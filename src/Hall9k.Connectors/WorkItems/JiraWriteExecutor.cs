@@ -229,11 +229,17 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         string? summary = ExtractField(fields, "summary");
         string description = AppendMarker(ApplyFormat(ExtractField(fields, "description"), payload.EffectiveFormat), Marker(taskId));
 
-        // Composed fields are laid down first, and the three reserved nodes are written after,
-        // deliberately overwriting anything a composed payload happened to also name — a card is
-        // always filed against the board hall9k resolved and the work item type it validated
-        // (independent pre-PR review, adversarial lens, cycle 1), never a project or issuetype a
-        // composer smuggled into "fields" alongside them.
+        // Discarded case-insensitively, the same way ExtractField above pulls "summary" and
+        // "description" regardless of a composer's own casing choice: a card is always filed
+        // against the board hall9k resolved and the work item type it validated (independent
+        // pre-PR review, adversarial lens, cycle 1), never a project or issuetype a composer
+        // smuggled into "fields" alongside them — and an exact-case-only guard left "issueType"
+        // (as opposed to "issuetype") free to reach Jira alongside the reserved node below,
+        // which Jira refuses outright as a duplicate field rather than silently overriding
+        // (independent pre-PR review, adversarial lens, cycle 10).
+        ExtractField(fields, "project");
+        ExtractField(fields, "issuetype");
+
         JsonObject fieldsNode = [];
         AppendFields(fieldsNode, fields);
         fieldsNode["project"] = new JsonObject { ["key"] = project.Value };
@@ -577,13 +583,35 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// to; text with none — closeout's own merge comment among them — passes through verbatim, which
     /// is what lets a bare URL still auto-link the way "plain" text always rendered before this
     /// conversion existed (independent pre-PR review, adversarial lens, cycle 2).
+    /// <para>
+    /// Anything other than "markdown" or "plain" is refused here too, not only at
+    /// <see cref="JiraWritePayload.Validate"/>: <see cref="JiraWriteCoordinator.RetryPendingAsync"/>
+    /// replays an already-recorded payload's own <c>PayloadJson</c> without re-validating it (by
+    /// design — a retry mints no new intent), so a payload naming "html" and recorded pending before
+    /// <c>AllowedFormats</c> narrowed to drop it would otherwise reach this method under the older
+    /// build's rules and fall through to <see cref="JiraMarkupText.ToPlainLiteral"/>, which has no
+    /// notion of HTML tags and would post raw HTML source to the card verbatim — the exact
+    /// silently-unmet-at-the-transport outcome dropping "html" from composition was meant to prevent
+    /// (independent pre-PR review, adversarial lens, cycle 10). Refusing it here as an ordinary,
+    /// non-auth failure instead means an install upgrading mid-flight with such a write already
+    /// pending gets a named, terminal reason asking for a recomposed payload rather than a broken
+    /// card nobody was told about.
+    /// </para>
     /// </summary>
     private static string? ApplyFormat(string? text, string format) =>
         text.IsBlank()
             ? text
-            : string.Equals(format, "markdown", StringComparison.OrdinalIgnoreCase)
-                ? JiraMarkupText.FromMarkdown(text)
-                : JiraMarkupText.ToPlainLiteral(text);
+            : format.Trim().ToLowerInvariant() switch
+            {
+                "markdown" => JiraMarkupText.FromMarkdown(text),
+                "plain" => JiraMarkupText.ToPlainLiteral(text),
+                _ => throw new JiraWriteExecutionException(
+                    JiraWriteFailureKind.Other,
+                    $"\"{format}\" is not a text format this executor can convert for Jira — only "
+                    + "\"markdown\" and \"plain\" are. This write's payload was recorded before that "
+                    + "narrowing existed, so it cannot simply be retried as-is: recompose it with a "
+                    + "supported format instead."),
+            };
 
     private static void AppendFields(JsonObject fieldsNode, IReadOnlyDictionary<string, string> fields)
     {
@@ -739,7 +767,12 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         {
             throw new JiraWriteExecutionException(
                 JiraWriteFailureKind.Other,
-                $"Could not reach {account.Site} to {verb}: {RelayedText.OneLine(exception.Message)}. Check "
+                $"Could not reach {account.Site} to {verb}: {RelayedText.OneLine(exception.Message)}. This "
+                + "is genuinely ambiguous, the same as the timeout above — the connection can drop after "
+                + "Jira already received and carried out the request, while the response was still being "
+                + "read back, so do not assume nothing happened: for a create, run the same write again — "
+                + "the marker search this executor runs first will find the card if it exists rather than "
+                + "filing a second one; for an update or a comment, check the board before retrying. Check "
                 + "the site URL on the registered connection (h9k connection list) and that this machine "
                 + "can reach it.");
         }
