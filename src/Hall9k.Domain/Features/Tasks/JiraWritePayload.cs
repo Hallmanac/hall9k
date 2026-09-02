@@ -122,6 +122,19 @@ public sealed record JiraWritePayload(
             RefuseUnusedMember(operation, "workItemType", WorkItemType.IsNotBlank());
             RefuseUnusedMember(operation, "comment", Comment.IsNotBlank());
             RefuseUnusedMember(operation, "projectKey", ProjectKey.IsNotBlank());
+
+            // An update has no bound project or work item type of its own to overwrite a composed
+            // value with the way CreateAsync does, so JiraWriteExecutor.UpdateAsync drops these two
+            // fields before building the request rather than moving a card's board or type through
+            // an ordinary field write. Refusing them here, before the intent is even recorded, closes
+            // the gap that dropping left open: without this, a payload naming "project" or
+            // "issuetype" inside "fields" validated clean, the field was silently discarded at the
+            // transport, and the write still recorded a verified success claiming content that was
+            // never sent — including the case where such a field was the payload's only content, so
+            // Jira received an effectively empty update and still answered 2xx (independent pre-PR
+            // review, adversarial lens, cycle 8).
+            RefuseReassignmentField(HasField(Fields, "project"), "project");
+            RefuseReassignmentField(HasField(Fields, "issuetype"), "issuetype");
         }
 
         if (Format.IsNotBlank() && !AllowedFormats.Contains(Format.Trim().ToLowerInvariant()))
@@ -154,6 +167,31 @@ public sealed record JiraWritePayload(
             $"A \"{operation}\" write does not send \"{memberName}\" — the executor for this operation "
             + "never reads it, so it would be silently dropped rather than carried out. Remove it from "
             + "the payload, or submit it as a separate write of the operation that does send it.");
+    }
+
+    /// <summary>
+    /// Refuses a "project" or "issuetype" field inside an update's own "fields" — the two members an
+    /// update has no bound value of its own to overwrite a composed one with (unlike a create, which
+    /// always writes both from its own <see cref="ProjectKey"/> and <see cref="WorkItemType"/>), so
+    /// <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor.UpdateAsync"/> drops either one before
+    /// building the request rather than moving a card between boards or types through an ordinary
+    /// field write. This is the same silently-dropped-content problem <see cref="RefuseUnusedMember"/>
+    /// exists to prevent, but that method's own message ("submit it as a separate write of the
+    /// operation that does send it") would be false here: no operation sends a card's project or
+    /// issue type through "fields" at all, so this refusal names the actual, correct fix instead.
+    /// </summary>
+    private static void RefuseReassignmentField(bool present, string fieldName)
+    {
+        if (!present)
+        {
+            return;
+        }
+
+        throw new DomainValidationException(
+            $"An \"update\" write does not send \"{fieldName}\" inside \"fields\" — an update has no "
+            + "board or work item type of its own to move a card to, so this would be silently dropped "
+            + "rather than carried out. Remove it from the payload; moving a card between projects or "
+            + "changing its work item type is not something an update field write does.");
     }
 
     /// <summary>

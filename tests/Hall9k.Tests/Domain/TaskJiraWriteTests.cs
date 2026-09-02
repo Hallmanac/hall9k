@@ -96,6 +96,43 @@ public sealed class TaskJiraWriteTests
     }
 
     /// <summary>
+    /// An update has no bound project of its own to overwrite a composed value with the way a
+    /// create does, so <see cref="Hall9k.Connectors.WorkItems.JiraWriteExecutor.UpdateAsync"/> drops
+    /// this field rather than sending it — refused at validation instead, so the payload is never
+    /// recorded as an intent it does not actually carry out (independent pre-PR review, adversarial
+    /// lens, cycle 8).
+    /// </summary>
+    [Fact]
+    public void An_update_naming_a_project_field_is_refused_because_the_executor_never_sends_it()
+    {
+        JiraWritePayload payload = new(
+            WorkItemType: null, Fields: new Dictionary<string, string> { ["project"] = "OPS" }, Comment: null);
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Update);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*does not send \"project\"*");
+    }
+
+    /// <summary>
+    /// The stronger case a missing check would let through: a real field alongside the dropped one,
+    /// so the payload looks like it changes something and passes the "would change nothing" gate,
+    /// but the issuetype change is silently discarded at the transport while the recorded outcome
+    /// still claims it happened.
+    /// </summary>
+    [Fact]
+    public void An_update_naming_an_issuetype_field_is_refused_even_alongside_a_real_field()
+    {
+        JiraWritePayload payload = new(
+            WorkItemType: null,
+            Fields: new Dictionary<string, string> { ["summary"] = "Renamed", ["issuetype"] = "Bug" },
+            Comment: null);
+
+        Action validate = () => payload.Validate(JiraWriteOperation.Update);
+
+        validate.Should().Throw<DomainValidationException>().WithMessage("*does not send \"issuetype\"*");
+    }
+
+    /// <summary>
     /// A field composed through <see cref="JiraWritePayload.FromJson"/> is stored as its own raw
     /// JSON text, so an empty summary arrives here as the two-character string <c>""</c> rather
     /// than an empty one — this validation has to decode it the same way
