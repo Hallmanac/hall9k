@@ -29,7 +29,7 @@ h9k install                  # publish release binaries to ~/.hall9k/bin (no ser
 h9k update                   # refresh an already-installed machine from the latest GitHub release, no repo/SDK needed
 h9k uninstall [--purge-data] # take the platform off the machine; the database survives unless --purge-data (Decisions Log #83)
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
-h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days, review-cycle caps (backlog 59, Decisions Log #103, #111, #112)
+h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days, review-cycle caps, a periodic token-spend budget (--spend-budget, --spend-period; backlog 59, Decisions Log #103, #111, #112, #113)
 h9k doctor [--yes]           # diagnose the database situation and what to do about it; --yes remediates non-interactively, for scripts and dispatched agents (Decisions Log #73, #74, #99)
 h9k project add --name <n> --repo-url <url>   # register a project and create its home directory
 h9k project init <name>      # create, repair or refresh a project's home; idempotent
