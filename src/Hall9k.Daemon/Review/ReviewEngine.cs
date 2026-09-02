@@ -374,9 +374,10 @@ public sealed class ReviewEngine(
                         // The boundary this new FinalFullPass cycle's own diff instruction scopes
                         // to (task: the mandatory FinalFullPass rereads only the commits no
                         // full-scope pass has already read): run.LastFullScopeReviewHeadSha still
-                        // holds the value as it stood before this cycle starts, since
-                        // StartCycleIfNew only moves it once this dispatch's own ReviewDispatched
-                        // lands.
+                        // holds the value as it stood before this cycle starts, since it only
+                        // moves once a full-scope cycle actually DELIVERS a readable verdict from
+                        // every lens it dispatched (RunAggregate.SetReviewPhaseAndLatchFullScopeBoundary),
+                        // which this dispatch's own ReviewDispatched cannot itself trigger.
                         string? settlingSinceSha = await ResolveFinalFullPassSinceShaAsync(
                             context.Run.WorktreePath, run.LastFullScopeReviewHeadSha, cancellationToken);
                         if (!await DispatchReviewPassesAsync(
@@ -2903,7 +2904,7 @@ public sealed class ReviewEngine(
     /// an earlier full-scope cycle genuinely read is not the same claim as it still being an
     /// ancestor of today's HEAD, so this is verified fresh rather than trusted at face value.
     /// </summary>
-    private static async Task<string?> ResolveFinalFullPassSinceShaAsync(
+    private static async ValueTask<string?> ResolveFinalFullPassSinceShaAsync(
         string worktreePath, string? lastFullScopeHeadSha, CancellationToken cancellationToken)
     {
         if (lastFullScopeHeadSha is null)
