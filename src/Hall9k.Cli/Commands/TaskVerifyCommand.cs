@@ -154,29 +154,41 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         if (project.VerifyCommands.Count == 0)
         {
             string? headSha = await InteractiveWorktreeGit.GetHeadShaAsync(run.WorktreePath, cancellationToken);
-            await RecordPassAsync(session, runId, "No verification gates configured for this project.", headSha, gatesFingerprint, treeConfirmedClean, cancellationToken);
+            await RecordPassAsync(
+                session, runId, "No verification gates configured for this project.", headSha, gatesFingerprint,
+                treeConfirmedClean, gateDurations: [], cancellationToken);
             AnsiConsole.MarkupLine("[green]No verification gates configured for this project — nothing to run.[/]");
             return ExitCodes.Ok;
         }
 
+        // Every gate's own wall-clock duration this pass (task: gate wall-clock duration is
+        // recorded and surfaced), in the order the gates ran.
+        List<GateDuration> gateDurations = [];
+
         foreach (VerifyCommand gate in project.VerifyCommands)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]Running gate '{gate.Name}'...[/]");
+            Stopwatch gateStopwatch = Stopwatch.StartNew();
             (bool passed, string summary) = await RunGateAsync(run.WorktreePath, gate, cancellationToken);
+            TimeSpan gateElapsed = gateStopwatch.Elapsed;
             if (passed)
             {
+                gateDurations.Add(new GateDuration(gate.Name, gateElapsed, Passed: true));
                 AnsiConsole.MarkupLineInterpolated($"[green]Gate '{gate.Name}' passed.[/]");
                 continue;
             }
 
-            await RecordFailureAsync(session, runId, [gate.Name], cancellationToken);
+            gateDurations.Add(new GateDuration(gate.Name, gateElapsed, Passed: false));
+            await RecordFailureAsync(session, runId, [gate.Name], gateDurations, cancellationToken);
             AnsiConsole.MarkupLineInterpolated($"[red]Gate '{gate.Name}' failed:[/]");
             AnsiConsole.WriteLine(summary);
             return ExitCodes.Conflict;
         }
 
         string? passHeadSha = await InteractiveWorktreeGit.GetHeadShaAsync(run.WorktreePath, cancellationToken);
-        await RecordPassAsync(session, runId, $"h9k task verify: {project.VerifyCommands.Count} gate(s) ran full scope.", passHeadSha, gatesFingerprint, treeConfirmedClean, cancellationToken);
+        await RecordPassAsync(
+            session, runId, $"h9k task verify: {project.VerifyCommands.Count} gate(s) ran full scope.", passHeadSha,
+            gatesFingerprint, treeConfirmedClean, gateDurations, cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[green]Verification passed ({project.VerifyCommands.Count} gate(s)).[/]");
         return ExitCodes.Ok;
     }
@@ -305,17 +317,20 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
 
     private static async Task RecordPassAsync(
         IDocumentSession session, Guid runId, string? note, string? headSha, string verifyCommandsFingerprint,
-        bool ranFullScope, CancellationToken cancellationToken)
+        bool ranFullScope, IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
     {
         session.Events.Append(
-            runId, new VerificationPassed(runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha, verifyCommandsFingerprint));
+            runId,
+            new VerificationPassed(
+                runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha, verifyCommandsFingerprint, gateDurations));
         await session.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task RecordFailureAsync(
-        IDocumentSession session, Guid runId, IReadOnlyList<string> failedGates, CancellationToken cancellationToken)
+        IDocumentSession session, Guid runId, IReadOnlyList<string> failedGates,
+        IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
     {
-        session.Events.Append(runId, new VerificationFailed(runId, failedGates, DateTimeOffset.UtcNow));
+        session.Events.Append(runId, new VerificationFailed(runId, failedGates, DateTimeOffset.UtcNow, gateDurations));
         await session.SaveChangesAsync(cancellationToken);
     }
 }
