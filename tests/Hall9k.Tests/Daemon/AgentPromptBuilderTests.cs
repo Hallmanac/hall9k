@@ -1150,6 +1150,45 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1 finding (both lenses): the scoped FinalFullPass block's
+    /// acceptance-criteria sentence used to render unconditionally, but the adversarial lens never
+    /// prints an objective or acceptance criteria at all (Decisions Log #59) — pointing it at
+    /// criteria that appear nowhere in its own prompt either confuses it or sends it hunting for
+    /// the task's criteria outside the prompt, undoing the blind-to-intent design. The conformance
+    /// lens still gets the sentence, since it does print the criteria — just above the mechanics
+    /// section rather than "below" it as the pre-fix wording claimed.
+    /// </summary>
+    [Fact]
+    public void Final_full_pass_scoped_instruction_omits_acceptance_criteria_sentence_from_the_adversarial_lens()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Adversarial, ReviewMode.FinalFullPass,
+            sinceSha: "abc1234");
+
+        prompt.Should().NotContain(
+            "The same goes for the acceptance",
+            "the adversarial lens prints no acceptance criteria for a scoped pass to point at");
+    }
+
+    /// <summary>
+    /// Same fix, the conformance side: the criteria are printed above the mechanics section
+    /// (`## What the diff is supposed to do`, before `## How to review`), so the scoped sentence
+    /// must point "above", not "below".
+    /// </summary>
+    [Fact]
+    public void Final_full_pass_scoped_instruction_points_the_conformance_lens_at_criteria_above_it()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Conformance, ReviewMode.FinalFullPass,
+            sinceSha: "abc1234");
+
+        prompt.Should().Contain("acceptance");
+        prompt.Should().Contain(
+            "criteria above", "the criteria render earlier in this same prompt, not further down it");
+        prompt.Should().NotContain("criteria below");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1, adversarial finding: a scoped FinalFullPass range can
     /// resolve empty (the fix session that concluded a Verify cycle committed nothing), and the
     /// reviewer needs to be told that is a legitimate merge-ready outcome rather than an instruction
