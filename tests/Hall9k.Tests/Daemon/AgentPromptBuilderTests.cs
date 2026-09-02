@@ -1827,8 +1827,9 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The one carve-out to the sweep's fixing bound (cycle-3 review, this task): a pre-existing
-    /// sibling of a finding already dispositioned <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/>
+    /// The carve-out to the sweep's fixing bound (cycle-3 review, this task; keyed on the sibling
+    /// site's own disposition since cycle 11 — see below): a pre-existing sibling this document
+    /// separately dispositions <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/>
     /// is fixed in that same separate commit rather than merely named, because that disposition
     /// already decided this defect's shape belongs in its own commit here — leaving a sibling
     /// named-not-fixed would contradict it and reintroduce the exact lap this phase exists to
@@ -1842,11 +1843,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain(
-            "unless the finding you are sweeping is itself dispositioned",
+            "this document itself separately",
             "the fixing bound carries an explicit carve-out rather than applying uniformly");
         prompt.Should().Contain(ReviewFindingDispositions.FixHereInItsOwnCommit);
         prompt.Should().Contain(
-            "belongs in that same",
+            "fixed here, in that same separate commit",
             "a sibling of a fix-in-its-own-commit finding is fixed in that commit, not merely named");
         prompt.Should().Contain(
             "cost exactly the lap this phase exists to remove",
@@ -1858,15 +1859,15 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> carve-out's own carve-out
-    /// (cycle-10 review, this task): a pre-existing sibling that this same findings document
-    /// separately dispositions <see cref="ReviewFindingDispositions.DoNotFixHere"/> stays
-    /// routed away rather than being pulled into the fix-in-its-own-commit commit, even though it
-    /// shares the swept finding's defect shape. Without this, one adversarial pass reporting the
-    /// same shape at two pre-existing sites — one graded severely enough to land
-    /// <c>FixHereInItsOwnCommit</c>, the other graded lower and routed away — would have the sweep
-    /// fix the routed-away site anyway, contradicting the routing disposition and duplicating a
-    /// defect a draft bug task or the standing sweep already covers.
+    /// The fixing carve-out's own carve-out (cycle-10 review, this task): a pre-existing sibling
+    /// that this same findings document separately dispositions
+    /// <see cref="ReviewFindingDispositions.DoNotFixHere"/> stays routed away rather than being
+    /// pulled into a fix-in-its-own-commit commit, even though it shares the swept finding's
+    /// defect shape. Without this, one adversarial pass reporting the same shape at two
+    /// pre-existing sites — one graded severely enough to land <c>FixHereInItsOwnCommit</c>, the
+    /// other graded lower and routed away — would have the sweep fix the routed-away site anyway,
+    /// contradicting the routing disposition and duplicating a defect a draft bug task or the
+    /// standing sweep already covers.
     /// </summary>
     [Fact]
     public void Self_check_phase_does_not_fix_a_sibling_that_is_itself_routed_away()
@@ -1875,15 +1876,39 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
 
         prompt.Should().Contain(
-            "unless that",
-            "the fix-in-its-own-commit carve-out itself carries an exception rather than applying uniformly");
-        prompt.Should().Contain(
-            "sibling site is itself listed above under",
+            $"\"{ReviewFindingDispositions.DoNotFixHere}\" stays routed away",
             "a sibling already dispositioned elsewhere in this document is not pulled into the fix-here commit");
         prompt.Should().Contain(
-            "a finding this document already routed away stays routed away",
+            "does not become yours to fix just because it shares",
             "routing already decided this defect's disposition; the sweep does not override it just because a "
             + "different finding of the same shape happens to be a fix-in-its-own-commit case");
+    }
+
+    /// <summary>
+    /// The mirror case cycle 10 missed (cycle-11 review, this task): the carve-out has to be keyed
+    /// on the sibling site's own disposition, not on how the finding *being swept* is
+    /// dispositioned. Before this fix, an ordinary <see cref="ReviewFindingDispositions.FixHere"/>
+    /// finding's sweep reaching a sibling separately dispositioned
+    /// <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> was told to merely name it —
+    /// the exact inverse of the disposition already recorded for that sibling three paragraphs
+    /// earlier in this same prompt.
+    /// </summary>
+    [Fact]
+    public void Self_check_phase_carve_out_is_keyed_on_the_sibling_sites_own_disposition()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
+
+        prompt.Should().Contain(
+            "regardless of which",
+            "the carve-out states explicitly that it does not depend on which finding's sweep surfaced the sibling");
+        prompt.Should().Contain(
+            "finding's sweep surfaced the sibling or how that finding is itself dispositioned",
+            "the precedence rule is stated independently of the swept finding's own disposition");
+        prompt.Should().NotContain(
+            "unless the finding you are sweeping is itself dispositioned",
+            "the old wording keyed the carve-out on the swept finding rather than the sibling site, which is the "
+            + "defect this cycle fixed");
     }
 
     /// <summary>
@@ -1929,7 +1954,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// A project configuring no verification gates has no suite for the self-check phase's own
     /// test-run sub-rule to run — it skips the sub-rule instead of ordering the session to invent
     /// a command that satisfies it (mirrors <see cref="WorkPromptBuilder.AppendSelfReviewPhaseRules"/>'s
-    /// own empty-gates branch).
+    /// own empty-gates branch). The sub-rule's heading itself says so rather than keeping the
+    /// with-gates heading's imperative "run the tests" and contradicting it in the body
+    /// (conformance review, cycle 11): a session skimming bolded sub-rule headings — the normal
+    /// way to scan a numbered list — would otherwise read the heading as the instruction and
+    /// invent a command the body was written to prevent.
     /// </summary>
     [Fact]
     public void Self_check_phase_skips_the_test_run_when_the_project_configures_no_gates()
@@ -1937,7 +1966,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
         string prompt = AgentPromptBuilder.BuildReviewFix(
             SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1);
 
-        prompt.Should().Contain("Run the touched tests, in the foreground");
+        prompt.Should().Contain("**No tests to run.**");
+        prompt.Should().NotContain(
+            "Run the touched tests, in the foreground",
+            "the no-gates heading must not keep the with-gates imperative and then tell the session to skip it");
         prompt.Should().Contain(
             "This project configures no",
             "the sub-rule states its own precondition rather than ordering a run over a suite that does not exist");

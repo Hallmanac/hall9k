@@ -1740,6 +1740,21 @@ public static class AgentPromptBuilder
     /// <see cref="ReviewFindingDispositions.DoNotFixHere"/>, so a routed-away sibling stays
     /// routed away no matter which finding's sweep surfaces it.
     /// </para>
+    /// <para>
+    /// Cycle 11 review found the cycle-10 carve-out still one-directional: it excluded a sibling
+    /// listed under <see cref="ReviewFindingDispositions.DoNotFixHere"/>, but a sibling separately
+    /// dispositioned <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> was excluded
+    /// only when the finding *being swept* carried that same disposition — an ordinary
+    /// <see cref="ReviewFindingDispositions.FixHere"/> finding's sweep still told the sweeping
+    /// session to merely name such a sibling, contradicting the disposition already recorded for
+    /// it three paragraphs earlier. The carve-out is now keyed on the sibling site's own
+    /// disposition alone, not on how the finding being swept is itself dispositioned: an explicit
+    /// disposition on the sibling always wins, regardless of which finding's sweep surfaced it.
+    /// The same edit folded the ambiguous "for every other pre-existing site" clause into an
+    /// explicit "one this document does not separately disposition" test, closing the misreading
+    /// where it could parse as excluding only a routed-away sibling rather than any dispositioned
+    /// one.
+    /// </para>
     /// </summary>
     private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt, ProjectDetails project)
     {
@@ -1772,19 +1787,21 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     at and judged fine counts as cleared, one you never looked at does not. A");
         prompt.AppendLine("     pre-existing site outside this branch's own changes is not yours to fix here;");
         prompt.AppendLine("     fixing it would grow this pull request with unrelated changes the same way the");
-        prompt.AppendLine("     disposition rule above forbids — unless the finding you are sweeping is itself dispositioned");
-        prompt.AppendLine($"     \"{ReviewFindingDispositions.FixHereInItsOwnCommit}\": that");
-        prompt.AppendLine("     disposition has already decided this defect's shape is worth cleaning up here,");
-        prompt.AppendLine("     in a commit of its own, so a pre-existing sibling of that same finding");
-        prompt.AppendLine("     belongs in that same separate commit rather than merely named — naming instead");
-        prompt.AppendLine("     of fixing it would cost exactly the lap this phase exists to remove — unless that");
-        prompt.AppendLine($"     sibling site is itself listed above under \"{ReviewFindingDispositions.DoNotFixHere}\":");
-        prompt.AppendLine("     a finding this document already routed away stays routed away regardless of what");
-        prompt.AppendLine("     shape it shares with a finding you are fixing, so treat it the same as any other");
-        prompt.AppendLine("     site under that heading — not yours to fix here, no matter which finding's sweep");
-        prompt.AppendLine("     surfaced it. For every");
-        prompt.AppendLine("     other pre-existing site, it is still yours to name and not to fix: leave it out");
-        prompt.AppendLine("     of your fix, but name it in your final summary anyway — if the next review");
+        prompt.AppendLine("     disposition rule above forbids — unless this document itself separately");
+        prompt.AppendLine("     dispositions that exact sibling site as a finding of its own, in which case an");
+        prompt.AppendLine("     explicit disposition always beats the sweep's own default, regardless of which");
+        prompt.AppendLine("     finding's sweep surfaced the sibling or how that finding is itself dispositioned:");
+        prompt.AppendLine($"     a sibling listed under \"{ReviewFindingDispositions.FixHereInItsOwnCommit}\" gets");
+        prompt.AppendLine("     fixed here, in that same separate commit — that disposition has already decided");
+        prompt.AppendLine("     this defect's shape is worth cleaning up now, and naming it instead of fixing it");
+        prompt.AppendLine("     would cost exactly the lap this phase exists to remove; a sibling listed under");
+        prompt.AppendLine($"     \"{ReviewFindingDispositions.DoNotFixHere}\" stays routed away — a finding this");
+        prompt.AppendLine("     document already routed away does not become yours to fix just because it shares");
+        prompt.AppendLine($"     a shape with one you are; and a sibling listed under \"{ReviewFindingDispositions.FixHere}\"");
+        prompt.AppendLine($"     or \"{ReviewFindingDispositions.RideAlong}\" is already your work by that listing");
+        prompt.AppendLine("     alone, swept or not. For every other pre-existing site — one this document does");
+        prompt.AppendLine("     not separately disposition — it is still yours to name and not to fix: leave it");
+        prompt.AppendLine("     out of your fix, but name it in your final summary anyway — if the next review");
         prompt.AppendLine("     dispatch is a verify pass, naming it there is the only path this sibling has of");
         prompt.AppendLine("     ever reaching a reviewer and being reported as a finding of its own; a");
         prompt.AppendLine("     pre-existing sibling left off the sweep never reaches even that path.");
@@ -1799,9 +1816,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     you conclude, the same as any other real finding this phase surfaces.");
         if (project.VerifyCommands.Count == 0)
         {
-            prompt.AppendLine("  3. **Run the touched tests, in the foreground.** This project configures no");
-            prompt.AppendLine("     verification gates, so there is no suite to run here — skip this");
-            prompt.AppendLine("     sub-rule rather than inventing a command to satisfy it.");
+            prompt.AppendLine("  3. **No tests to run.** This project configures no");
+            prompt.AppendLine("     verification gates, so there is no suite to run here — move on");
+            prompt.AppendLine("     rather than inventing a command to satisfy this sub-rule.");
         }
         else
         {
