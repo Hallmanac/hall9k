@@ -84,9 +84,14 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         // missing is the normal missing-run-sweep path (silent, see RecordPullRequestOnRunStreamAsync's
         // own comment) and not this warning's concern — this fires only when a run stream existed
         // to record onto and the URL still did not end up recorded. The two reasons that can
-        // happen name different, and differently recoverable, advice (independent pre-PR review,
-        // cycle 3, medium): a fresh h9k task resolve --pr is never a real lever either way, since
-        // this task is now Done and TaskDecider.Resolve accepts only a Failed one.
+        // happen name different advice, and neither names h9k pr resolve as a fix (independent
+        // pre-PR review, cycle 1, medium): that command reopens the task onto its own
+        // already-recorded PullRequestUrl and branch (TaskDecider.Reopen, PullRequestResolveCommand)
+        // rather than accepting a new URL, so it cannot correct a mistyped or foreign one — it can
+        // only dispatch a follow-up run onto a dead branch, or, worse, watch whatever pull request
+        // the wrong number happens to name in the project's own repository. This task is Done, and
+        // a fresh h9k task resolve --pr is never a real lever either way, since TaskDecider.Resolve
+        // accepts only a Failed one.
         if (runStreamOutcome == RunStreamPullRequestOutcome.NotRecorded && settings.PullRequestUrl.IsNotBlank())
         {
             if (task.Type == TaskType.PrReview)
@@ -102,8 +107,10 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
             {
                 await Console.Error.WriteLineAsync(
                     $"Note: {settings.PullRequestUrl} does not look like a pull request on this task's own "
-                    + "project repository, so closeout will not watch it for a merge — h9k status will keep "
-                    + "showing this run as unwatched until h9k pr resolve records one it recognizes.");
+                    + "project repository, so closeout will not watch it for a merge. There is no lever "
+                    + "that fixes this: h9k pr resolve reopens the task onto its already-recorded pull "
+                    + "request rather than accepting a corrected one, so it cannot record a different URL. "
+                    + "h9k status will keep showing this run as unwatched, which is expected here.");
             }
         }
 
