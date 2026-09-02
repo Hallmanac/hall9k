@@ -364,11 +364,16 @@ public sealed class JiraWriteExecutorTests
     [Fact]
     public async Task ProbeAuthenticationAsync_reports_Authenticated_on_success()
     {
-        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"issues":[]}""");
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"accountId":"5b10a2844c20165700ede21g","emailAddress":"brian@example.com"}""");
 
         JiraAuthProbeResult probe = await Executor(requester).ProbeAuthenticationAsync(CancellationToken.None);
 
         probe.Should().Be(JiraAuthProbeResult.Authenticated);
+        JiraRequest sent = requester.Requests.Should().ContainSingle().Subject;
+        sent.Method.Should().Be(HttpMethod.Get, "the probe confirms the credential with a GET, not a search POST");
+        sent.Url.Should().Be(
+            new Uri("https://hall9k.atlassian.net/rest/api/2/myself"),
+            "the probe reads the credential's own identity rather than running a JQL search nothing on a real tenant matches");
     }
 
     [Fact]
@@ -394,7 +399,7 @@ public sealed class JiraWriteExecutorTests
     [Fact]
     public async Task ProbeAuthenticationAsync_lets_an_unresolvable_credential_propagate_unwrapped()
     {
-        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"issues":[]}""");
+        RecordingJiraRequester requester = RecordingJiraRequester.Succeeding(200, """{"accountId":"5b10a2844c20165700ede21g","emailAddress":"brian@example.com"}""");
 
         Func<Task> act = () => ExecutorWithUnresolvableCredential(requester).ProbeAuthenticationAsync(CancellationToken.None);
 
@@ -498,6 +503,23 @@ public sealed class JiraWriteExecutorTests
         string? body = requester.Requests.First(r => r.Method == HttpMethod.Post).JsonBody;
         body.Should().Contain("\"project\":{\"key\":\"PROJ\"}");
         body.Should().Contain("\"issuetype\":{\"name\":\"Dev Task\"}");
+    }
+
+    [Fact]
+    public async Task Update_drops_a_composed_project_or_issuetype_field_rather_than_sending_it()
+    {
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(_ => Ok("""{"key":"PROJ-20"}"""));
+
+        JiraWritePayload payload = JiraWritePayload.FromJson(
+            """{"fields":{"summary":"S","project":{"key":"OTHER"},"issuetype":{"name":"Bug"}}}""");
+
+        await Executor(requester).UpdateAsync("PROJ-20", payload, CancellationToken.None);
+
+        string? body = requester.Requests.First(r => r.Method == HttpMethod.Put).JsonBody;
+        body.Should().NotContain(
+            "\"project\"", "an update has no bound project of its own to overwrite a composed one with, so it is dropped instead");
+        body.Should().NotContain(
+            "\"issuetype\"", "an update never moves a card to a different work item type through a field write");
     }
 
     // ---- A markdown-composed description or comment reaches Jira as wiki markup, not literal characters --
