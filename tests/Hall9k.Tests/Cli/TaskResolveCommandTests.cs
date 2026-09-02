@@ -90,4 +90,17 @@ public sealed class TaskResolveCommandTests
                 new Uri("https://github.com/x/y"))
             .Should().BeNull();
     }
+
+    [Fact]
+    public void Builds_nothing_for_a_pull_request_naming_the_same_owner_and_repo_on_a_different_host()
+    {
+        // PullRequestUrls.RepositoryFrom reads owner/repo out of path segments only, so a same-owner
+        // same-repo URL on a different host would otherwise slip past the guard undetected
+        // (adversarial review, cycle 1, medium): https://gitlab.com/x/y/pull/24 must not be treated
+        // as the same repository as a project recorded at https://github.com/x/y.
+        TaskResolveCommand.BuildFailedRunPullRequestEvent(
+                DomainId.New(), "https://gitlab.com/x/y/pull/24", Now,
+                new Uri("https://github.com/x/y"))
+            .Should().BeNull();
+    }
 }
