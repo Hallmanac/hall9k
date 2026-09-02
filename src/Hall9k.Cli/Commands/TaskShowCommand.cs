@@ -438,7 +438,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// review, cycle 2, conformance finding): the pull request body points here for "the review
     /// history", and until this line existed that pointer was circular — this command rendered
     /// only the same count the body already had. Each entry is <see cref="RunDetails.ReviewRideAlongFindings"/>'s
-    /// own severity and location, named the same way <see cref="PullRequestBody"/> now does. A run
+    /// own severity and location, named the same way <c>PullRequestBody</c> now does. A run
     /// settled before that field existed has an empty list even when the count above is non-zero,
     /// which is an honest gap rather than a reconstruction, so this prints nothing extra for it.
     /// </summary>
