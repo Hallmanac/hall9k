@@ -930,6 +930,161 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The run-side counterpart to h9k task resolve --pr (backlog: a pull request recorded by
+    /// h9k task resolve --pr is observed to merge like every other pull request the platform
+    /// knows about): a task a human resolved from Failed onto a pull request, with the run never
+    /// having recorded one through the ordinary PullRequestOpened path, now lands in the orphan
+    /// sweep's candidate set — PullRequestRecordedOnFailedRun is what puts it there without ever
+    /// moving the run out of Failed (the LOAD-BEARING TRAP: PullRequestOpened/Updated would move
+    /// it to AwaitingReview and misroute it into the watched sweep instead).
+    /// </summary>
+    [Fact]
+    public async Task A_pull_request_recorded_by_task_resolve_pr_reaches_true_closeout_when_it_merges()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedResolvedFailedRunWithPullRequestAsync(store, node, worktrees, repoPath, cts.Token);
+        Guid dependentId = await SeedBlockedDependentAsync(store, node.OwnerId, taskId, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-1) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1),
+            "h9k task resolve --pr's recorded pull request is an orphan candidate exactly like any other");
+        inspector.StateInspections.Should().Be(1);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed,
+            "the observed merge completes the run exactly as any other closeout does");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+
+        TaskListItem dependent = (await query.LoadAsync<TaskListItem>(dependentId, cts.Token))!;
+        dependent.State.Should().Be(TaskState.Queued,
+            "true closeout unblocks dependents exactly as any other observed merge does");
+
+        Directory.Exists(worktree.Path).Should().BeFalse("closeout completion removes the retained worktree");
+    }
+
+    /// <summary>
+    /// The negative half of the acceptance criteria: a resolve with no --pr appends nothing to
+    /// the run stream (<c>TaskResolveCommand.BuildFailedRunPullRequestEvent</c> returns null), so
+    /// <see cref="RunDetails.PullRequestNumber"/> stays null and the orphan query's own filter —
+    /// <c>r.PullRequestNumber != null</c> — never matches this row at all.
+    /// </summary>
+    [Fact]
+    public async Task A_resolve_without_a_pull_request_never_enters_the_orphan_sweep()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedResolvedFailedRunWithPullRequestAsync(
+            store, node, worktrees, repoPath, cts.Token, pullRequestUrl: null);
+
+        FakeInspector inspector = new();
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0),
+            "no pull request was ever recorded on the run stream, so the orphan query's own filter excludes this row");
+        inspector.StateInspections.Should().Be(0, "there is nothing here for the sweep to read");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.PullRequestNumber.Should().BeNull("a resolve with no --pr never touches the run stream");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "the resolution itself still lands regardless of --pr");
+    }
+
+    /// <summary>
+    /// Mirrors what <c>h9k task resolve --pr</c> itself appends (TaskFailed then TaskResolved on
+    /// the task stream, RunFailed then, when a pull request was named, PullRequestRecordedOnFailedRun
+    /// on the run stream) — the run never passes through PullRequestOpened at all, the same shape
+    /// a gate failure or a crash before any pull request existed leaves behind.
+    /// </summary>
+    private static async Task<(Guid TaskId, Guid RunId, Worktree Worktree)> SeedResolvedFailedRunWithPullRequestAsync(
+        DocumentStore store,
+        NodeContext node,
+        GitWorktreeManager worktrees,
+        string repoPath,
+        CancellationToken cancellationToken,
+        string? pullRequestUrl = PullRequestUrl)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid ownerId = node.OwnerId;
+        Guid projectId = DomainId.New();
+
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out", BranchNameTemplate.Default, ExternalReference: null), cancellationToken);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
+                null, Now, ownerId),
+            ownerId, Now);
+        List<object> taskEvents = [.. lifecycle];
+
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(task, node.NodeId, ownerId, runId, Now);
+        task.Apply(claimed);
+        taskEvents.Add(claimed);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskFailed taskFailed =
+            TaskDecider.Fail(task, runId, "the gates never went green", Now);
+        task.Apply(taskFailed);
+        taskEvents.Add(taskFailed);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskResolved resolved = TaskDecider.Resolve(
+            task, "the work merged; only the gate failed", pullRequestUrl, Now, ownerId);
+        task.Apply(resolved);
+        taskEvents.Add(resolved);
+
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+
+        List<object> runEvents =
+        [
+            new RunDispatched(runId, taskId, node.NodeId, ownerId, task.LeaseGeneration, DomainId.New(),
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationFailed(runId, ["test"], Now),
+            new RunFailed(runId, "the gates never went green", Now),
+        ];
+        if (pullRequestUrl is not null)
+        {
+            runEvents.Add(new PullRequestRecordedOnFailedRun(runId, pullRequestUrl, 7, Now));
+        }
+
+        session.Events.StartStream<RunAggregate>(runId, [.. runEvents]);
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, runId, worktree);
+    }
+
+    /// <summary>
     /// The other orphan shape (origin: 2026-08-28 needs-you cleanup, task 98ac05ef): a task
     /// completed Claimed -> Done naming a run id that never had its own stream started at all,
     /// because RunLauncher's declined-dispatch path discovered the pull request was already
