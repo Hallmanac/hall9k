@@ -229,7 +229,7 @@ public sealed class PullRequestBodyTests
     /// learns a below-High finding was carried rather than fixed.
     /// </summary>
     [Fact]
-    public void A_run_with_ride_along_residuals_names_the_count_and_the_findings_artifact()
+    public void A_run_with_ride_along_residuals_names_the_count_and_a_durable_pointer()
     {
         RunDetails run = Run();
         run.ReviewResidualsRideAlong = 2;
@@ -237,7 +237,7 @@ public sealed class PullRequestBodyTests
 
         string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
 
-        body.Should().Contain("2 findings").And.Contain("review-4-findings.md");
+        body.Should().Contain("2 findings").And.Contain($"h9k task show {run.TaskId}");
     }
 
     [Fact]
