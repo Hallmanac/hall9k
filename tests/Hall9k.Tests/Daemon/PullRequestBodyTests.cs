@@ -222,6 +222,32 @@ public sealed class PullRequestBodyTests
         body.Should().Contain("What I did:\n\n- read the issue\n- wrote the draft");
     }
 
+    /// <summary>
+    /// The spend-governor task (task: a mandatory FinalFullPass records merge-ready when every
+    /// finding it attaches is below High): today, before this task, the pull request body carries
+    /// no review information at all, so this is the one place a human already reading this code
+    /// learns a below-High finding was carried rather than fixed.
+    /// </summary>
+    [Fact]
+    public void A_run_with_ride_along_residuals_names_the_count_and_the_findings_artifact()
+    {
+        RunDetails run = Run();
+        run.ReviewResidualsRideAlong = 2;
+        run.ReviewCycle = 4;
+
+        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().Contain("2 findings").And.Contain("review-4-findings.md");
+    }
+
+    [Fact]
+    public void A_run_with_no_ride_along_residuals_says_nothing_about_review()
+    {
+        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().NotContain("ride-along").And.NotContain("Review ride-alongs");
+    }
+
     private static RunDetails Run() => new()
     {
         Id = DomainId.New(),
