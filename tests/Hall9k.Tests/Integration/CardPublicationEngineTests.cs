@@ -287,7 +287,13 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
             session.Events.Append(
                 taskId,
                 new JiraWriteRequested(taskId, writeId, JiraWriteOperation.Create, null, "{}", node.OwnerId, Now),
-                new JiraWriteFailed(taskId, writeId, "Jira rejected the registered credentials", IsAuthFailure: true, Now));
+                new JiraWriteFailed(
+                    taskId,
+                    writeId,
+                    "Jira rejected the registered credentials. This write stays recorded and pending; it "
+                    + "retries automatically once the connection is fixed.",
+                    IsAuthFailure: true,
+                    Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -303,7 +309,7 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         task.PendingJiraWriteIsAuthFailure.Should().BeTrue("the pre-seeded write is still pending on a rejected credential");
         task.PublicationOutcome.Should()
             .Contain("rejected the registered credential")
-            .And.Contain("retry automatically")
+            .And.Contain("retries automatically")
             .And.NotContain("Check the board", "no card was ever filed for this session to have lost track of");
     }
 

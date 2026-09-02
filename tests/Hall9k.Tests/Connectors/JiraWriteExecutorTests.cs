@@ -536,4 +536,23 @@ public sealed class JiraWriteExecutorTests
         string? body = requester.Requests.Single(r => r.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)).JsonBody;
         body.Should().Contain("{noformat}").And.Contain("## still literal");
     }
+
+    [Fact]
+    public async Task Comment_composed_as_plain_with_no_wiki_markup_active_character_is_posted_unwrapped_so_its_url_still_auto_links()
+    {
+        // Closeout's own merge comment is composed with format "plain" and carries a bare URL as
+        // its one actionable element. Wrapping every "plain" body in {noformat} regardless of its
+        // content boxed that URL into dead text (independent pre-PR review, adversarial lens,
+        // cycle 2) — this is the case that must stay unwrapped for the URL to auto-link.
+        RecordingJiraRequester requester = RecordingJiraRequester.RespondingTo(request =>
+            request.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)
+                ? Created("""{"id":"1"}""")
+                : Ok("""{"key":"PROJ-23"}"""));
+
+        string comment = "The pull request for this work has merged: https://github.com/hall9k/hall9k/pull/1";
+        await Executor(requester).CommentAsync("PROJ-23", comment, "plain", CancellationToken.None);
+
+        string? body = requester.Requests.Single(r => r.Url.ToString().EndsWith("/comment", StringComparison.Ordinal)).JsonBody;
+        body.Should().NotContain("{noformat}").And.Contain(comment);
+    }
 }

@@ -474,7 +474,12 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// pending, automatically-retried write, rather than a raw <see cref="DomainException"/>
     /// escaping this connector as a terminal failure (independent pre-PR review, both lenses,
     /// cycle 1: closeout's own merge comment was being dropped, not retried, whenever h9kd had not
-    /// yet inherited the environment its credential names).
+    /// yet inherited the environment its credential names). Ends with the same retry reassurance
+    /// <see cref="Explain"/>'s own 401 message ends with, rather than leaving it unsaid here: a
+    /// caller composing an operator-facing line from this exception's own message (closeout's merge
+    /// notice, the retry sweep's queued-notice log line) trusts that the recorded reason already
+    /// says whether and how the write retries, which held for a 401 but not for this vault-resolution
+    /// case until this sentence was added (independent pre-PR review, adversarial lens, cycle 2).
     /// </summary>
     private async ValueTask<string> AuthorizeAsync(string purpose, CancellationToken cancellationToken)
     {
@@ -486,7 +491,8 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         {
             throw new JiraWriteExecutionException(
                 JiraWriteFailureKind.AuthFailure,
-                $"Could not resolve the registered credential to {purpose}: {exception.Message}");
+                $"Could not resolve the registered credential to {purpose}: {exception.Message} This write "
+                + "stays recorded and pending; it retries automatically once the connection is fixed.");
         }
     }
 
@@ -520,7 +526,11 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
     /// Atlassian's own CLI to carry that text past its wiki-markup parser untouched, and nothing on
     /// this side of the REST swap does that anymore, so unconverted "plain" text would have Jira's
     /// own renderer interpret any wiki-markup-shaped characters it happens to contain (independent
-    /// pre-PR review, adversarial lens, cycle 1).
+    /// pre-PR review, adversarial lens, cycle 1). That conversion boxes the text in Jira's
+    /// <c>{noformat}</c> macro only when it actually carries a character wiki markup assigns meaning
+    /// to; text with none — closeout's own merge comment among them — passes through verbatim, which
+    /// is what lets a bare URL still auto-link the way "plain" text always rendered before this
+    /// conversion existed (independent pre-PR review, adversarial lens, cycle 2).
     /// </summary>
     private static string? ApplyFormat(string? text, string format) =>
         text.IsBlank()

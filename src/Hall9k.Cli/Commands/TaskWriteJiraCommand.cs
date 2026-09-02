@@ -57,7 +57,9 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
             + "reports, not a display name), comment, projectKey (only for --op create, when the project's own routing "
             + "rules say a different board than the one bound with h9k project set --jira), and format "
             + "(\"markdown\" or \"plain\" for how the description or comment text is "
-            + "written; defaults to markdown, since that is what most card-authoring skills produce)")]
+            + "written; defaults to markdown, since that is what most card-authoring skills produce — "
+            + "\"html\" is refused: there is no verified HTML-to-Jira-wiki-markup mapping to convert it "
+            + "with, so compose as markdown or plain instead)")]
         public string File { get; init; } = string.Empty;
 
         [CommandOption("--issue <KEY>")]
@@ -119,9 +121,12 @@ public sealed class TaskWriteJiraCommand : Hall9kAsyncCommand<TaskWriteJiraComma
                 // claim: AuthorizeAsync classifies both a real 401 and a credential the vault could
                 // not even resolve as PendingAuthentication (retriable either way), and only the
                 // first of those is actually a claim Jira examined and rejected (independent pre-PR
-                // review, adversarial lens, cycle 1).
-                AnsiConsole.MarkupLine(
-                    $"[yellow]{result.Message.EscapeMarkup()}[/] — this write is recorded and pending for task {shortId}.");
+                // review, adversarial lens, cycle 1). Printed as its own line rather than appended
+                // after a dash: the message is already a full sentence (or several) ending in a full
+                // stop, so tacking more text on with " — " read as one clause resuming after a period
+                // (independent pre-PR review, adversarial lens, cycle 2).
+                AnsiConsole.MarkupLine($"[yellow]{result.Message.EscapeMarkup()}[/]");
+                AnsiConsole.MarkupLine($"[dim]  This write is recorded and pending for task {shortId}.[/]");
                 AnsiConsole.MarkupLine(
                     "[dim]  If the registered API token was revoked or rotated, create a fresh one at "
                     + "https://id.atlassian.com/manage-profile/security/api-tokens and register the "
