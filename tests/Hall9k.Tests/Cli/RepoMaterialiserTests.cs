@@ -2,6 +2,7 @@ using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -99,7 +100,9 @@ public sealed class RepoMaterialiserTests : IDisposable
                 "main",
                 DomainId.New(),
                 DomainId.New(),
-                "Prove the materialised repo dispatches"),
+                "Prove the materialised repo dispatches",
+                BranchNameTemplate.Default,
+                ExternalReference: null),
             _cancellation.Token);
 
         worktree.StartPoint.Should().Be("origin/main", "the corrected refspec is what makes this possible");

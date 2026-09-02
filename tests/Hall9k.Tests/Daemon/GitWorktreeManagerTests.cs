@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -101,12 +102,113 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Guid taskId = DomainId.New();
 
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Same task twice"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Same task twice", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         Worktree second = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Same task twice"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Same task twice", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
 
         second.Branch.Should().NotBe(first.Branch);
         second.Branch.Should().StartWith(first.Branch + "-r");
+    }
+
+    /// <summary>
+    /// The team convention the Windows field report asked for (item 9, ruled 2026-09-01): a
+    /// project states it once and the branch git actually gets is the one the team names.
+    /// </summary>
+    [Fact]
+    public async Task A_project_template_names_the_branch_git_actually_gets()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        WorktreeRequest request = Request(
+            "Add rate limiting to the auth endpoints",
+            BranchNameTemplate.Parse("{key}-{slug}"),
+            externalReference: "jira:ARX-14");
+
+        Worktree worktree = await _manager.CreateAsync(request, cts.Token);
+
+        worktree.Branch.Should().Be("ARX-14-add-rate-limiting-to-the-auth");
+        (_, string current) = TryGit(worktree.Path, "branch --show-current");
+        current.Trim().Should().Be(worktree.Branch, "git took the templated name as a real ref");
+    }
+
+    /// <summary>
+    /// The collision handling is template-agnostic: a retried task whose retained worktree still
+    /// holds the branch gets the same run-suffixed name it always did, over whatever the template
+    /// rendered — and git takes that one too.
+    /// </summary>
+    [Fact]
+    public async Task Retry_under_a_template_gets_the_same_run_suffixed_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid taskId = DomainId.New();
+        BranchNameTemplate template = BranchNameTemplate.Parse("{key}-{slug}");
+
+        Worktree first = await _manager.CreateAsync(
+            new WorktreeRequest(
+                _repositoryPath, "main", taskId, DomainId.New(), "Same task twice", template, "jira:ARX-14"),
+            cts.Token);
+        Worktree second = await _manager.CreateAsync(
+            new WorktreeRequest(
+                _repositoryPath, "main", taskId, DomainId.New(), "Same task twice", template, "jira:ARX-14"),
+            cts.Token);
+
+        first.Branch.Should().Be("ARX-14-same-task-twice");
+        second.Branch.Should().StartWith(first.Branch + "-r");
+        (_, string current) = TryGit(second.Path, "branch --show-current");
+        current.Trim().Should().Be(second.Branch);
+    }
+
+    /// <summary>
+    /// A task carrying no external item still cuts a legal branch, and one that says out loud
+    /// that no key was observed rather than eliding the segment or inventing a number.
+    /// </summary>
+    [Fact]
+    public async Task A_task_with_no_external_reference_cuts_a_branch_saying_so()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        WorktreeRequest request = Request(
+            "Add rate limiting", BranchNameTemplate.Parse("{key}-{slug}"), externalReference: null);
+
+        Worktree worktree = await _manager.CreateAsync(request, cts.Token);
+
+        worktree.Branch.Should().Be("no-key-add-rate-limiting");
+        (_, string current) = TryGit(worktree.Path, "branch --show-current");
+        current.Trim().Should().Be(worktree.Branch);
+    }
+
+    /// <summary>
+    /// A project template need not contain <c>{shortid}</c>, so a rendered name can collide with a
+    /// branch that already exists on origin without ever having existed locally — the shape a
+    /// tracker-keyed template produces whenever someone else already pushed their own branch under
+    /// the same key. Before the fix, <c>ResolveBranchNameAsync</c> checked only
+    /// <c>refs/heads/&lt;branch&gt;</c>; the fetch this method already runs lands another node's
+    /// branch at <c>refs/remotes/origin/&lt;branch&gt;</c> instead (adversarial pre-PR review,
+    /// cycle 3), so the old code would have built the whole run on a name that collides with
+    /// origin's history and only discovered it when the eventual push was refused.
+    /// </summary>
+    [Fact]
+    public async Task A_name_that_only_exists_on_origin_still_gets_a_run_suffixed_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+
+        // Someone else's own branch, pushed straight to origin — never fetched into this
+        // repository's refs/heads at all.
+        string developer = Path.Combine(_root, "developer");
+        Git(_root, $"clone \"{_originPath}\" \"{developer}\"");
+        Git(developer, "checkout -q -b ARX-14");
+        File.WriteAllText(Path.Combine(developer, "UNRELATED.md"), "someone else's work\n");
+        Git(developer, "add -A");
+        Git(developer, "-c user.name=Dev -c user.email=d@d commit -qm unrelated");
+        Git(developer, "push -q origin ARX-14");
+
+        WorktreeRequest request = Request(
+            "Add rate limiting", BranchNameTemplate.Parse("{key}"), externalReference: "jira:ARX-14");
+
+        Worktree worktree = await _manager.CreateAsync(request, cts.Token);
+
+        worktree.Branch.Should().NotBe("ARX-14", "that name already exists on origin");
+        worktree.Branch.Should().StartWith("ARX-14-r");
+        (_, string current) = TryGit(worktree.Path, "branch --show-current");
+        current.Trim().Should().Be(worktree.Branch);
     }
 
     [Fact]
@@ -118,7 +220,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         // First run: branch created, work committed and pushed, worktree removed (the
         // PullRequestOpener lifecycle).
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Follow up on me"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Follow up on me", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
@@ -155,7 +257,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         // First run's worktree is retained through closeout (log #21) — the branch is
         // still checked out there, so a fresh worktree add would be refused by git anyway.
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Reuse my worktree"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Reuse my worktree", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
@@ -190,7 +292,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Guid taskId = DomainId.New();
 
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Rewrite me remotely"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Rewrite me remotely", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
@@ -235,7 +337,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         // Run 1: a checkpoint commit, pushed — the exact tip PullRequestOpener pushes before a
         // later `gh pr create` failure leaves the task to retry.
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recompose then retry"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recompose then retry", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "checkpoint\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
@@ -276,7 +378,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Guid taskId = DomainId.New();
 
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recompose then vanish"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recompose then vanish", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "checkpoint\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
@@ -310,7 +412,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Guid taskId = DomainId.New();
 
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Rescue my stranded work"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Rescue my stranded work", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
@@ -346,7 +448,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Guid taskId = DomainId.New();
 
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Strand my work"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Strand my work", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
@@ -372,7 +474,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Guid taskId = DomainId.New();
 
         Worktree worktree = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Delete me everywhere"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Delete me everywhere", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "merged work\n");
         Git(worktree.Path, "add -A");
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
@@ -398,7 +500,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Guid taskId = DomainId.New();
 
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Remote only branch"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Remote only branch", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
@@ -432,7 +534,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Guid taskId = DomainId.New();
 
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recreate without reflog config"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Recreate without reflog config", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
         File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "checkpoint\n");
         Git(first.Path, "add -A");
         Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm checkpoint");
@@ -491,7 +593,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Git(_repositoryPath, "config core.logAllRefUpdates false");
 
         Worktree first = await _manager.CreateAsync(
-            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Create without reflog config"), cts.Token);
+            new WorktreeRequest(_repositoryPath, "main", taskId, DomainId.New(), "Create without reflog config", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
 
         (_, string createdReflog) = TryGit(first.Path, $"reflog show {first.Branch} --format=%H");
         createdReflog.Trim().Should().NotBeEmpty(
@@ -715,8 +817,10 @@ public sealed class GitWorktreeManagerTests : IDisposable
         Git(_seedPath, "push origin main");
     }
 
-    private WorktreeRequest Request(string objective) =>
-        new(_repositoryPath, "main", DomainId.New(), DomainId.New(), objective);
+    private WorktreeRequest Request(
+        string objective, BranchNameTemplate? template = null, string? externalReference = null) =>
+        new(_repositoryPath, "main", DomainId.New(), DomainId.New(), objective,
+            template ?? BranchNameTemplate.Default, externalReference);
 
     private static void Git(string workingDirectory, string arguments)
     {
