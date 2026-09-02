@@ -244,20 +244,27 @@ public sealed class RunAggregate
     public string? PriorCycleHeadSha { get; private set; }
 
     /// <summary>
-    /// The worktree HEAD of the most recent cycle that read the branch at full scope with fresh
-    /// context — a <see cref="ReviewMode.Discovery"/> or <see cref="ReviewMode.FinalFullPass"/>
-    /// cycle, never a <see cref="ReviewMode.Verify"/> one, which only ever reads a delta (task:
-    /// the mandatory FinalFullPass reads only the commits no full-scope pass has already read).
-    /// Held constant across every <see cref="ReviewMode.Verify"/> cycle in between — unlike
-    /// <see cref="CycleHeadSha"/>, which moves on every cycle regardless of mode — so a
-    /// <see cref="ReviewMode.FinalFullPass"/> dispatched after several fix-and-verify rounds still
-    /// finds the boundary of the last pass that actually read at full scope, not just the
-    /// immediately preceding cycle. "Full scope" is the chain rather than one pass's own range: a
-    /// scoped <see cref="ReviewMode.FinalFullPass"/> reads from the previous full-scope pass's own
-    /// head, so successive full-scope reads tile the branch with no gap. Null until the first
-    /// full-scope cycle records a HeadSha, or when the most recent one's HeadSha could not be read
-    /// at dispatch time — the engine falls
-    /// back to a full-range diff instruction rather than guessing at a boundary (the same
+    /// The worktree HEAD of the most recent cycle that actually DELIVERED a readable full-scope
+    /// verdict from every lens it dispatched — a <see cref="ReviewMode.Discovery"/> or
+    /// <see cref="ReviewMode.FinalFullPass"/> cycle, never a <see cref="ReviewMode.Verify"/> one,
+    /// which only ever reads a delta (task: the mandatory FinalFullPass reads only the commits no
+    /// full-scope pass has already read). This latches when <see cref="DeriveReviewPhase"/> first
+    /// reports every current-cycle lens answered (<see cref="ReviewPhase.FixNeeded"/> or
+    /// <see cref="ReviewPhase.Settling"/>), never at the cycle's own dispatch (independent pre-PR
+    /// review, cycle 1 adversarial finding): a cycle dispatched at head H1 whose verdict never
+    /// resolves — parked on <see cref="ReviewPhase.VerdictMissing"/> past its one re-prompt, or a
+    /// lens never even topped up before the run parked — must not narrow a later full-scope read
+    /// past commits no reviewer was ever observed to have read; only an actually concluded
+    /// full-scope cycle earns that trust. Held constant across every <see cref="ReviewMode.Verify"/>
+    /// cycle in between — unlike <see cref="CycleHeadSha"/>, which moves on every cycle regardless
+    /// of mode — so a <see cref="ReviewMode.FinalFullPass"/> dispatched after several
+    /// fix-and-verify rounds still finds the boundary of the last pass that actually delivered a
+    /// full-scope verdict, not just the immediately preceding cycle. "Full scope" is the chain
+    /// rather than one pass's own range: a scoped <see cref="ReviewMode.FinalFullPass"/> reads from
+    /// the previous full-scope pass's own head, so successive full-scope reads tile the branch with
+    /// no gap. Null until the first full-scope cycle delivers a verdict, or when the concluding
+    /// cycle's own HeadSha could not be read at dispatch time — the engine falls back to a
+    /// full-range diff instruction rather than guessing at a boundary (the same
     /// degrade-rather-than-guess rule <c>TestScopeResolver</c> already follows).
     /// </summary>
     public string? LastFullScopeReviewHeadSha { get; private set; }
@@ -612,7 +619,7 @@ public sealed class RunAggregate
             FindingsOf(@event.Findings, @event.Verdict), @event.Mode ?? ReviewMode.Discovery);
         _inFlightReviewPasses.RemoveAll(inFlight => inFlight.Lens == lens);
         _cycleHasPassMilestones = true;
-        ReviewPhase = DeriveReviewPhase();
+        SetReviewPhaseAndLatchFullScopeBoundary(DeriveReviewPhase());
     }
 
     public void Apply(ReviewCompleted @event)
@@ -632,7 +639,8 @@ public sealed class RunAggregate
         // A pre-lens stream keeps the single-lens phase rule it was written under: its one
         // ReviewCompleted is the whole cycle, and re-deriving would send a daemon upgraded
         // mid-review back to top up a lens for a cycle that already concluded.
-        ReviewPhase = _cycleHasPassMilestones ? DeriveReviewPhase() : PhaseFor(@event.Verdict);
+        SetReviewPhaseAndLatchFullScopeBoundary(
+            _cycleHasPassMilestones ? DeriveReviewPhase() : PhaseFor(@event.Verdict));
     }
 
     public void Apply(ReviewTrackConcluded @event)
@@ -641,7 +649,7 @@ public sealed class RunAggregate
         _concludedReviewTracks.RemoveAll(track => track.Lens == lens);
         _concludedReviewTracks.Add(new ReviewTrackOutcome(lens, @event.Cycle, @event.Settlement));
         _reviewResiduals.AddRange(@event.Residuals ?? []);
-        ReviewPhase = DeriveReviewPhase();
+        SetReviewPhaseAndLatchFullScopeBoundary(DeriveReviewPhase());
     }
 
     /// <summary>See the event's own doc for why this exists: the inverse of <see cref="Apply(ReviewTrackConcluded)"/>, not a replacement of its record.</summary>
@@ -650,7 +658,33 @@ public sealed class RunAggregate
         _concludedReviewTracks.RemoveAll(track => track.Lens == @event.Lens);
         _trackReactivatedAtCycle[@event.Lens] = @event.Cycle;
         ReviewTrackReactivations++;
-        ReviewPhase = DeriveReviewPhase();
+        SetReviewPhaseAndLatchFullScopeBoundary(DeriveReviewPhase());
+    }
+
+    /// <summary>
+    /// Sets <see cref="ReviewPhase"/> and, exactly once a <see cref="ReviewMode.Discovery"/> or
+    /// <see cref="ReviewMode.FinalFullPass"/> cycle has actually DELIVERED a readable verdict from
+    /// every lens it dispatched, latches <see cref="LastFullScopeReviewHeadSha"/> to that cycle's
+    /// own <see cref="CycleHeadSha"/> (independent pre-PR review, cycle 1 adversarial finding).
+    /// <see cref="ReviewPhase.FixNeeded"/>/<see cref="ReviewPhase.Settling"/> (or, for a pre-lens
+    /// stream, <see cref="ReviewPhase.MergeReady"/>) is exactly that confirmation: every other
+    /// phase this can land on — <see cref="ReviewPhase.AwaitingVerdict"/> (a lens still owed a
+    /// look), <see cref="ReviewPhase.VerdictMissing"/> (a lens answered unreadably) — means at
+    /// least one lens never gave this cycle a real verdict, so the boundary must not move past
+    /// commits that lens was never confirmed to have read. Latching here rather than at the
+    /// cycle's own dispatch is what keeps a park — <see cref="ReviewPhase.VerdictMissing"/> past
+    /// its one re-prompt, or a lens never even topped up before the run parked — from narrowing a
+    /// later full-scope read past commits no reviewer was ever observed to have read.
+    /// </summary>
+    private void SetReviewPhaseAndLatchFullScopeBoundary(ReviewPhase phase)
+    {
+        ReviewPhase = phase;
+        bool confirmedFullScopeVerdict = phase is ReviewPhase.FixNeeded or ReviewPhase.Settling or ReviewPhase.MergeReady;
+        if (confirmedFullScopeVerdict
+            && (CurrentCycleMode == ReviewMode.Discovery || CurrentCycleMode == ReviewMode.FinalFullPass))
+        {
+            LastFullScopeReviewHeadSha = CycleHeadSha;
+        }
     }
 
     /// <summary>
@@ -857,10 +891,6 @@ public sealed class RunAggregate
         CycleHeadSha = headSha;
         PriorCycleSinceSha = CycleSinceSha;
         CycleSinceSha = sinceSha;
-        if (mode == ReviewMode.Discovery || mode == ReviewMode.FinalFullPass)
-        {
-            LastFullScopeReviewHeadSha = headSha;
-        }
 
         _inFlightReviewPasses.Clear();
         _completedReviewPasses.Clear();
