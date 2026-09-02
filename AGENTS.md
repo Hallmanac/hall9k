@@ -485,7 +485,16 @@ The checkpoints, in the order the window sees them:
    fix session dodged a flaky-test race by restructuring the test rather than fixing the race the
    review kept finding), visible on `h9k task show` and the daemon log line when it does apply;
    de-escalation is automatic the moment a later round moves on to a genuinely different finding.
-   An out-of-scope finding this pull request is not fixing still has to land somewhere (#63): a
+   A fix session's own work ends with a mandatory self-check phase before it hands back, scaled
+   down from the build session's own adversarial self-review above to the size a fix round
+   actually is (one pass, not a loop): for every finding it fixed, it enumerates every other site
+   sharing that defect's shape — inside this branch's own changes or pre-existing on the base —
+   and fixes or clears each one inside the branch's own changes, naming rather than fixing a
+   pre-existing sibling outside them unless that sibling carries its own "fix in its own commit"
+   disposition; it states what the replaced code did that the new code no longer does and
+   confirms the difference is intended; and it runs the touched tests in the foreground and waits
+   for them to finish, rather than backgrounding them and trusting the platform's own re-verify to
+   catch what it left behind. An out-of-scope finding this pull request is not fixing still has to land somewhere (#63): a
    Medium or higher mints a draft bug task of its own, unchanged, while a Low instead folds into
    the project's one standing sweep draft — the board shows it as `Sweep: consolidated
    out-of-scope review findings` (Decisions Log #99) — so eight one-line pre-existing defects cost

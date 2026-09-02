@@ -345,6 +345,15 @@ as it would have anyway. De-escalation is automatic the moment a later round mov
 genuinely different finding, with no separate reset step. `h9k task show` prints a "Fix
 escalation" line while the newest run's most recent fix dispatch escalated this way.
 
+**The fix session ends with a mandatory self-check phase before it hands back.** Scaled down from
+the build session's own adversarial self-review to a single pass rather than a loop, it runs once
+every finding is fixed or disputed: for each finding it fixed, it sweeps for every other site
+sharing the same defect shape and fixes or clears each one inside the branch's own changes, states
+what the replaced code did that the new code no longer does and confirms the difference is
+intended, and runs the touched tests in the foreground, waiting for them to finish, before it
+concludes — so a half-applied fix or a fix-introduced regression is caught by its own author
+instead of costing a separate verify lap.
+
 Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90, #92, #93.
 
 ## Closeout
