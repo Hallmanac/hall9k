@@ -414,7 +414,7 @@ public sealed class TaskLifecycleSurfaceTests
         TaskStatusRow row = StatusFixtures.Compose(task);
 
         row.Attention.Cause.Should().Be("Jira rejected the registered credentials");
-        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
+        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com");
     }
 
     /// <summary>
@@ -436,7 +436,7 @@ public sealed class TaskLifecycleSurfaceTests
         TaskStatusRow row = StatusFixtures.Compose(task, interactive);
 
         row.Attention.Cause.Should().Be("Jira rejected the registered credentials");
-        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
+        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com");
     }
 
     /// <summary>
@@ -459,7 +459,7 @@ public sealed class TaskLifecycleSurfaceTests
 
         row.Attention.Level.Should().Be(AttentionLevel.NeedsYou);
         row.Attention.Cause.Should().Be("Jira rejected the registered credentials");
-        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
+        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com");
     }
 
     /// <summary>
@@ -505,6 +505,6 @@ public sealed class TaskLifecycleSurfaceTests
         row.State.Should().Be(LifecycleState.Delivered);
         row.Group.Should().Be(AttentionBucket.NeedsYou);
         row.Attention.Cause.Should().Be("Jira rejected the registered credentials");
-        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com (a fresh API token)");
+        row.Attention.Lever.Should().Be("h9k connection add jira --site https://your-org.atlassian.net --email you@example.com");
     }
 }
