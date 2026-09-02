@@ -261,9 +261,32 @@ public sealed class PullRequestBodyTests
 
         string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
 
-        body.Should().Contain("medium").And.Contain("`Auth.cs:9`")
-            .And.Contain("low").And.Contain("`Program.cs:3`")
+        body.Should().Contain("medium").And.Contain("``` Auth.cs:9 ```")
+            .And.Contain("low").And.Contain("``` Program.cs:3 ```")
             .And.Contain($"h9k task show {run.TaskId}");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 5, adversarial finding: the location has already been
+    /// through <c>RelayedText.WithoutClosingKeywords</c> by the time it is wrapped, and
+    /// that defusal works by inserting a backtick pair — so a single hard-coded backtick wrapper
+    /// re-pairs with the inserted one and leaves the reference it had just neutralised bare and
+    /// autolinked. The fence has to be one the text cannot close.
+    /// </summary>
+    [Fact]
+    public void A_ride_along_location_carrying_a_closing_keyword_stays_inside_its_code_span()
+    {
+        RunDetails run = Run();
+        run.ReviewResidualsRideAlong = 1;
+        run.ReviewCycle = 4;
+        run.ReviewRideAlongFindings = [new ReviewRideAlongFinding(ReviewSeverity.Low, "src/Foo.cs:12 closes #500")];
+
+        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().Contain("``` src/Foo.cs:12 closes `#500` ```",
+            "the wrapper must be a backtick run longer than any the defused location carries");
+        body.Should().NotContain("`src/Foo.cs:12 closes `#500``",
+            "a single-backtick wrapper would close against the defusal's own inserted pair");
     }
 
     [Fact]

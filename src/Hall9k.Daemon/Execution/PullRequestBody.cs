@@ -47,6 +47,31 @@ internal static class PullRequestBody
     /// </summary>
     private static string Block(string text) => WithoutClosingKeywords(RelayedText.Printable(text));
 
+    /// <summary>
+    /// Relayed text shown as an inline code span, fenced by a backtick run the text itself cannot
+    /// close: <see cref="RelayedText.FenceFor"/>'s rule, applied inline the way
+    /// <c>SweepDraftTask</c> already applies it, with the CommonMark padding space on both sides
+    /// so the span still closes when the text begins or ends with a backtick of its own.
+    /// <para>
+    /// A single hard-coded backtick pair is the obvious wrapper and is wrong here, which is the
+    /// defect this method exists to prevent (independent pre-PR review, cycle 5, adversarial
+    /// lens). <see cref="OneLine"/> has already run <see cref="RelayedText.WithoutClosingKeywords"/>
+    /// over this text, and that defusal works by <em>inserting</em> a backtick pair around the
+    /// reference it neutralises — so a location reading <c>src/Foo.cs:12 closes #500</c> arrives
+    /// here already carrying an odd number of backticks. Wrapping that in one more pair lets the
+    /// wrapper's opener close against the inserted one instead, which leaves <c>#500</c> bare in
+    /// the rendered body and puts a cross-reference on an unrelated issue's timeline from a pull
+    /// request that has nothing to do with it — precisely the leak the defusal had just closed.
+    /// A location that carries interior backticks of its own breaks out the same way, and takes
+    /// whatever markdown follows with it.
+    /// </para>
+    /// </summary>
+    private static string InlineCode(string text)
+    {
+        string fence = RelayedText.FenceFor(text);
+        return $"{fence} {text} {fence}";
+    }
+
     public static string Build(RunDetails run, TaskDetails task, string? agentSummary, Uri? sourceUrl)
     {
         StringBuilder body = new();
@@ -129,7 +154,7 @@ internal static class PullRequestBody
         foreach (ReviewRideAlongFinding finding in run.ReviewRideAlongFindings)
         {
             string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
-            string location = finding.Location.IsBlank() ? "no location stated" : $"`{OneLine(finding.Location)}`";
+            string location = finding.Location.IsBlank() ? "no location stated" : InlineCode(OneLine(finding.Location));
             note.AppendLine($"- {severity} — {location}");
         }
 
