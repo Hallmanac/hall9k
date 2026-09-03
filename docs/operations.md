@@ -648,6 +648,12 @@ run sits at Working until a human runs `h9k task deliver`, `h9k task verify`, `h
 attach), `h9k task handback`, or `h9k task release`, and the same stale-claim nudge described above
 fires once it has sat unattended past `interactiveClaimStaleAfterDays`.
 
+Giving the claim back — `handback`, `release`, `retry`, or `pr resolve` reopening it — does not
+land the task on Queued when the dependency snapshot the override acknowledged still names an
+open blocker: only `h9k task assign` clears that snapshot, and claiming past a blocker
+(`--acknowledge-unmet-dependencies`) never does, so the task lands Blocked instead until the
+blocker actually closes out. Each command's own confirmation says which happened.
+
 ## The recovery levers
 
 Five levers. Picking the wrong one loses work, and the question that separates them is *what

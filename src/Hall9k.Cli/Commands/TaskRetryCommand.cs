@@ -76,9 +76,29 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         }
         await Doorbell.RingAsync($"task-retried:{taskId}", cancellationToken);
 
-        AnsiConsole.MarkupLineInterpolated(branch is null
-            ? (FormattableString)$"[dim]Task {taskId} requeued — the next run starts clean from the base branch.[/]"
-            : $"[dim]Task {taskId} requeued — the next run resumes branch {branch} if it survives, or starts clean.[/]");
+        // TaskAggregate.Apply(TaskRetried) never touches _unmetDependencies, only Assign does —
+        // so a deliberately-claimed Blocked task (h9k task start --acknowledge-unmet-dependencies)
+        // whose worktree cut failed can still name an open blocker here, landing Blocked rather
+        // than Queued; no run dispatches until that blocker closes out (conformance review,
+        // cycle 4).
+        int unmetDependencyCount = task.UnmetDependencies.Count;
+        if (unmetDependencyCount > 0)
+        {
+            string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} requeued, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — no run dispatches until those close out.[/]");
+        }
+        else if (branch is null)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} requeued — the next run starts clean from the base branch.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} requeued — the next run resumes branch {branch} if it survives, or starts clean.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 }

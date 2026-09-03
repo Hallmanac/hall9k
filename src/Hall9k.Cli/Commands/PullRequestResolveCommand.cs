@@ -111,8 +111,25 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         }
         await Doorbell.RingAsync($"pr-resolve:{taskId}", cancellationToken);
 
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId} reopened — a follow-up run will resume branch {previousRun.Branch} for {task.PullRequestUrl}.[/]");
+        // TaskAggregate.Apply(TaskReopened) never touches _unmetDependencies, only Assign does —
+        // so a deliberately-claimed Blocked task (h9k task start --acknowledge-unmet-dependencies)
+        // that reached Done while still naming an open blocker lands back on Blocked here, not
+        // Queued, and no follow-up run dispatches until that blocker closes out — the task sits
+        // Blocked with its previous run already superseded rather than silently re-running
+        // (conformance review, cycle 4).
+        int unmetDependencyCount = task.UnmetDependencies.Count;
+        if (unmetDependencyCount > 0)
+        {
+            string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} reopened, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — no follow-up run resumes branch {previousRun.Branch} until those close out.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} reopened — a follow-up run will resume branch {previousRun.Branch} for {task.PullRequestUrl}.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 }
