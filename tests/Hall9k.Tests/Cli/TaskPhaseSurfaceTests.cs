@@ -72,6 +72,28 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Detail.Should().Be("worktree and prompt being prepared");
     }
 
+    /// <summary>
+    /// An interactive claim's own Dispatched window is no longer necessarily brief (Decisions Log
+    /// #124): by default h9k task work returns as soon as it prints the prompt, before anyone has
+    /// pasted it anywhere, so a claim can sit Dispatched — with no session ever having registered —
+    /// for as long as the operator takes to get to it. The generic "worktree and prompt being
+    /// prepared" wording above describes a headless run's own brief pre-launch window, not this
+    /// one, so an interactive claim gets its own honest phase instead.
+    /// </summary>
+    [Fact]
+    public void An_interactive_claim_awaiting_its_pasted_session_reads_honestly_rather_than_as_still_being_prepared()
+    {
+        Guid runId = DomainId.New();
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty),
+            StatusFixtures.Run(runId, RunState.Dispatched, sessionProcessId: null));
+
+        row.Phase.Text.Should().Be("awaiting a pasted session");
+        row.Phase.Detail.Should().Contain("self-registers");
+        row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
+    }
+
     [Fact]
     public void A_run_that_records_no_session_never_reads_as_one_that_is_running()
     {

@@ -32,24 +32,49 @@ namespace Hall9k.Cli.Commands;
 /// The operator's interactive claim (PLAN.md, an operator can work a task interactively): on a
 /// Queued task, claims it exactly as headless dispatch would (same branch, same worktree, and the
 /// prompt assembled through the identical code — <see cref="WorkPromptBuilder"/> is the code both
-/// paths call, with its working rules swapped for an attached operator), then launches a regular
-/// interactive Claude Code session attached to this terminal. On a Published task assigned to
-/// nobody, this command assigns it to the operator's own owner and claims it interactively in the
-/// same atomic event append (task 688a1ccf-h9k, 2026-09-02): the task is never observably Queued
-/// in between, so the dispatcher — woken within moments by the doorbell notification a plain
-/// <c>h9k task assign</c> would have sent — can never win the race to it. A Published task whose
-/// dependencies have not all closed out is refused, naming the open blockers, the same bar
-/// dispatch itself holds an assignment to (<see cref="TaskDependency"/>). The claim is
-/// held by the human, not a process: no <c>TaskLease</c> is written, so there is nothing for a
-/// heartbeat to renew or an expiry sweep to reclaim, and closing the terminal is a normal way to
-/// leave — the task stays Claimed and re-running this command resumes the most recently recorded
-/// interactive session's own conversation (`claude --resume`), falling back to a fresh one — said
-/// out loud, never silently — when the recorded one cannot be resumed (PLAN.md §16 #124, a
-/// deliberate reversal of #103's original "always fresh" opening move). An interactive claim
-/// occupies zero concurrency slots: it never creates a node-owned run (RunDispatched records
-/// NodeId as the sentinel <see cref="Guid.Empty"/>,
-/// which <c>NodeLoad</c>'s ceiling measurement never counts), so it starts even when the daemon's
+/// paths call, with its working rules swapped for an attached operator). On a Published task
+/// assigned to nobody, this command assigns it to the operator's own owner and claims it
+/// interactively in the same atomic event append (task 688a1ccf-h9k, 2026-09-02): the task is
+/// never observably Queued in between, so the dispatcher — woken within moments by the doorbell
+/// notification a plain <c>h9k task assign</c> would have sent — can never win the race to it. A
+/// Published task whose dependencies have not all closed out is refused, naming the open
+/// blockers, the same bar dispatch itself holds an assignment to (<see cref="TaskDependency"/>).
+/// The claim is held by the human, not a process: no <c>TaskLease</c> is written, so there is
+/// nothing for a heartbeat to renew or an expiry sweep to reclaim, and closing the terminal is a
+/// normal way to leave — the task stays Claimed, and re-running this command re-enters the same
+/// worktree and branch (the two connectors below differ on what happens from there: a fresh
+/// prompt by default, or the recorded conversation resumed under <c>--direct-launch</c>). An
+/// interactive claim occupies zero concurrency slots: it never creates a node-owned run
+/// (RunDispatched records NodeId as the sentinel <see cref="Guid.Empty"/>, which
+/// <c>NodeLoad</c>'s ceiling measurement never counts), so it starts even when the daemon's
 /// session ceiling is fully consumed and never competes with headless dispatch throughput.
+/// <para>
+/// <b>Default: the prompt-handoff connector (R4, idea fcaded0b's design rulings, Take the Wheel
+/// epic 9272e514's slice 7).</b> This command claims the task and cuts the worktree exactly as
+/// before, then prints the worktree path, the branch, and a starting prompt — it no longer
+/// launches or waits on a Claude Code process itself. The operator pastes that prompt into a
+/// Claude Code session started anywhere; the prompt carries the coordinates and tells the session
+/// to self-register through <c>h9k task register-session</c> (replacing the launch-time pid
+/// observation the direct-launch path below still performs), which is what lets the
+/// double-booking and liveness guards (re-entry, verify, deliver, handback, release) recognise
+/// it. A session that never registers gets the honest degradation every guard already had for a
+/// task nobody ever recorded a session against — a silent no-op, not a false block. Re-entry here
+/// always opens with a fresh prompt rather than resuming a prior conversation: the operator's own
+/// pasted-in session is not one this command ever launched, so there is nothing of its own for
+/// this command to reattach to.
+/// </para>
+/// <para>
+/// <b><c>--direct-launch</c>: the prior behavior, kept for one release.</b> Launches a plain
+/// interactive <c>claude</c> process attached to this terminal exactly as this command always
+/// did, recording <see cref="Events.InteractiveSessionStarted"/> itself from
+/// <c>Process.Start()</c>'s own pid the moment it is alive. Re-entering here resumes the most
+/// recently recorded interactive session's own conversation (<c>claude --resume</c>), falling
+/// back to a fresh session — said out loud, never silently — when the recorded one cannot be
+/// resumed (PLAN.md §16 #124, a deliberate reversal of #103's original "always fresh" opening
+/// move). The Windows script-shim refusal (<see cref="DetectWindowsScriptShim"/>) applies only
+/// here: a pasted prompt travels through no argv, so the cmd.exe embedded-newline problem that
+/// refusal exists for cannot occur on the default path above.
+/// </para>
 /// </summary>
 public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Settings>
 {
@@ -62,27 +87,37 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         [CommandOption("--force")]
         [Description("Re-enter even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
         public bool Force { get; init; }
+
+        [CommandOption("--direct-launch")]
+        [Description(
+            "Launch a plain interactive Claude Code process attached to this terminal yourself, the way this "
+            + "command always did, instead of printing a prompt to paste into a session you start on your own. "
+            + "Kept for one release; the prompt-handoff default is the supported path going forward. Refused on "
+            + "a machine where Claude Code resolves to a Windows script shim (.cmd/.bat/.ps1) — the opening "
+            + "prompt cannot travel through cmd.exe's argv with its newlines intact.")]
+        public bool DirectLaunch { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         // Checked before anything is claimed, not inside the launch's own catch (adversarial
-        // review, cycle 8): the prompt travels as a single positional argument carrying the
-        // whole multi-line working-rules document, and cmd.exe — which every .cmd/.bat/.ps1
-        // shim (the shape an npm-installed Claude Code takes on Windows) ultimately runs
-        // through — treats an embedded newline as a command separator, not literal argument
-        // content. There is no quoting fix for that (WindowsCommandLine's own extra-quote
-        // wrapping only survives embedded quotes, not embedded newlines), so this is refused
-        // up front rather than left to strand a claim nobody can ever enter.
-        if (DetectWindowsScriptShim(ClaudeBinary()) is { } shimPath)
+        // review, cycle 8), and only for --direct-launch: the prompt-handoff default below never
+        // puts the prompt on an argv at all (the operator pastes it as a chat message into a
+        // session they started themselves), so cmd.exe's embedded-newline problem — every
+        // .cmd/.bat/.ps1 shim (the shape an npm-installed Claude Code takes on Windows) ultimately
+        // runs through it, and it treats an embedded newline as a command separator, not literal
+        // argument content — cannot occur there. There is no quoting fix for that (WindowsCommandLine's
+        // own extra-quote wrapping only survives embedded quotes, not embedded newlines), so
+        // --direct-launch is refused up front rather than left to strand a claim nobody can ever enter.
+        if (settings.DirectLaunch && DetectWindowsScriptShim(ClaudeBinary()) is { } shimPath)
         {
             throw new DomainConflictException(
-                $"Claude Code resolves to a script ({shimPath}) on this machine, which h9k task work cannot "
-                + "launch: an interactive claim's opening prompt travels as a multi-line command-line argument, "
-                + "and cmd.exe — which every .cmd/.bat/.ps1 shim runs through — cannot carry embedded newlines "
-                + "in one. Headless dispatch is unaffected (its prompt travels through a redirected file "
-                + "instead): h9k task assign to dispatch this task headlessly, or install Claude Code's native "
-                + "Windows build so `claude` resolves to an .exe.");
+                $"Claude Code resolves to a script ({shimPath}) on this machine, which h9k task work --direct-launch "
+                + "cannot launch: an interactive claim's opening prompt travels as a multi-line command-line "
+                + "argument, and cmd.exe — which every .cmd/.bat/.ps1 shim runs through — cannot carry embedded "
+                + "newlines in one. Drop --direct-launch to get the prompt-handoff default instead (paste the "
+                + "printed prompt into a Claude Code session you start yourself — no argv involved), or install "
+                + "Claude Code's native Windows build so `claude` resolves to an .exe.");
         }
 
         using var store = CliStore.Open();
@@ -128,7 +163,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         string? blockerContext = await LoadBlockerContextAsync(session, taskDetails, cancellationToken);
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
-            isInteractive: true);
+            isInteractive: true, requiresSelfRegistration: !settings.DirectLaunch);
 
         // The same settings file every headless spawn writes (ClaudeExecutor), so the
         // platform-imposed overrides — no co-authored-by trailers (PLAN.md §6.6), and command-tool
@@ -177,6 +212,63 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         InteractiveSessionLiveness.EnsureNotAttachedElsewhere(currentRun, taskId, "work", settings.Force, quiet: crossMachineNoticeShown);
 
+        return settings.DirectLaunch
+            ? await LaunchDirectlyAsync(
+                store, session, taskId, runId, worktreePath, branch, prompt, claudeSessionId, previousClaudeSessionId,
+                settingsFile, project.SkipPermissions, sessionName, cancellationToken)
+            : PrintPromptHandoff(worktreePath, branch, prompt, settingsFile);
+    }
+
+    /// <summary>
+    /// The default connector (R4): the claim and the worktree cut already happened exactly as
+    /// <c>--direct-launch</c>'s own path leaves them — this only differs in what happens with the
+    /// result. No process is started and nothing about this run is recorded here; the operator's
+    /// own pasted-in session records itself through <c>h9k task register-session</c> once it
+    /// exists, which is the honest reason this prints rather than launches.
+    /// </summary>
+    private static int PrintPromptHandoff(string worktreePath, string branch, string prompt, string settingsFile)
+    {
+        AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
+        // Plain MarkupLine, not the Interpolated overload: settingsFile is a filesystem path this
+        // platform generated (never a stray '[' to escape in practice), and the message is built
+        // with ordinary string concatenation across lines, which an interpolated-string literal
+        // cannot be split across while still binding to the FormattableString overload.
+        AnsiConsole.MarkupLine(
+            $"[dim]Settings file (recommended): {settingsFile} — pass --settings {settingsFile} to your own "
+            + "claude invocation for this platform's required conventions (no co-authored-by trailers, longer "
+            + "command-tool timeouts).[/]");
+        AnsiConsole.MarkupLine(
+            "[dim]Paste the prompt below into a Claude Code session started anywhere — its own terminal, this "
+            + "one once you exit h9k, wherever suits you:[/]");
+        AnsiConsole.WriteLine();
+        // WriteLine, not MarkupLine: the prompt is the operator's to paste verbatim, and Spectre
+        // would try to parse any [..] it happened to contain as markup instead of printing it.
+        // ExternalText.ForTerminal first: the prompt embeds the task's own objective and agent
+        // context, which since adoption (PLAN.md §3.1a) can be quoting an issue title or body
+        // written by anyone who could file one — printed raw, a control or bidirectional-override
+        // character in that text would be obeyed by this terminal rather than shown, exactly the
+        // attack ExternalText's own doc comment names. Safe to run over the whole composed prompt,
+        // platform-authored sections included: RelayedText.Printable keeps ordinary markdown
+        // (newlines, tabs, backticks, headings) and drops only what a sink would obey instead of
+        // display.
+        AnsiConsole.WriteLine(ExternalText.ForTerminal(prompt));
+        return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// <c>--direct-launch</c>'s own path, kept for one release exactly as this command always
+    /// behaved: launches a plain interactive <c>claude</c> process attached to this terminal,
+    /// waits for it to exit, and prints the same deliver/verify/work/handback/release menu this
+    /// command always has. Everything before the launch (the claim, the worktree cut, the prompt,
+    /// the settings file, the pre-launch re-checks) is identical to the default path above; this
+    /// method starts exactly where the two paths diverge.
+    /// </summary>
+    private static async Task<int> LaunchDirectlyAsync(
+        DocumentStore store, IDocumentSession session, Guid taskId, Guid runId, string worktreePath, string branch,
+        string prompt, Guid claudeSessionId, Guid? previousClaudeSessionId, string settingsFile, bool skipPermissions,
+        string sessionName, CancellationToken cancellationToken)
+    {
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
         AnsiConsole.MarkupLine(previousClaudeSessionId is not null
@@ -222,7 +314,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 // really started a process with a real pid, so it is recorded and paired exactly
                 // like any other attempt rather than left invisible.
                 (attemptExitCode, sessionStartRecorded, resumeNotFound, exitedAt) = await LaunchInteractiveClaudeAsync(
-                    worktreePath, resume ? reentryPrompt : prompt, sessionIdToLaunch, settingsFile, project.SkipPermissions, runId,
+                    worktreePath, resume ? reentryPrompt : prompt, sessionIdToLaunch, settingsFile, skipPermissions, runId,
                     sessionName, resume,
                     // CancellationToken.None: by the time this runs, process.Start() has already
                     // spawned a real, terminal-attached claude — a Ctrl-C landing in the window
@@ -883,7 +975,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         Task<(bool NotFound, string? WithheldText)>? resumeNotFoundTask = resume
             ? TeeAndDetectResumeNotFoundAsync(process)
             : null;
-        DateTimeOffset startedAt = ReadStartedAt(process);
+        DateTimeOffset startedAt = InteractiveSessionLiveness.ReadStartedAt(process);
         bool sessionStartRecorded = true;
         try
         {
@@ -1161,38 +1253,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     }
 
     /// <summary>
-    /// Mirrors Hall9k.Daemon.ProcessManagement.ProcessManagerBase.ReadStartedAt exactly — not
-    /// referenced, because the CLI cannot reference the daemon project (Reference graph:
-    /// Cli -> Domain + Connectors). Reads the just-started process's own start time rather than
-    /// stamping <see cref="DateTimeOffset.UtcNow"/>: stamping "now" risks a false match in
-    /// InteractiveSessionLiveness.IsAlive if the child dies within milliseconds of Start() and
-    /// the OS recycles its pid for an unrelated process inside the 2-second tolerance both
-    /// checks use (adversarial review, cycle 4). DateTimeOffset.MinValue is recorded instead of
-    /// a plausible-looking guess when the process's own start time cannot be read — AGENTS.md's
-    /// "never guess at unobserved facts" — which guarantees no later liveness check ever matches
-    /// a real process's start time against it.
-    /// </summary>
-    private static DateTimeOffset ReadStartedAt(Process process)
-    {
-        try
-        {
-            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
-        {
-            return DateTimeOffset.MinValue;
-        }
-    }
-
-    /// <summary>
     /// Called only after <c>process.WaitForExitAsync</c> has already completed, so unlike
-    /// <see cref="ReadStartedAt"/> there is no unobserved-guess risk in the fallback: the process
-    /// has genuinely already exited by the time this runs, so <see cref="DateTimeOffset.UtcNow"/>
-    /// read right here is itself an observation (of when this method witnessed the exit that
-    /// already happened), not a plausible-looking stand-in for one that has not (independent
-    /// pre-PR review, cycle 1: the deferred <see cref="Hall9k.Domain.Features.Run.Events.InteractiveSessionEnded"/>
-    /// for a failed resume needs the resume's own exit time, not the later moment its fallback
-    /// happens to start).
+    /// <see cref="InteractiveSessionLiveness.ReadStartedAt"/> there is no unobserved-guess risk in
+    /// the fallback: the process has genuinely already exited by the time this runs, so
+    /// <see cref="DateTimeOffset.UtcNow"/> read right here is itself an observation (of when this
+    /// method witnessed the exit that already happened), not a plausible-looking stand-in for one
+    /// that has not (independent pre-PR review, cycle 1: the deferred
+    /// <see cref="Hall9k.Domain.Features.Run.Events.InteractiveSessionEnded"/> for a failed resume
+    /// needs the resume's own exit time, not the later moment its fallback happens to start).
     /// </summary>
     private static DateTimeOffset ReadExitedAt(Process process)
     {

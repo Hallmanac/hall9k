@@ -30,7 +30,8 @@ public static class WorkPromptBuilder
         string? resumeReason = null,
         bool isInteractive = false,
         bool isHandback = false,
-        bool isDeliberateHeadlessStart = false)
+        bool isDeliberateHeadlessStart = false,
+        bool requiresSelfRegistration = false)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -144,6 +145,11 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  delivery is `h9k task deliver`, run by the operator explicitly; nothing pushes or");
             prompt.AppendLine("  opens a pull request until then.");
             AppendCommitDisciplineRuleForInteractiveSession(prompt);
+            if (requiresSelfRegistration)
+            {
+                AppendSelfRegistrationRule(prompt, task.Id);
+                AppendFindLiveAgentsRule(prompt, task.Id);
+            }
         }
         else if (isDeliberateHeadlessStart)
         {
@@ -700,6 +706,51 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  never-`git add`ed one under src/ or tests/ — an untracked file only warns without");
         prompt.AppendLine("  blocking delivery outside those trees (a build byproduct can legitimately be one");
         prompt.AppendLine("  there) — so `git add` it and commit rather than leaving it for a warning to catch.");
+    }
+
+    /// <summary>
+    /// The prompt-handoff model's own connector rule (R4, idea fcaded0b's design rulings, Take the
+    /// Wheel epic 9272e514's slice 7): <c>h9k task work</c> no longer launches this session and
+    /// records its pid itself the way a direct launch's own <c>onStarted</c> callback did — it
+    /// printed this prompt for the operator to paste into a Claude Code session they started on
+    /// their own, so hall9k has not observed this session exists yet. Naming the observation gate
+    /// directly (<c>Hall9k.Cli.Commands.TaskRegisterSessionCommand</c> — this project cannot
+    /// reference the CLI, so it is named rather than linked) and what happens without it, the same
+    /// concreteness <see cref="AppendExternalInteractionLoggingRule"/> already gives the escape-hatch
+    /// invariant, rather than a vague "please identify yourself" a session could reasonably read as
+    /// optional.
+    /// </summary>
+    public static void AppendSelfRegistrationRule(StringBuilder prompt, Guid taskId)
+    {
+        prompt.AppendLine("- **Register yourself, right away.** This prompt was pasted into a Claude Code");
+        prompt.AppendLine("  session the operator started on their own — hall9k did not launch you, so it has");
+        prompt.AppendLine("  not observed you exist yet. As your first action, run:");
+        prompt.AppendLine($"  `h9k task register-session {taskId}`. This is what lets the platform's own");
+        prompt.AppendLine("  double-booking and liveness guards (re-entry, verify, deliver, handback, release)");
+        prompt.AppendLine("  recognise this session; skip it and those guards behave exactly as if nobody were");
+        prompt.AppendLine("  attached here — a second terminal could re-enter, verify, or deliver this same");
+        prompt.AppendLine("  worktree without hall9k ever seeing the collision. It refuses if it cannot read");
+        prompt.AppendLine("  your own process id from the environment — if that happens, say so plainly to the");
+        prompt.AppendLine("  operator rather than continuing as though it had worked.");
+    }
+
+    /// <summary>
+    /// R4 and R8 together: a session started this way still needs to find and message whatever
+    /// other agents this task already has running (a re-entry into a claim a headless follow-up
+    /// once touched, or simply a curious operator asking what else is live). <see cref="SessionRoleName"/>
+    /// is the fixed vocabulary every dispatched session's own name is drawn from; <c>h9k task show</c>
+    /// is the query surface that already renders it (<c>TaskShowCommand.WriteSessionsAsync</c>'s own
+    /// doc has the mechanism) — named here rather than assumed known, the same reasoning
+    /// <see cref="AppendProjectHome"/> already applies to the project's own paths.
+    /// </summary>
+    public static void AppendFindLiveAgentsRule(StringBuilder prompt, Guid taskId)
+    {
+        prompt.AppendLine("- **Other agents on this task, if any, answer to their slice-1 names** —");
+        prompt.AppendLine("  `<task-shortid>-<role>` (a build session is `-build`, a fix session is `-fix-2`,");
+        prompt.AppendLine("  and so on). Reach one through the cross-session mesh (ListAgents/SendMessage) by");
+        prompt.AppendLine($"  that name. If you do not already know which are live, `h9k task show {taskId}`");
+        prompt.AppendLine("  lists this task's runs and every session each one currently has active, by name —");
+        prompt.AppendLine("  query it rather than guessing at who else is out there.");
     }
 
     /// <summary>

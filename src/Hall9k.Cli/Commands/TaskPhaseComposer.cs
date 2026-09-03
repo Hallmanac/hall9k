@@ -125,6 +125,29 @@ internal static class TaskPhaseComposer
                     "h9k task work re-enters this claim; closing the terminal is a normal way to leave");
         }
 
+        // An interactive claim's own Dispatched window is no longer necessarily brief (Decisions
+        // Log #124): by default h9k task work returns as soon as it prints the worktree, branch,
+        // and starting prompt, before the operator has pasted it anywhere — so the generic
+        // "worktree and prompt being prepared" wording below would misdescribe a fully-prepared
+        // claim sitting untouched, possibly for a long while, as still mid-setup.
+        // InteractiveSessionStarted (h9k task register-session, or a --direct-launch's own
+        // onStarted callback) is what moves the run to Running, so Dispatched here always means
+        // "nothing has registered yet" — never a claim actively being worked. Gated on
+        // ClaimedByNodeId (Guid.Empty), the same interactive-claim sentinel the Running case above
+        // already keys on: a headless run's own Dispatched window (the brief instant before
+        // RunLauncher's process actually starts) is exactly what the wording below still describes
+        // correctly. --direct-launch's own Dispatched window is just as brief as a headless run's,
+        // so this line is momentarily inaccurate for it too in principle — but nothing reads
+        // h9k status inside the milliseconds between a claim and --direct-launch's own
+        // Process.Start(), and the run record carries no field distinguishing which launch mode a
+        // claim used, so there is no honest way to special-case that path out of this one.
+        if (task.ClaimedByNodeId == Guid.Empty && run.State.Value == "Dispatched")
+        {
+            return new TaskPhase("awaiting a pasted session", SessionLiveness.NotApplicable,
+                "h9k task work already printed the worktree, branch, and prompt — paste it into a Claude Code "
+                + "session (it self-registers) or h9k task work --direct-launch to launch one yourself");
+        }
+
         return run.State.Value switch
         {
             "Dispatched" => new TaskPhase("starting up", session, "worktree and prompt being prepared"),

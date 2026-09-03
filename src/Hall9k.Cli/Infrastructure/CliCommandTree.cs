@@ -680,18 +680,38 @@ public static class CliCommandTree
                     + "same bar dispatch itself holds an assignment to. On an already-Queued task assigned to "
                     + "you, this claims it exactly as before: cuts the same branch and worktree headless "
                     + "dispatch would, assembles the prompt through the identical code path (its working rules "
-                    + "swapped for an attached operator), and launches a regular interactive Claude Code session "
-                    + "attached to this terminal. The claim is held by you, not a process — no liveness "
+                    + "swapped for an attached operator). By default it then prints the worktree path, the "
+                    + "branch, and that prompt for you to paste into a Claude Code session you start yourself, "
+                    + "anywhere — the pasted session self-registers (h9k task register-session), which is what "
+                    + "lets the double-booking and liveness guards below recognise it; --direct-launch instead "
+                    + "launches a plain interactive Claude Code process attached to this terminal the way this "
+                    + "command always did (kept for one release; refused on a machine where Claude Code resolves "
+                    + "to a Windows script shim). The claim is held by you, not a process — no liveness "
                     + "lease, no heartbeat reclaim, and the dispatcher never claims a task you hold this way. "
                     + "Occupies zero concurrency slots: it starts even when the daemon's session ceiling is fully "
                     + "consumed. Closing the terminal is a normal way to leave — the task stays claimed, and "
-                    + "running this again resumes the most recently recorded session's own conversation, falling "
-                    + "back to a fresh one (announced, never silent) only when the recorded one cannot be resumed. "
-                    + "Exits are h9k task deliver (push and hand into the standard pipeline), h9k task release (give it "
+                    + "running this again re-enters the same worktree and branch with a fresh prompt "
+                    + "(--direct-launch instead resumes the most recently recorded session's own conversation, "
+                    + "falling back to a fresh one — announced, never silent — only when the recorded one cannot "
+                    + "be resumed). Exits are h9k task deliver (push and hand into the standard pipeline), "
+                    + "h9k task release (give it "
                     + "back to the queue), or h9k task handback (let a headless agent finish from here). "
                     + "Re-entry is refused when the claim's session was recorded on another machine this one "
                     + "cannot check — --force attests you confirmed by hand that it has exited.")
-                .WithExample("task", "work", "28b19893");
+                .WithExample("task", "work", "28b19893")
+                .WithExample("task", "work", "28b19893", "--direct-launch");
+            task.AddCommand<TaskRegisterSessionCommand>("register-session")
+                .WithDescription(
+                    "The self-registration observation gate a starting prompt (h9k task work's default, "
+                    + "prompt-handoff output) tells the pasted-in Claude Code session to call as its first act: "
+                    + "records this session's own process identity (read from CLAUDE_PID, Claude Code's own "
+                    + "environment variable) against the run the same way a direct launch's own onStarted "
+                    + "callback used to. The double-booking and liveness guards (re-entry, verify, deliver, "
+                    + "handback, release) key off this record from here on. Refuses rather than guessing when "
+                    + "CLAUDE_PID is absent — not a session this platform can ever check, so nothing is recorded, "
+                    + "the same honest degradation a session that never calls this at all already gets. Only for "
+                    + "a task you hold interactively (h9k task work).")
+                .WithExample("task", "register-session", "28b19893");
             task.AddCommand<TaskStartCommand>("start")
                 .WithDescription(
                     "Dispatch a Published or Queued task on the spot, headless, instead of waiting for the "
