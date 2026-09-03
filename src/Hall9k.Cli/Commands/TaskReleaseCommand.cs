@@ -146,8 +146,13 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         // Mirrors TaskHandbackCommand's own guard: an operator's own session, still attached
         // in another terminal, may be editing this exact worktree right now — requeuing it
         // out from under that session double-books the task the moment the daemon claims it
-        // headlessly (adversarial review, cycle 1).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "release", settings.Force);
+        // headlessly (adversarial review, cycle 1). Skipped when this invocation is that very
+        // session releasing itself on the operator's own go
+        // (InteractiveSessionLiveness.IsSelfInvocation's own doc has both signals).
+        if (!InteractiveSessionLiveness.IsSelfInvocation(run))
+        {
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "release", settings.Force);
+        }
 
         if (run.State != RunState.Dispatched && run.State != RunState.Running)
         {

@@ -67,8 +67,14 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
 
         // An operator's own session, still attached in another terminal, owns this worktree right
         // now — handing it to a headless agent out from under it would double-book the same files
-        // (adversarial review, cycle 1).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "hand back", settings.Force);
+        // (adversarial review, cycle 1). Skipped when this invocation is that very session handing
+        // itself back on the operator's own go (InteractiveSessionLiveness.IsSelfInvocation's own
+        // doc has both signals) — the same reasoning h9k task verify's own exemption already rests
+        // on: it is waiting on this command, not racing it.
+        if (!InteractiveSessionLiveness.IsSelfInvocation(run))
+        {
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "hand back", settings.Force);
+        }
 
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver hands the run
         // to the standard pipeline, the task can still read Claimed+interactive for the whole
