@@ -16,4 +16,5 @@ public sealed record ContextSynthesisDispatched(
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset DispatchedAt,
-    AgentModel? Model = null);
+    AgentModel? Model = null,
+    string SessionName = "");

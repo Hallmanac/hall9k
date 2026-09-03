@@ -28,6 +28,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// once here is what lets the conformance lens reuse this run's own dispatch-time read instead of
 /// taking a second one. Null for a pr-review run dispatched before this field existed, or for any
 /// non-pr-review run, which never carries one.
+/// SessionName is the exact name the primary session's Claude Code process launches under
+/// (task: every dispatched agent session launches under a human-readable id-and-role name,
+/// see <see cref="Hall9k.Domain.Features.Run.SessionRoleName"/>) - "build" for an ordinary
+/// dispatch or a plain follow-up, "rebase" or "checks" for those follow-up kinds, or the
+/// pr-review task type's own "review-adversarial-1" (its primary session IS the adversarial
+/// lens). Recorded here, at the one place that knows which of those this dispatch actually is,
+/// rather than reconstructed later from <see cref="AgentRole.Build"/> alone, which cannot tell
+/// the three apart. Blank on a stream written before this field existed.
 /// </summary>
 public sealed record RunDispatched(
     Guid Id,
@@ -43,4 +51,5 @@ public sealed record RunDispatched(
     bool IsFollowUp = false,
     AgentModel? Model = null,
     string RunDirectory = "",
-    string? PrReviewBaseRefName = null);
+    string? PrReviewBaseRefName = null,
+    string SessionName = "");

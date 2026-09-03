@@ -27,4 +27,5 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </para>
 /// </summary>
 public sealed record InteractiveSessionStarted(
-    Guid Id, Guid ClaudeSessionId, DateTimeOffset StartedAt, int ProcessId, string MachineName = "");
+    Guid Id, Guid ClaudeSessionId, DateTimeOffset StartedAt, int ProcessId, string MachineName = "",
+    string SessionName = "");

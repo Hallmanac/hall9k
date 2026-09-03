@@ -28,4 +28,5 @@ public sealed record ReviewVerdictReprompted(
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset RepromptedAt,
     AgentModel? Model = null,
-    ReviewLens? Lens = null);
+    ReviewLens? Lens = null,
+    string SessionName = "");

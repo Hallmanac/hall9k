@@ -17,6 +17,13 @@ public sealed class RunDetails
     public string WorktreePath { get; set; } = string.Empty;
     public string Branch { get; set; } = string.Empty;
     /// <summary>
+    /// The primary session's own recorded name, from <see cref="RunDispatched.SessionName"/> —
+    /// survives a later <see cref="RunResumed"/> unchanged, since a resume re-enters the same
+    /// session rather than starting a differently-named one. Blank on a stream written before
+    /// this field existed.
+    /// </summary>
+    public string SessionName { get; set; } = string.Empty;
+    /// <summary>
     /// Where this run's artifacts lived at dispatch, as recorded on <see cref="RunDispatched"/>.
     /// A task's directory can move across the <c>tasks</c>/<c>tasks/_archive</c> boundary and
     /// back after dispatch (backlog 51, PLAN.md §16 #84), so this is a dispatch-time record, not
@@ -259,6 +266,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         SessionId = @event.Data.SessionId,
         WorktreePath = @event.Data.WorktreePath,
         Branch = @event.Data.Branch,
+        SessionName = @event.Data.SessionName,
         RunDirectory = @event.Data.RunDirectory.IsNotBlank()
             ? @event.Data.RunDirectory
             : RunPaths.GlobalDirectory(@event.Data.Id),
@@ -288,7 +296,9 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ProcessId = @event.Data.ProcessId;
         view.ProcessStartedAt = @event.Data.ProcessStartedAt;
-        StartSession(view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+        StartSession(
+            view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: view.SessionName);
         view.State = RunState.Running;
     }
 
@@ -302,7 +312,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ProcessId = @event.Data.ProcessId;
         view.ProcessStartedAt = @event.Data.ProcessStartedAt;
         StartSession(
-            view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+            view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: view.SessionName);
         // A budget park is the only park RunResumed currently clears (backlog 40); a review
         // park's ParkedReason is only ever cleared by ReviewParkResolved, a human's own act.
         view.ParkedReason = null;
@@ -362,7 +373,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewCycleMode = @event.Data.Mode ?? ReviewMode.Discovery;
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         StartSession(
-            view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+            view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: @event.Data.SessionName);
         // Mirrors RunResumed and ReviewFixDispatched: a redispatched review pass over a
         // budget park (backlog 40) is live work again, so the stale park reason must go too.
         view.ParkedReason = null;
@@ -375,7 +387,9 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.LastFixSessionEscalated = @event.Data.Escalated;
         view.LastFixSessionEscalationReason = @event.Data.EscalationReason;
         view.LastFixSessionEscalationCycle = @event.Data.Cycle;
-        StartSession(view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+        StartSession(
+            view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: @event.Data.SessionName);
         // Mirrors RunAggregate: a fix session redispatched over a budget park (backlog 40)
         // is the one path that needs this stated, since nothing else moves State off BudgetParked.
         view.ParkedReason = null;
@@ -393,7 +407,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         StartSession(
-            view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+            view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: @event.Data.SessionName);
     }
 
     /// <summary>
@@ -444,7 +459,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         StartSession(
-            view, AgentRole.Review, ReviewLens.Conformance, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+            view, AgentRole.Review, ReviewLens.Conformance, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: @event.Data.SessionName);
         view.State = RunState.UnderReview;
     }
 
@@ -590,7 +606,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ContextSynthesisSessions++;
         StartSession(
-            view, AgentRole.Synthesis, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt);
+            view, AgentRole.Synthesis, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: @event.Data.SessionName);
     }
 
     public void Apply(IEvent<ContextSynthesisCompleted> @event, RunDetails view)
@@ -643,7 +660,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.LastInteractiveActivityAt = @event.Data.StartedAt;
         StartSession(
             view, AgentRole.Interactive, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.StartedAt,
-            @event.Data.MachineName);
+            @event.Data.MachineName, @event.Data.SessionName);
         view.State = RunState.Running;
     }
 
@@ -680,7 +697,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     /// </summary>
     private static void StartSession(
         RunDetails view, AgentRole role, ReviewLens? lens, int processId, DateTimeOffset? startedAt,
-        string machineName = "")
+        string machineName = "", string name = "")
     {
         ReviewLens track = lens ?? ReviewLens.Unknown;
         if (role == AgentRole.Review)
@@ -692,7 +709,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             view.ActiveSessions.Clear();
         }
 
-        view.ActiveSessions.Add(new ActiveSession(role, track, processId, startedAt, machineName));
+        view.ActiveSessions.Add(new ActiveSession(role, track, processId, startedAt, machineName, name));
     }
 
     /// <summary>
