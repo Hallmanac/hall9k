@@ -601,7 +601,7 @@ reclaim, only a question (Decisions Log #103).
 
 | Command | What it does |
 |---|---|
-| `h9k task work <id>` | Claims a Published or Queued task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and opens a regular interactive Claude Code session. On a task you already hold, re-enters that same worktree instead of claiming again. |
+| `h9k task work <id>` | Claims a Published or Queued task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and opens a regular interactive Claude Code session. On a task you already hold, re-enters that same worktree and branch, resuming the most recently recorded session's own conversation — falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
 | `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
 | `h9k task handback <id>` | Releases the human claim and queues the task through normal dispatch, so a headless agent resumes the branch from wherever the operator left it. |
