@@ -157,7 +157,7 @@ internal static class HeadlessLaunch
             {
                 File.Delete(pidFile);
             }
-            catch (IOException)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
             }
         }
@@ -227,7 +227,7 @@ internal static class HeadlessLaunch
         {
             return File.Exists(standardErrorFile) ? File.ReadAllText(standardErrorFile).Trim() : string.Empty;
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             return string.Empty;
         }
