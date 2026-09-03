@@ -39,7 +39,7 @@ public sealed record ReviewResidualDisposition
     /// folded into a fix session the run happened to dispatch anyway, so it ships — or does not
     /// ship — with nobody having spent a cycle on it either way. Counted the same way
     /// <see cref="Routed"/> already is (per distinct location, whenever the run settles), not
-    /// deduplicated against the other three dispositions for the same reason
+    /// deduplicated against the other four dispositions for the same reason
     /// <see cref="ReviewResidualTally"/>'s own doc explains: a finding that both rode along and,
     /// separately, got exported really did meet both ends.
     /// </summary>
