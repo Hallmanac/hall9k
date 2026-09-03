@@ -658,9 +658,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// <see cref="TaskAssignCommand.AnnounceAsync"/> already makes on the identical fact pattern —
     /// but a dead one (<see cref="TaskDependency.IsDead"/>) never will, so making that promise for
     /// it tells the operator to wait on a merge that can never happen; <see cref="TaskDependency.DescribeDeath"/>
-    /// already says the honest thing instead (independent pre-PR review, cycle 1).
+    /// already says the honest thing instead (independent pre-PR review, cycle 1). Internal, not
+    /// private: <see cref="TaskStartCommand.PrepareDeliberateClaimFromPublished"/> reuses this
+    /// exact fragment for the identical "h9k task assign to hold it Blocked" alternative in its own
+    /// refusal, rather than re-deriving the dead-versus-live distinction a second time and letting
+    /// the two drift (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
-    private static string DescribeUnmetDependencyAdvice(Guid taskId, IReadOnlyList<TaskDependency> unmet)
+    internal static string DescribeUnmetDependencyAdvice(Guid taskId, IReadOnlyList<TaskDependency> unmet)
     {
         IReadOnlyList<TaskDependency> dead = [.. unmet.Where(dependency => dependency.IsDead)];
         if (dead.Count == 0)

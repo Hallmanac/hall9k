@@ -123,8 +123,13 @@ public sealed class TaskStartClaimTests
 
     /// <summary>
     /// A dead blocker (<see cref="TaskDependency.IsDead"/>) will never close out — the refusal
-    /// still names it honestly rather than promising it queues itself, mirroring
-    /// <c>TaskWorkClaimTests</c>'s identical case.
+    /// must not promise it "queues itself the moment the last one's pull request merges" the way
+    /// <c>h9k task assign ... to hold it Blocked until they clear</c> would;
+    /// <see cref="TaskDependency.DescribeDeath"/>'s honest remedy belongs here instead, reused
+    /// from <see cref="TaskWorkCommand.DescribeUnmetDependencyAdvice"/> rather than re-derived —
+    /// mirrors <c>TaskWorkClaimTests</c>'s identical case (independent pre-PR review, cycle 1,
+    /// adversarial finding at TaskStartCommand.cs:427: this refusal named the blocker but still
+    /// made the false promise a dead blocker can never keep).
     /// </summary>
     [Fact]
     public void A_published_task_with_a_dead_dependency_is_refused_without_a_false_merge_promise()
@@ -137,7 +142,11 @@ public sealed class TaskStartClaimTests
 
         act.Should().Throw<DomainBusinessRuleException>()
             .WithMessage("*depends on 1 task(s) that have not closed out*")
-            .Where(exception => exception.Message.Contains(dead.Describe()));
+            .Where(exception => exception.Message.Contains(dead.Describe())
+                    && exception.Message.Contains(dead.DescribeDeath())
+                    && !exception.Message.Contains("queues itself the moment"),
+                "a dead blocker's pull request will never merge, so the ordinary queues-itself "
+                + "promise must not be made for it");
     }
 
     private static TaskDependency DeadDependency() => new(

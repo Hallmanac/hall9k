@@ -238,6 +238,13 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                         $"Publish it first: h9k task publish {task.Id}.",
                     var state when state == TaskState.Claimed =>
                         $"It already has a live claim — h9k task show {task.Id} names who holds it.",
+                    var state when state == TaskState.Failed =>
+                        $"Failed is a waypoint, not an end — h9k task retry {task.Id} to requeue it, "
+                        + $"h9k task resolve {task.Id} --reason \"…\" if the objective was met anyway, or "
+                        + $"h9k task abandon {task.Id} --reason \"…\" to close it out.",
+                    var state when state == TaskState.NeedsHuman =>
+                        $"It is parked waiting on a human — h9k task show {task.Id} names why, and "
+                        + $"h9k review resolve {task.Id} or h9k pr resolve {task.Id} answers it, whichever applies.",
                     _ => "Its story has already moved past dispatch.",
                 });
         }
@@ -424,8 +431,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 + string.Join("; ", unmet.Select(dependency => ExternalText.OneLine(dependency.Describe()))) + ". "
                 + "The platform advises rather than refuses here: "
                 + $"h9k task start {task.Id} --acknowledge-unmet-dependencies to start it anyway, once you have "
-                + $"confirmed that is what you want, or h9k task assign {task.Id} to hold it Blocked until they "
-                + $"clear. h9k task show {task.Id} for the full picture.");
+                + $"confirmed that is what you want, or {TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmet)} "
+                + $"h9k task show {task.Id} for the full picture.");
         }
 
         task.Apply(assigned);
