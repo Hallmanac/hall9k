@@ -115,8 +115,11 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         // so a deliberately-claimed Blocked task (h9k task start --acknowledge-unmet-dependencies)
         // that reached Done while still naming an open blocker lands back on Blocked here, not
         // Queued, and no follow-up run dispatches until that blocker closes out — the task sits
-        // Blocked with its previous run already superseded rather than silently re-running
-        // (conformance review, cycle 4).
+        // Blocked rather than silently re-running (conformance review, cycle 4). Apply(TaskReopened)
+        // keeps CurrentRunId pointing at previousRunId in this one case rather than nulling it the
+        // way every other branch does, so this run stays watched (CloseoutEngine keeps reading its
+        // pull request for a merge or close) instead of being superseded and orphaned
+        // (adversarial review, cycle 1, on h9k task start).
         int unmetDependencyCount = task.UnmetDependencies.Count;
         if (unmetDependencyCount > 0)
         {
