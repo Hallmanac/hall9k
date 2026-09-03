@@ -35,13 +35,27 @@ namespace Hall9k.Tests.Integration;
 // The success-path tests drive ClaimAndCutAsync all the way through, which rings the doorbell
 // (Hall9k.Cli.Infrastructure.Doorbell) — see TaskWorkClaimRefusalTests's own class comment for why
 // that needs HALL9K_CONNECTION_STRING pointed at the fixture for the duration of each such call,
-// and why this joins the same collection.
+// and why this joins the same collection. One test also asks OperatingSettingsResolver to resolve
+// the node's own configured model default, which reads PlatformPaths.Home's config.json — this
+// class redirects process-wide HALL9K_HOME too, for the same reason DispatchCeilingTests and
+// VerificationRunnerTests do, so that read is isolated from whatever is actually installed on the
+// machine running the suite rather than asserting against it by accident (adversarial review,
+// cycle 4: a developer's own ~/.hall9k/config.json setting modelByRole.build made the test pass
+// for the wrong reason, and would fail outright on a machine configuring a different model there).
 [Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
     private readonly List<string> _repositoryRoots = [];
+    private readonly string _home = SetTempHome();
+
+    private static string SetTempHome()
+    {
+        string home = Path.Combine(Path.GetTempPath(), $"hall9k-start-claim-home-{Guid.NewGuid():N}");
+        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+        return home;
+    }
 
     [Fact]
     public async Task A_draft_task_is_refused_and_told_to_publish_first()
@@ -463,6 +477,18 @@ public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClas
 
     public void Dispose()
     {
+        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+        try
+        {
+            if (Directory.Exists(_home))
+            {
+                Directory.Delete(_home, recursive: true);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+
         foreach (string root in _repositoryRoots)
         {
             try
