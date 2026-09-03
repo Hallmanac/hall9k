@@ -92,6 +92,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // its own fresh session under InteractiveSessionStarted regardless.
         Guid claudeSessionId = DomainId.New();
 
+        // Every re-entry launches under the same name (task: every dispatched agent session
+        // launches under a human-readable id-and-role name) — the interactive claim is one
+        // named session across however many attach/detach cycles it takes, not a fresh identity
+        // each time.
+        string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim);
+
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, bool crossMachineNoticeShown) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, settings.Force, cancellationToken)
             : await ClaimAndCutAsync(store, session, task, fence, context, claudeSessionId, cancellationToken);
@@ -175,12 +181,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         try
         {
             (exitCode, sessionStartRecorded) = await LaunchInteractiveClaudeAsync(
-                worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions, runId,
+                worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions, runId, sessionName,
                 // CancellationToken.None: by the time this runs, process.Start() has already
                 // spawned a real, terminal-attached claude — a Ctrl-C landing in the window before
                 // this append completes must not turn into a lost append (adversarial review,
                 // cycle 3), the same reasoning AppendSessionEndedAsync's own call already applies.
-                (processId, startedAt) => AppendSessionStartedAsync(store, runId, claudeSessionId, processId, startedAt, CancellationToken.None),
+                (processId, startedAt) => AppendSessionStartedAsync(store, runId, claudeSessionId, processId, startedAt, sessionName, CancellationToken.None),
                 cancellationToken);
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
@@ -528,7 +534,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     }
 
     private static async Task AppendSessionStartedAsync(
-        DocumentStore store, Guid runId, Guid claudeSessionId, int processId, DateTimeOffset startedAt, CancellationToken cancellationToken)
+        DocumentStore store, Guid runId, Guid claudeSessionId, int processId, DateTimeOffset startedAt,
+        string sessionName, CancellationToken cancellationToken)
     {
         await using IDocumentSession startSession = store.LightweightSession();
         // MachineName is what lets InteractiveSessionLiveness tell "this session, checkable on
@@ -538,7 +545,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // NodeLoad's ceiling never counts it), so this event is the only place that identity is
         // ever recorded.
         startSession.Events.Append(runId, new InteractiveSessionStarted(
-            runId, claudeSessionId, startedAt, processId, Environment.MachineName));
+            runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
         await startSession.SaveChangesAsync(cancellationToken);
     }
 
@@ -556,7 +563,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     private static async Task<(int ExitCode, bool SessionStartRecorded)> LaunchInteractiveClaudeAsync(
         string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions, Guid runId,
-        Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
+        string sessionName, Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -573,6 +580,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         process.StartInfo.EnvironmentVariables[InteractiveSessionLiveness.InteractiveRunEnvironmentVariable] = runId.ToString();
         process.StartInfo.ArgumentList.Add("--session-id");
         process.StartInfo.ArgumentList.Add(sessionId.ToString());
+        // Verified against `claude --help` and confirmed empirically (task: every dispatched
+        // agent session launches under a human-readable id-and-role name): -n/--name is what
+        // `~/.claude/sessions/<pid>.json` records as this session's name, which is what
+        // `claude agents --json` and another session's cross-session mesh
+        // (ListAgents/SendMessage) address it by.
+        process.StartInfo.ArgumentList.Add("--name");
+        process.StartInfo.ArgumentList.Add(sessionName);
         process.StartInfo.ArgumentList.Add("--model");
         process.StartInfo.ArgumentList.Add(AgentModel.Fable.Value);
         process.StartInfo.ArgumentList.Add("--settings");
