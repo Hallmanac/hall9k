@@ -476,7 +476,13 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        if (task.State != TaskState.Done || task.PullRequestUrl.IsBlank() || run.PullRequestNumber is not > 0)
+        // Blocked is admitted alongside Done: task.CurrentRunId == run.Id already narrowed this
+        // to the one case a Blocked task can still carry it — Apply(TaskReopened) landed here
+        // behind a still-open dependency and kept CurrentRunId pointing at this run rather than
+        // nulling it, precisely so its own merge/close detection keeps running while nothing else
+        // dispatches a follow-up (adversarial review, cycle 1, on h9k task start).
+        if ((task.State != TaskState.Done && task.State != TaskState.Blocked)
+            || task.PullRequestUrl.IsBlank() || run.PullRequestNumber is not > 0)
         {
             return InspectionOutcome.Skipped;
         }
@@ -563,8 +569,15 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        // Only a Done task is in closeout; a reopened one has a follow-up in flight.
-        if (task.State != TaskState.Done || task.PullRequestUrl.IsBlank() || run.PullRequestNumber is not > 0)
+        // Only a Done task is ordinarily in closeout; a reopened one that landed Queued has a
+        // follow-up in flight instead. Blocked is admitted alongside Done for the one case that
+        // still carries this exact run's id: Apply(TaskReopened) landed here behind a still-open
+        // dependency and kept CurrentRunId pointing at this run rather than nulling it (the check
+        // above already narrowed CurrentRunId == run.Id to reach this line), precisely so merge/close
+        // detection keeps running while nothing else dispatches a follow-up (adversarial review,
+        // cycle 1, on h9k task start).
+        if ((task.State != TaskState.Done && task.State != TaskState.Blocked)
+            || task.PullRequestUrl.IsBlank() || run.PullRequestNumber is not > 0)
         {
             return InspectionOutcome.Skipped;
         }

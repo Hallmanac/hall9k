@@ -507,7 +507,6 @@ public sealed class TaskAggregate
         _knownPendingReviewRequestLogins.AddRange(@event.KnownPendingReviewRequestLogins ?? []);
 
         ClaimedByNodeId = null;
-        CurrentRunId = null;
         PendingQuestionId = null;
         // Same invariant Apply(TaskRequeued) restores: a deliberately-claimed Blocked task
         // (h9k task start --acknowledge-unmet-dependencies) that reached Done/Reopened while
@@ -515,6 +514,15 @@ public sealed class TaskAggregate
         // Assign does — must not resurface as Queued while that dependency is still on record
         // unmet, or a closeout-dispatched follow-up runs headless behind the still-open blocker.
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Landing on Blocked leaves no new run to take over this one's watch — nulling
+        // CurrentRunId unconditionally, the way every other give-the-claim-back event does,
+        // would silently drop CloseoutEngine's own merge/close detection for the pull request
+        // this reopen just parked behind an open dependency, and would leave a later
+        // h9k pr resolve (once the blocker clears) with no recorded run to follow up on at all
+        // (adversarial review, cycle 1, on h9k task start). Landing on Queued still nulls it:
+        // the next claim (TaskClaimed) overwrites it with the follow-up's own fresh run id
+        // moments later, same as every sibling event.
+        CurrentRunId = State == TaskState.Blocked ? @event.PreviousRunId : null;
     }
 
     /// <summary>

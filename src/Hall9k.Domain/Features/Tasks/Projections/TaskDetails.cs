@@ -502,12 +502,15 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
-        view.CurrentRunId = null;
         view.DependencyOverrideAcknowledged = false;
         // Same invariant the TaskRequeued handler above restores: a deliberately-claimed Blocked
         // task can reach Done/Reopened while still carrying an unmet dependency, since Claim never
         // clears UnmetDependencies — only Assign does.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Mirrors TaskAggregate.Apply(TaskReopened)'s own reasoning: nulling this unconditionally
+        // would drop CloseoutEngine's watch of the pull request a Blocked landing just parked
+        // behind an open dependency (adversarial review, cycle 1, on h9k task start).
+        view.CurrentRunId = view.State == TaskState.Blocked ? @event.Data.PreviousRunId : null;
         view.FinishedAt = null;
     }
 
