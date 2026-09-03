@@ -21,4 +21,11 @@ namespace Hall9k.Domain.Features.Run;
 /// Distinct ride-alongs (Decisions Log #87) never folded into a fix session the run happened to
 /// dispatch for another reason — recorded, and never fixed in this pull request.
 /// </param>
-public sealed record ReviewResidualTally(int FixedUnreviewed, int Routed, int RoutingFailed, int RideAlong);
+/// <param name="Unfixed">
+/// Distinct <see cref="ReviewFindingDisposition.Fix"/>-dispositioned findings never handed to a
+/// fix session at all — the track carrying one was still active when the run settled, most often
+/// a human resolving a capped park with <c>h9k review resolve --merge-ready</c>. Unlike
+/// <see cref="RideAlong"/>, these were graded above the fix bar; the loop simply never reached
+/// them.
+/// </param>
+public sealed record ReviewResidualTally(int FixedUnreviewed, int Routed, int RoutingFailed, int RideAlong, int Unfixed);

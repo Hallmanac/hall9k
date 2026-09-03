@@ -35,6 +35,20 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// between "we know how many" and "we know which ones" rather than a count this list should be
 /// expected to reconstruct.
 /// </para>
+/// <para>
+/// <see cref="ResidualsUnfixed"/> is the opposite fact from <see cref="ResidualsRideAlong"/>
+/// (adversarial review, routed finding at ReviewEngine.cs:1146): a
+/// <see cref="ReviewFindingDisposition.Fix"/>-dispositioned finding — the platform's own decision
+/// that this one had to be fixed here — whose track was still active (most often capped) when the
+/// run settled without a fix session ever reading it, typically a human resolving a capped park
+/// with <c>h9k review resolve --merge-ready</c>. Folding it into <see cref="ResidualsRideAlong"/>
+/// would understate it as polish nobody was owed; dropping it, which <c>SettleAsync</c> once did,
+/// hides an in-scope medium or high finding behind a settled line that reads as though nothing
+/// serious was left behind. <see cref="UnfixedFindings"/> names each one the same way
+/// <see cref="RideAlongFindings"/> names its own tally. Both default to zero/empty for the same
+/// reason the rest of this event's counts do: a stream written before this disposition existed
+/// genuinely predates it.
+/// </para>
 /// </summary>
 public sealed record ReviewSettled(
     Guid Id,
@@ -45,4 +59,6 @@ public sealed record ReviewSettled(
     int ResidualsRoutingFailed,
     DateTimeOffset SettledAt,
     int ResidualsRideAlong = 0,
-    IReadOnlyList<ReviewRideAlongFinding>? RideAlongFindings = null);
+    IReadOnlyList<ReviewRideAlongFinding>? RideAlongFindings = null,
+    int ResidualsUnfixed = 0,
+    IReadOnlyList<ReviewUnfixedFinding>? UnfixedFindings = null);

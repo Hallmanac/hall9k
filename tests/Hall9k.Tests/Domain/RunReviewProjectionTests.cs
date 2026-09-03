@@ -204,6 +204,31 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// The opposite fact from a ride-along (adversarial review, routed finding at
+    /// ReviewEngine.cs:1146): <see cref="ReviewSettled.ResidualsUnfixed"/> and
+    /// <see cref="ReviewSettled.UnfixedFindings"/> carry through to this view the same way their
+    /// ride-along counterparts already do.
+    /// </summary>
+    [Fact]
+    public void Run_details_names_each_unfixed_finding_the_settle_event_carries()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewSettled>(
+            new ReviewSettled(
+                id, 4, ReviewSettlement.Settled, 0, 0, 0, Now, ResidualsUnfixed: 1,
+                UnfixedFindings: [new ReviewUnfixedFinding(ReviewSeverity.High, "Api.cs:7")])),
+            view);
+
+        view.ReviewResidualsUnfixed.Should().Be(1);
+        view.ReviewUnfixedFindings.Should().ContainSingle()
+            .Which.Should().Match<ReviewUnfixedFinding>(
+                finding => finding.Severity == ReviewSeverity.High && finding.Location == "Api.cs:7");
+    }
+
+    /// <summary>
     /// A thread-dispute park (Decisions Log #62) lands from Verifying, before any review pass has
     /// read the diff — the human resolving it decided the disputed THREAD, not a review finding,
     /// so it must not ride into a later review prompt as though a fresh-context reviewer's own
