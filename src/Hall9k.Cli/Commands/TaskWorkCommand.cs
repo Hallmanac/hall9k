@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -31,7 +32,13 @@ namespace Hall9k.Cli.Commands;
 /// Queued task, claims it exactly as headless dispatch would (same branch, same worktree, and the
 /// prompt assembled through the identical code — <see cref="WorkPromptBuilder"/> is the code both
 /// paths call, with its working rules swapped for an attached operator), then launches a regular
-/// interactive Claude Code session attached to this terminal. The claim is
+/// interactive Claude Code session attached to this terminal. On a Published task assigned to
+/// nobody, this command assigns it to the operator's own owner and claims it interactively in the
+/// same atomic event append (task 688a1ccf-h9k, 2026-09-02): the task is never observably Queued
+/// in between, so the dispatcher — woken within moments by the doorbell notification a plain
+/// <c>h9k task assign</c> would have sent — can never win the race to it. A Published task whose
+/// dependencies have not all closed out is refused, naming the open blockers, the same bar
+/// dispatch itself holds an assignment to (<see cref="TaskDependency"/>). The claim is
 /// held by the human, not a process: no <c>TaskLease</c> is written, so there is nothing for a
 /// heartbeat to renew or an expiry sweep to reclaim, and closing the terminal is a normal way to
 /// leave — the task stays Claimed and re-running this command re-enters the same worktree and
@@ -327,27 +334,37 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true, crossMachineNoticeShown);
     }
 
-    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ClaimAndCutAsync(
+    internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, string sessionName, CancellationToken cancellationToken)
     {
-        if (task.State != TaskState.Queued)
+        // Published is the atomic entry (task 688a1ccf-h9k): the dependency snapshot is loaded
+        // here, before any other check, because it decides whether this claim is even possible —
+        // a Published task whose dependencies have not all closed out cannot land Queued, and an
+        // interactive claim needs Queued, not Blocked. dependencies stays null for the ordinary
+        // Queued entry, which is what tells the append step below whether an assignment travels
+        // in the same atomic batch as the claim.
+        IReadOnlyList<TaskDependency>? dependencies = null;
+        if (task.State == TaskState.Published)
+        {
+            dependencies = await TaskDependencyQuery.LoadAsync(session, task.BlockedBy, cancellationToken);
+        }
+        else if (task.State != TaskState.Queued)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is {task.State.Value} — only a Queued task (or one you already hold "
-                + "interactively) can be worked this way. " + task.State switch
+                $"Task {task.Id} is {task.State.Value} — only a Published or Queued task (or one you already "
+                + "hold interactively) can be worked this way. " + task.State switch
                 {
                     var state when state == TaskState.Blocked =>
                         "It is assigned but waiting on a dependency; h9k task show names it.",
                     var state when state.IsPreDispatch =>
-                        $"Assign it first: h9k task assign {task.Id}.",
+                        $"Publish it first: h9k task publish {task.Id}.",
                     var state when state == TaskState.Claimed =>
                         "It is claimed by a node running headless work already.",
                     _ => "Its story has already moved past dispatch.",
                 });
         }
-
-        if (task.AssignedOwnerId != context.OwnerId)
+        else if (task.AssignedOwnerId != context.OwnerId)
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is assigned to {task.AssignedOwnerId} — an operator claims only their own owner's work.");
@@ -390,6 +407,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
 
         Guid runId = DomainId.New();
+        DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
 
         // Commit the claim before touching the filesystem — mirrors the daemon's own dispatch
         // order (DispatchEngine.TryClaimAsync commits TaskClaimed first; RunLauncher only then
@@ -397,9 +415,35 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // by the SaveChangesAsync below before any worktree or branch exists on disk, instead of
         // after — which used to leave one orphaned, referenced by nothing (adversarial review,
         // cycle 1).
-        TaskClaimed claimed = TaskDecider.ClaimInteractively(task, context.OwnerId, runId, DateTimeOffset.UtcNow);
-        long claimedVersion = fence.Version + 1;
-        session.Events.Append(task.Id, expectedVersion: claimedVersion, claimed);
+        //
+        // dependencies is non-null only for the Published entry (task 688a1ccf-h9k): the
+        // assignment and the claim are computed together, and the assignment travels in the same
+        // Append call as the claim — one expectedVersion covering both events, so the database
+        // arbitrates a genuine collision (another operator, or another owner's h9k task assign)
+        // to exactly one winner with nothing ever landing on a task this operator does not end up
+        // holding.
+        TaskAssigned? assigned = null;
+        TaskClaimed claimed;
+        if (dependencies is not null)
+        {
+            (assigned, claimed) = PrepareInteractiveClaimFromPublished(
+                task, context.OwnerId, dependencies, runId, claimedAt);
+        }
+        else
+        {
+            claimed = TaskDecider.ClaimInteractively(task, context.OwnerId, runId, claimedAt);
+        }
+
+        long claimedVersion = fence.Version + (assigned is null ? 1 : 2);
+        if (assigned is null)
+        {
+            session.Events.Append(task.Id, expectedVersion: claimedVersion, claimed);
+        }
+        else
+        {
+            session.Events.Append(task.Id, expectedVersion: claimedVersion, assigned, claimed);
+        }
+
         // Deliberately no TaskLease: the claim is held by the human, not a process — no
         // liveness lease, no heartbeat reclaim (AGENTS.md).
         try
@@ -408,8 +452,10 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
         catch (EventStreamUnexpectedMaxEventIdException)
         {
-            throw new DomainConflictException(
-                $"Task {task.Id} changed while claiming it — check h9k status and try again.");
+            throw assigned is null
+                ? new DomainConflictException(
+                    $"Task {task.Id} changed while claiming it — check h9k status and try again.")
+                : await DescribeAssignAndClaimRaceLossAsync(store, task.Id, cancellationToken);
         }
 
         // Cut only after the claim is safely committed. A failure from here on has already
@@ -471,6 +517,88 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         await Doorbell.RingAsync($"task-claimed-interactively:{task.Id}", cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[dim]Claimed task {task.Id} interactively.[/]");
         return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork, CrossMachineNoticeShown: false);
+    }
+
+    /// <summary>
+    /// The atomic decision behind the Published entry (task 688a1ccf-h9k): assigns
+    /// <paramref name="task"/> to the operator's own owner and claims it interactively as one
+    /// unit, computed from an already-loaded dependency snapshot so this is pure — no session, no
+    /// append — and independently testable. Mutates <paramref name="task"/> in place once the
+    /// assignment is decided (the same "append, then <c>Apply</c> the local aggregate" convention
+    /// <see cref="TaskPublishCommand"/> already uses for its own publish-then-assign composition),
+    /// so <see cref="TaskDecider.ClaimInteractively"/>'s own guard (Queued, and this owner's own
+    /// work) sees exactly the state the assignment just decided.
+    /// <para>
+    /// A Published task whose dependencies have not all closed out is refused outright, before
+    /// either event is built: <see cref="TaskDecider.ClaimInteractively"/> needs Queued, not
+    /// Blocked, and this command's whole point is claiming the task now — landing it Blocked and
+    /// stopping there would silently turn a one-command interactive claim into a way to start
+    /// (or half-start) work whose blockers are still open, exactly the outcome dispatch itself
+    /// already refuses for a headless run.
+    /// </para>
+    /// </summary>
+    internal static (TaskAssigned Assigned, TaskClaimed Claimed) PrepareInteractiveClaimFromPublished(
+        TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> dependencies, Guid runId, DateTimeOffset now)
+    {
+        TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId);
+        if (assigned.UnmetDependencies.Count > 0)
+        {
+            IReadOnlyList<TaskDependency> unmet =
+                [.. dependencies.Where(dependency => assigned.UnmetDependencies.Contains(dependency.Id))];
+            throw new DomainBusinessRuleException(
+                $"Task {task.Id} depends on {unmet.Count} task(s) that have not closed out, the same bar "
+                + "dispatch itself holds an assignment to, so an interactive claim will not start it while "
+                + "they are open: " + string.Join("; ", unmet.Select(dependency => dependency.Describe())) + ". "
+                + $"h9k task assign {task.Id} to hold it Blocked until they clear (it queues itself the moment "
+                + $"the last one's pull request merges), or h9k task show {task.Id} for the full picture.");
+        }
+
+        task.Apply(assigned);
+        TaskClaimed claimed = TaskDecider.ClaimInteractively(task, ownerId, runId, now);
+        return (assigned, claimed);
+    }
+
+    /// <summary>
+    /// Reads what actually landed after this operator's atomic assign-and-claim lost the
+    /// database's optimistic-concurrency race (task 688a1ccf-h9k) — the loser is told honestly who
+    /// won rather than only that the task changed, since two operators (or an operator racing
+    /// another owner's headless <c>h9k task assign</c>) racing the same Published task is exactly
+    /// the collision this atomic path exists to arbitrate.
+    /// </summary>
+    internal static async Task<DomainConflictException> DescribeAssignAndClaimRaceLossAsync(
+        DocumentStore store, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate? current = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        if (current is null)
+        {
+            return new DomainConflictException(
+                $"Task {taskId} changed while claiming it, and no longer has a record — check h9k status "
+                + "to see where it stands.");
+        }
+
+        if (current.State != TaskState.Claimed)
+        {
+            // Something else committed first, but that write never claimed the task — a plain
+            // h9k task assign that landed Queued or Blocked, most likely — so there is no
+            // claimant to name. Saying so honestly beats asserting a claim that may never have
+            // happened (AGENTS.md: never guess at unobserved facts).
+            return new DomainConflictException(
+                $"Task {taskId} changed while claiming it — it now reads {current.State.Value}, not Claimed. "
+                + "h9k status to see where it stands.");
+        }
+
+        OwnerDetails? owner = current.AssignedOwnerId is { } ownerId
+            ? await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken)
+            : null;
+        string ownerName = owner?.Name ?? current.AssignedOwnerId?.ToString() ?? "an unknown owner";
+        string winner = current.IsInteractiveClaim
+            ? $"another operator claimed it interactively first, for {ownerName}"
+            : $"a node claimed it for headless dispatch first, for {ownerName}";
+
+        return new DomainConflictException(
+            $"Task {taskId} was claimed by someone else first — {winner}. "
+            + "h9k status to see where it stands.");
     }
 
     private static async Task FailInteractiveClaimAsync(
