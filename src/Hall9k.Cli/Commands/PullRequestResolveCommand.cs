@@ -67,10 +67,7 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         Guid previousRunId = task.CurrentRunId
             ?? throw new DomainConflictException($"Task {taskId} has no recorded run to follow up on.");
         RunDetails previousRun = await session.LoadAsync<RunDetails>(previousRunId, cancellationToken)
-            ?? throw new DomainNotFoundException(
-                $"Task {taskId}'s run {previousRunId} has no run record, so there is no branch to resume — " +
-                "pr resolve cannot dispatch a follow-up here. If the pull request has since merged, the " +
-                $"closeout sweep will complete the task on its own; otherwise check {task.PullRequestUrl} directly.");
+            ?? throw new DomainNotFoundException(MissingRunRecordMessage(taskId, previousRunId, task.PullRequestUrl));
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
@@ -134,5 +131,23 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// A task can reach here with no pull request at all — a Claimed task whose run stream has
+    /// not started yet (the launcher is still checking out a worktree) hits the same missing-run
+    /// record this command refuses on. The advice about the closeout sweep, and the URL it names,
+    /// only make sense once a pull request exists (independent pre-PR review, cycle 1, ride-along).
+    /// </summary>
+    private static string MissingRunRecordMessage(Guid taskId, Guid runId, string? pullRequestUrl)
+    {
+        string baseMessage =
+            $"Task {taskId}'s run {runId} has no run record, so there is no branch to resume — " +
+            "pr resolve cannot dispatch a follow-up here.";
+        return pullRequestUrl.IsNotBlank()
+            ? $"{baseMessage} If the pull request has since merged, the closeout sweep will complete the " +
+              $"task on its own; otherwise check {pullRequestUrl} directly."
+            : $"{baseMessage} This task has no pull request yet, so it is likely still dispatching its run — " +
+              "check h9k status and retry once it does.";
     }
 }
