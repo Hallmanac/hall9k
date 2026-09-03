@@ -123,6 +123,32 @@ public sealed class WorkPromptBuilderTests
     }
 
     [Fact]
+    public void Interactive_prompt_with_self_registration_carries_the_worktree_path_rather_than_asserting_it()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().Contain(_worktreePath, "the prompt was pasted into a session that may not already be there");
+        prompt.Should().NotContain(
+            "You are in an isolated git worktree",
+            "that claim is false unless the operator's session happens to already be running there");
+    }
+
+    [Fact]
+    public void Interactive_prompt_without_self_registration_still_asserts_it_is_in_the_worktree()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true);
+
+        prompt.Should().Contain(
+            "You are in an isolated git worktree", "--direct-launch sets the child process's own working directory to it");
+    }
+
+    [Fact]
     public void Interactive_prompt_still_states_delivery_is_explicit_and_never_the_sessions_own_call()
     {
         TaskDetails task = SomeTask();
