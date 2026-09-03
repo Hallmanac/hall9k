@@ -696,6 +696,16 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.InteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
         view.InteractiveSessionCount++;
         view.LastInteractiveActivityAt = @event.Data.StartedAt;
+        // Mirrors RunResumed's own update: a start-it-mine claim re-entered with h9k task work
+        // spawns under a different recorded name (the interactive-claim suffix, not build), and
+        // without this the headless-versus-attended discriminator in TaskPhaseComposer keeps
+        // reading the pre-re-entry build name forever (conformance and adversarial review, cycle
+        // 3, on h9k task start). Blank only on a stream written before this field existed, the
+        // same case RunResumed guards against.
+        if (@event.Data.SessionName.IsNotBlank())
+        {
+            view.SessionName = @event.Data.SessionName;
+        }
         StartSession(
             view, AgentRole.Interactive, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.StartedAt,
             @event.Data.MachineName, @event.Data.SessionName);
