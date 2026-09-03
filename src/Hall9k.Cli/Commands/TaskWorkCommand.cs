@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Worktrees;
@@ -186,12 +187,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // (worktree/prompt/settings from above, store/runId/sessionName for the two event
         // appends), so a resume attempt and its fresh-session fallback below are just two calls
         // to the same attempt rather than two hand-duplicated blocks.
-        async Task<(int ExitCode, bool ResumeNotFound, Guid? PendingEndedSessionId)> AttemptAsync(
-            Guid sessionIdToLaunch, bool resume, Guid? pendingEndedSessionId = null)
+        async Task<(int ExitCode, bool ResumeNotFound, (Guid SessionId, DateTimeOffset EndedAt)? PendingEndedSession)> AttemptAsync(
+            Guid sessionIdToLaunch, bool resume, (Guid SessionId, DateTimeOffset EndedAt)? pendingEndedSession = null)
         {
             int attemptExitCode;
             bool sessionStartRecorded;
             bool resumeNotFound;
+            DateTimeOffset exitedAt;
             try
             {
                 // InteractiveSessionStarted appends only once the process is actually alive
@@ -205,14 +207,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 // attempt too: a resume that turns out not to find a matching conversation still
                 // really started a process with a real pid, so it is recorded and paired exactly
                 // like any other attempt rather than left invisible.
-                (attemptExitCode, sessionStartRecorded, resumeNotFound) = await LaunchInteractiveClaudeAsync(
+                (attemptExitCode, sessionStartRecorded, resumeNotFound, exitedAt) = await LaunchInteractiveClaudeAsync(
                     worktreePath, prompt, sessionIdToLaunch, settingsFile, project.SkipPermissions, runId,
                     sessionName, resume,
                     // CancellationToken.None: by the time this runs, process.Start() has already
                     // spawned a real, terminal-attached claude — a Ctrl-C landing in the window
                     // before this append completes must not turn into a lost append (adversarial
                     // review, cycle 3), the same reasoning AppendSessionEndedAsync's own call
-                    // already applies. pendingEndedSessionId, when this is the fallback attempt
+                    // already applies. pendingEndedSession, when this is the fallback attempt
                     // following a not-found resume, rides in the same transaction as this
                     // attempt's own Started event (adversarial review, cycle 1: appending them
                     // separately left a window where ActiveSessions read empty — the failed
@@ -220,14 +222,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                     // second h9k task work from another terminal could pass
                     // EnsureNotAttachedElsewhere and launch a second claude into this worktree).
                     (processId, startedAt) => AppendSessionStartedAsync(
-                        store, runId, sessionIdToLaunch, processId, startedAt, sessionName, pendingEndedSessionId, CancellationToken.None),
+                        store, runId, sessionIdToLaunch, processId, startedAt, sessionName, pendingEndedSession, CancellationToken.None),
                     cancellationToken);
             }
             catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
             {
                 // The claude binary is missing, or the worktree directory vanished before the
                 // process could even start: nothing was recorded, so the claim is preserved with
-                // no run history to close out. A pendingEndedSessionId this attempt never got to
+                // no run history to close out. A pendingEndedSession this attempt never got to
                 // append stays unrecorded too — the same degraded-but-recoverable shape as
                 // sessionStartRecorded staying false below: EnsureNotAttachedElsewhere checks the
                 // recorded pid against the live process table, so a stale ActiveSessions entry
@@ -253,11 +255,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             //
             // A not-found resume is the one case this Ended is deferred rather than appended
             // here: the caller always retries a not-found resume with a fallback attempt, so
-            // returning sessionIdToLaunch lets that fallback bundle this attempt's Ended with its
-            // own Started in one transaction instead of two, closing the window described above.
+            // returning sessionIdToLaunch (paired with the resume attempt's own observed exit
+            // time, not the fallback's later start time — independent pre-PR review, cycle 1)
+            // lets that fallback bundle this attempt's Ended with its own Started in one
+            // transaction instead of two, closing the window described above.
             if (sessionStartRecorded && resumeNotFound)
             {
-                return (attemptExitCode, resumeNotFound, sessionIdToLaunch);
+                return (attemptExitCode, resumeNotFound, (sessionIdToLaunch, exitedAt));
             }
 
             if (sessionStartRecorded)
@@ -274,14 +278,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // attempt below reports the recorded conversation could not be found — announced, never
         // silent, since silently swapping which conversation an operator is talking to would be
         // exactly the kind of unobserved-fact guess AGENTS.md rules out.
-        (int exitCode, bool resumeNotFound, Guid? pendingEndedSessionId) = previousClaudeSessionId is { } previousSessionId
+        (int exitCode, bool resumeNotFound, (Guid SessionId, DateTimeOffset EndedAt)? pendingEndedSession) = previousClaudeSessionId is { } previousSessionId
             ? await AttemptAsync(previousSessionId, resume: true)
             : await AttemptAsync(claudeSessionId, resume: false);
         if (resumeNotFound)
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[yellow]Task {taskId}'s recorded interactive session could not be resumed (no matching conversation found) — starting a fresh session instead.[/]");
-            (exitCode, _, _) = await AttemptAsync(claudeSessionId, resume: false, pendingEndedSessionId);
+            (exitCode, _, _) = await AttemptAsync(claudeSessionId, resume: false, pendingEndedSession);
         }
 
         AnsiConsole.MarkupLineInterpolated(exitCode == 0
@@ -393,12 +397,18 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // worktree, and re-entry now resumes that recorded conversation itself (--resume) rather
         // than handing a fresh session the same prompt to rediscover it (Decisions Log #124).
         // run.InteractiveClaudeSessionId is the most recently recorded InteractiveSessionStarted's
-        // own ClaudeSessionId — null only when no interactive session has ever actually started on
-        // this run (a first launch that died before the process came up), in which case there is
-        // nothing to resume and the caller mints a fresh one exactly as it always has; the same
-        // fresh-session path also runs, announced rather than silent, if a resume attempt reports
-        // the recorded conversation could not be found.
-        return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true, crossMachineNoticeShown, run.InteractiveClaudeSessionId);
+        // own ClaudeSessionId. When none has ever landed for this run, this falls back to
+        // run.SessionId — the id RunDispatched recorded before any process ever started, the same
+        // "session id is the first spawned session's own id" convention ClaimAndCutAsync follows —
+        // because a first launch that spawned claude and then failed to record its own
+        // InteractiveSessionStarted (a transient database error, swallowed in
+        // LaunchInteractiveClaudeAsync's own onStarted catch) still spawned it under exactly that
+        // id: the conversation is real and sitting on disk even though nothing durable ever named
+        // it (adversarial review, cycle 2). A launch that never reached Process.Start() at all
+        // carries the identical fallback value with nothing on disk to match it, and --resume
+        // against it simply reports no matching conversation — the same announced, never-silent
+        // fresh-session fallback below already handles either way.
+        return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true, crossMachineNoticeShown, run.InteractiveClaudeSessionId ?? run.SessionId);
     }
 
     internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown, Guid? PreviousClaudeSessionId)> ClaimAndCutAsync(
@@ -758,17 +768,21 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     private static async Task AppendSessionStartedAsync(
         DocumentStore store, Guid runId, Guid claudeSessionId, int processId, DateTimeOffset startedAt,
-        string sessionName, Guid? pendingEndedSessionId, CancellationToken cancellationToken)
+        string sessionName, (Guid SessionId, DateTimeOffset EndedAt)? pendingEndedSession, CancellationToken cancellationToken)
     {
         await using IDocumentSession startSession = store.LightweightSession();
-        if (pendingEndedSessionId is { } endedSessionId)
+        if (pendingEndedSession is { } pending)
         {
             // The fallback attempt's own Started, appended below, lands in the same transaction
             // as the failed resume's Ended: RunDetailsProjection runs inline, so both apply to
             // the document atomically and no reader ever observes the gap in between where
-            // ActiveSessions would otherwise read empty (adversarial review, cycle 1).
+            // ActiveSessions would otherwise read empty (adversarial review, cycle 1). EndedAt is
+            // the resume attempt's own observed exit time, not DateTimeOffset.UtcNow read here at
+            // the fallback's start — "now" is always later than the resume actually exited, which
+            // would otherwise record the failed attempt as outliving the very session that
+            // replaced it (independent pre-PR review, cycle 1).
             startSession.Events.Append(runId, new InteractiveSessionEnded(
-                runId, endedSessionId, DateTimeOffset.UtcNow, Turns: null, InputTokens: null, OutputTokens: null, CostUsd: null));
+                runId, pending.SessionId, pending.EndedAt, Turns: null, InputTokens: null, OutputTokens: null, CostUsd: null));
         }
 
         // MachineName is what lets InteractiveSessionLiveness tell "this session, checkable on
@@ -794,7 +808,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         await endSession.SaveChangesAsync(cancellationToken);
     }
 
-    private static async Task<(int ExitCode, bool SessionStartRecorded, bool ResumeNotFound)> LaunchInteractiveClaudeAsync(
+    private static async Task<(int ExitCode, bool SessionStartRecorded, bool ResumeNotFound, DateTimeOffset ExitedAt)> LaunchInteractiveClaudeAsync(
         string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions, Guid runId,
         string sessionName, bool resume, Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
     {
@@ -823,8 +837,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // since an interactive session has no stream-json result payload to read the way a
         // headless run's ClaudeExecutor does. Read asynchronously from the moment the process
         // starts, not after it exits: a long, successful resumed session writing anything at all
-        // to stderr over its lifetime must never fill the pipe and deadlock it. A fresh (non-resume)
-        // launch never redirects it, keeping today's full TTY passthrough exactly as it was.
+        // to stderr over its lifetime must never fill the pipe and deadlock it — and, unlike an
+        // earlier draft, must never be swallowed either (adversarial review, cycle 1, medium
+        // finding): TeeAndDetectResumeNotFoundAsync below tees it live to Console.Error, the same
+        // passthrough a fresh (non-resume) launch already gets from its own inherited handle,
+        // except for the near-instant window a not-found failure's own text lives in.
         if (resume)
         {
             process.StartInfo.RedirectStandardError = true;
@@ -842,8 +859,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // for hours, and this read must survive to the process's own exit — via the stream closing
         // when the child's stderr handle closes — regardless of what happens to the outer token in
         // between (mirrors process.WaitForExitAsync's own CancellationToken.None retry below).
-        Task<string>? stderrTask = resume
-            ? process.StandardError.ReadToEndAsync(CancellationToken.None)
+        Task<bool>? resumeNotFoundTask = resume
+            ? TeeAndDetectResumeNotFoundAsync(process)
             : null;
         DateTimeOffset startedAt = ReadStartedAt(process);
         bool sessionStartRecorded = true;
@@ -886,7 +903,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             await process.WaitForExitAsync(CancellationToken.None);
         }
 
-        // Drained unconditionally, not only when the exit code says to look at it: the process
+        // Awaited unconditionally, not only when the exit code says to look at it: the process
         // has already exited by this point, but `process` is disposed (the `using` above) the
         // moment this method returns, and a still-pending read against a disposed process's
         // stream would fault the task with nobody ever observing it (self-review finding: a
@@ -900,39 +917,103 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // was still holding it open"). A descendant that inherited claude's stderr and outlives
         // it (an MCP stdio server not dying with its parent is the ordinary case) would otherwise
         // hang this read forever, and with InteractiveChildGuard still attached at that point,
-        // every further Ctrl-C is swallowed rather than reaching h9k. The only case this read
-        // exists to serve is the near-instant not-found exit PLAN.md §16 #123 itself describes as
-        // "near-instantly", so a wait of a few seconds past the child's own exit already covers
-        // it; past that, the read is abandoned (still observed below, so its eventual fault
-        // against the disposed process is never left unobserved) and this attempt is reported as
-        // an ordinary exit with no captured diagnostic (adversarial review, cycle 1).
+        // every further Ctrl-C is swallowed rather than reaching h9k. By this point
+        // TeeAndDetectResumeNotFoundAsync has already teed everything a successful resume wrote
+        // live, so what is bounded here is only the wait for its own task to finish observing
+        // EOF — a wait of a few seconds past the child's own exit already covers the near-instant
+        // not-found shape PLAN.md §16 #124 itself describes as "near-instantly"; past that, the
+        // task is abandoned (still observed below, so its eventual fault against the disposed
+        // process is never left unobserved) and this attempt is reported as an ordinary exit
+        // (adversarial review, cycle 1).
         bool resumeNotFound = false;
-        if (stderrTask is not null)
+        if (resumeNotFoundTask is not null)
         {
-            Task firstToComplete = await Task.WhenAny(stderrTask, Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None));
-            if (firstToComplete == stderrTask)
+            Task firstToComplete = await Task.WhenAny(resumeNotFoundTask, Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None));
+            if (firstToComplete == resumeNotFoundTask)
             {
-                string standardError = await stderrTask;
-                resumeNotFound = process.ExitCode != 0 && IsResumeNotFoundError(standardError);
-                // The redirect above (resume only) already took stderr off the terminal, so any
-                // failure other than the recognised not-found text would otherwise vanish with no
-                // diagnostic and no fresh-session fallback — a fresh (non-resume) launch never
-                // redirects, so this is the resume path's own replacement for that passthrough
-                // (independent pre-PR review, cycle 1).
-                if (process.ExitCode != 0 && !resumeNotFound && standardError.Trim().Length > 0)
-                {
-                    AnsiConsole.MarkupLineInterpolated($"[yellow]{standardError.Trim()}[/]");
-                }
+                // TeeAndDetectResumeNotFoundAsync already teed anything that was not the not-found
+                // marker itself live as it arrived; ExitCode is the other half of the signal — the
+                // marker text alone, with no matching nonzero exit, is not treated as a genuine
+                // resume failure.
+                resumeNotFound = process.ExitCode != 0 && await resumeNotFoundTask;
             }
             else
             {
-                _ = stderrTask.ContinueWith(
+                _ = resumeNotFoundTask.ContinueWith(
                     static faulted => _ = faulted.Exception,
                     TaskScheduler.Default);
             }
         }
 
-        return (process.ExitCode, sessionStartRecorded, resumeNotFound);
+        return (process.ExitCode, sessionStartRecorded, resumeNotFound, ReadExitedAt(process));
+    }
+
+    private static readonly TimeSpan ResumeNotFoundDetectionWindow = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Starts reading the resumed child's stderr immediately and tees it live to
+    /// <see cref="Console.Error"/> — the same passthrough a fresh (non-resume) launch already gets
+    /// from its own inherited handle — except for the first <see cref="ResumeNotFoundDetectionWindow"/>,
+    /// whose text is held back instead of teed (adversarial review, cycle 1, medium finding: an
+    /// earlier draft captured the whole session and only ever replayed it on a nonzero exit, so a
+    /// successful resume's stderr never reached the terminal at all). That window is the only place
+    /// the near-instant "No conversation found" failure (<see cref="IsResumeNotFoundError"/>) can
+    /// appear, so nothing arriving after it is ever searched for the marker (adversarial review,
+    /// cycle 1, low finding: a descendant that inherited the handle and echoed the same literal text
+    /// hours into a genuinely resumed session must never be read as a resume failure). Held-back text
+    /// is flushed the moment the window closes without that shape — whether by the window elapsing
+    /// (an ordinary long-running resume) or by EOF arriving inside it with other, unrelated text — and
+    /// everything after is teed as it arrives. Resolves to whether the window's own text was the
+    /// not-found marker; the caller still gates that on the exit code too, since this method alone
+    /// cannot see it.
+    /// </summary>
+    private static async Task<bool> TeeAndDetectResumeNotFoundAsync(Process process)
+    {
+        StringBuilder earlyBuffer = new();
+        char[] buffer = new char[4096];
+        using CancellationTokenSource windowCts = new(ResumeNotFoundDetectionWindow);
+        try
+        {
+            while (true)
+            {
+                int read = await process.StandardError.ReadAsync(buffer, windowCts.Token);
+                if (read == 0)
+                {
+                    // EOF inside the window: the near-instant shape a genuine not-found failure
+                    // takes, and nothing further will ever arrive on this stream.
+                    string text = earlyBuffer.ToString();
+                    bool notFound = IsResumeNotFoundError(text);
+                    if (!notFound && text.Length > 0)
+                    {
+                        await Console.Error.WriteAsync(text);
+                    }
+
+                    return notFound;
+                }
+
+                earlyBuffer.Append(buffer, 0, read);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The window elapsed with the process still writing — an ordinary long, successful
+            // resume, a shape the not-found failure never takes (it is always near-instant).
+            // Fall through: flush what the window caught, then keep teeing everything else live
+            // until real EOF. The caller bounds how long it waits on this task exactly the way it
+            // always bounded the old whole-session read.
+        }
+
+        await Console.Error.WriteAsync(earlyBuffer.ToString());
+        while (true)
+        {
+            int read = await process.StandardError.ReadAsync(buffer, CancellationToken.None);
+            if (read == 0)
+            {
+                return false;
+            }
+
+            await Console.Error.WriteAsync(new string(buffer, 0, read));
+        }
     }
 
     /// <summary>
@@ -1056,6 +1137,28 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
         {
             return DateTimeOffset.MinValue;
+        }
+    }
+
+    /// <summary>
+    /// Called only after <c>process.WaitForExitAsync</c> has already completed, so unlike
+    /// <see cref="ReadStartedAt"/> there is no unobserved-guess risk in the fallback: the process
+    /// has genuinely already exited by the time this runs, so <see cref="DateTimeOffset.UtcNow"/>
+    /// read right here is itself an observation (of when this method witnessed the exit that
+    /// already happened), not a plausible-looking stand-in for one that has not (independent
+    /// pre-PR review, cycle 1: the deferred <see cref="Hall9k.Domain.Features.Run.Events.InteractiveSessionEnded"/>
+    /// for a failed resume needs the resume's own exit time, not the later moment its fallback
+    /// happens to start).
+    /// </summary>
+    private static DateTimeOffset ReadExitedAt(Process process)
+    {
+        try
+        {
+            return new DateTimeOffset(process.ExitTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+        {
+            return DateTimeOffset.UtcNow;
         }
     }
 }
