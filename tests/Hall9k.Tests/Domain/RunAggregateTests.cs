@@ -49,6 +49,66 @@ public sealed class RunAggregateTests
         run.State.IsTerminal.Should().BeTrue();
     }
 
+    /// <summary>
+    /// Task: the review pipeline's stage composition becomes configuration recorded per run — a
+    /// stream dispatched with no composition recorded (every stream before this setting existed)
+    /// opens both tracks, byte-for-byte what every run already did, the unchanged-defaults case.
+    /// </summary>
+    [Fact]
+    public void A_run_with_no_recorded_composition_opens_both_tracks()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+
+        run.ReviewStageComposition.Should().Be(ReviewStageComposition.FullPipeline);
+        run.ActiveReviewLenses.Should().Equal(ReviewLens.CycleLenses);
+        run.CurrentCycleLenses.Should().Equal(ReviewLens.CycleLenses);
+    }
+
+    /// <summary>
+    /// A composition resolved at dispatch and recorded on RunDispatched is what the whole run's
+    /// lens bookkeeping reads from then on — the adversarial-only case never opens a conformance
+    /// track at all, on the opening cycle or the mandatory final pass.
+    /// </summary>
+    [Fact]
+    public void Adversarial_only_never_opens_the_conformance_track()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now, ReviewStageComposition: ReviewStageComposition.AdversarialOnly));
+
+        run.ActiveReviewLenses.Should().Equal([ReviewLens.Adversarial]);
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Adversarial,
+            Mode: ReviewMode.FinalFullPass));
+
+        run.CurrentCycleLenses.Should().Equal(
+            [ReviewLens.Adversarial], "the mandatory final pass still respects the opening composition");
+    }
+
+    /// <summary>Composition: none opens no track at all — there is nobody left for ActiveReviewLenses to name.</summary>
+    [Fact]
+    public void Composition_none_opens_no_track()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now, ReviewStageComposition: ReviewStageComposition.None));
+
+        run.ActiveReviewLenses.Should().BeEmpty();
+        run.CurrentCycleLenses.Should().BeEmpty();
+    }
+
     [Fact]
     public void Interactive_session_started_moves_to_running_and_records_the_claude_session_id()
     {

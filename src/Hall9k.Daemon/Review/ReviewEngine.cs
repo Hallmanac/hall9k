@@ -190,6 +190,18 @@ public sealed class ReviewEngine(
             switch (run.ReviewPhase)
             {
                 case ReviewPhase.None:
+                    if (run.ReviewStageComposition == ReviewStageComposition.None)
+                    {
+                        // Composition: none (task: the review pipeline's stage composition
+                        // becomes configuration recorded per run) — no reviewer ever looks at
+                        // this diff. The gates VerificationRunner already ran before this loop
+                        // was ever entered are what this composition keeps; Decisions Log #92's
+                        // guarantee is waived here, by the attestation recorded when this
+                        // composition was set (ReviewStageCompositionValidation).
+                        await SettleWithNoReviewAsync(run, cancellationToken);
+                        break;
+                    }
+
                     // Cycle 1 is always Discovery (task: review cycles after the first) — the
                     // adversarial lens's blindness design (log #63) stays intact where discovery
                     // actually happens.
@@ -345,6 +357,27 @@ public sealed class ReviewEngine(
                             break;
                         }
 
+                        if (run.ReviewStageComposition.WaivesFinalFullPassGuarantee)
+                        {
+                            // Composition: skip-final-pass (task: the review pipeline's stage
+                            // composition becomes configuration recorded per run) waives Decisions
+                            // Log #92's mandatory fresh-context re-read immediately before merge,
+                            // by the attestation recorded when this composition was set
+                            // (ReviewStageCompositionValidation) — the gate above already ran full
+                            // over this tip; only the extra reviewer pass is what's skipped.
+                            if (await ParkIfLifetimeBudgetExceededAsync(
+                                context, run, caps, SettleReason.NothingOwed, cancellationToken))
+                            {
+                                return false;
+                            }
+
+                            logger.LogInformation(
+                                "Run {RunId}: settling at cycle {Cycle} — composition skip-final-pass waives the mandatory final full pass (Decisions Log #92)",
+                                run.Id, run.ReviewCycle);
+                            await SettleAsync(run, cancellationToken);
+                            break;
+                        }
+
                         // The per-track cycle caps cannot bound this on their own (cycle-3 finding):
                         // a track the final pass keeps reawakening gets its budget base bumped by
                         // that very reactivation (RunAggregate.TrackBudgetBaseCycle's own doc), so it
@@ -381,7 +414,7 @@ public sealed class ReviewEngine(
                         string? settlingSinceSha = await ResolveFinalFullPassSinceShaAsync(
                             context.Run.WorktreePath, run.LastFullScopeReviewHeadSha, cancellationToken);
                         if (!await DispatchReviewPassesAsync(
-                            context, run.ReviewCycle + 1, ReviewLens.CycleLenses, ReviewMode.FinalFullPass,
+                            context, run.ReviewCycle + 1, run.ReviewStageComposition.OpeningLenses(), ReviewMode.FinalFullPass,
                             settlingHeadSha, sinceSha: settlingSinceSha, run.CurrentCycleMode, run.CycleSinceSha,
                             cancellationToken))
                         {
@@ -525,6 +558,27 @@ public sealed class ReviewEngine(
                         break;
                     }
 
+                    // Composition: skip-final-pass, the Reverify branch's own mirror of the
+                    // Settling branch's identical check above (task: the review pipeline's stage
+                    // composition becomes configuration recorded per run) — this is the "empty
+                    // terminal case" (every track already concluded, a stray fix owed one more
+                    // full-scope read) reaching Reverify straight rather than through Settling;
+                    // the waiver applies identically either way.
+                    if (reverifyMode == ReviewMode.FinalFullPass && run.ReviewStageComposition.WaivesFinalFullPassGuarantee)
+                    {
+                        if (await ParkIfLifetimeBudgetExceededAsync(
+                            context, run, caps, SettleReason.NothingOwed, cancellationToken))
+                        {
+                            return false;
+                        }
+
+                        logger.LogInformation(
+                            "Run {RunId}: settling at cycle {Cycle} — composition skip-final-pass waives the mandatory final full pass (Decisions Log #92)",
+                            run.Id, run.ReviewCycle);
+                        await SettleAsync(run, cancellationToken);
+                        break;
+                    }
+
                     // Same independent bound as the Settling branch above, checked here too: a run
                     // can reach a FinalFullPass dispatch straight from Reverify (every track just
                     // concluded again without ever passing back through Settling), and the per-track
@@ -541,7 +595,7 @@ public sealed class ReviewEngine(
 
                     IReadOnlyList<ReviewLens> reverifyLenses = reverifyMode == ReviewMode.Verify
                         ? run.ActiveReviewLenses
-                        : ReviewLens.CycleLenses;
+                        : run.ReviewStageComposition.OpeningLenses();
                     string? reverifyHeadSha = await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
                     // The cycle about to be dispatched has not started yet, so run.CycleHeadSha still
                     // holds the cycle THIS reverify is following — exactly the boundary a Verify
@@ -2016,6 +2070,31 @@ public sealed class ReviewEngine(
     /// <see cref="ReviewResidualDisposition.Unfixed"/> when none did.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Composition: none (task: the review pipeline's stage composition becomes configuration
+    /// recorded per run) — settles the run straight off <see cref="ReviewPhase.None"/> with no
+    /// review pass ever dispatched, no track ever opened, and no gate run here (the gates
+    /// VerificationRunner already ran before <see cref="ReviewAsync"/> was ever entered are what
+    /// this composition keeps). Deliberately not <see cref="SettleAsync"/>: that method's own
+    /// residual tally and per-track conclusion bookkeeping all read <see cref="RunAggregate.ActiveReviewLenses"/>,
+    /// which is empty for this composition by construction (<see cref="ReviewStageComposition.OpeningLenses"/>),
+    /// so it would append nothing anyway — this is the honest, minimal record of that instead.
+    /// <see cref="ReviewSettlement.Settled"/>, never <see cref="ReviewSettlement.Clean"/>: nobody
+    /// read the final tip, so this composition can never make the narrower claim Clean means.
+    /// </summary>
+    private async Task SettleWithNoReviewAsync(RunAggregate run, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(run.Id, new ReviewSettled(
+            run.Id, run.ReviewCycle, ReviewSettlement.Settled,
+            ResidualsFixed: 0, ResidualsRouted: 0, ResidualsRoutingFailed: 0, now));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: review composition is none — settling with no reviewer ever dispatched (Decisions Log #92 waived)",
+            run.Id);
+    }
+
     private async Task SettleAsync(RunAggregate run, CancellationToken cancellationToken)
     {
         // Derived before the conclusions below are appended, and unaffected by them: a track

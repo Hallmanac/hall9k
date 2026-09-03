@@ -36,6 +36,13 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// lens). Recorded here, at the one place that knows which of those this dispatch actually is,
 /// rather than reconstructed later from <see cref="AgentRole.Build"/> alone, which cannot tell
 /// the three apart. Blank on a stream written before this field existed.
+/// ReviewStageComposition is which pre-PR review stages this run gets, resolved once here via
+/// <see cref="ReviewStageCompositionResolver"/> (task: the review pipeline's stage composition
+/// becomes configuration recorded per run) and frozen for the run's whole lifetime — see
+/// <see cref="ReviewStageComposition"/>'s own doc for why this is resolved at dispatch rather
+/// than re-checked live the way the review-cycle caps are. Null replays as
+/// <see cref="ReviewStageComposition.FullPipeline"/> — the shape every run had before this
+/// setting existed.
 /// </summary>
 public sealed record RunDispatched(
     Guid Id,
@@ -52,4 +59,5 @@ public sealed record RunDispatched(
     AgentModel? Model = null,
     string RunDirectory = "",
     string? PrReviewBaseRefName = null,
-    string SessionName = "");
+    string SessionName = "",
+    ReviewStageComposition? ReviewStageComposition = null);
