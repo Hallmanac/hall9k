@@ -4,6 +4,7 @@ using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Tests.Fakes;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -18,8 +19,13 @@ namespace Hall9k.Tests.Cli;
 /// h9k never spawned. These mutate process-wide environment variables, so — per
 /// <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>'s own blanket rule over every
 /// <c>Environment.SetEnvironmentVariable</c>/<c>GetEnvironmentVariable</c> caller, not only
-/// <c>HALL9K_HOME</c> itself — both this class and its nested scope helper carry
-/// <c>[Collection("Hall9kHome")]</c> so they never race a different collection's own env-var test.
+/// <c>HALL9K_HOME</c> itself — this class carries <c>[Collection("Hall9kHome")]</c> so it never
+/// races a different collection's own env-var test. <see cref="EnvironmentVariableScope"/> itself
+/// is a shared helper in <c>Hall9k.Tests.Fakes</c>, carrying the identical attribute on its own
+/// declaration too — <c>HomeEnvironmentIsolationTests</c>'s own scan flags any class using these
+/// members without it, helper included, even though the attribute has no runtime effect on a type
+/// with no test methods of its own; this class still needs its own copy regardless, since the
+/// helper's attribute does not extend serialization to a caller that omits it.
 /// </summary>
 [Collection("Hall9kHome")]
 public sealed class InteractiveSessionLivenessTests
@@ -179,37 +185,5 @@ public sealed class InteractiveSessionLivenessTests
         DateTimeOffset startedAt = InteractiveSessionLiveness.ReadStartedAt(current);
 
         startedAt.Should().NotBe(DateTimeOffset.MinValue, "the current process's own start time is always readable");
-    }
-
-    /// <summary>Saves and restores the named environment variables around a test, isolating it from every other.</summary>
-    [Collection("Hall9kHome")]
-    private sealed class EnvironmentVariableScope : IDisposable
-    {
-        private readonly (string Name, string? Previous)[] _saved;
-
-        private EnvironmentVariableScope((string Name, string? Previous)[] saved) => _saved = saved;
-
-        public static EnvironmentVariableScope Clear(params string[] names) =>
-            Set([.. names.Select(name => (name, (string?)null))]);
-
-        public static EnvironmentVariableScope Set(params (string Name, string? Value)[] values)
-        {
-            (string Name, string? Previous)[] saved =
-                [.. values.Select(value => (value.Name, Environment.GetEnvironmentVariable(value.Name)))];
-            foreach ((string name, string? value) in values)
-            {
-                Environment.SetEnvironmentVariable(name, value);
-            }
-
-            return new EnvironmentVariableScope(saved);
-        }
-
-        public void Dispose()
-        {
-            foreach ((string name, string? previous) in _saved)
-            {
-                Environment.SetEnvironmentVariable(name, previous);
-            }
-        }
     }
 }
