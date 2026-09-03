@@ -2,20 +2,27 @@ using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
 
 /// <summary>
-/// The three delivery-arrangement sentences <see cref="WorkPromptBuilder.Build"/> can hand a
-/// session, one per launch shape: a dispatcher-launched headless build (watched by
-/// RunSupervisor), an operator's attached <c>h9k task work</c> claim, and a deliberate
-/// <c>h9k task start</c> kick-off — headless like the first, but unsupervised like neither
-/// (independent pre-PR review, cycle 1, both lenses: the session was being told the platform
-/// verifies and opens the PR after it finishes, which is true of the first shape only).
+/// The delivery-arrangement sentences <see cref="WorkPromptBuilder.Build"/> can hand a session,
+/// one per launch shape: a dispatcher-launched headless build (watched by RunSupervisor), an
+/// operator's attached <c>h9k task work</c> claim — with or without the prompt-handoff model's
+/// own self-registration content (R4, idea fcaded0b's design rulings, Take the Wheel epic
+/// 9272e514's slice 7): the default <c>h9k task work</c> path sets <c>requiresSelfRegistration</c>,
+/// and the kept-for-one-release <c>--direct-launch</c> path does not, since that path still
+/// records the session itself the way it always did — and a deliberate <c>h9k task start</c>
+/// kick-off: headless like the first, but unsupervised like neither (independent pre-PR review,
+/// cycle 1, both lenses: the session was being told the platform verifies and opens the PR after
+/// it finishes, which is true of the first shape only).
 /// </summary>
 public sealed class WorkPromptBuilderTests
 {
+    private readonly string _worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-work-prompt-{Guid.NewGuid():N}");
+
     [Fact]
     public void A_dispatcher_launched_build_is_told_the_platform_verifies_and_opens_the_pr()
     {
@@ -72,14 +79,70 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().NotContain("yours to trigger by hand once you finish");
     }
 
-    private static string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
+    [Fact]
+    public void Interactive_prompt_without_self_registration_carries_none_of_its_content()
+    {
+        string prompt = Build(isInteractive: true, isDeliberateHeadlessStart: false);
+
+        prompt.Should().NotContain("register-session", "--direct-launch keeps the launch-time recording it always had");
+        prompt.Should().NotContain("slice-1 names");
+        prompt.Should().Contain("h9k task deliver", "delivery stays explicit regardless of which launch path got here");
+    }
+
+    [Fact]
+    public void Interactive_prompt_with_self_registration_tells_the_session_to_register_itself()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().Contain($"h9k task register-session {task.Id}");
+        prompt.Should().Contain("did not launch you");
+    }
+
+    [Fact]
+    public void Interactive_prompt_with_self_registration_points_at_slice_1_names_and_task_show()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().Contain("slice-1 names");
+        prompt.Should().Contain($"h9k task show {task.Id}");
+    }
+
+    [Fact]
+    public void Self_registration_content_never_leaks_into_a_headless_dispatch_prompt()
+    {
+        string prompt = Build(isInteractive: false, isDeliberateHeadlessStart: false);
+
+        prompt.Should().NotContain("register-session");
+        prompt.Should().NotContain("slice-1 names");
+    }
+
+    [Fact]
+    public void Interactive_prompt_still_states_delivery_is_explicit_and_never_the_sessions_own_call()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().Contain("run by the operator explicitly");
+        prompt.Should().Contain("nothing pushes or");
+    }
+
+    private string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
         WorkPromptBuilder.Build(
             SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing",
-            worktreePath: Path.Combine(Path.GetTempPath(), $"hall9k-nonexistent-{Guid.NewGuid():N}"),
+            worktreePath: _worktreePath,
             isInteractive: isInteractive, isDeliberateHeadlessStart: isDeliberateHeadlessStart);
 
     private static TaskDetails SomeTask() => new()
     {
+        Id = DomainId.New(),
         Objective = "Add rate limiting to auth endpoints",
         AcceptanceCriteria = ["Requests over the limit get 429"],
     };
