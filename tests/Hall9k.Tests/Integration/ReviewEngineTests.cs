@@ -2970,6 +2970,153 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 3, conformance finding #2: the sibling-suppression dedup
+    /// above was cycle-scoped to catch a reactivated track's own stale residual, but that same
+    /// scoping also blocked the legitimate cross-cycle match it still owes when the forced
+    /// disposition really is <see cref="ReviewResidualDisposition.FixedUnreviewed"/>. Adversarial
+    /// concludes normally at cycle 1 on a Medium at A.cs:10 (the gate is active from cycle 1),
+    /// recording <c>FixedUnreviewed</c>. Conformance's own separate issue keeps it going into
+    /// cycle 2, where its own Verify pass reports the IDENTICAL location — a fix session dispatches
+    /// over it this same cycle and disputes it, so the run parks with the fix session's own
+    /// dispatch cycle equal to the settle cycle, exactly the shape that forces
+    /// <c>FixedUnreviewed</c> rather than <c>Unfixed</c>. The human resolves with merge-ready, and
+    /// <c>SettleAsync</c> must recognize A.cs:10 already has a fixed-unreviewed residual from
+    /// adversarial's own cycle-1 conclusion — a whole cycle earlier — rather than force a second
+    /// one in under conformance, which would count one defect as fixed-unreviewed twice.
+    /// </summary>
+    [Fact]
+    public async Task A_disputed_fix_session_at_a_previously_fixed_unreviewed_location_does_not_double_count()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance's own separate issue keeps it going; adversarial's medium
+            // concludes the track right here (the gate is active from cycle 1), recording
+            // FixedUnreviewed at A.cs:10.
+            "FINDING: severity=medium; scope=in-scope; at=Conform.cs:5\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:10\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            // Cycle 1's fix session resolves conformance's own Conform.cs:5 finding cleanly —
+            // adversarial's A.cs:10 is already consumed by its own conclusion above, so it is
+            // never in this merged document at all.
+            "Fixed.\n\nRESOLUTION: fixed",
+            // Cycle 2: only conformance is still active — one Verify pass, and it reports the
+            // SAME location as adversarial's own cycle-1 conclusion.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:10\n"
+            + "Defect: still present, same spot adversarial flagged a cycle ago.\n\nVERDICT: needs-fixes",
+            // Cycle 2's fix session dispatches over that same-cycle finding and disputes it, so
+            // the run parks with no cycle 3 ever starting: the dispatch cycle and the settle
+            // cycle are the same, forcing FixedUnreviewed.
+            "That is the intended behavior per spec.\n\nRESOLUTION: disputed");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions { AdversarialSeverityGateFromCycle = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the fix session disputed conformance's own finding");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsFixed.Should().Be(
+            1, "A.cs:10 is one defect, already recorded fixed-unreviewed by adversarial's own cycle-1 " +
+                "conclusion — conformance's own cycle-2 restatement of the identical place must collapse " +
+                "into it, not add a second fixed-unreviewed count for the same defect");
+        run.ReviewResidualsUnfixed.Should().Be(0, "nothing here was left unhanded to a fix session");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, conformance finding #2: the finding itself named the
+    /// identical defect in <c>alreadyOnStreamRideAlong</c>'s own FixedUnreviewed branch, alongside
+    /// <c>alreadyOnStreamFix</c> above — the sibling test's shape, but for a ride-along instead of
+    /// a Fix finding. Adversarial concludes normally at cycle 1 on a Low ride-along at L.cs:20 (the
+    /// gate is active from cycle 1) — a fix session dispatches THIS cycle over conformance's own
+    /// separate Medium, so adversarial's ride-along, handed to that same merged document, records
+    /// FixedUnreviewed rather than plain RideAlong. Conformance's own issue keeps it going into
+    /// cycle 2, where its Verify pass restates the IDENTICAL L.cs:20 location as a ride-along again
+    /// alongside its own still-open Medium; its own cycle-2 fix session disputes the Medium, so the
+    /// run parks with the dispatch cycle equal to the settle cycle — forcing FixedUnreviewed again.
+    /// The human resolves with merge-ready, and <c>SettleAsync</c> must recognize L.cs:20 already
+    /// has a fixed-unreviewed residual from adversarial's own cycle-1 conclusion — a whole cycle
+    /// earlier — rather than force a second one in under conformance.
+    /// </summary>
+    [Fact]
+    public async Task A_disputed_fix_session_at_a_previously_fixed_unreviewed_ride_along_location_does_not_double_count()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance's own separate issue keeps it going; adversarial's own low
+            // ride-along concludes the track right here (the gate is active from cycle 1). A fix
+            // session WILL dispatch this cycle over conformance's own finding, so adversarial's
+            // ride-along is handed to that same merged document and records FixedUnreviewed at
+            // L.cs:20 rather than plain RideAlong.
+            "FINDING: severity=medium; scope=in-scope; at=Conform.cs:5\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=low; scope=in-scope; at=L.cs:20\nDefect: a nit nobody asked for.\n\n"
+            + "VERDICT: needs-fixes",
+            // Cycle 1's fix session resolves conformance's own Conform.cs:5 finding cleanly —
+            // adversarial's L.cs:20 is already consumed by its own conclusion above.
+            "Fixed.\n\nRESOLUTION: fixed",
+            // Cycle 2: only conformance is still active — one Verify pass, restating both its own
+            // Medium and a ride-along at the SAME location as adversarial's own cycle-1 conclusion.
+            "FINDING: severity=medium; scope=in-scope; at=Conform.cs:5\n"
+            + "Defect: still not met.\n\n"
+            + "FINDING: severity=low; scope=in-scope; at=L.cs:20\n"
+            + "Defect: still a nit, same spot adversarial flagged a cycle ago.\n\nVERDICT: needs-fixes",
+            // Cycle 2's fix session dispatches over that same-cycle finding and disputes it, so
+            // the run parks with no cycle 3 ever starting: the dispatch cycle and the settle
+            // cycle are the same, forcing FixedUnreviewed for the ride-along too.
+            "That is the intended behavior per spec.\n\nRESOLUTION: disputed");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions { AdversarialSeverityGateFromCycle = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the fix session disputed conformance's own finding");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsFixed.Should().Be(
+            2, "Conform.cs:5 (conformance's own genuinely new fixed-unreviewed location this cycle) " +
+                "and L.cs:20 (adversarial's own cycle-1 conclusion, one defect, not two) together");
+        run.ReviewResidualsRideAlong.Should().Be(
+            0, "L.cs:20 already has its own fixed-unreviewed residual from cycle 1 — it must not also " +
+                "land here as an unclaimed ride-along, and must not be force-recorded a second time either");
+        run.ReviewResidualsUnfixed.Should().Be(0, "nothing here was left unhanded to a fix session");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1, both lenses' finding #1: the sibling-suppression dedup
     /// above matched a Fix-shaped residual at the same place from ANY cycle, not just this one, so
     /// a track the mandatory <see cref="ReviewMode.FinalFullPass"/> reawakens with a genuinely
@@ -3127,6 +3274,78 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 "it must not also appear here, mis-attributed to conformance")
             .Which.Should().Match<ReviewUnfixedFinding>(
                 finding => finding.Severity == ReviewSeverity.Medium && finding.Location == "Conform.cs:1");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, both lenses' finding #1: the sibling-tag skip above
+    /// only ever needs to catch a tag naming a track that concluded THIS cycle (the one case
+    /// where a residual for it genuinely already sits on the stream) — not one that concluded
+    /// cycles ago. Adversarial concludes clean at cycle 1 with nothing to say at all; conformance
+    /// keeps its own separate Medium going for two more cycles until it hits its cap. The cap
+    /// cycle's own Verify pass — the only pass covering conformance, the one active lens — also
+    /// restates an old <c>track=adversarial</c> finding at a placed location, exactly the shape
+    /// <c>AgentPromptBuilder.AppendVerifyTrackTagContract</c> asks a Verify reviewer for. Before
+    /// this fix, the skip fired unconditionally on "not currently active" and dropped it outright;
+    /// it must instead fall back to conformance, the only lens still being force-concluded, the
+    /// same way an untagged finding already does.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_pass_finding_tagged_for_a_track_that_concluded_cycles_ago_is_credited_not_dropped()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance's own issue keeps it going; adversarial finds nothing at all
+            // and concludes clean right here — no reactivation anywhere in this scenario.
+            "FINDING: severity=medium; scope=in-scope; at=Conform.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "VERDICT: merge-ready",
+            "Tried.\n\nRESOLUTION: fixed",
+            // Cycle 2: only conformance is still active, so one Verify pass stands in for it.
+            // Conformance's own restated finding keeps it going, but this is already its
+            // two-cycle cap. The same pass also restates an old adversarial-tagged finding at a
+            // DIFFERENT, placed location — adversarial concluded a whole cycle ago, with no
+            // residual of its own for this place, so this is not the same-cycle sibling
+            // conclusion the guard above exists to catch.
+            "FINDING: severity=medium; scope=in-scope; track=conformance; at=Conform.cs:1\n"
+            + "Defect: still not met.\n\n"
+            + "FINDING: severity=medium; scope=in-scope; track=adversarial; at=Adv.cs:2\n"
+            + "Defect: restated from an earlier cycle.\n\nVERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions
+            {
+                MaxComplianceReviewCycles = 2,
+                MaxAdversarialReviewCycles = 5,
+            })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("conformance is still continuing but already at its two-cycle cap");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsUnfixed.Should().Be(
+            2, "both conformance's own restated finding and the adversarial-tagged restatement must " +
+                "be credited under conformance — the still-active lens — rather than dropped just " +
+                "because adversarial's own conclusion is a whole cycle stale");
+        run.ReviewUnfixedFindings.Should().HaveCount(2)
+            .And.Contain(finding => finding.Severity == ReviewSeverity.Medium && finding.Location == "Conform.cs:1")
+            .And.Contain(finding => finding.Severity == ReviewSeverity.Medium && finding.Location == "Adv.cs:2");
     }
 
     /// <summary>
