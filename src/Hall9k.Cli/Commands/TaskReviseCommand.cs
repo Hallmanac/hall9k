@@ -97,6 +97,24 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         [CommandOption("--clear-queue-first")]
         [Description("Remove the queue-first marker without waiting for it to dispatch")]
         public bool ClearQueueFirst { get; init; }
+
+        [CommandOption("--review-stage-composition <COMPOSITION|default>")]
+        [Description(
+            "Change this task's own review stage composition (task: the review pipeline's stage "
+            + "composition becomes configuration recorded per run) — full-pipeline, adversarial-only, "
+            + "conformance-only, skip-final-pass, or none; 'default' clears the override and defers to "
+            + "the project's, then the node's, then the compiled default. skip-final-pass and none waive "
+            + "Decisions Log #92's mandatory pre-merge fresh-context read; adversarial-only, "
+            + "conformance-only, and none each drop a lens's own attention budget entirely — every one "
+            + "of those needs --accept-reduced-review")]
+        public string? ReviewStageComposition { get; init; }
+
+        [CommandOption("--accept-reduced-review")]
+        [Description(
+            "Acknowledges the consequence --review-stage-composition just named, when the value passed "
+            + "removes a load-bearing review guarantee. Required for skip-final-pass, none, "
+            + "adversarial-only, or conformance-only; refused as meaningless otherwise")]
+        public bool AcceptReducedReview { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -116,6 +134,12 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         {
             throw new DomainValidationException(
                 "--queue-first and --clear-queue-first say opposite things; pass one.");
+        }
+
+        if (settings.AcceptReducedReview && settings.ReviewStageComposition is null)
+        {
+            throw new DomainValidationException(
+                "--accept-reduced-review has nothing to acknowledge without --review-stage-composition.");
         }
 
         string? objective = settings.Objective;
@@ -176,7 +200,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         if (namesCurrentEpic && task.EpicId is { } currentEpic && objective.IsBlank() && criteria.Count == 0
             && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank()
-            && !queuePriority.HasValue)
+            && !queuePriority.HasValue && settings.ReviewStageComposition is null)
         {
             AnsiConsole.MarkupLine(
                 $"[green]Already in epic[/] {TaskListCommand.ShortId(currentEpic)}. [dim]Nothing to do.[/]");
@@ -195,7 +219,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             DateTimeOffset.UtcNow,
             context.OwnerId,
             epicId,
-            queuePriority);
+            queuePriority,
+            settings.ReviewStageComposition is { } composition
+                ? Optional<string?>.Of(composition)
+                : Optional<string?>.None,
+            settings.AcceptReducedReview);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
@@ -269,6 +297,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         if (revised.QueuePriority.HasValue)
         {
             yield return revised.QueuePriority.Value ? "marked queue-first" : "queue-first marker cleared";
+        }
+
+        if (revised.ReviewStageComposition.HasValue)
+        {
+            yield return revised.ReviewStageComposition.Value is { } composition
+                ? $"review stage composition {composition}"
+                : "review stage composition override cleared";
         }
     }
 

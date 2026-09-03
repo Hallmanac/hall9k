@@ -169,10 +169,35 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "otherwise gives the three caps above. Same resolution order and clearing idiom as "
             + "--max-compliance-review-cycles; the compiled default is 25.")]
         public string? LifetimeReviewCycleBudget { get; init; }
+
+        [CommandOption("--review-stage-composition <COMPOSITION|default>")]
+        [Description(
+            "This project's review stage composition (task: the review pipeline's stage composition "
+            + "becomes configuration recorded per run) — full-pipeline, adversarial-only, "
+            + "conformance-only, skip-final-pass, or none. Outranks the node's own setting "
+            + "(h9k config set), and is itself outranked by a task override (h9k task add/revise). "
+            + "'default' clears the project override so the node value (or the compiled default, "
+            + "full-pipeline) decides. skip-final-pass and none waive Decisions Log #92's mandatory "
+            + "pre-merge fresh-context read; adversarial-only, conformance-only, and none each drop a "
+            + "lens's own attention budget entirely — every one of those needs --accept-reduced-review.")]
+        public string? ReviewStageComposition { get; init; }
+
+        [CommandOption("--accept-reduced-review")]
+        [Description(
+            "Acknowledges the consequence --review-stage-composition just named, when the value passed "
+            + "removes a load-bearing review guarantee. Required for skip-final-pass, none, "
+            + "adversarial-only, or conformance-only; refused as meaningless otherwise.")]
+        public bool AcceptReducedReview { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        if (settings.AcceptReducedReview && settings.ReviewStageComposition is null)
+        {
+            throw new DomainValidationException(
+                "--accept-reduced-review has nothing to acknowledge without --review-stage-composition.");
+        }
+
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
@@ -269,7 +294,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 ? Optional<BranchNameTemplate>.Of(ClearingWord(branchTemplate)
                     ? BranchNameTemplate.Default
                     : BranchNameTemplate.Parse(branchTemplate))
-                : Optional<BranchNameTemplate>.None);
+                : Optional<BranchNameTemplate>.None,
+            // Blank/"default" clearing and the recognized-value parse both happen inside the
+            // decider (ReviewStageCompositionValidation.VetInput), so the raw input rides through
+            // unchanged here — the same "the decider is the one place that enforces the closed
+            // set" discipline BacklogPolicy's own doc already states.
+            reviewStageComposition: settings.ReviewStageComposition is { } composition
+                ? Optional<string?>.Of(composition)
+                : Optional<string?>.None,
+            reviewStageCompositionAcknowledged: settings.AcceptReducedReview);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);

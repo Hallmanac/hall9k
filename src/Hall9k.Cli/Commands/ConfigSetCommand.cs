@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -163,6 +164,29 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "budget is set but this is not). Has no observable effect on its own until --spend-budget is also set.")]
         public string? SpendPeriod { get; init; }
 
+        [CommandOption("--review-stage-composition <COMPOSITION>")]
+        [Description(
+            "This node's review stage composition (task: the review pipeline's stage composition "
+            + "becomes configuration recorded per run) — full-pipeline (both lenses, every cycle, the "
+            + "mandatory final pass, byte-for-byte today's shipped pipeline), adversarial-only, "
+            + "conformance-only, skip-final-pass, or none. Resolves task override (h9k task add/revise) "
+            + "> project override (h9k project set) > this node value > the compiled default "
+            + "(full-pipeline), resolved once at each run's dispatch and frozen for that run's whole "
+            + "lifetime — unlike the review-cycle caps above, a mid-run change here reaches only the "
+            + "task's NEXT run. There is no 'default' clearing word here, the same as the caps: once "
+            + "set, re-set it to full-pipeline or hand-edit the config file. skip-final-pass and none "
+            + "waive Decisions Log #92's mandatory pre-merge fresh-context read; adversarial-only, "
+            + "conformance-only, and none each drop a lens's own attention budget entirely — every one "
+            + "of those is refused without --accept-reduced-review.")]
+        public string? ReviewStageComposition { get; init; }
+
+        [CommandOption("--accept-reduced-review")]
+        [Description(
+            "Acknowledges the consequence --review-stage-composition just named, when the value passed "
+            + "removes a load-bearing review guarantee (skip-final-pass, none, adversarial-only, or "
+            + "conformance-only). Required for those values; refused as meaningless otherwise.")]
+        public bool AcceptReducedReview { get; init; }
+
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
         [Description(
             "How many days an interactive claim (h9k task work) can sit untouched before h9k status nudges "
@@ -199,7 +223,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ModelPublication is null && settings.MaxComplianceReviewCycles is null
             && settings.MaxAdversarialReviewCycles is null && settings.MaxFinalFullPassRounds is null
             && settings.LifetimeReviewCycleBudget is null && settings.SpendBudget is null
-            && settings.SpendPeriod is null;
+            && settings.SpendPeriod is null && settings.ReviewStageComposition is null;
 
         if (onlyInteractiveClaimStaleAfterDaysChanged)
         {
@@ -225,7 +249,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ModelPublication is null && settings.InteractiveClaimStaleAfterDays is null
             && settings.MaxComplianceReviewCycles is null && settings.MaxAdversarialReviewCycles is null
             && settings.MaxFinalFullPassRounds is null && settings.LifetimeReviewCycleBudget is null
-            && settings.SpendBudget is null && settings.SpendPeriod is null)
+            && settings.SpendBudget is null && settings.SpendPeriod is null
+            && settings.ReviewStageComposition is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-task-runs 2. "
@@ -287,6 +312,21 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && !SpendPeriod.FromInput(spendPeriod).IsWellFormed)
         {
             throw new DomainValidationException("--spend-period must be \"day\" or \"week\".");
+        }
+
+        if (settings.ReviewStageComposition is { } composition)
+        {
+            // Parse throws with the recognized values quoted (per the CLI command standards) on
+            // an unrecognized word; RefuseWithoutAcknowledgment throws naming the consequence and
+            // --accept-reduced-review when the value removes a load-bearing guarantee.
+            ReviewStageComposition parsed = ReviewStageComposition.Parse(composition);
+            ReviewStageCompositionValidation.RefuseWithoutAcknowledgment(
+                parsed, settings.AcceptReducedReview, "--review-stage-composition");
+        }
+        else if (settings.AcceptReducedReview)
+        {
+            throw new DomainValidationException(
+                "--accept-reduced-review has nothing to acknowledge without --review-stage-composition.");
         }
 
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays && staleAfterDays < 1)
@@ -386,6 +426,13 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.SpendPeriod = SpendPeriod.FromInput(spendPeriod).Value;
             changed.Add($"spend-period = {operating.SpendPeriod}");
+        }
+
+        if (settings.ReviewStageComposition is { } composition)
+        {
+            string normalized = ReviewStageComposition.Parse(composition).Value;
+            operating.ReviewStageComposition = normalized;
+            changed.Add($"review-stage-composition = {normalized}");
         }
     }
 

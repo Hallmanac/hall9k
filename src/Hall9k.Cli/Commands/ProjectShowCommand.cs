@@ -117,6 +117,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Max adversarial review cycles", ReviewCapRow(project, project.MaxAdversarialReviewCycles, "max-adversarial-review-cycles"));
         table.AddRow("Max final-full-pass rounds", ReviewCapRow(project, project.MaxFinalFullPassRounds, "max-final-full-pass-rounds"));
         table.AddRow("Lifetime review-cycle budget", ReviewCapRow(project, project.LifetimeReviewCycleBudget, "lifetime-review-cycle-budget"));
+        table.AddRow("Review stage composition", ReviewStageCompositionRow(project));
         table.AddRow("Settings changed", project.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
@@ -159,6 +160,18 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         ? value.ToString()
         : $"[dim]not set — the node decides (h9k config show), unless a task overrides it. Set one: "
           + $"h9k project set {project.Name.EscapeMarkup()} --{optionName} <N>[/]";
+
+    /// <summary>
+    /// This project's own review stage composition override when set, else the resolution chain
+    /// underneath it (task: the review pipeline's stage composition becomes configuration
+    /// recorded per run) — this project outranks the node, and a task override outranks this
+    /// project in turn. The <c>ReviewCapRow</c> shape, applied to the closed-set string instead
+    /// of an int.
+    /// </summary>
+    private static string ReviewStageCompositionRow(ProjectDetails project) => project.ReviewStageComposition is { } value
+        ? value.EscapeMarkup()
+        : $"[dim]not set — the node decides (h9k config show), unless a task overrides it. Set one: "
+          + $"h9k project set {project.Name.EscapeMarkup()} --review-stage-composition <COMPOSITION>[/]";
 
     private static void WriteTasks(ProjectDetails project, IReadOnlyList<TaskStatusRow> rows)
     {

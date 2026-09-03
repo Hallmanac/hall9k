@@ -408,4 +408,75 @@ public sealed class ConfigSetCommandTests
         operating.SpendPeriod.Should().Be("day");
         changed.Should().ContainSingle().Which.Should().Contain("day");
     }
+
+    /// <summary>
+    /// Task: the review pipeline's stage composition becomes configuration recorded per run — the
+    /// node level has no clearing word, the same shape the four review-cycle caps already have,
+    /// so full-pipeline validates and applies with nothing else required.
+    /// </summary>
+    [Fact]
+    public void A_full_pipeline_composition_validates_and_applies_without_acknowledgment()
+    {
+        ConfigSetCommand.Settings settings = new() { ReviewStageComposition = "full-pipeline" };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+        act.Should().NotThrow();
+
+        OperatingSettings operating = new();
+        List<string> changed = [];
+        ConfigSetCommand.Apply(settings, operating, changed);
+        operating.ReviewStageComposition.Should().Be("FullPipeline");
+    }
+
+    [Fact]
+    public void An_unrecognized_composition_is_refused_with_the_recognized_values_quoted()
+    {
+        ConfigSetCommand.Settings settings = new() { ReviewStageComposition = "bogus" };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*'bogus'*")
+            .WithMessage("*full-pipeline*");
+    }
+
+    [Fact]
+    public void None_without_acknowledgment_is_refused_naming_the_consequence_and_the_flag()
+    {
+        ConfigSetCommand.Settings settings = new() { ReviewStageComposition = "none" };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*Decisions Log #92*")
+            .WithMessage("*--accept-reduced-review*");
+    }
+
+    [Fact]
+    public void None_with_acknowledgment_validates_and_applies()
+    {
+        ConfigSetCommand.Settings settings = new() { ReviewStageComposition = "none", AcceptReducedReview = true };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+        act.Should().NotThrow();
+
+        OperatingSettings operating = new();
+        List<string> changed = [];
+        ConfigSetCommand.Apply(settings, operating, changed);
+        operating.ReviewStageComposition.Should().Be("None");
+    }
+
+    /// <summary>
+    /// Combined with an unrelated real setting so the "nothing to change" no-op guard does not
+    /// fire first and mask the message this test actually checks for.
+    /// </summary>
+    [Fact]
+    public void Accept_reduced_review_without_a_composition_is_refused_as_meaningless()
+    {
+        ConfigSetCommand.Settings settings = new() { MaxConcurrentTaskRuns = 2, AcceptReducedReview = true };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*nothing to acknowledge*");
+    }
 }

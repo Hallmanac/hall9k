@@ -119,7 +119,9 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--rerequest-review", "on")
                 .WithExample("project", "set", "hall9k", "--jira", "PROJ")
                 .WithExample("project", "set", "hall9k", "--backlog", "github-issues")
-                .WithExample("project", "set", "hall9k", "--branch-template", "{key}-{slug}");
+                .WithExample("project", "set", "hall9k", "--branch-template", "{key}-{slug}")
+                .WithExample(
+                    "project", "set", "hall9k", "--review-stage-composition", "none", "--accept-reduced-review");
         });
 
         config.AddBranch("owner", owner =>
@@ -348,7 +350,8 @@ public static class CliCommandTree
                 .WithExample("config", "set", "--model-review", "sonnet", "--model-fix", "haiku")
                 .WithExample("config", "set", "--model-review-verify", "sonnet")
                 .WithExample("config", "set", "--interactive-claim-stale-after-days", "5")
-                .WithExample("config", "set", "--spend-budget", "5000000", "--spend-period", "week");
+                .WithExample("config", "set", "--spend-budget", "5000000", "--spend-period", "week")
+                .WithExample("config", "set", "--review-stage-composition", "skip-final-pass", "--accept-reduced-review");
         });
 
         config.AddBranch("idea", idea =>
@@ -477,7 +480,9 @@ public static class CliCommandTree
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Wire the new pane in\"",
                     "--blocked-by", "28b19893")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Wire the new pane in\"",
-                    "--epic", "28b19893");
+                    "--epic", "28b19893")
+                .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Prototype the new endpoint\"",
+                    "--review-stage-composition", "none", "--accept-reduced-review");
             task.AddCommand<TaskReviseCommand>("revise")
                 .WithDescription(
                     "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies. "
@@ -495,7 +500,8 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--epic", "3f2a91b2")
                 .WithExample("task", "revise", "28b19893", "--clear-epic")
                 .WithExample("task", "revise", "28b19893", "--queue-first")
-                .WithExample("task", "revise", "28b19893", "--clear-queue-first");
+                .WithExample("task", "revise", "28b19893", "--clear-queue-first")
+                .WithExample("task", "revise", "28b19893", "--review-stage-composition", "default");
             task.AddCommand<TaskSetReviewCapsCommand>("set-review-caps")
                 .WithDescription(
                     "Override one or more of this task's four review-cycle caps — the conformance and "
