@@ -692,6 +692,25 @@ public static class CliCommandTree
                     + "Re-entry is refused when the claim's session was recorded on another machine this one "
                     + "cannot check — --force attests you confirmed by hand that it has exited.")
                 .WithExample("task", "work", "28b19893");
+            task.AddCommand<TaskStartCommand>("start")
+                .WithDescription(
+                    "Dispatch a Published or Queued task on the spot, headless, instead of waiting for the "
+                    + "dispatcher's own ceiling and ordering to reach it (a deliberate human kick-off). On a "
+                    + "Published task assigned to nobody, this assigns it to your own owner and claims it in "
+                    + "one atomic event append, the same collapsing h9k task work's own Published entry already "
+                    + "uses. Unlike h9k task work, an unmet dependency does not refuse outright: the platform "
+                    + "names every open blocker and advises, and --acknowledge-unmet-dependencies is your "
+                    + "recorded override to start it anyway. Refused on Draft (publish it first), an "
+                    + "already-Blocked task, a task that already has a live claim, and every terminal state — "
+                    + "there is nothing there to start. Ceiling-exempt on the same reasoning h9k task work's own "
+                    + "claim already is (Decisions Log #103): a deliberate human act is outside the automation's "
+                    + "budget. The session launches headless and detached under the <task-shortid>-build name — "
+                    + "reachable on the session mesh (claude agents --json, ListAgents/SendMessage) — and this "
+                    + "command returns as soon as the process is confirmed alive, without waiting for it to "
+                    + "finish. Once it is done: h9k task deliver, h9k task verify, h9k task work (to attach), "
+                    + "h9k task handback, or h9k task release.")
+                .WithExample("task", "start", "28b19893")
+                .WithExample("task", "start", "28b19893", "--acknowledge-unmet-dependencies");
             task.AddCommand<TaskVerifyCommand>("verify")
                 .WithDescription(
                     "Run the project's build and test gates on demand against an interactive claim's worktree, "
