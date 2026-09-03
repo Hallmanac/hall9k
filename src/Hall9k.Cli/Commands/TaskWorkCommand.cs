@@ -725,6 +725,16 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
                 : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(taskDetails), runId);
 
+            // Resolved once, here, and frozen on RunDispatched for this run's whole lifetime
+            // (task: the review pipeline's stage composition becomes configuration recorded per
+            // run) — the node level has no live DaemonOptions to read from an interactive claim,
+            // so this reads the same platform config file value RunLauncher's own dispatch
+            // eventually binds through DaemonOptions for a headless run.
+            Hall9k.Domain.Infrastructure.Persistence.OperatingSettings nodeSettings =
+                await Hall9k.Domain.Infrastructure.Persistence.PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+            ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
+                taskDetails.ReviewStageComposition, project.ReviewStageComposition, nodeSettings.ReviewStageComposition);
+
             // Fable is the human-interactive model tier (AgentModel's own doc comment, Decisions
             // Log #33) — a fixed platform choice for an operator-attended session, not the
             // project/task role-resolution chain a headless build session runs through. SessionId
@@ -734,7 +744,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
-                IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory, SessionName: sessionName));
+                IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory, SessionName: sessionName,
+                ReviewStageComposition: reviewStageComposition));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

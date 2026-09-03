@@ -188,6 +188,20 @@ public sealed class DaemonOptions
     public int LifetimeReviewCycleBudget { get; set; } = OperatingSettings.DefaultLifetimeReviewCycleBudget;
 
     /// <summary>
+    /// This node's review stage composition (task: the review pipeline's stage composition
+    /// becomes configuration recorded per run) — bound through the same "Hall9k" configuration
+    /// section as the four review-cycle caps above, never a <see cref="DaemonOptionsBinding.ResolverOwnedKeys"/>
+    /// entry, so a hand-edited config file or an environment variable can carry a value
+    /// <c>ConfigurationBinder</c> throws on if it is not a recognized composition word — the same
+    /// shape those four caps already have. Task &gt; project &gt; node &gt; this compiled default
+    /// (<see cref="ReviewStageComposition.FullPipeline"/>) is <see cref="ReviewStageCompositionResolver"/>'s
+    /// own resolution order, resolved once at dispatch (<see cref="RunLauncher"/>) rather than
+    /// re-checked live the way the caps are — see <see cref="ReviewStageComposition"/>'s own doc
+    /// for why.
+    /// </summary>
+    public string ReviewStageComposition { get; set; } = Hall9k.Domain.Features.Run.ReviewStageComposition.FullPipeline.Value;
+
+    /// <summary>
     /// The first adversarial cycle the severity gate applies to (Decisions Log #63). A Low or an
     /// ungraded finding rides along instead of being fixed on its own at every cycle, gate or no
     /// gate (Decisions Log #87) — the gate does not turn that rule on. What the gate changes is
