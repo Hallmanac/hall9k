@@ -150,11 +150,20 @@ public static class WorkPromptBuilder
             // Neither of the other two sentences is true here: a dispatcher-launched build is
             // watched by RunSupervisor, and an attached h9k task work session is watched by the
             // operator sitting at it — this run is neither, since h9k task start's own RunDispatched
-            // carries the ceiling-exempt Guid.Empty NodeId and so no monitor ever adopts it.
-            prompt.AppendLine("  nothing supervises this run once it starts, so verification and delivery are");
-            prompt.AppendLine("  yours to trigger by hand once you finish: `h9k task deliver` pushes the branch");
-            prompt.AppendLine("  and opens the pull request through the ordinary review pipeline (`h9k task");
-            prompt.AppendLine("  verify` checks the gates first if you want to look before delivering).");
+            // carries the ceiling-exempt Guid.Empty NodeId and so no monitor ever adopts it. Framed
+            // as a human's act, not this session's own: InteractiveSessionLiveness.EnsureNotAttachedElsewhere
+            // refuses both h9k task deliver and h9k task verify unconditionally from inside this very
+            // session (unlike an attached h9k task work claim, verify's self-invocation exemption keys
+            // on HALL9K_INTERACTIVE_RUN_ID, which HeadlessLaunch.SpawnDetached never sets), so an
+            // instruction telling this session to run either itself describes a command that always
+            // fails (conformance and adversarial review, cycle 4).
+            prompt.AppendLine("  nothing supervises this run once it starts, and verification and delivery are");
+            prompt.AppendLine("  a human's to trigger by hand once you finish, not yours:");
+            prompt.AppendLine("  `h9k task deliver` pushes the branch and opens the pull request through the");
+            prompt.AppendLine("  ordinary review pipeline (`h9k task verify` checks the gates first if they want");
+            prompt.AppendLine("  to look before delivering). Both commands refuse when run from inside this very");
+            prompt.AppendLine("  session, so do not attempt them yourself — end with your summary once the work");
+            prompt.AppendLine("  below is done.");
             AppendCheckpointCommitRules(prompt, project, worktreePath);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }

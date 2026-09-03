@@ -54,6 +54,24 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().NotContain("delivery is `h9k task deliver`, run by the operator explicitly");
     }
 
+    /// <summary>
+    /// h9k task deliver and h9k task verify both refuse unconditionally when invoked from inside
+    /// the very session that holds the claim they would act on (InteractiveSessionLiveness.
+    /// EnsureNotAttachedElsewhere finds its own recorded pid alive; verify's self-invocation
+    /// exemption keys on HALL9K_INTERACTIVE_RUN_ID, which HeadlessLaunch.SpawnDetached never
+    /// sets) — so the prompt must not tell this session to trigger either itself (independent
+    /// pre-PR review, cycle 4, both lenses).
+    /// </summary>
+    [Fact]
+    public void A_deliberate_headless_start_is_told_a_human_not_itself_triggers_verify_and_delivery()
+    {
+        string prompt = Build(isInteractive: false, isDeliberateHeadlessStart: true);
+
+        prompt.Should().Contain("a human's to trigger by hand");
+        prompt.Should().Contain("do not attempt them yourself");
+        prompt.Should().NotContain("yours to trigger by hand once you finish");
+    }
+
     private static string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
         WorkPromptBuilder.Build(
             SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing",
