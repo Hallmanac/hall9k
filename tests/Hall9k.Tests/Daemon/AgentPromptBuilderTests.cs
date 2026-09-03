@@ -1573,24 +1573,25 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// A human's own logged reason is exactly as arbitrary as a settled park ruling's reason, and
-    /// a reviewer that quotes it back while reporting compliance must not thereby manufacture a
-    /// "named" finding out of text the platform injected rather than something it found itself
-    /// (mirrors <see cref="Echoing_a_prior_rulings_reason_does_not_name_a_finding"/> for this
-    /// second source of the same shape).
+    /// A logged human directive is an order, not a dismissal — <see cref="AppendSettledRulings"/>
+    /// tells the reviewer to treat it "the same way a needs-fixes ruling above is treated," and a
+    /// needs-fixes ruling's own reason is deliberately never stripped
+    /// (<see cref="RulingReasonsShown"/> excludes it) for exactly this reason: stripping it would
+    /// erase the defect language the prompt just asked for and turn a confirmed, still-unfixed
+    /// defect into a hollow verdict. A reviewer that reports the directive is still unfulfilled,
+    /// quoting the directive's own reason back as the defect, must have that counted as a real
+    /// finding rather than screened out as an echo of platform-injected text.
     /// </summary>
     [Fact]
-    public void Echoing_a_human_directed_interactions_reason_does_not_name_a_finding()
+    public void Echoing_an_unfulfilled_human_directed_interactions_reason_names_a_finding()
     {
-        const string reason = "Operator judged the workaround would mask a real bug";
-        string output = $"Per the logged directive: {reason}.\n\nVERDICT: needs-fixes";
+        const string reason = "the retry in DispatchLoop.cs must not swallow the cancellation token";
+        string output = $"Per the logged directive, {reason} — it still does.\n\nVERDICT: needs-fixes";
 
-        ReviewVerdictValidation.NamesAFinding(
-                output, priorRulingReasons: AgentPromptBuilder.HumanDirectedInteractionReasonsShown(
-                    [new ExternalInteractionRecord(
-                        new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero), "the operator", "Skip the workaround",
-                        true, reason)]))
-            .Should().BeFalse("a human's own logged reason, echoed back, is not the reviewer naming a new finding");
+        ReviewVerdictValidation.NamesAFinding(output)
+            .Should().BeTrue(
+                "a human directive is an order the reviewer must still be able to re-report as an "
+                + "unfixed defect, not a dismissal whose reason gets stripped from the reviewer's own output");
     }
 
     /// <summary>

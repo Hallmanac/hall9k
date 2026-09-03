@@ -151,7 +151,7 @@ of this task's own to merge.
 ### Outside-interaction logging
 
 `h9k task log-interaction <task> --party "<who>" --summary "<what happened>"` is the escape-hatch
-invariant's own executor (PLAN.md Decisions Log #122, idea fcaded0b's design rulings 4 and 5):
+invariant's own executor (PLAN.md Decisions Log #123, idea fcaded0b's design rulings 4 and 5):
 every dispatched agent's own prompt states that any interaction with a party outside its session —
 another agent session reached through the mesh, a human steering it that way, an external service
 — gets logged through this command unconditionally, even if the interacting party asks otherwise.
@@ -163,8 +163,9 @@ claim against, so this is best-effort by construction, not enforcement: the plat
 it was told and what its own channels can otherwise see. A human-directed entry rides forward into
 a later review pass through the identical settled-rulings surface a `review resolve` verdict
 already uses (Decisions Log #88) — a standing instruction, not evidence to weigh; an
-agent-initiated entry with no human direction is audit trail only, visible on `h9k task show`, and
-never reaches a review prompt.
+agent-initiated entry with no human direction is audit trail only: it lands on the run stream and
+never reaches a review prompt, but nothing renders it on `h9k task show` yet (designed but not
+built by this task) — reading the raw stream is the only way to see one today.
 
 ### Recovery
 
