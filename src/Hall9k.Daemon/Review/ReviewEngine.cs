@@ -201,7 +201,7 @@ public sealed class ReviewEngine(
                         // surface is the input the parked kernel-versus-policy interpreter split
                         // (2026-09-01 architecture review; Brian's ruling, 2026-09-02: this task
                         // is the pragmatic settings-plus-engines cut, not that refactor) will
-                        // eventually read when it lands, PLAN.md Decisions Log #125.
+                        // eventually read when it lands, PLAN.md Decisions Log #127.
                         await SettleWithNoReviewAsync(run, cancellationToken);
                         break;
                     }
@@ -371,7 +371,7 @@ public sealed class ReviewEngine(
                             // over this tip; only the extra reviewer pass is what's skipped. This
                             // composition-aware conditional is also the parked kernel-versus-policy
                             // interpreter split's input — see the composition-none branch above,
-                            // PLAN.md Decisions Log #125.
+                            // PLAN.md Decisions Log #127.
                             if (await ParkIfLifetimeBudgetExceededAsync(
                                 context, run, caps, SettleReason.NothingOwed, cancellationToken))
                             {
@@ -562,7 +562,7 @@ public sealed class ReviewEngine(
                     // review cycle is ever spent when no lens is ever dispatched. This
                     // composition-aware conditional is also the parked kernel-versus-policy
                     // interpreter split's input — see the composition-none branch above, PLAN.md
-                    // Decisions Log #125.
+                    // Decisions Log #127.
                     if (run.ReviewStageComposition == ReviewStageComposition.None)
                     {
                         await SettleWithNoReviewAsync(run, cancellationToken);
@@ -594,7 +594,7 @@ public sealed class ReviewEngine(
                     // full-scope read) reaching Reverify straight rather than through Settling;
                     // the waiver applies identically either way. This composition-aware conditional
                     // is also the parked kernel-versus-policy interpreter split's input — see the
-                    // composition-none branch above, PLAN.md Decisions Log #125.
+                    // composition-none branch above, PLAN.md Decisions Log #127.
                     if (reverifyMode == ReviewMode.FinalFullPass && run.ReviewStageComposition.WaivesFinalFullPassGuarantee)
                     {
                         if (await ParkIfLifetimeBudgetExceededAsync(

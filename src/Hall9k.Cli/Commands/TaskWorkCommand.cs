@@ -728,9 +728,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // Resolved once, here, and frozen on RunDispatched for this run's whole lifetime
             // (task: the review pipeline's stage composition becomes configuration recorded per
             // run) — the node level has no live DaemonOptions to read from an interactive claim,
-            // so this reads the same platform config file value RunLauncher's own dispatch
-            // eventually binds through DaemonOptions for a headless run. The non-throwing
-            // TryReadOperatingSettingsAsync, not the write path's throwing ReadOperatingSettingsAsync
+            // so this reads the platform config file directly, the same file-only source
+            // TaskStatusComposer's own interactive-claim-staleness read already uses, rather than
+            // the Hall9k__ReviewStageComposition environment variable OperatingSettingsResolver
+            // (for h9k config show) and the daemon's own DaemonOptions binding both also honor for
+            // a headless run — an operator running only from an exported environment variable sees
+            // this interactive claim resolve the node level differently from a headless dispatch on
+            // the same machine (independent pre-PR review, cycle 1, conformance lens). The
+            // non-throwing TryReadOperatingSettingsAsync, not the write path's throwing ReadOperatingSettingsAsync
             // (independent pre-PR review, cycle 1, adversarial lens): this call sits inside the
             // post-claim block above, whose catch already records the claim Failed on any
             // exception, and a malformed config file is exactly the case the rest of this

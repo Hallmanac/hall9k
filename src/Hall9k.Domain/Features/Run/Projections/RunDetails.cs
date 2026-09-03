@@ -499,6 +499,12 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewRideAlongFindings = [.. @event.Data.RideAlongFindings ?? []];
         view.ReviewResidualsUnfixed = @event.Data.ResidualsUnfixed;
         view.ReviewUnfixedFindings = [.. @event.Data.UnfixedFindings ?? []];
+        // Mirrors RunAggregate.Apply(ReviewSettled): composition none reaches this event having
+        // never dispatched a reviewer, so State would otherwise still read Verifying from the
+        // AgentSessionCompleted that preceded the gate, and RunSupervisor.ResumePipeline reads
+        // this same view's State to decide whether a resumed run still owes itself a gate run
+        // (independent pre-PR review, cycle 1, adversarial finding).
+        view.State = RunState.UnderReview;
     }
 
     public void Apply(IEvent<PrReviewConformanceDispatched> @event, RunDetails view)

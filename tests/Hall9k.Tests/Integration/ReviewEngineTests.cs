@@ -252,6 +252,73 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Conformance-only never opens the adversarial track — the mirror of
+    /// <see cref="Composition_adversarial_only_never_dispatches_the_conformance_lens"/>, added as
+    /// this composition's own engine-level coverage (independent pre-PR review, cycle 1,
+    /// adversarial finding: only None and AdversarialOnly had engine tests before this).
+    /// </summary>
+    [Fact]
+    public async Task Composition_conformance_only_never_dispatches_the_adversarial_lens()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(
+            store, ["reviewed"], cts.Token, ReviewStageComposition.ConformanceOnly);
+
+        ScriptedExecutor executor = new("Every acceptance criterion is met.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().ContainSingle("only the conformance lens ever opens — one pass, not two");
+        executor.Spawns[0].Prompt.Should().Contain(
+            "What the diff is supposed to do", "the one pass dispatched is the conformance lens, never adversarial");
+    }
+
+    /// <summary>
+    /// Skip-final-pass keeps both tracks through an ordinary fix-and-reverify cycle, but waives
+    /// Decisions Log #92's mandatory fresh-context FinalFullPass immediately before merge — the
+    /// mirror of <see cref="Either_lens_finding_defects_produces_one_verdict_and_one_fix_session_over_the_merged_findings"/>,
+    /// whose own identical scenario under the default FullPipeline composition pays for that extra
+    /// pass (two more spawns, one more review cycle). The mandatory build/test gate itself still
+    /// runs full before the run may settle — this composition only ever touches the reviewer pass,
+    /// never the gate (independent pre-PR review, cycle 1, adversarial finding: only None and
+    /// AdversarialOnly had engine tests before this).
+    /// </summary>
+    [Fact]
+    public async Task Composition_skip_final_pass_settles_without_the_mandatory_final_full_pass()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(
+            store, ["reviewed"], cts.Token, ReviewStageComposition.SkipFinalPass);
+
+        const string conformanceFinding = "1. `Auth.cs:42` — the limiter never resets. Scenario: the second request always 429s.";
+        const string adversarialFinding = "1. `WorkItemContext.cs:18` — task text reaches the prompt unfenced. Scenario: a crafted objective redirects the agent.";
+        ScriptedExecutor executor = new(
+            $"{conformanceFinding}\n\nVERDICT: needs-fixes",
+            $"{adversarialFinding}\n\nVERDICT: needs-fixes",
+            "Reset the limiter window and fenced the task text.\n\nRESOLUTION: fixed",
+            "Verified both fixes; nothing new stands.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            4, "two passes → one fix → one verify pass — no mandatory final full pass for this composition");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewCycle.Should().Be(2, "only the verify cycle advances it — no extra final-pass cycle spent");
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Select(e => e.Mode).Should().Equal(
+            [ReviewMode.Discovery, ReviewMode.Discovery, ReviewMode.Verify],
+            "no FinalFullPass mode is ever dispatched under this composition");
+        events.OfType<VerificationPassed>().Should().HaveCount(
+            3, "the mandatory gate still runs full immediately before settling — only the reviewer pass is waived");
+    }
+
+    /// <summary>
     /// Per-pass turns and input tokens must be readable from an ordinary production run, so both
     /// ride on <see cref="ReviewPassCompleted"/> itself rather than only on the separately-appended
     /// <see cref="TokensRecorded"/> event.

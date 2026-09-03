@@ -72,7 +72,12 @@ dispatch trigger. The path back for an edit is `unassign → draft → revise �
 simultaneously — settable any time, even mid-run — in place of the node's global default.
 `set-review-caps` overrides the node's compiled review-cycle-cap defaults for one task —
 settable at any time, even while the task's run is live, so it doubles as the takeover lever
-for a grinding run. See [operations.md](operations.md#daemon-operating-settings).
+for a grinding run. `add`/`revise --review-stage-composition <VALUE|default>` sets the task-level
+override of which pre-PR review stages a run gets — unlike the review caps above, Draft-only, so
+a live task's next run is the earliest a change reaches it — and `--accept-reduced-review`
+acknowledges a value that removes a load-bearing guarantee (Decisions Log #127, see
+[project set](#projects-owners-connections) below). See
+[operations.md](operations.md#daemon-operating-settings).
 
 `h9k task add` also adopts existing external work: `--from-issue 42` (or `owner/repo#42`, or a
 URL), `--from-jira PROJ-1` (or a URL), and `--from-pr` (a pull request number, `owner/repo#42`, or
@@ -227,10 +232,23 @@ recipe for a project that has none yet, and the repair path for one that is inco
 `project set` is where the verification gates, the agent model, parallelism, commit style,
 context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog
 none|github-issues|jira`) and its routing guidance, the review re-request policy, the
-project-level review-cycle-cap overrides, the branch-name template (`--branch-template`,
+project-level review-cycle-cap overrides, the review stage composition (`--review-stage-
+composition`, below), the branch-name template (`--branch-template`,
 [below](#branch-naming)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
+
+Which pre-PR review stages a run gets is itself a project-, task-, and node-level setting
+(`--review-stage-composition <full-pipeline|adversarial-only|conformance-only|skip-final-pass|none>`
+at `h9k config set`, `h9k project set`, and `h9k task add`/`revise`, Decisions Log #127): the full
+pipeline (default, both lenses every cycle plus the mandatory final full pass), one lens only,
+the mandatory final full pass skipped, or no pre-PR review at all. Resolved once, at each run's
+own dispatch, task > project > node > compiled default, and frozen for that run's whole lifetime —
+unlike the review-cycle caps above, a mid-run change reaches only the task's next run — and
+recorded on the run's own stream, so `h9k task show` always answers which pipeline shape a given
+run actually ran under. A value that removes a load-bearing guarantee (Decisions Log #92, or a
+lens's own attention budget) is refused at set time unless acknowledged with
+`--accept-reduced-review`, which prints the consequence being accepted.
 
 ### The project home
 
@@ -404,7 +422,10 @@ session cap's global default (`--session-cap-per-run`, overridable per task with
 `h9k task set-session-cap` even mid-run), the per-role model overrides, the interactive-claim
 staleness threshold, the node-level review-cycle caps (compliance, adversarial, final-full-pass,
 and the task-lifetime budget — each overridable per project, and per task too via
-`h9k task set-review-caps`), and a periodic token-spend budget (`--spend-budget <tokens|none>`
+`h9k task set-review-caps`), the review stage composition (`--review-stage-composition
+<VALUE>`, [above](#tasks-development-and-dispatch); the node level has no clearing word and needs
+`--accept-reduced-review` for a value that removes a load-bearing guarantee, Decisions Log #127),
+and a periodic token-spend budget (`--spend-budget <tokens|none>`
 paired with `--spend-period <day|week>`, backlog: spend-governor step three, Decisions Log #120) —
 once the current period's recorded spend reaches the budget, the dispatcher declines to claim
 further queued work until the period rolls, gating claims only and never touching work already
