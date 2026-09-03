@@ -627,10 +627,12 @@ reclaim, only a question (Decisions Log #103).
 
 `work` (on re-entry), `verify`, `deliver`, `handback`, and `release` are all refused while the
 claim's own interactive session is still attached in another terminal — exit it first (Ctrl+D or
-`/exit`). One exception: any of them run from inside that very session (the one it is blocked
-waiting on, not racing — recognised either by a direct launch's own injected marker, or by a
-self-registered session's `CLAUDE_PID` matching its own recorded process) is allowed to act on its
-own worktree.
+`/exit`). One exception: `verify`, `deliver`, `handback`, or `release` run from inside that very
+session (the one it is blocked waiting on, not racing — recognised either by a direct launch's own
+injected marker, or by a self-registered session's `CLAUDE_PID` matching its own recorded process)
+is allowed to act on its own worktree. `work` itself is never exempted, even from inside its own
+session: re-entering spawns a second, concurrent session rather than blocking on the first, which
+is exactly the collision this guard exists to prevent.
 
 `work` (on re-entry), `verify`, `deliver`, `handback`, and `release` are also refused when the
 claim's session was recorded on a machine other than the one running the command — this machine
