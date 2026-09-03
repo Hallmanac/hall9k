@@ -45,6 +45,18 @@ public sealed record ReviewResidualDisposition
     /// </summary>
     public static readonly ReviewResidualDisposition RideAlong = new("RideAlong");
 
+    /// <summary>
+    /// A <see cref="ReviewFindingDisposition.Fix"/>-dispositioned finding the loop never handed to
+    /// a fix session: the platform had already decided this one had to be fixed here — unlike
+    /// <see cref="RideAlong"/>, which means the opposite, that it never met the fix bar — but the
+    /// track carrying it was still active (capped, or otherwise owed another cycle) when the run
+    /// settled anyway, most often a human resolving a capped park with <c>h9k review resolve
+    /// --merge-ready</c>. Recording it distinctly from <see cref="RideAlong"/> is what keeps a
+    /// settled line honest about the difference between "graded below the fix bar, never worth a
+    /// cycle" and "graded above it, but the loop ran out before it ever got one".
+    /// </summary>
+    public static readonly ReviewResidualDisposition Unfixed = new("Unfixed");
+
     /// <summary>Not recognized. Serializes as an empty string.</summary>
     public static readonly ReviewResidualDisposition Unknown = new("");
 

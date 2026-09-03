@@ -550,6 +550,31 @@ public sealed class RunAggregateTests
         new(lens, 1, ReviewSeverity.Low, ReviewFindingScope.InScope, ReviewResidualDisposition.RideAlong, location);
 
     /// <summary>
+    /// The opposite fact from a ride-along (adversarial review, routed finding at
+    /// ReviewEngine.cs:1146): an <see cref="ReviewResidualDisposition.Unfixed"/> residual is a
+    /// Fix-dispositioned finding — the platform's own decision that it had to be fixed here — that
+    /// never reached a fix session. It counts, and is named, exactly like a ride-along, on its own
+    /// tally so folding it into RideAlong's count never has to happen.
+    /// </summary>
+    [Fact]
+    public void DeriveUnfixedResiduals_names_each_unfixed_finding_by_severity_and_location()
+    {
+        RunAggregate run = Dispatched(out Guid id);
+        run.Apply(new ReviewTrackConcluded(
+            id, ReviewLens.Adversarial, 1, ReviewSettlement.Settled,
+            [new ReviewResidual(
+                ReviewLens.Adversarial, 1, ReviewSeverity.High, ReviewFindingScope.InScope,
+                ReviewResidualDisposition.Unfixed, "Api.cs:7")],
+            Now));
+
+        run.DeriveResidualTally().Unfixed.Should().Be(1, "a Fix-dispositioned finding never handed to a fix session");
+        run.DeriveResidualTally().RideAlong.Should().Be(0, "an Unfixed residual is not a ride-along");
+        run.DeriveUnfixedResiduals().Should().ContainSingle()
+            .Which.Should().Match<ReviewResidual>(
+                residual => residual.Severity == ReviewSeverity.High && residual.Location == "Api.cs:7");
+    }
+
+    /// <summary>
     /// A place can be fixed unreviewed twice over by two roads: the tracks conclude separately,
     /// so both lenses can end on the same defect, and one terminal cycle can state that place in
     /// two finding blocks. Either way it is one defect shipped without a second read, and the

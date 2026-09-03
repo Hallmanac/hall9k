@@ -1048,7 +1048,8 @@ public sealed class RunAggregate
             PerDefect(ReviewResidualDisposition.FixedUnreviewed).Count,
             routed.Count,
             failed.Count,
-            PerDefect(ReviewResidualDisposition.RideAlong).Count);
+            PerDefect(ReviewResidualDisposition.RideAlong).Count,
+            PerDefect(ReviewResidualDisposition.Unfixed).Count);
     }
 
     /// <summary>
@@ -1062,6 +1063,16 @@ public sealed class RunAggregate
     /// <see cref="DeriveResidualTally"/>'s own caller already accounts for separately.
     /// </summary>
     public IReadOnlyList<ReviewResidual> DeriveRideAlongResiduals() => PerDefect(ReviewResidualDisposition.RideAlong);
+
+    /// <summary>
+    /// The <see cref="ReviewResidualDisposition.Unfixed"/> residuals already on this run's stream,
+    /// named the same way <see cref="DeriveRideAlongResiduals"/> names its own disposition — each
+    /// one's severity and location, for <c>SettleAsync</c> to write onto
+    /// <see cref="Events.ReviewSettled"/>. Excludes a track this cycle is force-concluding without
+    /// ever having read a reviewer's verdict on it, the same gap <see cref="DeriveResidualTally"/>'s
+    /// own caller already accounts for separately.
+    /// </summary>
+    public IReadOnlyList<ReviewResidual> DeriveUnfixedResiduals() => PerDefect(ReviewResidualDisposition.Unfixed);
 
     /// <summary>
     /// This disposition's residuals with every repeat of a place already seen dropped, and — for

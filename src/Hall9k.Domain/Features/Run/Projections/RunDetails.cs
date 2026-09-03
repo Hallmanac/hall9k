@@ -188,6 +188,23 @@ public sealed class RunDetails
     /// </summary>
     public List<ReviewRideAlongFinding> ReviewRideAlongFindings { get; set; } = [];
     /// <summary>
+    /// Fix-dispositioned findings never handed to a fix session at all — the opposite fact from
+    /// <see cref="ReviewResidualsRideAlong"/> (Decisions Log #87, adversarial review, routed
+    /// finding at ReviewEngine.cs:1146): the platform had already decided one of these had to be
+    /// fixed here, but the track carrying it was still active when the run settled, typically a
+    /// human resolving a capped park with <c>h9k review resolve --merge-ready</c>.
+    /// </summary>
+    public int ReviewResidualsUnfixed { get; set; }
+    /// <summary>
+    /// <see cref="ReviewResidualsUnfixed"/> named rather than merely counted, the same reason
+    /// <see cref="ReviewRideAlongFindings"/> names its own tally: each entry's severity and
+    /// location, so a reader of the pull request body or <c>h9k task show</c> can identify what
+    /// was left unfixed rather than learning only how many findings were. Empty for a run settled
+    /// before this field existed even when the count above is non-zero — an honest gap, not a
+    /// reconstruction of history nobody recorded.
+    /// </summary>
+    public List<ReviewUnfixedFinding> ReviewUnfixedFindings { get; set; } = [];
+    /// <summary>
     /// Whether the most recently dispatched fix session ran on the review role's model instead
     /// of the fix role's, because it repeated an earlier fix round's own findings
     /// (task: a second fix round over the same findings). Automatic once the repeated findings
@@ -476,6 +493,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewResidualsRoutingFailed = @event.Data.ResidualsRoutingFailed;
         view.ReviewResidualsRideAlong = @event.Data.ResidualsRideAlong;
         view.ReviewRideAlongFindings = [.. @event.Data.RideAlongFindings ?? []];
+        view.ReviewResidualsUnfixed = @event.Data.ResidualsUnfixed;
+        view.ReviewUnfixedFindings = [.. @event.Data.UnfixedFindings ?? []];
     }
 
     public void Apply(IEvent<PrReviewConformanceDispatched> @event, RunDetails view)
