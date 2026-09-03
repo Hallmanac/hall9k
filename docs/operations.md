@@ -429,8 +429,9 @@ current period's recorded spend has reached a budget the daemon has confirmed it
 
 ### Daemon operating settings
 
-The concurrency ceiling, the model-by-role policy, the four review-cycle caps, and the periodic
-spend budget and its period are durable, not just environment variables (backlog 59): they also
+The concurrency ceiling, the model-by-role policy, the four review-cycle caps, the review stage
+composition, and the periodic spend budget and its period are durable, not just environment
+variables (backlog 59): they also
 load from the `"hall9k"` section of the platform config file
 (`~/.hall9k/config.json`, the same file [§Postgres](#postgres) uses for `connectionString`),
 deliberately outside `bin/` — an update replaces `bin/` wholesale, and these settings belong to
@@ -463,6 +464,7 @@ h9k config set --model-review sonnet --model-fix haiku      # per-role model ove
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
 h9k config set --max-compliance-review-cycles 5 --lifetime-review-cycle-budget 40   # the node's review-cycle caps
+h9k config set --review-stage-composition adversarial-only --accept-reduced-review   # which pre-PR review stages a run gets
 h9k config set --spend-budget 5000000 --spend-period week   # the periodic token-spend budget and its window
 h9k config set --spend-budget none                          # clear it back to unbudgeted
 ```
@@ -493,6 +495,21 @@ instead of a stale-log hunt. Hand-editing the file works just as well as the CLI
 is the guided path, not the only one. A running daemon binds configuration once, at startup, so a
 change — from either path — takes effect on the next `h9k daemon stop` / `h9k daemon start`, the
 same as changing an environment variable would.
+
+The review stage composition (Decisions Log #127) — which pre-PR review stages a run gets:
+`full-pipeline` (default, both lenses every cycle plus the mandatory final full pass),
+`adversarial-only`, `conformance-only`, `skip-final-pass`, or `none` — resolves the same
+`task > project > node > compiled default` order as the review-cycle caps, but is resolved once,
+at each run's own dispatch, and frozen for that run's whole lifetime rather than re-checked live:
+a mid-run change reaches only the task's next run, never the one already in flight. `h9k config
+set` is the node level (no clearing word); `h9k project set` and `h9k task add`/`revise` carry the
+identical option (`'default'` clears a project or task override back to the level above). A value
+that removes a load-bearing guarantee — Decisions Log #92's mandatory pre-merge fresh-context read
+(`skip-final-pass`, `none`), or a lens's own attention budget (`adversarial-only`,
+`conformance-only`, `none`) — is refused at set time unless acknowledged with
+`--accept-reduced-review`, which prints the consequence being accepted. `h9k task show` prints
+the composition a given run actually ran under; `h9k project show` and `h9k config show` print
+their own level's override.
 
 `h9k daemon status` prints the identical resolution, but it names what a daemon *started right
 now* would pick up, not what the already-running process actually started with — and that gap

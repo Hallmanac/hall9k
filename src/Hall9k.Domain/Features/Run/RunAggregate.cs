@@ -731,6 +731,17 @@ public sealed class RunAggregate
         LastReviewVerdict = ReviewVerdict.MergeReady;
         ReviewSettlement = @event.Settlement;
         ReviewPhase = ReviewPhase.MergeReady;
+        // Every other settle path already sits at UnderReview by the time this fires — its own
+        // opening ReviewDispatched set it there — so this is a no-op for them. Composition none
+        // is the one path that reaches ReviewSettled having never dispatched a reviewer at all
+        // (SettleWithNoReviewAsync), which used to leave State exactly where AgentSessionCompleted
+        // last left it: Verifying. RunSupervisor.ResumePipeline branches on State == Verifying to
+        // decide whether a resumed run still owes itself a gate run; a daemon restart in the
+        // narrow window between this settle and PullRequestOpener.OpenAsync therefore re-ran the
+        // full build/test gate over an already-merge-ready tip, discarding the settled result if
+        // that rerun failed for any reason a gate can fail for (independent pre-PR review, cycle 1,
+        // adversarial finding). Setting it here, unconditionally, is what closes that gap.
+        State = RunState.UnderReview;
     }
 
     public void Apply(ReviewVerdictReprompted @event)

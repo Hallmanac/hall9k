@@ -171,8 +171,8 @@ public static class ProjectDecider
             branchNameTemplate = BranchNameTemplate.Parse(chosenTemplate.Value);
         }
 
-        // Normalized to the canonical value ("adversarial" round-trips as "AdversarialOnly") or to
-        // null (blank/"default" clears), the same discipline BranchNameTemplate's own
+        // Normalized to the canonical value ("adversarial-only" round-trips as "AdversarialOnly") or
+        // to null (blank/"default" clears), the same discipline BranchNameTemplate's own
         // Parse-before-recording gives its setting: what lands on the stream is what h9k project
         // show and the resolver will read back, not whatever alias or clearing word a human typed.
         Optional<string?> normalizedComposition = reviewStageComposition.HasValue
