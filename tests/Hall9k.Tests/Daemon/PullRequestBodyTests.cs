@@ -297,6 +297,50 @@ public sealed class PullRequestBodyTests
         body.Should().NotContain("ride-along").And.NotContain("Review ride-alongs");
     }
 
+    /// <summary>
+    /// The opposite fact from a ride-along (adversarial review, routed finding at
+    /// ReviewEngine.cs:1146): a Fix-dispositioned finding the loop never handed to a fix session
+    /// at all, most often a human resolving a capped park with `h9k review resolve --merge-ready`.
+    /// Before this test's own fix, nothing about it ever reached the pull request body — it was
+    /// silently dropped by <c>ReviewEngine.SettleAsync</c>'s forced-residual loop.
+    /// </summary>
+    [Fact]
+    public void A_run_with_unfixed_residuals_names_the_count_and_a_durable_pointer()
+    {
+        RunDetails run = Run();
+        run.ReviewResidualsUnfixed = 1;
+        run.ReviewCycle = 4;
+
+        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().Contain("Left unfixed").And.Contain("1 finding").And.Contain($"h9k task show {run.TaskId}");
+    }
+
+    /// <summary>
+    /// Named rather than merely counted, the same reason a ride-along is (independent pre-PR
+    /// review, cycle 2, conformance finding).
+    /// </summary>
+    [Fact]
+    public void A_run_with_named_unfixed_findings_lists_each_ones_severity_and_location()
+    {
+        RunDetails run = Run();
+        run.ReviewResidualsUnfixed = 1;
+        run.ReviewCycle = 4;
+        run.ReviewUnfixedFindings = [new ReviewUnfixedFinding(ReviewSeverity.High, "Api.cs:7")];
+
+        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().Contain("high").And.Contain("``` Api.cs:7 ```").And.Contain($"h9k task show {run.TaskId}");
+    }
+
+    [Fact]
+    public void A_run_with_no_unfixed_residuals_says_nothing_about_it()
+    {
+        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().NotContain("Left unfixed").And.NotContain("unfixed");
+    }
+
     private static RunDetails Run() => new()
     {
         Id = DomainId.New(),

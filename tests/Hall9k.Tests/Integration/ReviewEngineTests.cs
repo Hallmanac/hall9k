@@ -2832,6 +2832,67 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         run.ReviewResidualsRideAlong.Should().Be(
             1, "the low finding at B.cs:2 rode along on the capped conformance track and was " +
                 "never fixed or re-reviewed — settling must not drop it silently");
+        run.ReviewResidualsUnfixed.Should().Be(
+            1, "the medium finding at A.cs:1 was Fix-dispositioned — the platform had already " +
+                "decided it had to be fixed here — but the cap parked before any fix session ever ran");
+        run.ReviewUnfixedFindings.Should().ContainSingle()
+            .Which.Should().Match<ReviewUnfixedFinding>(
+                finding => finding.Severity == ReviewSeverity.Medium && finding.Location == "A.cs:1");
+    }
+
+    /// <summary>
+    /// The exact shape the finding routed to this task describes (adversarial review, routed
+    /// finding at ReviewEngine.cs:1146): cycle N's own pass returns needs-fixes with an in-scope
+    /// High (Fix) and an in-scope Low (RideAlong). The track is capped, so the run parks in
+    /// <c>ReviewPhase.FixNeeded</c> without ever dispatching a fix session over either finding.
+    /// A human resolves the park with <c>h9k review resolve --merge-ready</c>, and the settled
+    /// line must not report the High as though it had simply vanished: before this fix,
+    /// <c>SettleAsync</c>'s forced-residual loop only ever swept up RideAlong-dispositioned
+    /// findings, so the High at Api.cs:7 was silently dropped from every tally.
+    /// </summary>
+    [Fact]
+    public async Task A_capped_fix_finding_the_run_settles_over_is_recorded_as_unfixed_not_dropped()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        const string mixedFindings =
+            "FINDING: severity=high; scope=in-scope; at=Api.cs:7\n"
+            + "Defect: envelope type differs from spec.\n\n"
+            + "FINDING: severity=low; scope=in-scope; at=Shared.cs:9\n"
+            + "Defect: a nit nobody asked for.\n\nVERDICT: needs-fixes";
+        ScriptedExecutor executor = new(
+            mixedFindings,
+            "Nothing of my own.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(
+            store, executor, new DaemonOptions { MaxComplianceReviewCycles = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("conformance is still continuing but already at its one-cycle cap");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsUnfixed.Should().Be(
+            1, "the high finding at Api.cs:7 was decided fix-here but never handed to a fix session");
+        run.ReviewUnfixedFindings.Should().ContainSingle()
+            .Which.Should().Match<ReviewUnfixedFinding>(
+                finding => finding.Severity == ReviewSeverity.High && finding.Location == "Api.cs:7");
+        run.ReviewResidualsRideAlong.Should().Be(1, "the low finding at Shared.cs:9 still rides along as before");
+        run.ReviewResidualsFixed.Should().Be(0, "no fix session ever ran over either finding");
     }
 
     /// <summary>
@@ -3056,6 +3117,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// concluding or not — so it must record fixed-unreviewed, the same distinction
     /// <c>RecordReviewPassAsync</c>'s own <c>fixSessionWillDispatch</c> already draws for a
     /// normally-concluding track, rather than ride-along, which would claim nobody ever looked.
+    /// The disputed Fix finding itself (Api.cs:7) gets the identical treatment, for the identical
+    /// reason (adversarial review, routed finding at ReviewEngine.cs:1146): it too was handed to
+    /// this same fix session, so it records fixed-unreviewed rather than vanishing from the tally
+    /// the way it once did.
     /// </summary>
     [Fact]
     public async Task A_ride_along_handed_to_a_disputed_fix_session_settles_as_fixed_unreviewed()
@@ -3091,10 +3156,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.ReviewResidualsFixed.Should().Be(
-            1, "the low finding at Shared.cs:9 was already inside the merged document the " +
-                "disputed fix session read this same cycle, so it shipped fixed-unreviewed");
+            2, "both the disputed high finding at Api.cs:7 and the low finding at Shared.cs:9 " +
+                "were already inside the merged document the disputed fix session read this same " +
+                "cycle, so both shipped fixed-unreviewed rather than one of them vanishing");
         run.ReviewResidualsRideAlong.Should().Be(
-            0, "it must not also be counted as an unclaimed ride-along");
+            0, "the low finding must not also be counted as an unclaimed ride-along");
+        run.ReviewResidualsUnfixed.Should().Be(
+            0, "the high finding was handed to the fix session this cycle, not left unhanded");
     }
 
     /// <summary>

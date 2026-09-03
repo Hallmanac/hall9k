@@ -98,6 +98,12 @@ internal static class PullRequestBody
             body.AppendLine(Block(agentSummary));
         }
 
+        if (run.ReviewResidualsUnfixed > 0)
+        {
+            body.AppendLine();
+            body.AppendLine(UnfixedNote(run));
+        }
+
         if (run.ReviewResidualsRideAlong > 0)
         {
             body.AppendLine();
@@ -109,6 +115,39 @@ internal static class PullRequestBody
         body.AppendLine("---");
         body.AppendLine($"Hall9k run `{run.Id}` · {totalTokens} tokens");
         return body.ToString();
+    }
+
+    /// <summary>
+    /// What the run left unfixed, unlike a ride-along, because the platform had already decided it
+    /// met the fix bar — an in-scope medium or high — and the loop simply ran out before a fix
+    /// session ever read it (Decisions Log #87, adversarial review, routed finding at
+    /// ReviewEngine.cs:1146: the shape it exists to name is a human resolving a capped park with
+    /// <c>h9k review resolve --merge-ready</c>, so this is the one line on the pull request itself
+    /// saying so, rather than a settled line that reads as though only polish was left behind).
+    /// Named the same way <see cref="RideAlongNote"/> names its own tally, for the same reason.
+    /// </summary>
+    private static string UnfixedNote(RunDetails run)
+    {
+        string plural = run.ReviewResidualsUnfixed == 1 ? "finding" : "findings";
+        string header = $"**Left unfixed:** {run.ReviewResidualsUnfixed} {plural} the platform decided met the fix "
+            + "bar, but no fix session reached them before this review loop ended";
+        if (run.ReviewUnfixedFindings.Count == 0)
+        {
+            return $"{header} — see `h9k task show {run.TaskId}` for the review history.";
+        }
+
+        StringBuilder note = new();
+        note.AppendLine($"{header}:");
+        foreach (ReviewUnfixedFinding finding in run.ReviewUnfixedFindings)
+        {
+            string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
+            string location = finding.Location.IsBlank() ? "no location stated" : InlineCode(OneLine(finding.Location));
+            note.AppendLine($"- {severity} — {location}");
+        }
+
+        note.AppendLine();
+        note.Append($"See `h9k task show {run.TaskId}` for the full review history.");
+        return note.ToString();
     }
 
     /// <summary>
