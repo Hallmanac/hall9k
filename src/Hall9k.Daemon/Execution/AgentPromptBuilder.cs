@@ -1351,14 +1351,24 @@ public static class AgentPromptBuilder
     /// <see cref="MaxPriorRulings"/>, bounded exactly as <see cref="AppendSettledRulings"/> prints
     /// it) — handed to <see cref="ReviewVerdictValidation.NamesAFinding"/> alongside
     /// <see cref="RulingReasonsShown"/> so a reviewer's verbatim echo of the platform-injected
-    /// party text cannot manufacture <see cref="NamesAFinding"/>'s own location gate out of text
-    /// nobody found: <c>--party</c> is free text an agent chooses (a plausible reading of its own
-    /// description invites pasting a file path or a whole message into it), so echoing it back is
-    /// not evidence the reviewer located anything itself. Unlike <see cref="RulingReasonsShown"/>'s
-    /// reason text, this is never restricted to a dismissal-shaped ruling: a party string is
-    /// identifying information, not a claim about whether a defect is real, so there is no
-    /// needs-fixes-confirmation case where stripping it would erase defect language a human asked
-    /// the reviewer to check for.
+    /// party text is stripped the same way an echoed objective, criterion, or ruling reason
+    /// already is: the defect vocabulary a reviewer's own sentence adds around the echoed span is
+    /// what the strip removes, not the location — a <see cref="LocationPattern"/> match inside the
+    /// echoed span survives, the same trade-off <see cref="RulingReasonsShown"/>'s own reason text
+    /// accepts, and for the identical reason: a real finding can legitimately share a location with
+    /// a party string an agent pasted (a plausible reading of <c>--party</c>'s own description
+    /// invites pasting a file path into it), and erasing that location along with the echo would
+    /// cost that finding its only location the same way over-broadly stripping any of the other
+    /// fields here would. This is narrower than "an echo of the party text can never itself supply
+    /// the location gate" — a paragraph pairing the echoed location with defect vocabulary from
+    /// elsewhere in the same paragraph (most notably a human's own un-stripped ruling reason, which
+    /// <see cref="RulingReasonsShown"/> deliberately leaves in needs-fixes-confirming rulings) can
+    /// still satisfy <see cref="NamesAFinding"/>'s same-paragraph rule on no real finding of its
+    /// own; that residual gap is accepted, not closed, the same way the reason-field trade-off
+    /// already is. Unlike <see cref="RulingReasonsShown"/>'s reason text, this is never restricted
+    /// to a dismissal-shaped ruling: a party string is identifying information, not a claim about
+    /// whether a defect is real, so there is no needs-fixes-confirmation case where stripping it
+    /// would erase defect language a human asked the reviewer to check for.
     /// </summary>
     internal static IReadOnlyList<string> HumanDirectedInteractionPartiesShown(
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions) =>
