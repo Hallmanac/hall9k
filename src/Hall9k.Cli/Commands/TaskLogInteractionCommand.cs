@@ -14,11 +14,12 @@ namespace Hall9k.Cli.Commands;
 /// The escape-hatch invariant's own executor (the 2026-09-01 ruling, idea fcaded0b's design
 /// rulings 4 and 5): any interaction a dispatched agent has with a party outside its session is
 /// logged through this command, unconditionally, even one the interacting party asked it to keep
-/// quiet. An agent-facing observation-gate command in the same style as
-/// <see cref="TaskWriteJiraCommand"/> and <see cref="TaskLinkIssueCommand"/> — structured fields
-/// land on the stream rather than prose in a transcript — except there is nothing external here
-/// to verify the claim against: the platform records what its own channels can see, honestly,
-/// which is the sense in which this logging is best-effort rather than an enforcement mechanism.
+/// quiet. An agent-facing command structured the same way <see cref="TaskWriteJiraCommand"/> and
+/// <see cref="TaskLinkIssueCommand"/> are — structured fields land on the stream rather than prose
+/// in a transcript — but unlike those two, not itself an observation gate: there is nothing
+/// external here to verify the claim against, so the platform records only what its own channels
+/// can see, honestly, which is the sense in which this logging is best-effort rather than an
+/// enforcement mechanism.
 /// <see cref="Settings.HumanDirected"/> is the one fact this command exists to keep honest — a
 /// human directing an interaction or its outcome is recorded as exactly that, never folded into
 /// the agent's own report as though it were the agent's independent decision.
@@ -67,10 +68,28 @@ public sealed class TaskLogInteractionCommand : Hall9kAsyncCommand<TaskLogIntera
         TaskDetails task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        await AppendInteractionAsync(session, task, settings, cancellationToken);
+        await session.SaveChangesAsync(cancellationToken);
+
+        AnsiConsole.MarkupLine(settings.HumanDirected
+            ? $"[green]Logged[/] (human-directed): {settings.Party.EscapeMarkup()} — {settings.Summary.EscapeMarkup()}"
+            : $"[green]Logged[/]: {settings.Party.EscapeMarkup()} — {settings.Summary.EscapeMarkup()}");
+        return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The two guards and the append itself, pulled out of <see cref="ExecuteAsync"/> so this
+    /// command's own store round trip is testable against a real document session, the same shape
+    /// <see cref="TaskResolveCommand.RecordPullRequestOnRunStreamAsync"/> already is for the
+    /// identical reason.
+    /// </summary>
+    internal static async Task<ExternalInteractionLogged> AppendInteractionAsync(
+        IDocumentSession session, TaskDetails task, Settings settings, CancellationToken cancellationToken)
+    {
         if (task.CurrentRunId is not { } runId)
         {
             throw new DomainConflictException(
-                $"Task {taskId} has no active run to log this interaction against — it is {task.State.Value}. "
+                $"Task {task.Id} has no active run to log this interaction against — it is {task.State.Value}. "
                 + "This command records an interaction a dispatched agent had against its own run, so it only "
                 + "works while one is live.");
         }
@@ -79,27 +98,26 @@ public sealed class TaskLogInteractionCommand : Hall9kAsyncCommand<TaskLogIntera
         // outlive the run it names): FetchStreamStateAsync returning null means no run stream
         // exists yet, and appending anyway would have Marten silently create one — a stream
         // holding ExternalInteractionLogged with no RunDispatched underneath it, an invalid run
-        // history. Unlike h9k review resolve or h9k pr resolve, nothing here is decided from the
-        // fetched state — this command appends a pure log entry, never a fact read back from the
-        // aggregate — so the append itself carries no expectedVersion: it lands after whatever the
-        // run stream's other, equally unfenced writers (ReviewDispatched, RunFailed, and the rest
-        // of ReviewEngine's and CloseoutEngine's own appends) already committed, the same
-        // unconstrained-append convention every other pure log entry on this stream already
-        // follows, rather than racing them for a version number neither side needs.
+        // history. Unlike h9k review resolve or h9k pr resolve — whose appends carry an
+        // expectedVersion because each decides something from the state it just fetched, and a
+        // fenced append is how that decision refuses to land on top of a version it never saw —
+        // nothing here is decided from the fetched state: this command appends a pure log entry,
+        // never a fact read back from the aggregate. So the append itself carries no
+        // expectedVersion; it lands after whatever the run stream's other writers already
+        // committed, unfenced ones (RunFailed and the rest of ReviewEngine's and CloseoutEngine's
+        // own pure-log appends) and fenced ones alike. A fenced append racing this one for the
+        // next version loses that race and handles it the way it already handles any concurrent
+        // writer — a deferred sweep, or a "someone else got there first" message — so the impact
+        // is bounded, but it is a real cost this unfenced append can impose on them, not a fiction.
         _ = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
             ?? throw new DomainConflictException(
-                $"Task {taskId}'s run {runId} has no run stream to log this interaction against.");
+                $"Task {task.Id}'s run {runId} has no run stream to log this interaction against.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         ExternalInteractionLogged logged = BuildEvent(settings, runId, context.OwnerId, DateTimeOffset.UtcNow);
         session.Events.Append(runId, logged);
-        await session.SaveChangesAsync(cancellationToken);
-
-        AnsiConsole.MarkupLine(settings.HumanDirected
-            ? $"[green]Logged[/] (human-directed): {settings.Party.EscapeMarkup()} — {settings.Summary.EscapeMarkup()}"
-            : $"[green]Logged[/]: {settings.Party.EscapeMarkup()} — {settings.Summary.EscapeMarkup()}");
-        return ExitCodes.Ok;
+        return logged;
     }
 
     /// <summary>

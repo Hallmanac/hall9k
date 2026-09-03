@@ -1522,7 +1522,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
             priorHumanDirectedInteractions: priorInteractions);
 
         prompt.Should().Contain("Human directives logged mid-run on this task");
-        prompt.Should().Contain("2026-09-01, with the operator: Real bug, ordered fixed");
+        prompt.Should().Contain(
+            "2026-09-01, with the operator: Skip the workaround (reason given: Real bug, ordered fixed)",
+            "the directive itself (--summary) must reach the prompt, not only the human's own justification " +
+            "(--reason) — a reviewer told to treat this as a standing instruction needs to see what was directed");
         prompt.Should().Contain("a standing instruction");
     }
 
@@ -1574,21 +1577,33 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// A logged human directive is an order, not a dismissal — <see cref="AppendSettledRulings"/>
-    /// tells the reviewer to treat it "the same way a needs-fixes ruling above is treated," and a
-    /// needs-fixes ruling's own reason is deliberately never stripped
-    /// (<see cref="RulingReasonsShown"/> excludes it) for exactly this reason: stripping it would
-    /// erase the defect language the prompt just asked for and turn a confirmed, still-unfixed
-    /// defect into a hollow verdict. A reviewer that reports the directive is still unfulfilled,
-    /// quoting the directive's own reason back as the defect, must have that counted as a real
-    /// finding rather than screened out as an echo of platform-injected text.
+    /// tells the reviewer to treat it as a standing instruction to check and re-report if unmet,
+    /// and its reason text is deliberately never stripped from <see cref="ReviewVerdictValidation.NamesAFinding"/>
+    /// for exactly this reason: stripping it would erase the defect language the prompt just asked
+    /// for and turn a confirmed, still-unfixed defect into a hollow verdict. A reviewer that
+    /// reports the directive is still unfulfilled, quoting the directive's own reason back as the
+    /// defect, must have that counted as a real finding rather than screened out as an echo of
+    /// platform-injected text — wired through <see cref="AgentPromptBuilder.HumanDirectedInteractionPartiesShown"/>,
+    /// the actual strip list <see cref="Hall9k.Daemon.Review.ReviewEngine"/> passes for this
+    /// section, so this proves the reason survives that real strip list rather than merely
+    /// surviving a call that never passed one (independent pre-PR review, cycle 1: the previous
+    /// version of this test passed no strip lists at all and would have passed identically even if
+    /// the party strip had started stripping the reason too).
     /// </summary>
     [Fact]
     public void Echoing_an_unfulfilled_human_directed_interactions_reason_names_a_finding()
     {
         const string reason = "the retry in DispatchLoop.cs must not swallow the cancellation token";
         string output = $"Per the logged directive, {reason} — it still does.\n\nVERDICT: needs-fixes";
+        ExternalInteractionRecord[] priorInteractions =
+        [
+            new ExternalInteractionRecord(
+                new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero), "the operator", "directive summary",
+                true, reason),
+        ];
 
-        ReviewVerdictValidation.NamesAFinding(output)
+        ReviewVerdictValidation.NamesAFinding(
+                output, priorRulingReasons: AgentPromptBuilder.HumanDirectedInteractionPartiesShown(priorInteractions))
             .Should().BeTrue(
                 "a human directive is an order the reviewer must still be able to re-report as an "
                 + "unfixed defect, not a dismissal whose reason gets stripped from the reviewer's own output");
