@@ -200,6 +200,59 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
     }
 
     /// <summary>
+    /// The re-entry acceptance criterion PLAN.md §16 #124 names (task 864c7f30-h9k): a live run
+    /// carrying a previously recorded <see cref="RunDetails.InteractiveClaudeSessionId"/> hands it
+    /// back as <c>ReenterAsync</c>'s own <c>PreviousClaudeSessionId</c>, which is what the launch
+    /// above attempts <c>--resume</c> on before ever minting a fresh session. Nothing else on this
+    /// branch pins that one field of the returned tuple — <see cref="TaskWorkResumeArgumentsTests"/>
+    /// pins only the argument policy once a session id is already in hand, never the wiring that
+    /// hands it to that policy in the first place (conformance review, cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task A_live_run_carrying_a_recorded_session_hands_it_back_as_the_one_to_resume()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid recordedClaudeSessionId = DomainId.New();
+        string worktreePath = CreateEmptyDirectory();
+
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            taskId, DomainId.New(), "Already claimed, re-entered from another terminal", ["it is done"],
+            TaskType.Chore, null, null, null, Now, ownerId));
+        task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, ownerId));
+        task.Apply(TaskDecider.Assign(task, ownerId, [], Now, ownerId));
+        task.Apply(TaskDecider.ClaimInteractively(task, ownerId, runId, Now));
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new RunDetails
+            {
+                Id = runId,
+                TaskId = taskId,
+                State = RunState.Running,
+                WorktreePath = worktreePath,
+                Branch = "task/already-claimed",
+                RunDirectory = worktreePath,
+                InteractiveClaudeSessionId = recordedClaudeSessionId,
+            });
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        (Guid resultRunId, string resultWorktreePath, _, _, bool resumesPreviousWork, _, Guid? previousClaudeSessionId) =
+            await TaskWorkCommand.ReenterAsync(session, task, force: false, cts.Token);
+
+        resultRunId.Should().Be(runId);
+        resultWorktreePath.Should().Be(worktreePath);
+        resumesPreviousWork.Should().BeTrue();
+        previousClaudeSessionId.Should().Be(recordedClaudeSessionId);
+    }
+
+    /// <summary>
     /// The Queued entry's own success path through <see cref="TaskWorkCommand.ClaimAndCutAsync"/>
     /// is unchanged by the Published entry this branch adds (the <c>else if</c> restructure keeps
     /// it reachable exactly as before), but nothing pinned that claim used to append exactly one
@@ -414,6 +467,14 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
             .WithMessage("*depends on 1 task(s)*")
             .Where(exception => exception.Message.Contains("The blocker, still open")
                 && exception.Message.Contains("h9k task assign"));
+    }
+
+    private string CreateEmptyDirectory()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-work-claim-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        _repositoryRoots.Add(root);
+        return root;
     }
 
     private string CreateRepository()
