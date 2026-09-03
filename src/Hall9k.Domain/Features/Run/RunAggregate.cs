@@ -1100,6 +1100,14 @@ public sealed class RunAggregate
         ActiveFixSessionModel = AgentModel.Unknown;
     }
 
+    // No-op: a logged interaction never changes RunState or any field the write path fences on
+    // — it exists here only so this stream replays every event without a gap, the same convention
+    // every other Run event upholds (RunDetails.ExternalInteractions is the read model anything
+    // that actually needs the history queries).
+    public void Apply(ExternalInteractionLogged @event)
+    {
+    }
+
     public void Apply(PullRequestOpened @event)
     {
         PullRequestUrl = @event.PullRequestUrl;
