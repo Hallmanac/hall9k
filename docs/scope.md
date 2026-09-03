@@ -55,21 +55,28 @@ dispatching it headless. On a Published task assigned to nobody, it assigns the 
 operator's own owner and claims it interactively in one atomic event append, so the task is never
 observably Queued in between and the dispatcher can never win the race to it; a Published task
 whose dependencies have not all closed out is refused, naming the open blockers. Either way, it
-claims the task, cuts the same branch and worktree headless dispatch would, and
-opens a regular interactive Claude Code session attached to the operator's own terminal, its
-prompt assembled through the same code path a headless spawn's is, with the working rules swapped
-for an attached operator. The claim is held by the human rather than a
-process — no lease, no heartbeat reclaim — so closing the terminal is a normal way to leave, and
-running `h9k task work` again re-enters the same worktree and branch, resuming the most recently
-recorded session's own conversation — falling back to a fresh session, announced rather than
-silent, only when the recorded one cannot be resumed. It
-occupies zero concurrency slots (the run's `NodeId` is the sentinel `Guid.Empty`, which the
-node's session-ceiling accounting never counts), so it starts even when the daemon's queue is
-full. `h9k task verify` runs the project's gates on demand against the claim's worktree; `h9k task
-deliver` pushes the branch and hands the run into the standard delivery pipeline — from there it
-is indistinguishable from a headless run; `h9k task handback` releases the claim to a headless
-agent partway through, resuming the same branch; `h9k task release` gives an untouched claim back
-to the dispatch queue. See [PLAN.md Decisions Log #103, #122, #124](../PLAN.md).
+claims the task and cuts the same branch and worktree headless dispatch would, then — by default —
+prints the worktree path, the branch, and a starting prompt assembled through the same code path a
+headless spawn's is (its working rules swapped for an attached operator) for the operator to paste
+into a Claude Code session started anywhere. The pasted session self-registers
+(`h9k task register-session`), which is what lets the double-booking and liveness guards below
+recognise it; a session that never registers degrades honestly to the same no-op every guard
+already had for a task nobody ever recorded a session against. `--direct-launch` instead launches
+a plain interactive Claude Code session attached to the operator's own terminal itself, the way
+this command always did (kept for one release; refused on a machine where Claude Code resolves to
+a Windows script shim, since the prompt cannot survive that shim's argv). The claim is held by the
+human rather than a process — no lease, no heartbeat reclaim — so closing the terminal is a normal
+way to leave, and running `h9k task work` again re-enters the same worktree and branch — by
+default with a fresh prompt, or, under `--direct-launch`, resuming the most recently recorded
+session's own conversation, falling back to a fresh session, announced rather than silent, only
+when the recorded one cannot be resumed. It occupies zero concurrency slots (the run's `NodeId` is
+the sentinel `Guid.Empty`, which the node's session-ceiling accounting never counts), so it starts
+even when the daemon's queue is full. `h9k task verify` runs the project's gates on demand against
+the claim's worktree; `h9k task deliver` pushes the branch and hands the run into the standard
+delivery pipeline — from there it is indistinguishable from a headless run; `h9k task handback`
+releases the claim to a headless agent partway through, resuming the same branch; `h9k task
+release` gives an untouched claim back to the dispatch queue. See
+[PLAN.md Decisions Log #103, #122, #124, #126](../PLAN.md).
 
 ### A deliberate human kick-off
 

@@ -579,7 +579,8 @@ next move on, renders dim as its own level. It is there so you can consciously i
 
 ## Working a task interactively
 
-`h9k task work | verify | deliver | handback | release` (Decisions Log #103, #122, #124)
+`h9k task work | register-session | verify | deliver | handback | release` (Decisions Log #103,
+#122, #124, #126)
 
 An operator can work a Published or Queued task in their own terminal instead of dispatching it
 headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it
@@ -590,9 +591,24 @@ assignment to. `h9k task assign` and `h9k task publish --assign` are unchanged a
 headless dispatch triggers. Whichever state it entered from, the claim itself is held by the human,
 not a process: there is no lease and no heartbeat reclaim, so
 closing the terminal is a normal way to leave, and re-running `h9k task work <id>` re-enters the
-same worktree and branch, resuming the most recently recorded session's own conversation —
-falling back to a fresh session, announced rather than silent, only when the recorded one cannot
-be resumed.
+same worktree and branch with a fresh prompt.
+
+By default, `h9k task work` no longer launches anything itself (Decisions Log #126): it prints the
+worktree path, the branch, and a starting prompt for the operator to paste into a Claude Code
+session started anywhere. That pasted session's first act is `h9k task register-session <id>`,
+which records its own process identity (read from `CLAUDE_PID`, Claude Code's own environment
+variable) the way a direct launch's own launch-time recording always did — this is what lets the
+double-booking and liveness guards below recognise it. A session that never registers gets the
+same honest no-op every guard already had for a claim nobody ever recorded a session against:
+nothing blocks a second entry, but nothing is silently overwritten either. `--direct-launch` keeps
+the prior behavior for one release — a plain interactive Claude Code process launched and waited on
+by `h9k task work` itself, recording its pid the moment it starts, and resuming the most recently
+recorded session's own conversation on re-entry — falling back to a fresh session, announced rather
+than silent, only when the recorded one cannot be resumed (Decisions Log #124) — refused on a
+machine where Claude Code resolves to a Windows script shim (`.cmd`/`.bat`/`.ps1`), since the
+shim's `cmd.exe` cannot carry the prompt's embedded newlines through its argv; the prompt-handoff
+default is unaffected by that refusal, since the pasted prompt never travels through an argv at
+all.
 
 Nothing reclaims a quiet claim automatically, but a long-untouched one is easy to forget about:
 once it has sat past `interactiveClaimStaleAfterDays` (three days by default, [configurable
@@ -602,7 +618,8 @@ reclaim, only a question (Decisions Log #103).
 
 | Command | What it does |
 |---|---|
-| `h9k task work <id>` | Claims a Published or Queued task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and opens a regular interactive Claude Code session. On a task you already hold, re-enters that same worktree and branch, resuming the most recently recorded session's own conversation — falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. |
+| `h9k task work <id>` | Claims a Published or Queued task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and — by default — prints the worktree, the branch, and that prompt to paste into a session started elsewhere; `--direct-launch` opens a regular interactive Claude Code session itself instead, kept for one release. On a task you already hold, re-enters that same worktree and branch — by default with a fresh prompt, or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. |
+| `h9k task register-session <id>` | The pasted-in session's own first act: records its process identity (from `CLAUDE_PID`) against the claim, the way a direct launch's own launch-time recording always did. Refuses rather than guessing when `CLAUDE_PID` cannot be read. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
 | `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
 | `h9k task handback <id>` | Releases the human claim and queues the task through normal dispatch, so a headless agent resumes the branch from wherever the operator left it. |
@@ -610,8 +627,10 @@ reclaim, only a question (Decisions Log #103).
 
 `work` (on re-entry), `verify`, `deliver`, `handback`, and `release` are all refused while the
 claim's own interactive session is still attached in another terminal — exit it first (Ctrl+D or
-`/exit`). One exception: `verify` run from inside that very session (the one it is blocked
-waiting on, not racing) is allowed to check its own worktree.
+`/exit`). One exception: any of them run from inside that very session (the one it is blocked
+waiting on, not racing — recognised either by a direct launch's own injected marker, or by a
+self-registered session's `CLAUDE_PID` matching its own recorded process) is allowed to act on its
+own worktree.
 
 `work` (on re-entry), `verify`, `deliver`, `handback`, and `release` are also refused when the
 claim's session was recorded on a machine other than the one running the command — this machine

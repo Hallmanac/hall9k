@@ -131,7 +131,7 @@ guard working as intended, not a bug to route around. On a project tracked under
 
 ### Working a task interactively
 
-`h9k task work | verify | deliver | handback | release`
+`h9k task work | register-session | verify | deliver | handback | release`
 
 An operator can work a Published or Queued task in their own terminal instead of dispatching it
 headless. On a Published task assigned to nobody, `work` assigns it to the operator's own owner
@@ -140,14 +140,19 @@ between, so the dispatcher can never win the race to it; a Published task whose 
 not all closed out is refused, naming the open blockers. `h9k task assign` and
 `h9k task publish --assign` are unchanged and remain the headless dispatch triggers. Either way,
 `work` cuts the same branch and worktree headless dispatch would, assembles the prompt
-through the same code path (its working rules swapped for an attached operator), and opens a
-regular interactive Claude Code session — the claim is held by the human, not a process, so
-closing the terminal is a normal way to leave and re-running `work` re-enters the same worktree,
-resuming the most recently recorded session's own conversation (falling back to a fresh session,
-announced, only when the recorded one cannot be resumed).
-From there, `verify` runs the project's gates on demand, `deliver` pushes the branch and hands the
-claim into the standard delivery pipeline, `handback` releases the claim to a headless agent
-partway through (resuming the branch), and `release` gives an untouched claim back to the queue.
+through the same code path (its working rules swapped for an attached operator) — and by default
+prints the worktree, the branch, and that prompt for the operator to paste into a Claude Code
+session started anywhere, rather than launching one itself. The pasted session's first act is
+`register-session`, which records its own process identity (from `CLAUDE_PID`) against the claim;
+`--direct-launch` keeps the old behavior (a regular interactive Claude Code session `work` launches
+and waits on itself) for one release, and re-running `work` under it resumes the most recently
+recorded session's own conversation (falling back to a fresh session, announced, only when the
+recorded one cannot be resumed). The claim is held by the human, not a process either way, so
+closing the terminal is a normal way to leave and re-running `work` re-enters the same worktree —
+by default with a fresh prompt. From there, `verify` runs the project's gates on demand, `deliver`
+pushes the branch and hands the claim into the standard delivery pipeline, `handback` releases the
+claim to a headless agent partway through (resuming the branch), and `release` gives an untouched
+claim back to the queue.
 
 ### A deliberate human kick-off
 
