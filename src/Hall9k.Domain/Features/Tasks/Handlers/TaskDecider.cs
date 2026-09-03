@@ -807,10 +807,17 @@ public static class TaskDecider
 
     public static TaskCompleted Complete(TaskAggregate task, Guid runId, string? pullRequestUrl, DateTimeOffset completedAt)
     {
-        if (task.State != TaskState.Claimed)
+        // Blocked is admitted alongside Claimed for CloseoutEngine's own one case: a task
+        // Apply(TaskReopened) landed Blocked behind a still-open dependency, whose watched run
+        // then merged anyway — the follow-up that reopen was meant to dispatch is now moot, and
+        // finalizing straight to Done here is what stops a later TaskDependencyCompleted from
+        // re-queuing a task whose work already shipped (independent pre-PR review, cycle 3,
+        // adversarial lens, on h9k task start).
+        if (task.State != TaskState.Claimed && task.State != TaskState.Blocked)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is {task.State.Value} — only a claimed task completes.");
+                $"Task {task.Id} is {task.State.Value} — only a claimed task, or a Blocked one whose " +
+                "watched pull request merged anyway, completes.");
         }
 
         return new TaskCompleted(task.Id, runId, pullRequestUrl, completedAt);
