@@ -1659,6 +1659,31 @@ public sealed class CloseoutEngine(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        // TaskAggregate.Apply(TaskReopened) never clears _unmetDependencies (only Assign does),
+        // so a task claimed with h9k task start --acknowledge-unmet-dependencies that reached
+        // Done while a dependency was still open would land back on Blocked, not Queued, on the
+        // very same TaskReopened this method is about to append — the same fact
+        // PullRequestResolveCommand already reconciles for the human lever (its own comment at
+        // TaskDecider.Reopen's call site). Appending it anyway would supersede this run —
+        // retiring the only thing watching the pull request — while nothing ever claims the
+        // now-Blocked task to dispatch a follow-up: DispatchEngine.ClaimEligibleAsync filters on
+        // state = 'Queued', so the PR goes unwatched until the dependency closes out, and a merge
+        // inside that window is never observed (independent pre-PR review, cycle 1, conformance
+        // lens). Park instead: CloseoutParked stays in the watched query above, so merge/close
+        // detection keeps running every sweep (InspectAndActAsync's own "gets merge/close
+        // detection only" branch) until a human clears the dependency or forces a follow-up with
+        // h9k pr resolve, which already tolerates the same Blocked landing.
+        if (task.UnmetDependencies.Count > 0)
+        {
+            string dependencyNoun = task.UnmetDependencies.Count == 1 ? "dependency" : "dependencies";
+            string dependencyParkReason =
+                $"{reason} Task {task.Id} still has {task.UnmetDependencies.Count} unmet {dependencyNoun} — " +
+                "an automatic follow-up would land it Blocked rather than dispatch, so the pull request stays " +
+                "parked here, watched, instead. Clear the dependency, or h9k pr resolve to force a follow-up anyway.";
+            await ParkAsync(session, run, dependencyParkReason, now, cancellationToken);
+            return;
+        }
+
         // The lifetime ceiling is checked first and absolutely: it is the true runaway
         // backstop (Decisions Log #80, backlog 45), and no human engagement bypasses it —
         // only h9k pr resolve does.
