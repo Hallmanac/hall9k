@@ -28,14 +28,14 @@ public sealed class RunSessionProjectionTests
     {
         RunDetailsProjection projection = new();
         Guid id = DomainId.New();
-        RunDetails view = Dispatched(projection, id);
+        RunDetails view = Dispatched(projection, id, sessionName: "abc12345-build");
 
         view.ActiveSessions.Should().BeEmpty("nothing has been spawned yet");
 
         projection.Apply(new FakeEvent<RunProcessStarted>(new RunProcessStarted(id, 4484, Now)), view);
         view.ActiveSessions.Should().ContainSingle().Which
-            .Should().Be(new ActiveSession(AgentRole.Build, ReviewLens.Unknown, 4484, Now),
-                "pid plus start time is the identity (log #2)");
+            .Should().Be(new ActiveSession(AgentRole.Build, ReviewLens.Unknown, 4484, Now, Name: "abc12345-build"),
+                "pid plus start time is the identity (log #2), and the recorded name is what the live process actually answers to");
 
         projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), view);
         view.ActiveSessions.Should().BeEmpty("the gates run in the daemon, not in a session");
@@ -52,16 +52,41 @@ public sealed class RunSessionProjectionTests
         // session is identified the same way a fresh one is.
         RunDetailsProjection projection = new();
         Guid id = DomainId.New();
-        RunDetails view = Dispatched(projection, id);
+        RunDetails view = Dispatched(projection, id, sessionName: "abc12345-build");
         DateTimeOffset resumedAt = Now.AddHours(1);
 
-        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 5150, resumedAt, Now)), view);
+        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 5150, resumedAt, Now, "abc12345-build")), view);
 
         ActiveSession resumed = view.ActiveSessions.Should().ContainSingle().Subject;
         resumed.Role.Should().Be(AgentRole.Build);
         resumed.ProcessId.Should().Be(5150);
         resumed.StartedAt.Should().Be(resumedAt, "pid plus start time is the identity (log #2)");
+        resumed.Name.Should().Be("abc12345-build", "the resumed process's own recorded name, not a blank left over from the pre-name stream");
         view.ProcessStartedAt.Should().Be(resumedAt, "the run's own record and the session's agree");
+    }
+
+    /// <summary>
+    /// The gap this closes: a stream dispatched before <see cref="Events.RunDispatched.SessionName"/>
+    /// existed carries a blank <see cref="RunDetails.SessionName"/>, so a later token-budget resume
+    /// (<c>TokenBudgetRetryEngine</c>) computes and spawns under a fallback name of its own — and the
+    /// projection has to pick that fallback up from <see cref="Events.RunResumed.SessionName"/> rather
+    /// than the still-blank <see cref="RunDetails.SessionName"/>, or the live process answers to a name
+    /// the display can never report.
+    /// </summary>
+    [Fact]
+    public void A_resume_on_a_pre_name_stream_records_the_fallback_name_the_spawn_actually_used()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = Dispatched(projection, id, sessionName: "");
+        DateTimeOffset resumedAt = Now.AddHours(1);
+
+        projection.Apply(
+            new FakeEvent<RunResumed>(new RunResumed(id, 5150, resumedAt, Now, "abc12345-build")), view);
+
+        view.SessionName.Should().Be(
+            "abc12345-build", "the fallback the resuming spawn actually used, not the blank the pre-name stream carried");
+        view.ActiveSessions.Should().ContainSingle().Which.Name.Should().Be("abc12345-build");
     }
 
     [Fact]
@@ -208,8 +233,8 @@ public sealed class RunSessionProjectionTests
         view.ActiveSessions.Should().BeEmpty();
     }
 
-    private static RunDetails Dispatched(RunDetailsProjection projection, Guid id) =>
+    private static RunDetails Dispatched(RunDetailsProjection projection, Guid id, string sessionName = "") =>
         projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
             id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
-            "/wt/x", "task/x", ExecutorMode.Subscription, Now)));
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now, SessionName: sessionName)));
 }

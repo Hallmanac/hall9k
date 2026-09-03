@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -17,10 +18,14 @@ public sealed class RunDetails
     public string WorktreePath { get; set; } = string.Empty;
     public string Branch { get; set; } = string.Empty;
     /// <summary>
-    /// The primary session's own recorded name, from <see cref="RunDispatched.SessionName"/> —
-    /// survives a later <see cref="RunResumed"/> unchanged, since a resume re-enters the same
-    /// session rather than starting a differently-named one. Blank on a stream written before
-    /// this field existed.
+    /// The primary session's own recorded name, from <see cref="RunDispatched.SessionName"/>.
+    /// Ordinarily a later <see cref="RunResumed"/> leaves this unchanged, since a resume
+    /// re-enters the same session rather than starting a differently-named one — but a stream
+    /// written before <see cref="RunDispatched.SessionName"/> existed carries no recorded name
+    /// here, so the resuming spawn computes and records a fallback of its own
+    /// (<see cref="RunResumed.SessionName"/>), which then updates this field to match the name
+    /// the live process actually answers to. Blank on a stream written before either field
+    /// existed and never since resumed.
     /// </summary>
     public string SessionName { get; set; } = string.Empty;
     /// <summary>
@@ -311,6 +316,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ProcessId = @event.Data.ProcessId;
         view.ProcessStartedAt = @event.Data.ProcessStartedAt;
+        // The resumed spawn's own recorded name wins when a stream predates RunDispatched's
+        // own SessionName field: TokenBudgetRetryEngine computes and spawns under a fallback
+        // name in that case, and the live process answers to that name, not to view.SessionName's
+        // blank.
+        if (@event.Data.SessionName.IsNotBlank())
+        {
+            view.SessionName = @event.Data.SessionName;
+        }
         StartSession(
             view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
             name: view.SessionName);

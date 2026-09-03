@@ -143,7 +143,8 @@ public sealed class TokenBudgetRetryEngine(
                 LastActivityAt = DateTimeOffset.UtcNow,
                 StreamBytesRead = 0,
             });
-            session.Events.Append(run.Id, new RunResumed(run.Id, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow));
+            session.Events.Append(
+                run.Id, new RunResumed(run.Id, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, sessionName));
             await session.SaveChangesAsync(cancellationToken);
 
             supervisor.StartMonitoring(
