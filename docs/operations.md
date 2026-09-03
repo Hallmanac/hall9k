@@ -135,7 +135,7 @@ Hall9k requires a Postgres connection string and takes no position on where Post
 (Decisions Log #58). The one thing install does write is the connection string itself, and only
 when nothing resolves yet anywhere in the precedence chain below: the compose file it just wrote
 fully determines what that string has to be, so recording it is not a guess, and it is never
-written over a value that already resolves (Decisions Log #99). It also skips the write when
+written over a value that already resolves (Decisions Log #118). It also skips the write when
 something is already listening on `localhost:5432`, because a native Postgres of your own is a
 supported deployment, and writing install's compose credentials against it would turn doctor's
 honest "something is already listening" diagnosis into a manufactured authentication failure. You
@@ -385,7 +385,7 @@ ones worth knowing:
 | `Hall9k__LifetimeReviewCycleBudget` | 25 | The task-lifetime ceiling on review cycles, counted across every run and follow-up a task has had — immune to the per-run resets a stranding, retry, or follow-up round gives the three caps above; generous, so it only catches genuine pathology |
 | `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
 | `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication), plus `Hall9k__ModelByRole__ReviewVerify` — not a seventh role, but a narrower override for a Verify-shape review pass specifically, blank falling through to whatever review resolves |
-| `Hall9k__SpendBudgetTokens` | unbudgeted | The node's periodic token-spend budget (backlog: spend-governor step three, Decisions Log #113) — once the current period's recorded spend reaches it, the dispatcher declines to claim further queued work until the period rolls; a non-negative whole number of tokens, or absent for no budget |
+| `Hall9k__SpendBudgetTokens` | unbudgeted | The node's periodic token-spend budget (backlog: spend-governor step three, Decisions Log #120) — once the current period's recorded spend reaches it, the dispatcher declines to claim further queued work until the period rolls; a non-negative whole number of tokens, or absent for no budget |
 | `Hall9k__SpendPeriod` | week | The window `Hall9k__SpendBudgetTokens` resets on, `day` or `week` |
 
 Before Decisions Log #111, the ceiling was set in agent sessions and spent in runs, so there was a
@@ -506,7 +506,7 @@ current state while the daemon keeps running on whatever it read when it started
 
 `h9k update` never touches the config file. `h9k install` touches it in exactly one case — merging
 in `connectionString` when nothing resolves yet anywhere in the [precedence chain](#postgres)
-above and nothing is already listening on `localhost:5432` (Decisions Log #99) — and otherwise
+above and nothing is already listening on `localhost:5432` (Decisions Log #118) — and otherwise
 leaves it alone the same as update does; a missing file is created (with defaults, and only the
 settings you asked to change) the first time `h9k config set` needs it, and it says so.
 

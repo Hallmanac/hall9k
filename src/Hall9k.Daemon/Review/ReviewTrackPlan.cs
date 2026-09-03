@@ -13,7 +13,7 @@ namespace Hall9k.Daemon.Review;
 /// <param name="Fix">
 /// Findings this pull request resolves this cycle — a Medium or High in the branch's own code,
 /// plus out-of-scope Highs. Narrower on the mandatory <see cref="ReviewMode.FinalFullPass"/>
-/// cycle (Decisions Log #113) for the in-scope half only: there, only a High in the branch's own
+/// cycle (Decisions Log #119) for the in-scope half only: there, only a High in the branch's own
 /// code lands here, since an in-scope Medium rides along instead — an out-of-scope High still
 /// lands here on every mode, unchanged.
 /// </param>
@@ -22,7 +22,7 @@ namespace Hall9k.Daemon.Review;
 /// In-scope findings below the fix bar (Decisions Log #87) — a Low, or one nobody graded — not
 /// dispatched to a fix session of their own this cycle. On the mandatory
 /// <see cref="ReviewMode.FinalFullPass"/> cycle that bar narrows to High alone (Decisions Log
-/// #113), so an in-scope Medium rides along here too.
+/// #119), so an in-scope Medium rides along here too.
 /// </param>
 /// <param name="Residuals">
 /// What the track leaves unconfirmed if it ended here, and only the fixed-unreviewed half of

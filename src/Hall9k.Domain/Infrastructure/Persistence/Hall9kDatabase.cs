@@ -18,7 +18,7 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 /// (this shell, this invocation — the same mechanism <c>DaemonEnvironment</c> captures
 /// for a launchd-started daemon); the platform config file (<see cref="ConfigFile"/>, a
 /// durable per-machine setting written by <c>h9k doctor</c>'s start-offer, by <c>h9k
-/// install</c> itself when nothing resolves yet (Decisions Log #99), or by hand);
+/// install</c> itself when nothing resolves yet (Decisions Log #118), or by hand);
 /// and last, a per-project override file (<see cref="ProjectOverrideFileName"/>, found by
 /// walking up from the working directory). The override is checked last, deliberately:
 /// it is the one entry in this chain that can arrive already sitting in a repository
@@ -31,7 +31,7 @@ public static class Hall9kDatabase
     /// <summary>
     /// What <c>h9k install</c>'s shipped Postgres definition (<see cref="PostgresRuntime"/>)
     /// stands up. Written to <see cref="ConfigFile"/> by <c>h9k doctor</c>'s start-offer once
-    /// an operator accepts it, and — since Decisions Log #99 — by <c>h9k install</c> itself,
+    /// an operator accepts it, and — since Decisions Log #118 — by <c>h9k install</c> itself,
     /// non-interactively, but only when nothing in the precedence chain resolves yet and
     /// nothing is already listening on the default port: the compose file install just wrote
     /// fully determines this string, so that write is a record of what install already
@@ -145,7 +145,7 @@ public static class Hall9kDatabase
     /// <summary>
     /// Write the connection string to the platform config file — the doctor's own action when
     /// an operator accepts the start-offer on a previously unconfigured install, and (Decisions
-    /// Log #99) <c>h9k install</c>'s own action when nothing resolves yet and nothing is already
+    /// Log #118) <c>h9k install</c>'s own action when nothing resolves yet and nothing is already
     /// listening on the default port. Merges rather than overwrites, so a future key added to
     /// this file survives a connection-string write.
     /// </summary>
@@ -204,7 +204,7 @@ public static class Hall9kDatabase
     /// the identical way, distinguishing the same two causes rather than collapsing them. A third
     /// reader, <see cref="ReadExistingDocumentAsync"/> just above — called by
     /// <see cref="WriteConfiguredConnectionStringAsync"/>, both from the doctor's own start-offer
-    /// write and from <c>h9k install</c>'s unconfigured-machine write (Decisions Log #99) — keeps
+    /// write and from <c>h9k install</c>'s unconfigured-machine write (Decisions Log #118) — keeps
     /// the same distinction rather than collapsing it: a malformed file still starts fresh (its
     /// content is unrecoverable either way), but an unreadable one propagates the read exception
     /// instead of silently overwriting keys that are only momentarily inaccessible, not actually

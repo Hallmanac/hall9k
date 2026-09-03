@@ -793,7 +793,7 @@ public sealed record ReviewFindingRouted( // an out-of-scope non-high routes awa
     Guid Id,                             //   (log #63): a Medium still mints a draft bug task of
     ReviewLens Lens,                     //   its own, a Low instead folds into the project's one
     int Cycle,                           //   standing sweep draft (SweepDraftTask, Decisions Log
-    ReviewSeverity Severity,             //   #99). DraftTaskId null + FailureReason
+    ReviewSeverity Severity,             //   #117). DraftTaskId null + FailureReason
     string Location,                     //   set on a failed courtesy that never fails the review loop.
     Guid? DraftTaskId,
     string? FailureReason,
@@ -1012,7 +1012,7 @@ still finding something that does at `MaxComplianceReviewCycles` (3) parks the r
 nothing automated is left to try. A below-the-bar finding rides along instead of being fixed
 on its own **at every cycle, gate or no gate** — the fix bar reads only severity, never the
 cycle, except on the mandatory `FinalFullPass` cycle immediately before the run may settle
-(Decisions Log #113), where the bar itself narrows to `high` alone and an in-scope medium
+(Decisions Log #119), where the bar itself narrows to `high` alone and an in-scope medium
 rides along there too, exactly as a low already does everywhere else. Adversarial runs under
 a **severity gate** that governs a different question, whether
 the track is *forced* into another cycle regardless of severity: through
@@ -1040,7 +1040,7 @@ and the daemon routes it away instead (`ReviewFindingRouted`), inert until a hum
 it — but where it lands then splits by grade (`ReviewSeverity.MeetsFixBar`): a **Medium**
 still mints its own **draft bug task**, exactly as every non-high did before this split
 existed, while a **Low** instead folds into the project's one standing **sweep** draft
-(`SweepDraftTask`, Decisions Log #99) — so a serious pre-existing defect can never be
+(`SweepDraftTask`, Decisions Log #117) — so a serious pre-existing defect can never be
 buried in a polish pile, and eight one-line Low findings cost one build-gate-review
 pipeline instead of eight. A failed draft creation, of either kind, is recorded as a failed
 routing and never fails the review loop; it is counted apart from the routings that worked,

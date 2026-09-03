@@ -13,7 +13,7 @@ public sealed record RoleModelSetting(string Role, ResolvedSetting<string?> Mode
 /// value-shape failure on any other leaf, which <c>ConfigurationBinder</c> silently leaves at its
 /// default while binding every sibling key normally — so the file is still in force, just not for
 /// that one setting. The resolver-owned keys — the three concurrency settings (Decisions Log
-/// #111's follow-up) plus the periodic spend budget and its period (Decisions Log #113) — can no
+/// #111's follow-up) plus the periodic spend budget and its period (Decisions Log #120) — can no
 /// longer crash the daemon this second way: <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
 /// excludes them from the daemon's own <c>ConfigurationBinder</c> call; every other
 /// <c>DaemonOptions</c> leaf in this section — the four review-cycle caps included — is still
@@ -37,7 +37,7 @@ public enum ConfigFileProblemConsequence
 /// <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes from the daemon's own
 /// <c>ConfigurationBinder</c> call: the three concurrency settings (Decisions Log #111's
 /// follow-up) — <c>maxConcurrentTaskRuns</c>, <c>sessionCapPerRun</c>, <c>maxConcurrentAgentSessions</c>
-/// — or the periodic spend budget and its period (Decisions Log #113) — <c>spendBudgetTokens</c>,
+/// — or the periodic spend budget and its period (Decisions Log #120) — <c>spendBudgetTokens</c>,
 /// <c>spendPeriod</c>. <see cref="DescribeConsequence"/> names the mechanism that actually
 /// ignored the leaf, and for these five it is <see cref="OperatingSettingsResolver"/> treating a
 /// malformed value as absent, not <c>ConfigurationBinder</c> declining a conversion — the binder

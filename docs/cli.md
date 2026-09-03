@@ -339,7 +339,7 @@ session cap's global default (`--session-cap-per-run`, overridable per task with
 staleness threshold, the node-level review-cycle caps (compliance, adversarial, final-full-pass,
 and the task-lifetime budget — each overridable per project, and per task too via
 `h9k task set-review-caps`), and a periodic token-spend budget (`--spend-budget <tokens|none>`
-paired with `--spend-period <day|week>`, backlog: spend-governor step three, Decisions Log #113) —
+paired with `--spend-period <day|week>`, backlog: spend-governor step three, Decisions Log #120) —
 once the current period's recorded spend reaches the budget, the dispatcher declines to claim
 further queued work until the period rolls, gating claims only and never touching work already
 claimed; `--spend-budget none` clears it back to unbudgeted, since "no budget" has no compiled

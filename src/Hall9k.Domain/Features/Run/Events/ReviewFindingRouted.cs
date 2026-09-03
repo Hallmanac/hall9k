@@ -8,7 +8,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// <para>
 /// <see cref="DraftTaskId"/> names the draft the finding landed on: a Medium's own fresh
 /// <c>Bugfix</c> draft, or a Low's project-wide sweep draft, which most routings revise rather
-/// than create (Decisions Log #99). It is null when routing failed, and
+/// than create (Decisions Log #117). It is null when routing failed, and
 /// <see cref="FailureReason"/> then says why: routing is a courtesy the review loop pays to a
 /// defect it is not fixing, and a courtesy that fails must never fail the review. The finding is
 /// recorded as routed either way, because "we tried to route this and could not" is the fact,

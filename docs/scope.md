@@ -160,7 +160,7 @@ ceiling the dispatcher respects, counted directly in task runs (Decisions Log #1
 session-denominated setting still converts when the new one is absent, and a per-run session cap
 (global default, overridable per task even mid-run) governs how many agent sessions one run may
 hold simultaneously. A node-level periodic token-spend budget (`h9k config set
---spend-budget`/`--spend-period`, Decisions Log #113) paces dispatch the same way: once the
+--spend-budget`/`--spend-period`, Decisions Log #120) paces dispatch the same way: once the
 current period's recorded spend, summed live from every session's own token usage rather than a
 stored counter, meets the budget, the dispatcher declines to claim further queued work until the
 period rolls — never killing or parking work already running. Unset means unbudgeted, and `h9k
