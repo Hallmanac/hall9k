@@ -112,9 +112,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // node watches this run (RunSupervisor never adopts the sentinel Guid.Empty NodeId), so the
         // prompt tells the agent delivery is its own to trigger by hand rather than claiming the
         // platform verifies and opens the PR after it finishes.
+        // isHandback: taskDetails.ResumesFromHandback — the same reasoning
+        // AgentPromptBuilder.Build already applies for a dispatcher-launched build (conformance
+        // review, cycle 1): a start-it-mine claim can equally resume a human's own
+        // h9k task handback, and the caused "a human began this work interactively" block that
+        // fact earns is what tells this session plainly, rather than leaving it to infer the same
+        // thing from the causeless "a previous attempt worked here first" text a plain retry gets.
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
-            isInteractive: false, isDeliberateHeadlessStart: true);
+            isInteractive: false, isDeliberateHeadlessStart: true, isHandback: taskDetails.ResumesFromHandback);
 
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
