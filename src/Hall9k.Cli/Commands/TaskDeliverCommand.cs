@@ -200,7 +200,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // pushed with the branch stranded and no AgentSessionCompleted ever appended
         // (independent pre-PR review, cycle 7).
         //
-        // TryReadHeadlessHandoff first (adversarial review, cycle 1, on h9k task start): a
+        // ReadHeadlessResult first (adversarial review, cycle 1, on h9k task start): a
         // start-it-mine claim's own agent writes its handoff into its final message exactly as a
         // dispatcher-launched build does (WorkPromptBuilder's own AppendHandoffRules), but
         // nothing on this node ever adopts that run to capture it the way RunSupervisor does for
@@ -209,8 +209,8 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // claim never writes a stream.jsonl at all (LaunchInteractiveClaudeAsync attaches claude
         // to this terminal directly, no --output-format stream-json), so this read finds nothing
         // there and PromptForHandoff's own blank-default behavior is unchanged for that claim.
-        string? recoveredHandoff = TryReadHeadlessHandoff(run.RunDirectory);
-        string handoff = settings.Handoff ?? PromptForHandoff(recoveredHandoff);
+        HeadlessResult headlessResult = ReadHeadlessResult(run.RunDirectory);
+        string handoff = settings.Handoff ?? PromptForHandoff(headlessResult.Handoff);
         await WriteHandoffAsync(run.RunDirectory, handoff, CancellationToken.None);
 
         // Re-checked immediately before the append that hands this run to the daemon's
@@ -261,7 +261,20 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // sentinel left in place past this point would make the whole pipeline invisible to
         // every node's session ceiling forever (conformance review, cycle 1).
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, CancellationToken.None);
-        session.Events.Append(runId, new AgentSessionCompleted(runId, DateTimeOffset.UtcNow, context.NodeId));
+        DateTimeOffset completedAt = DateTimeOffset.UtcNow;
+        session.Events.Append(runId, new AgentSessionCompleted(runId, completedAt, context.NodeId));
+        if (headlessResult.Usage is { } usage)
+        {
+            // Mirrors RunSupervisor.CompleteRunAsync's own identical pairing of these two events
+            // for a dispatcher-adopted build session — the only other place a run's own token
+            // usage is ever recorded. run.Model, not a re-resolution: the session's own resolved
+            // model, as RunDispatched recorded it, the same reasoning CompleteRunAsync's own
+            // comment gives for reading it off the run stream rather than re-resolving it.
+            session.Events.Append(runId, new TokensRecorded(
+                runId, usage.InputTokens, usage.OutputTokens, usage.CostUsd, completedAt,
+                usage.CacheReadInputTokens, usage.CacheCreationInputTokens, run.Model));
+        }
+
         await session.SaveChangesAsync(CancellationToken.None);
 
         await Doorbell.RingAsync($"task-delivered:{taskId}", CancellationToken.None);
@@ -301,26 +314,33 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
     }
 
     /// <summary>
-    /// A start-it-mine claim's own stream.jsonl carries the agent's authored handoff inside its
-    /// terminal "result" line's own "result" field — the same field
+    /// A start-it-mine claim's own stream.jsonl carries both the agent's authored handoff and
+    /// its token usage inside its terminal "result" line — the same line
     /// <c>Hall9k.Daemon.Execution.StreamJsonParser.TryParseResult</c> reads into
-    /// <c>AgentResult.Summary</c> for a headless-dispatched run, duplicated here at the field
-    /// level rather than referenced because the CLI cannot reference
-    /// <c>Hall9k.Daemon</c> (Reference graph: Cli -> Domain + Connectors). Null when the file is
-    /// absent (an attended h9k task work claim never writes one) or carries no parseable
-    /// handoff — never guessed at as empty (AGENTS.md: never guess at unobserved facts).
+    /// <c>AgentResult</c> for a headless-dispatched run, duplicated here at the field level
+    /// rather than referenced because the CLI cannot reference <c>Hall9k.Daemon</c> (Reference
+    /// graph: Cli -> Domain + Connectors). A start-it-mine run's <c>Guid.Empty</c> node id means
+    /// <c>RunSupervisor</c> never adopts it, so this delivery is the only place anything ever
+    /// reads that line back — without this, the node's periodic token-spend budget
+    /// (<c>PeriodSpend</c>) silently under-counts every session <c>h9k task start</c> launches
+    /// (adversarial review, cycle 1, on h9k task start). Both fields null/absent when the file
+    /// is missing (an attended h9k task work claim never writes one) or carries no parseable
+    /// result line — never guessed at as empty or zero, which would read as an observed session
+    /// that authored no handoff and spent no tokens rather than one this command could not
+    /// measure (AGENTS.md: never guess at unobserved facts).
     /// </summary>
-    private static string? TryReadHeadlessHandoff(string runDirectory)
+    internal static HeadlessResult ReadHeadlessResult(string runDirectory)
     {
         string streamFile = RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(runDirectory));
         if (!File.Exists(streamFile))
         {
-            return null;
+            return new HeadlessResult(null, null);
         }
 
         // The LAST result line wins, mirroring HandoffParser's own "last marker wins" rule: a
         // headless `-p` session ordinarily emits exactly one, but nothing here depends on that.
         string? summary = null;
+        HeadlessUsage? usage = null;
         try
         {
             foreach (string line in File.ReadLines(streamFile))
@@ -334,11 +354,34 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 {
                     using JsonDocument document = JsonDocument.Parse(line);
                     JsonElement root = document.RootElement;
-                    if (root.TryGetProperty("type", out JsonElement type) && type.GetString() == "result"
-                        && root.TryGetProperty("result", out JsonElement text) && text.ValueKind == JsonValueKind.String)
+                    if (!root.TryGetProperty("type", out JsonElement type) || type.GetString() != "result")
+                    {
+                        continue;
+                    }
+
+                    if (root.TryGetProperty("result", out JsonElement text) && text.ValueKind == JsonValueKind.String)
                     {
                         summary = text.GetString();
                     }
+
+                    long inputTokens = 0;
+                    long cacheReadInputTokens = 0;
+                    long cacheCreationInputTokens = 0;
+                    long outputTokens = 0;
+                    if (root.TryGetProperty("usage", out JsonElement usageElement))
+                    {
+                        inputTokens = ReadTokenCount(usageElement, "input_tokens");
+                        cacheReadInputTokens = ReadTokenCount(usageElement, "cache_read_input_tokens");
+                        cacheCreationInputTokens = ReadTokenCount(usageElement, "cache_creation_input_tokens");
+                        outputTokens = ReadTokenCount(usageElement, "output_tokens");
+                    }
+
+                    decimal? costUsd = root.TryGetProperty("total_cost_usd", out JsonElement cost)
+                        && cost.ValueKind == JsonValueKind.Number
+                        ? cost.GetDecimal()
+                        : null;
+
+                    usage = new HeadlessUsage(inputTokens, cacheReadInputTokens, cacheCreationInputTokens, outputTokens, costUsd);
                 }
                 catch (JsonException)
                 {
@@ -348,13 +391,27 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 }
             }
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return null;
+            return new HeadlessResult(null, null);
         }
 
-        return HandoffParser.Parse(summary);
+        return new HeadlessResult(HandoffParser.Parse(summary), usage);
     }
+
+    private static long ReadTokenCount(JsonElement usage, string property) =>
+        usage.TryGetProperty(property, out JsonElement value)
+            && value.ValueKind == JsonValueKind.Number
+            && value.TryGetInt64(out long count)
+                ? count
+                : 0;
+
+    /// <summary>Both fields read from the same terminal "result" line in one pass over stream.jsonl.</summary>
+    internal sealed record HeadlessResult(string? Handoff, HeadlessUsage? Usage);
+
+    /// <summary>Mirrors <c>Hall9k.Daemon.Execution.AgentResult</c>'s own usage fields.</summary>
+    internal sealed record HeadlessUsage(
+        long InputTokens, long CacheReadInputTokens, long CacheCreationInputTokens, long OutputTokens, decimal? CostUsd);
 
     private static async Task WriteHandoffAsync(string runDirectory, string handoff, CancellationToken cancellationToken)
     {
