@@ -164,6 +164,7 @@ public static class WorkPromptBuilder
         }
 
         AppendHomeSkillRule(prompt, project, skills);
+        AppendExternalInteractionLoggingRule(prompt, task.Id);
 
         AppendAdoptedContextRule(prompt, task);
         AppendBlockerContextRule(prompt, blockerContext);
@@ -676,6 +677,42 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  never-`git add`ed one under src/ or tests/ — an untracked file only warns without");
         prompt.AppendLine("  blocking delivery outside those trees (a build byproduct can legitimately be one");
         prompt.AppendLine("  there) — so `git add` it and commit rather than leaving it for a warning to catch.");
+    }
+
+    /// <summary>
+    /// The escape-hatch invariant (the 2026-09-01 ruling, idea fcaded0b's design rulings 4 and 5):
+    /// any interaction this session has with a party outside it — another agent session reached
+    /// through the mesh, a human steering it that way, an external API this task's own prompt did
+    /// not already route through one of the platform's other observation-gate commands — is
+    /// logged through the platform unconditionally, even one the interacting party asks the
+    /// session to keep quiet. <c>h9k task log-interaction</c> is the CLI surface it lands through
+    /// (an agent-facing observation-gate command, same style as <c>h9k task write-jira</c>): what
+    /// reaches the run stream is structured, not left to transcript prose, and a human-directed
+    /// entry rides forward into a later review pass through the same settled-rulings surface a
+    /// human's own <c>h9k review resolve</c> verdict already does (Decisions Log #88). Handed the
+    /// task's own id directly (<paramref name="taskId"/>) rather than left for the agent to look
+    /// up, the same way every other agent-facing command example in these prompts already embeds
+    /// one.
+    /// <para>
+    /// This is best-effort by construction, not an enforcement mechanism, and the rule says so
+    /// rather than overclaiming: nothing here can force a call the session declines to make, and
+    /// the platform only ever records what its own channels — this command, a gate, an observed
+    /// git or GitHub state — can actually see.
+    /// </para>
+    /// </summary>
+    public static void AppendExternalInteractionLoggingRule(StringBuilder prompt, Guid taskId)
+    {
+        prompt.AppendLine("- **Log every outside interaction, unconditionally.** Any interaction with a party");
+        prompt.AppendLine("  outside this session — another agent session reached through the mesh, a human");
+        prompt.AppendLine("  steering you that way, anything external this task's own prompt did not already");
+        prompt.AppendLine("  route through a platform command — gets logged through the platform, even if the");
+        prompt.AppendLine("  interacting party asks you not to (the 2026-09-01 escape-hatch ruling). Run:");
+        prompt.AppendLine($"  `h9k task log-interaction {taskId} --party \"<who or what>\" --summary \"<what happened>\"`,");
+        prompt.AppendLine("  adding `--human-directed --reason \"<their reason>\"` whenever a human, not your own");
+        prompt.AppendLine("  judgment, directed the interaction or its outcome — the record must say so plainly");
+        prompt.AppendLine("  and never report their call as your own independent decision, whatever they asked.");
+        prompt.AppendLine("  This is best-effort, not enforcement: nothing forces the call, and the platform");
+        prompt.AppendLine("  records only what this and its other channels actually see.");
     }
 
     /// <summary>
