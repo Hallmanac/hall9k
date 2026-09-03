@@ -433,7 +433,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             AnsiConsole.MarkupLineInterpolated($"[dim]Task {taskId} is still claimed —[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task deliver {taskId}    push and hand into the standard delivery pipeline[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task verify {taskId}     run the project's gates on demand[/]");
-            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task work {taskId}       resume this worktree, continuing the recorded conversation[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task work {taskId}       re-enter (prints a fresh prompt; add --direct-launch to resume this conversation)[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task handback {taskId}   let a headless agent finish from here[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task release {taskId}    give it back to the dispatch queue[/]");
         }
