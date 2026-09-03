@@ -217,8 +217,9 @@ A deliberate human kick-off dispatches a Published or Queued task on the spot, h
 of dispatching it interactively or waiting on the queue (Decisions Log #125, "Take the Wheel"
 epic 9272e514's start-it-mine mode): `h9k task start <id>` reuses `h9k task work`'s own claim
 shape exactly (the same ceiling-exempt sentinel, so every existing lever above — deliver, verify,
-handback, release, the stale-claim nudge, and re-entering via `h9k task work` itself — applies
-unchanged to a start-it-mine claim too) and the same atomic Published entry, but launches the
+handback, release, the stale-claim nudge, and re-entering via `h9k task work` itself — accepts a
+start-it-mine claim on the identical terms an interactive one already gets) and the same atomic
+Published entry, but launches the
 agent headless (`claude -p`, Claude Code's own completion mode) and detached rather than attached
 to this terminal, under the slice-1 `<task-shortid>-build` name, addressable on the session mesh
 the moment it starts. Unlike `h9k task work`, an unmet dependency does not refuse outright here:
@@ -230,7 +231,14 @@ moment of assignment: a task already sitting Blocked from an ordinary `h9k task 
 refuses `h9k task start`, flag or not. `h9k task start` refuses Draft (publish it first), a
 pr-review task, a reopened task's follow-up branch, and any task that already carries a live claim
 — there is no re-entry branch the way `h9k task work` has one; a fresh claim is all this command
-ever makes.
+ever makes. Giving such a claim back before it finishes — `h9k task handback`, `h9k task release`,
+`h9k task retry`, or `h9k pr resolve`'s own reopen — lands the task on Blocked rather than Queued
+whenever the acknowledged dependency is still open, since claiming never clears it, only assigning
+does; each of those commands names the still-open blocker(s) rather than claiming a run that will
+not in fact dispatch. `h9k task deliver` recovers a start-it-mine session's own handoff and token
+usage from its `stream.jsonl` at delivery time — the only point anything on this node reads that
+file back, since a run dispatched under the sentinel node id above is never adopted to do it any
+other way.
 
 ```bash
 h9k task start <id>                              # dispatch a Published or Queued task headless, on the spot, ceiling-exempt

@@ -621,17 +621,17 @@ anyway.
 
 ## A deliberate human kick-off
 
-`h9k task start <id> [--acknowledge-unmet-dependencies]` (Decisions Log #124)
+`h9k task start <id> [--acknowledge-unmet-dependencies]` (Decisions Log #125)
 
 A deliberate human kick-off dispatches a Published or Queued task on the spot, headless, instead
 of dispatching it interactively (`h9k task work`, above) or waiting on the dispatch queue. `start`
 reuses `work`'s own claim shape exactly — the same ceiling-exempt sentinel `NodeId`, so `verify`,
 `deliver`, `handback`, `release`, the stale-claim nudge, and re-entering with `work` itself all
-apply unchanged to a start-it-mine claim too — but launches the agent headless and detached
-(`claude -p`, Claude Code's own completion mode) under the `<task-shortid>-build` name, addressable
-on the session mesh (`claude agents --json`, `SendMessage`) the moment it starts, rather than
-attached to the caller's own terminal, and returns as soon as the process is confirmed alive
-without waiting for it to finish.
+accept a start-it-mine claim on the identical terms an interactive one already gets — but launches
+the agent headless and detached (`claude -p`, Claude Code's own completion mode) under the
+`<task-shortid>-build` name, addressable on the session mesh (`claude agents --json`,
+`SendMessage`) the moment it starts, rather than attached to the caller's own terminal, and
+returns as soon as the process is confirmed alive without waiting for it to finish.
 
 Unlike `h9k task work`, an unmet dependency does not refuse `start` outright: the platform names
 every open blocker and advises, and `--acknowledge-unmet-dependencies` is the human's recorded
@@ -646,7 +646,11 @@ Because nothing on this node is watching a start-it-mine run the way the daemon 
 dispatched runs, the row it leaves behind reads the same as an interactive claim's: an untouched
 run sits at Working until a human runs `h9k task deliver`, `h9k task verify`, `h9k task work` (to
 attach), `h9k task handback`, or `h9k task release`, and the same stale-claim nudge described above
-fires once it has sat unattended past `interactiveClaimStaleAfterDays`.
+fires once it has sat unattended past `interactiveClaimStaleAfterDays`. `h9k task deliver` is also
+the only point anything on this node reads the session's own `stream.jsonl` back: it recovers the
+agent's authored handoff for a dependent task and records the session's token usage against the
+node's periodic spend budget, both of which nothing else would otherwise ever capture for a run
+dispatched under the sentinel node id above.
 
 Giving the claim back — `handback`, `release`, `retry`, or `pr resolve` reopening it — does not
 land the task on Queued when the dependency snapshot the override acknowledged still names an
