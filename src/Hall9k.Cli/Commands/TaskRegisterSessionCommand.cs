@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -144,7 +145,8 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
 
         (int processId, DateTimeOffset startedAt) = ReadClaudeProcess(task.Id);
         Guid claudeSessionId = ReadClaudeSessionId();
-        string sessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.InteractiveClaim);
+        string sessionName = ReadClaudeSessionName(processId)
+            ?? SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.InteractiveClaim);
 
         session.Events.Append(runId, new InteractiveSessionStarted(
             runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
@@ -216,5 +218,58 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
     {
         string? sessionId = Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID");
         return sessionId.IsNotBlank() && Guid.TryParse(sessionId, out Guid parsed) ? parsed : DomainId.New();
+    }
+
+    /// <summary>
+    /// The session's own real display name, read from the same file Claude Code itself writes it
+    /// to — <c>~/.claude/sessions/&lt;pid&gt;.json</c>, <see cref="SessionRoleName"/>'s own doc
+    /// comment already names this file's shape (<c>name</c>/<c>nameSource</c>) as verified against
+    /// a live session — keyed by the identical pid <see cref="ReadClaudeProcess"/> just read from
+    /// <c>CLAUDE_PID</c>, not a second, independent lookup. Recording the task-shortid-role guess
+    /// instead (<see cref="SessionRoleName.For"/>) would be true only when the operator happened
+    /// to launch with <c>--name &lt;that exact string&gt;</c>; under the prompt-handoff default
+    /// nothing enforces that, and a session already running under some other name before the
+    /// prompt was ever pasted in never gets it either — so the recorded name would be one nothing
+    /// answers to (independent pre-PR review, cycle 1, both lenses), while the cross-session mesh
+    /// (ListAgents/SendMessage) and <c>h9k task show</c>'s own Sessions block both address a
+    /// session by this file's own <c>name</c> field.
+    /// <para>
+    /// Best-effort, the same honest-degradation shape <see cref="ReadClaudeSessionId"/> already
+    /// takes for its own non-liveness-critical field: this file is Claude Code's own runtime
+    /// state, not a contract this platform owns, so a missing file, a missing or blank
+    /// <c>name</c>, or a parse failure falls back to the role-vocabulary guess rather than
+    /// refusing registration over a fact no guard here is actually built on.
+    /// </para>
+    /// </summary>
+    internal static string? ReadClaudeSessionName(int processId) =>
+        ReadClaudeSessionName(processId, Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "sessions"));
+
+    /// <summary>
+    /// <see cref="ReadClaudeSessionName(int)"/>'s own implementation, with the real
+    /// <c>~/.claude/sessions</c> directory pulled out as a parameter so this is testable against a
+    /// scratch directory rather than the operator's own live Claude Code state.
+    /// </summary>
+    internal static string? ReadClaudeSessionName(int processId, string sessionsDirectory)
+    {
+        string sessionFile = Path.Combine(sessionsDirectory, $"{processId}.json");
+        try
+        {
+            if (!File.Exists(sessionFile))
+            {
+                return null;
+            }
+
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(sessionFile));
+            return document.RootElement.TryGetProperty("name", out JsonElement nameElement)
+                && nameElement.ValueKind == JsonValueKind.String
+                && nameElement.GetString() is { Length: > 0 } name
+                ? name
+                : null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
     }
 }
