@@ -267,7 +267,10 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
-        view.State = TaskState.Queued;
+        // Same invariant the TaskRequeued handler above restores: a deliberately-claimed Blocked
+        // task can reach Done/Reopened while still carrying an unmet dependency, since Claim never
+        // clears UnmetDependencies — only Assign does.
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     public void Apply(IEvent<TaskFailed> @event, TaskListItem view)

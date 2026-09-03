@@ -634,6 +634,29 @@ public sealed class TaskDeciderTests
         task.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
     }
 
+    /// <summary>
+    /// Same invariant, reached through the fourth exit: a deliberately-claimed Blocked task that
+    /// completes still carries its open blocker (Complete only checks State == Claimed), and
+    /// Reopen only checks State == Done — neither ever touches UnmetDependencies — so a closeout-
+    /// dispatched follow-up must not resurface the task as Queued while the blocker is still on
+    /// record unmet (independent pre-PR review, cycle 2, verify pass).
+    /// </summary>
+    [Fact]
+    public void Reopen_of_a_deliberately_claimed_blocked_task_that_completed_returns_to_blocked_not_queued()
+    {
+        TaskAggregate task = DeliberatelyClaimedBlockedTask(out Guid blockerId);
+        Guid runId = task.CurrentRunId!.Value;
+        task.Apply(TaskDecider.Complete(task, runId, "https://github.com/x/y/pull/7", Now));
+        task.State.Should().Be(TaskState.Done);
+
+        task.Apply(TaskDecider.Reopen(
+            task, runId, "task/abc", "Unresolved review comments",
+            FollowUpKind.ReviewFeedback, automatic: true, Now, DomainId.New()));
+
+        task.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
+        task.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
+    }
+
     [Fact]
     public void ReleaseInteractiveClaim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {
