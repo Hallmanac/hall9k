@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Tests.Fakes;
 using Xunit;
 
@@ -13,6 +14,7 @@ namespace Hall9k.Tests.Domain;
 /// observes failing checks, review feedback, a park, and finally the merge that gives
 /// RunCompleted its reserved meaning.
 /// </summary>
+[Collection("Hall9kHome")]
 public sealed class RunCloseoutProjectionTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
@@ -210,6 +212,28 @@ public sealed class RunCloseoutProjectionTests
         projection.Apply(new FakeEvent<RunCompleted>(new RunCompleted(id, Now.AddHours(1))), view);
         view.State.Should().Be(RunState.Completed);
         view.FinishedAt.Should().Be(Now.AddHours(1));
+    }
+
+    /// <summary>
+    /// A run reconstructed by CloseoutEngine's missing-run sweep (a Done task naming a run that
+    /// never actually dispatched) still needs a resolvable RunDirectory: LogsCommand and
+    /// TaskShowCommand order a task's runs by DispatchedAt and pick the newest one, and a blank
+    /// directory resolves to a bare relative path nothing on disk answers to (independent pre-PR
+    /// review, cycle 1). RunDetailsProjection's own creator for the same event already carries
+    /// this fallback; this locks the sibling view to the same fact.
+    /// </summary>
+    [Fact]
+    public void Run_list_item_reconstructed_from_a_missing_run_record_still_has_a_resolvable_directory()
+    {
+        RunListItemProjection projection = new();
+        Guid id = DomainId.New();
+        RunListItem view = projection.Create(new FakeEvent<RunRecordReconstructed>(new RunRecordReconstructed(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), PullRequestUrl, 7, Now)));
+
+        view.State.Should().Be(RunState.Dispatched);
+        view.PullRequestUrl.Should().Be(PullRequestUrl);
+        view.RunDirectory.Should().Be(RunPaths.GlobalDirectory(id),
+            "a blank directory resolves to a bare relative path, sending h9k logs looking on this machine for a file that was never here");
     }
 
     [Fact]
