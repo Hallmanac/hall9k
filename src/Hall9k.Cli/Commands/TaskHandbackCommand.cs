@@ -124,8 +124,24 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         }
 
         await Doorbell.RingAsync($"task-handed-back:{taskId}", cancellationToken);
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId} handed back — the next headless run resumes branch {run.Branch}.[/]");
+        // TaskAggregate.Apply(TaskHandedBack) clears the claim but never touches
+        // _unmetDependencies, only Assign does — so a handback out of a deliberate
+        // start-it-mine override (h9k task start --acknowledge-unmet-dependencies) still naming
+        // an open blocker lands Blocked, not Queued, and no headless run dispatches until that
+        // blocker closes out (conformance review, cycle 4).
+        int unmetDependencyCount = task.UnmetDependencies.Count;
+        if (unmetDependencyCount == 0)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} handed back — the next headless run resumes branch {run.Branch}.[/]");
+        }
+        else
+        {
+            string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} handed back, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — no headless run resumes branch {run.Branch} until those close out.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 }

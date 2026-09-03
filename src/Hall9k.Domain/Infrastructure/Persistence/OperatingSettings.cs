@@ -152,11 +152,14 @@ public sealed class OperatingSettings
     /// Never kills or parks running work (Decisions Log #11), and never declines a review or fix
     /// session inside a run this node already claimed. It does not distinguish a first claim from
     /// a re-claim, though: a closeout follow-up or <c>h9k task retry</c> reopens its task straight
-    /// back to <see cref="Hall9k.Domain.Features.Tasks.TaskState.Queued"/> without clearing the
-    /// assignment (<c>TaskAggregate.Apply(TaskReopened)</c>), so it re-enters
-    /// <c>DispatchEngine.ClaimEligibleAsync</c>'s identical claim query and is declined by a spent
-    /// budget exactly as a brand-new task would be (independent pre-PR review, cycle 1,
-    /// adversarial lens — this doc used to promise the opposite).
+    /// back to <see cref="Hall9k.Domain.Features.Tasks.TaskState.Queued"/> — or, when the task's
+    /// dependency snapshot still names an open blocker (only reachable via a deliberate
+    /// start-it-mine claim's own override), to <see cref="Hall9k.Domain.Features.Tasks.TaskState.Blocked"/>
+    /// instead (<c>TaskAggregate.Apply(TaskReopened)</c>) — without clearing the assignment, so a
+    /// task that does land Queued re-enters <c>DispatchEngine.ClaimEligibleAsync</c>'s identical
+    /// claim query and is declined by a spent budget exactly as a brand-new task would be
+    /// (independent pre-PR review, cycle 1, adversarial lens — this doc used to promise the
+    /// opposite unconditionally).
     /// </para>
     /// <para>
     /// Known v1 limitation: the budget gates on the single total across every model, so an Opus

@@ -110,8 +110,24 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         }
 
         await Doorbell.RingAsync($"task-released:{taskId}", cancellationToken);
-        AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId} released back to the queue — the daemon claims it as it would any other queued task.[/]");
+        // Requeue (TaskAggregate.Apply(TaskRequeued)) clears the claim but never touches
+        // _unmetDependencies, only Assign does — so a claim released from a deliberate
+        // start-it-mine override (h9k task start --acknowledge-unmet-dependencies) still names
+        // an open blocker here and lands Blocked, not Queued; the daemon will not claim it until
+        // that blocker closes out (conformance review, cycle 4).
+        int unmetDependencyCount = task.UnmetDependencies.Count;
+        if (unmetDependencyCount == 0)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} released back to the queue — the daemon claims it as it would any other queued task.[/]");
+        }
+        else
+        {
+            string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} released back, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — it will not dispatch until those close out.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 
