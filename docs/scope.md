@@ -71,6 +71,22 @@ is indistinguishable from a headless run; `h9k task handback` releases the claim
 agent partway through, resuming the same branch; `h9k task release` gives an untouched claim back
 to the dispatch queue. See [PLAN.md Decisions Log #103, #122, #124](../PLAN.md).
 
+### A deliberate human kick-off
+
+`h9k task start <id>` dispatches a Published or Queued task on the spot, headless, instead of
+waiting on the dispatch queue or working it interactively. It reuses `h9k task work`'s own claim
+shape exactly — the same ceiling-exempt sentinel `NodeId`, so every lever built on it (`deliver`,
+`verify`, `handback`, `release`, the stale-claim nudge, and re-entering with `h9k task work`
+itself) applies unchanged — but launches the agent headless and detached (`claude -p`) under the
+`<task-shortid>-build` name rather than attached to the caller's terminal, and returns as soon as
+the process is confirmed alive. Unlike `h9k task work`, an unmet dependency on a Published task
+does not refuse outright: the platform names every open blocker, and
+`--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. That
+override only applies at the moment of assignment — a task already sitting Blocked from an
+ordinary `h9k task assign` still refuses. Refused otherwise on Draft, a pr-review task, a reopened
+task's follow-up branch, and any task that already has a live claim; there is no re-entry path the
+way `h9k task work` has one. See [PLAN.md Decisions Log #125](../PLAN.md).
+
 ### The board
 
 `h9k status` composes three surfaces (lifecycle state, live phase, attention) from the underlying
