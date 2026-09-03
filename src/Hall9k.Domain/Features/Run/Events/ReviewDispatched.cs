@@ -44,4 +44,5 @@ public sealed record ReviewDispatched(
     ReviewLens? Lens = null,
     ReviewMode? Mode = null,
     string? HeadSha = null,
-    string? SinceSha = null);
+    string? SinceSha = null,
+    string SessionName = "");

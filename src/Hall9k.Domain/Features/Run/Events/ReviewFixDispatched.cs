@@ -26,4 +26,5 @@ public sealed record ReviewFixDispatched(
     DateTimeOffset DispatchedAt,
     AgentModel? Model = null,
     bool Escalated = false,
-    string? EscalationReason = null);
+    string? EscalationReason = null,
+    string SessionName = "");

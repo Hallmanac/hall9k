@@ -18,4 +18,5 @@ public sealed record PrReviewConformanceDispatched(
     int ProcessId,
     DateTimeOffset ProcessStartedAt,
     DateTimeOffset DispatchedAt,
-    AgentModel Model);
+    AgentModel Model,
+    string SessionName = "");

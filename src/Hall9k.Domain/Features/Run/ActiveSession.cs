@@ -27,9 +27,18 @@ namespace Hall9k.Domain.Features.Run;
 /// every other role dispatches through the daemon, whose own <c>NodeId</c> already answers this.
 /// Blank when unknown, which is never treated as "this machine" (adversarial review, cycle 2).
 /// </param>
+/// <param name="Name">
+/// The exact name this session's Claude Code process carries (task: every dispatched agent
+/// session launches under a human-readable id-and-role name) — recorded rather than reconstructed
+/// from <paramref name="Role"/>/<paramref name="Lens"/> alone, because <see cref="AgentRole.Build"/>
+/// covers three genuinely different dispatch shapes (an ordinary build, a rebase follow-up, a
+/// failing-checks follow-up) that a role-only reconstruction cannot tell apart. Blank on a stream
+/// written before this field existed — an honest gap, not a guessed name.
+/// </param>
 public sealed record ActiveSession(
     AgentRole Role,
     ReviewLens Lens,
     int ProcessId,
     DateTimeOffset? StartedAt,
-    string MachineName = "");
+    string MachineName = "",
+    string Name = "");
