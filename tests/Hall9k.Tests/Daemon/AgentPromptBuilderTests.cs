@@ -1461,6 +1461,139 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The escape-hatch invariant (task: every outside interaction a dispatched agent has is
+    /// logged unconditionally): the build/work prompt names the CLI command, embeds this task's
+    /// own id so there is nothing to look up, and states the human-directed provenance rule
+    /// plainly rather than leaving it to be discovered.
+    /// </summary>
+    [Fact]
+    public void Working_rules_carry_the_outside_interaction_logging_invariant()
+    {
+        TaskDetails task = SomeTask();
+        task.Id = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        string prompt = AgentPromptBuilder.Build(task, SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("Log every outside interaction, unconditionally");
+        prompt.Should().Contain($"h9k task log-interaction {task.Id}");
+        prompt.Should().Contain("--human-directed");
+        prompt.Should().Contain("never report their call as your own independent decision");
+        prompt.Should().Contain("best-effort", "prompt-mandated logging is not enforcement, stated honestly");
+    }
+
+    /// <summary>
+    /// The adversarial lens stays blind to the task's objective and acceptance criteria, but a
+    /// task id is neither — the escape-hatch invariant reaches this lens exactly as it reaches
+    /// conformance, so a human steering an adversarial pass mid-run is logged just as honestly.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Every_review_lens_carries_the_outside_interaction_logging_invariant(string lens)
+    {
+        TaskDetails task = SomeTask();
+        task.Id = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        string prompt = AgentPromptBuilder.BuildReview(task, SomeProject(), "task/1-slug", cycle: 1, lens);
+
+        prompt.Should().Contain("Log every outside interaction, unconditionally");
+        prompt.Should().Contain($"h9k task log-interaction {task.Id}");
+    }
+
+    /// <summary>
+    /// A human directive logged mid-pass (<c>h9k task log-interaction --human-directed</c>) rides
+    /// forward into a later review pass through the identical settled-rulings surface a human's
+    /// own <c>h9k review resolve</c> verdict already uses (Decisions Log #88, task: a logged
+    /// human directive is carried into later review passes) — treated as a standing instruction,
+    /// not evidence to weigh.
+    /// </summary>
+    [Fact]
+    public void Human_directed_interactions_ride_into_review_as_standing_instructions()
+    {
+        ExternalInteractionRecord[] priorInteractions =
+        [
+            new ExternalInteractionRecord(
+                new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero), "the operator", "Skip the workaround",
+                true, "Real bug, ordered fixed"),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Conformance,
+            priorHumanDirectedInteractions: priorInteractions);
+
+        prompt.Should().Contain("Human directives logged mid-run on this task");
+        prompt.Should().Contain("2026-09-01, with the operator: Real bug, ordered fixed");
+        prompt.Should().Contain("a standing instruction");
+    }
+
+    /// <summary>
+    /// An agent-initiated interaction with no human direction attached is audit trail only
+    /// (<c>h9k task show</c>'s job) — it never rides into a later review pass, which is why
+    /// <see cref="ReviewEngine"/>'s own query filters on <c>HumanDirected</c> before this prompt
+    /// ever sees the list.
+    /// </summary>
+    [Fact]
+    public void Non_human_directed_interactions_are_never_handed_to_a_review_prompt()
+    {
+        ExternalInteractionRecord[] agentOnly =
+        [
+            new ExternalInteractionRecord(
+                new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero), "another agent session",
+                "Shared this run's worktree path with it", false, null),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 4, ReviewLens.Conformance,
+            priorHumanDirectedInteractions: agentOnly);
+
+        prompt.Should().NotContain("Human directives logged mid-run on this task");
+    }
+
+    /// <summary>
+    /// Bounded the same way settled review rulings already are (the task's own acceptance
+    /// criteria): only the newest few ride into the prompt, never an ever-growing transcript.
+    /// </summary>
+    [Fact]
+    public void Prior_human_directed_interactions_are_bounded_to_the_newest_few()
+    {
+        ExternalInteractionRecord[] priorInteractions =
+        [
+            .. Enumerable.Range(1, 10).Select(day => new ExternalInteractionRecord(
+                new DateTimeOffset(2026, 8, day, 0, 0, 0, TimeSpan.Zero), "the operator", $"directive {day}", true,
+                $"reason-{day:00}")),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 12, ReviewLens.Conformance,
+            priorHumanDirectedInteractions: priorInteractions);
+
+        prompt.Should().NotContain("reason-01", "the oldest entries are dropped once the bound is reached");
+        prompt.Should().NotContain("reason-02", "only the newest handful ride into the prompt");
+        prompt.Should().Contain("reason-10", "the newest entries are the ones kept");
+    }
+
+    /// <summary>
+    /// A human's own logged reason is exactly as arbitrary as a settled park ruling's reason, and
+    /// a reviewer that quotes it back while reporting compliance must not thereby manufacture a
+    /// "named" finding out of text the platform injected rather than something it found itself
+    /// (mirrors <see cref="Echoing_a_prior_rulings_reason_does_not_name_a_finding"/> for this
+    /// second source of the same shape).
+    /// </summary>
+    [Fact]
+    public void Echoing_a_human_directed_interactions_reason_does_not_name_a_finding()
+    {
+        const string reason = "Operator judged the workaround would mask a real bug";
+        string output = $"Per the logged directive: {reason}.\n\nVERDICT: needs-fixes";
+
+        ReviewVerdictValidation.NamesAFinding(
+                output, priorRulingReasons: AgentPromptBuilder.HumanDirectedInteractionReasonsShown(
+                    [new ExternalInteractionRecord(
+                        new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero), "the operator", "Skip the workaround",
+                        true, reason)]))
+            .Should().BeFalse("a human's own logged reason, echoed back, is not the reviewer naming a new finding");
+    }
+
+    /// <summary>
     /// The conformance prompt's own "How to review" bullet names two real doctrine files
     /// (AGENTS.md, CLAUDE.md) right beside the words it uses to describe what the reviewer
     /// should be looking for (adversarial cycle-1 finding, `ReviewVerdictValidation.cs:284`): a

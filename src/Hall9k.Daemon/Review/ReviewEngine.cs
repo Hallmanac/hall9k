@@ -847,7 +847,7 @@ public sealed class ReviewEngine(
         // reviewer is told the true bar rather than the ordinary cycle's.
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
-            sinceSha: sinceSha);
+            priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions, sinceSha: sinceSha);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) —
         // and each dispatch records the model it actually got, per pass.
@@ -908,7 +908,8 @@ public sealed class ReviewEngine(
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
-            sinceSha, priorCycleMode, priorCycleSinceSha, context.PriorRulings);
+            sinceSha, priorCycleMode, priorCycleSinceSha, context.PriorRulings,
+            context.PriorHumanDirectedInteractions);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -1283,10 +1284,15 @@ public sealed class ReviewEngine(
                 output,
                 sawTaskContext ? context.Task.Objective : null,
                 sawTaskContext ? context.Task.AcceptanceCriteria : null,
-                // Unlike the objective and the acceptance criteria, settled rulings are printed
-                // into BOTH lenses' prompts (AgentPromptBuilder.AppendSettledRulings), so this
-                // strip is never gated on sawTaskContext.
-                AgentPromptBuilder.RulingReasonsShown(context.PriorRulings)))
+                // Unlike the objective and the acceptance criteria, settled rulings and logged
+                // human directives are printed into BOTH lenses' prompts
+                // (AgentPromptBuilder.AppendSettledRulings), so this strip is never gated on
+                // sawTaskContext. Both lists feed the identical echo-stripping purpose — a
+                // reviewer quoting a human's own reason text back is not a new finding — so they
+                // are concatenated into the one list NamesAFinding screens against, rather than
+                // widening that method's own parameter list for a second source of the same shape.
+                [.. AgentPromptBuilder.RulingReasonsShown(context.PriorRulings),
+                    .. AgentPromptBuilder.HumanDirectedInteractionReasonsShown(context.PriorHumanDirectedInteractions)]))
         {
             // A needs-fixes verdict that names nothing is not a real answer (origin: ten
             // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact
@@ -2607,8 +2613,9 @@ public sealed class ReviewEngine(
             return null;
         }
 
-        IReadOnlyList<ReviewParkResolution> priorRulings = await LoadPriorRulingsAsync(query, taskId, cancellationToken);
-        return new ReviewContext(runId, taskId, run, task, project, priorRulings);
+        (IReadOnlyList<ReviewParkResolution> priorRulings, IReadOnlyList<ExternalInteractionRecord> priorHumanDirectedInteractions) =
+            await LoadPriorRulingsAndInteractionsAsync(query, taskId, cancellationToken);
+        return new ReviewContext(runId, taskId, run, task, project, priorRulings, priorHumanDirectedInteractions);
     }
 
     /// <summary>
@@ -2636,23 +2643,36 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Every human verdict this TASK's review park has ever taken, oldest first, across every run
-    /// it has had (a retry starts a fresh run stream, so a single run's own history is not
-    /// enough) — handed to a fresh review pass so it does not re-raise a question a human already
-    /// settled (task: review prompts carry prior rulings). Queried by <c>TaskId</c> off the
-    /// <see cref="RunDetails"/> document the way <c>BlockerHandoffQuery.ClosedOutRunsAsync</c>
-    /// already reads a task's run history, rather than looping <c>FetchStreamAsync</c> per run id.
+    /// Two settled-rulings sources this TASK's agents have ever recorded, oldest first within
+    /// each, across every run it has had (a retry starts a fresh run stream, so a single run's
+    /// own history is not enough) — handed to a fresh review pass so it does not re-raise a
+    /// question a human already settled (task: review prompts carry prior rulings) and does not
+    /// re-litigate a human directive it already logged (task: the escape-hatch invariant,
+    /// Decisions Log #88, #122). Every human verdict on a review park, and every human-directed
+    /// <see cref="ExternalInteractionLogged"/> — filtered to
+    /// <see cref="ExternalInteractionRecord.HumanDirected"/> here rather than left to the prompt
+    /// layer, since an agent-initiated interaction with nothing a human directed is audit trail
+    /// only (<c>h9k task show</c>'s job, not a later review pass's) and never rides into a prompt
+    /// at all — both come off the one <see cref="RunDetails"/> query by <c>TaskId</c>, the way
+    /// <c>BlockerHandoffQuery.ClosedOutRunsAsync</c> already reads a task's run history, rather
+    /// than looping <c>FetchStreamAsync</c> per run id or paying for the same query twice over.
     /// </summary>
-    private static async Task<IReadOnlyList<ReviewParkResolution>> LoadPriorRulingsAsync(
-        IQuerySession query, Guid taskId, CancellationToken cancellationToken)
+    private static async Task<(IReadOnlyList<ReviewParkResolution> PriorRulings, IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions)>
+        LoadPriorRulingsAndInteractionsAsync(IQuerySession query, Guid taskId, CancellationToken cancellationToken)
     {
         IReadOnlyList<RunDetails> taskRuns = await query.Query<RunDetails>()
             .Where(run => run.TaskId == taskId)
             .ToListAsync(cancellationToken);
 
-        return [.. taskRuns
+        IReadOnlyList<ReviewParkResolution> priorRulings = [.. taskRuns
             .SelectMany(run => run.ReviewParkResolutions)
             .OrderBy(ruling => ruling.ResolvedAt)];
+        IReadOnlyList<ExternalInteractionRecord> priorHumanDirectedInteractions = [.. taskRuns
+            .SelectMany(run => run.ExternalInteractions)
+            .Where(interaction => interaction.HumanDirected)
+            .OrderBy(interaction => interaction.LoggedAt)];
+
+        return (priorRulings, priorHumanDirectedInteractions);
     }
 
     private async Task<RunAggregate> LoadRunAsync(Guid runId, CancellationToken cancellationToken)
@@ -3234,8 +3254,9 @@ public sealed class ReviewEngine(
     /// history (2026-08-30): no cap is measured against this count, so summing it here rather than
     /// maintaining a second counter is enough (<see cref="RunDetails.ReviewCycle"/> already IS each
     /// run's own high-water cycle mark). Every OTHER run of this task is read off <see
-    /// cref="RunDetails"/> — the same by-<c>TaskId</c> join <see cref="LoadPriorRulingsAsync"/>
-    /// already uses — and the CURRENT run's own count comes from <paramref name="run"/> itself
+    /// cref="RunDetails"/> — the same by-<c>TaskId</c> join
+    /// <see cref="LoadPriorRulingsAndInteractionsAsync"/> already uses — and the CURRENT run's
+    /// own count comes from <paramref name="run"/> itself
     /// rather than its own (possibly not-yet-caught-up) <see cref="RunDetails"/> projection, since
     /// the aggregate just loaded at the top of this iteration is the freshest source available for
     /// it.
@@ -3604,5 +3625,6 @@ public sealed class ReviewEngine(
 
     private sealed record ReviewContext(
         Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project,
-        IReadOnlyList<ReviewParkResolution> PriorRulings);
+        IReadOnlyList<ReviewParkResolution> PriorRulings,
+        IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions);
 }
