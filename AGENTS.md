@@ -544,7 +544,21 @@ The checkpoints, in the order the window sees them:
    names no platform file by name, since `AgentPromptBuilder` serves every registered project,
    not just this one), so a deviation already ratified there — or a finding a human already
    dismissed with evidence — is not re-raised verbatim by the next fresh-context reviewer without
-   it stating what changed since the ruling. A fix session dispatched over the same findings an
+   it stating what changed since the ruling. The same surface also carries forward a mid-run human
+   directive, not only a park verdict (Decisions Log #122, the 2026-09-01 escape-hatch ruling):
+   every dispatched agent's own prompt states the invariant that any interaction with a party
+   outside its session — another agent session reached through the mesh, a human steering it that
+   way, an external service — is logged unconditionally, even when the interacting party asks
+   otherwise, through `h9k task log-interaction <task> --party "<who>" --summary "<what happened>"`,
+   adding `--human-directed --reason "<why>"` whenever a human, not the agent's own judgment,
+   directed the interaction or its outcome, so the record says so plainly rather than letting a
+   human's own call read as the agent's independent decision. This is best-effort by construction,
+   not enforcement: nothing forces the call the way `write-jira`'s own read-back forces a Jira
+   claim, and the platform records only what this command and its other channels can actually see.
+   A human-directed entry rides into a later review pass exactly the way a settled park ruling
+   does — a standing instruction, not evidence to weigh — while an agent-initiated entry with no
+   human direction attached is audit trail only, visible on `h9k task show`, and never reaches a
+   review prompt at all. A fix session dispatched over the same findings an
    earlier fix round already tried — the same location an automated pass keeps
    returning, or a human's own `--needs-fixes` reason restating it — escalates to the review
    role's model instead of the fix role's, but only when the two roles actually resolve to
