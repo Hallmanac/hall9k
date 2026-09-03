@@ -201,7 +201,9 @@ behind an open dependency. `h9k task assign` and `h9k task publish --assign` are
 remain the headless dispatch triggers; there is no `--interactive` flag on `assign`. Whichever
 state it entered from, the claim itself is held by the human, not a process, so there is no lease
 and no heartbeat reclaim; closing the terminal is a normal way to leave, and running
-`h9k task work` again re-enters the same worktree (Decisions Log #103):
+`h9k task work` again re-enters the same worktree, resuming the most recently recorded session's
+own conversation rather than starting a fresh one (falling back to a fresh session, announced,
+only when the recorded one cannot be resumed) (Decisions Log #103, #124):
 
 ```bash
 h9k task work <id>          # claim a Published or Queued task, cut the same branch/worktree headless dispatch would, assemble the prompt through the same code, open an interactive session
