@@ -48,7 +48,7 @@ One line per branch. Ask `--help` for the rest.
 | Command | What it is for |
 |---|---|
 | `h9k status` | The attention pane: what needs you, what has gone quiet, what is running. Bounded on purpose. |
-| `h9k task show <id>` | One task in full: contract, dependencies, external reference, conversation, every run and its outcome, each run's own gate wall-clock durations, and a flag when one materially exceeds the project's recent recorded average for that gate. The second command of any investigation. |
+| `h9k task show <id>` | One task in full: contract, dependencies, external reference, conversation, every run and its outcome, each run's own gate wall-clock durations, a flag when one materially exceeds the project's recent recorded average for that gate, and each run's own worktree path, branch and live agent sessions. The second command of any investigation. |
 | `h9k logs <id>` | A run's transcript, rendered from its stream-json (`--raw` for the stream-json itself). The log dive `h9k status` is meant to save you. |
 
 ### Ideas: capture and discovery
