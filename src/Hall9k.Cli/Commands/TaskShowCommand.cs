@@ -507,9 +507,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// the Runs table (independent pre-PR review, cycle 1, conformance finding): an absolute
     /// worktree path routinely runs 60+ characters, which forces the table to wrap in a default
     /// 80-120 column terminal and squeezes every other column with it. This mirrors the shape
-    /// <see cref="WriteSessionsAsync"/> already uses for the same reason. A run whose coordinates
-    /// were never recorded (a stream written before this task, or a reconstructed record) prints
-    /// nothing for that run rather than a bare "-" line.
+    /// <see cref="WriteSessionsAsync"/> already uses for the same reason, header included. A run
+    /// whose coordinates were never recorded (a stream written before this task, or a
+    /// reconstructed record) prints nothing for that run rather than a bare "-" line.
     /// </summary>
     private static void WriteCoordinates(
         IReadOnlyList<RunListItem> runs, IReadOnlyDictionary<Guid, RunDetails> runDetailsById)
@@ -524,6 +524,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return;
         }
 
+        AnsiConsole.MarkupLine("\n[bold]Worktree and branch[/]");
         foreach ((RunListItem run, RunDetails details) in withCoordinates)
         {
             string worktree = details.WorktreePath.IsNotBlank() ? details.WorktreePath : "-";
@@ -599,7 +600,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     {
         SessionLiveness.Alive => "[dim]session alive[/]",
         SessionLiveness.Gone => "[red]the recorded process is gone[/]",
-        _ => "[dim]session liveness not observed here[/]",
+        SessionLiveness.Unobserved => "[dim]session liveness not observed here[/]",
+        _ => string.Empty,
     };
 
     /// <summary>
