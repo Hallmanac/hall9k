@@ -90,6 +90,68 @@ public sealed class TaskRegisterSessionCommandTests
         TaskRegisterSessionCommand.ReadClaudeSessionId().Should().NotBe(Guid.Empty);
     }
 
+    [Fact]
+    public void Reads_the_sessions_own_name_from_its_claude_sessions_file()
+    {
+        string sessionsDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-claude-sessions-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(sessionsDirectory);
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(sessionsDirectory, "4242.json"),
+                """{"pid":4242,"name":"74a18e83-interactive-claim","nameSource":"user"}""");
+
+            TaskRegisterSessionCommand.ReadClaudeSessionName(4242, sessionsDirectory)
+                .Should().Be("74a18e83-interactive-claim");
+        }
+        finally
+        {
+            Directory.Delete(sessionsDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Reads_null_when_no_session_file_exists_for_the_pid()
+    {
+        string sessionsDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-claude-sessions-{Guid.NewGuid():N}");
+
+        TaskRegisterSessionCommand.ReadClaudeSessionName(4242, sessionsDirectory).Should().BeNull();
+    }
+
+    [Fact]
+    public void Reads_null_when_the_session_file_carries_no_name_field()
+    {
+        string sessionsDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-claude-sessions-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(sessionsDirectory);
+        try
+        {
+            File.WriteAllText(Path.Combine(sessionsDirectory, "4242.json"), """{"pid":4242}""");
+
+            TaskRegisterSessionCommand.ReadClaudeSessionName(4242, sessionsDirectory).Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(sessionsDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Reads_null_when_the_session_file_is_not_valid_json()
+    {
+        string sessionsDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-claude-sessions-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(sessionsDirectory);
+        try
+        {
+            File.WriteAllText(Path.Combine(sessionsDirectory, "4242.json"), "not json");
+
+            TaskRegisterSessionCommand.ReadClaudeSessionName(4242, sessionsDirectory).Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(sessionsDirectory, recursive: true);
+        }
+    }
+
     /// <summary>Saves and restores the named environment variables around a test, isolating it from every other.</summary>
     [Collection("Hall9kHome")]
     private sealed class EnvironmentVariableScope : IDisposable
