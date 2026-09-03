@@ -41,6 +41,8 @@ public sealed class ClaudeExecutorIsolationTests
             "the checkout's own project and local settings.json — where a hook would live — must never load");
         arguments.Should().Contain("--strict-mcp-config",
             "given with no --mcp-config, this connects to no MCP server rather than whatever the checkout's own .mcp.json names");
+        arguments.Should().Contain("--name \"test-review-adversarial-1\"",
+            "the untrusted-worktree isolation flags are not the only policy this spawn carries");
     }
 
     [Fact]

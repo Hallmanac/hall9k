@@ -142,6 +142,8 @@ public sealed class ModelPolicyTests
         arguments.Should().Contain("--model \"claude-opus-5[1m]\"",
             "the model is quoted so an id carrying shell glob characters reaches claude intact");
         arguments.Should().Contain($"--session-id {request.SessionId}");
+        arguments.Should().Contain("--name \"test-build\"",
+            "the recorded session name is what h9k task show and another session's cross-session mesh address this process by");
     }
 
     [Fact]
@@ -161,6 +163,8 @@ public sealed class ModelPolicyTests
         arguments.Should().Contain($"--resume {resumed}");
         arguments.Should().NotContain(argument => argument.StartsWith("--model", StringComparison.Ordinal),
             "a resumed session keeps the model it started with; the carried value is for the record, not the process");
+        arguments.Should().Contain("--name \"test-review-conformance-1\"",
+            "set on every spawn, resumed or fresh, so a resumed session's name never reverts to a worktree-derived one mid-run");
     }
 
     [Fact]
