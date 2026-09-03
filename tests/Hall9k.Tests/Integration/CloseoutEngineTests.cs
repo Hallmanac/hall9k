@@ -1346,7 +1346,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             await SetUpAsync(cts.Token);
         using IDisposable storeLifetime = store;
 
-        (Guid taskId, Guid runId, Worktree worktree) =
+        (Guid taskId, Guid runId, Worktree worktree, _) =
             await SeedAwaitingReviewWithUnmetDependencyAsync(store, node, worktrees, repoPath, cts.Token);
 
         FakeInspector inspector = new()
@@ -1373,6 +1373,76 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await NewEngine(store, node, mergedInspector, worktrees).PollOnceAsync(cts.Token);
         RunDetails runAfterMerge = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         runAfterMerge.State.Should().Be(RunState.Completed, "a parked run is still watched for the merge");
+    }
+
+    /// <summary>
+    /// h9k pr resolve's own reopen (unlike the automatic path above) does not park behind an
+    /// unmet dependency — it reopens anyway, landing the task Blocked while keeping CurrentRunId
+    /// pointing at the run it just reopened (Apply(TaskReopened), Decisions Log #125). Before this
+    /// fix, a merge observed while Blocked completed the run but never touched the task, so a
+    /// dependency clearing later would flip Blocked straight back to Queued
+    /// (Apply(TaskDependencyCompleted)) and a fresh dispatch would run this whole closeout a
+    /// second time for a brand-new run id (independent pre-PR review, cycle 3, adversarial lens,
+    /// on h9k task start).
+    /// </summary>
+    [Fact]
+    public async Task A_merge_observed_while_blocked_finalizes_the_task_and_a_later_dependency_clearing_never_reruns_closeout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree, Guid blockerId) =
+            await SeedAwaitingReviewWithUnmetDependencyAsync(store, node, worktrees, repoPath, cts.Token);
+
+        await using (IDocumentSession reopenSession = store.LightweightSession())
+        {
+            StreamState reopenFence = (await reopenSession.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+            TaskAggregate taskToReopen = (await reopenSession.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: reopenFence.Version, token: cts.Token))!;
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                taskToReopen, runId, worktree.Branch, "Unresolved review comments",
+                FollowUpKind.ReviewFeedback, automatic: false, Now, node.OwnerId);
+            reopenSession.Events.Append(taskId, expectedVersion: reopenFence.Version + 1, reopened);
+            await reopenSession.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession afterReopen = store.QuerySession())
+        {
+            TaskListItem blocked = (await afterReopen.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            blocked.State.Should().Be(TaskState.Blocked, "the dependency is still unmet — h9k pr resolve reopens anyway");
+            blocked.CurrentRunId.Should().Be(runId, "Apply(TaskReopened) keeps this run watched rather than nulling it");
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed, "the merge closeout ran exactly as it does for a Done task");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done,
+            "the follow-up this reopen parked behind is moot now — the pull request already merged");
+
+        // The dependency finally clears. Without the fix, this would flip the task straight back
+        // to Queued and a later dispatch would rerun the whole closeout for a new run id.
+        await using (IDocumentSession dependencySession = store.LightweightSession())
+        {
+            StreamState dependencyFence = (await dependencySession.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+            dependencySession.Events.Append(
+                taskId, expectedVersion: dependencyFence.Version + 1,
+                new Hall9k.Domain.Features.Tasks.Events.TaskDependencyCompleted(taskId, blockerId, [], Now));
+            await dependencySession.SaveChangesAsync(cts.Token);
+        }
+
+        TaskDetails afterDependencyClears = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        afterDependencyClears.State.Should().Be(TaskState.Done,
+            "a dependency clearing late must never resurrect a task whose closeout already finished");
     }
 
     /// <summary>
@@ -2929,7 +2999,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// covers at the aggregate level, seeded here so the closeout monitor can be exercised
     /// against it end to end.
     /// </summary>
-    private static async Task<(Guid TaskId, Guid RunId, Worktree Worktree)> SeedAwaitingReviewWithUnmetDependencyAsync(
+    private static async Task<(Guid TaskId, Guid RunId, Worktree Worktree, Guid BlockerId)> SeedAwaitingReviewWithUnmetDependencyAsync(
         DocumentStore store,
         NodeContext node,
         GitWorktreeManager worktrees,
@@ -2988,7 +3058,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
 
         await session.SaveChangesAsync(cancellationToken);
-        return (taskId, lastClaimRunId, worktree);
+        return (taskId, lastClaimRunId, worktree, blockerId);
     }
 
     /// <summary>

@@ -636,7 +636,8 @@ public sealed class TaskDeciderTests
 
     /// <summary>
     /// Same invariant, reached through the fourth exit: a deliberately-claimed Blocked task that
-    /// completes still carries its open blocker (Complete only checks State == Claimed), and
+    /// completes still carries its open blocker (Complete checks State == Claimed or Blocked —
+    /// the latter only for CloseoutEngine's own merge-observed-while-Blocked case, see below), and
     /// Reopen only checks State == Done — neither ever touches UnmetDependencies — so a closeout-
     /// dispatched follow-up must not resurface the task as Queued while the blocker is still on
     /// record unmet (independent pre-PR review, cycle 2, verify pass).
@@ -655,6 +656,48 @@ public sealed class TaskDeciderTests
 
         task.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
         task.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
+    }
+
+    /// <summary>
+    /// CloseoutEngine's own one case: a task Apply(TaskReopened) landed Blocked behind a still-
+    /// open dependency (h9k pr resolve, keeping CurrentRunId pointing at the reopened run per the
+    /// test above) whose watched pull request then merged anyway. Completing it straight from
+    /// Blocked is what stops a later TaskDependencyCompleted — which only ever acts on a task
+    /// still reading Blocked — from re-queuing a task whose work already shipped, and dispatching
+    /// a redundant closeout a second time (independent pre-PR review, cycle 3, adversarial lens,
+    /// on h9k task start).
+    /// </summary>
+    [Fact]
+    public void Complete_of_a_blocked_task_whose_watched_pull_request_merged_anyway_lands_done()
+    {
+        TaskAggregate task = DeliberatelyClaimedBlockedTask(out Guid blockerId);
+        Guid runId = task.CurrentRunId!.Value;
+        task.Apply(TaskDecider.Complete(task, runId, "https://github.com/x/y/pull/7", Now));
+        task.Apply(TaskDecider.Reopen(
+            task, runId, "task/abc", "Unresolved review comments",
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New()));
+        task.State.Should().Be(TaskState.Blocked, "sanity: the same setup the sibling test above verifies");
+
+        task.Apply(TaskDecider.Complete(task, runId, "https://github.com/x/y/pull/7", Now));
+
+        task.State.Should().Be(TaskState.Done, "the pull request already merged — there is no follow-up left to run");
+        task.PullRequestUrl.Should().Be("https://github.com/x/y/pull/7");
+
+        // Apply(TaskDependencyCompleted) only ever acts on a task still reading Blocked — this is
+        // the guarantee that actually stops the re-queue.
+        task.Apply(new TaskDependencyCompleted(task.Id, blockerId, [], Now));
+        task.State.Should().Be(TaskState.Done, "a dependency clearing late must never resurrect a task closeout already finished");
+    }
+
+    /// <summary>Every other non-Claimed, non-Blocked state still refuses — the widened guard is narrow, not gone.</summary>
+    [Fact]
+    public void Complete_of_a_queued_task_refuses()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.Complete(task, DomainId.New(), "https://github.com/x/y/pull/7", Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*only a claimed task, or a Blocked one*");
     }
 
     [Fact]

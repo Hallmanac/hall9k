@@ -1107,6 +1107,31 @@ public sealed class CloseoutEngine(
         session.Events.Append(run.Id, new PullRequestMerged(run.Id, mergedAt, now));
         session.Events.Append(run.Id, handoff);
         session.Events.Append(run.Id, new RunCompleted(run.Id, now));
+
+        // A Blocked task reaches here only through the one case InspectAndActAsync and
+        // InspectOrphanAsync both admit it for: Apply(TaskReopened) kept CurrentRunId pointing at
+        // this run behind a still-open dependency (h9k pr resolve landing Blocked, Decisions Log
+        // #125's own reopen path), so this merge/close watch kept running with no follow-up ever
+        // dispatched. Leaving the task Blocked here would let a later TaskDependencyCompleted flip
+        // it straight to Queued once that dependency finally clears (Apply(TaskDependencyCompleted)
+        // does that unconditionally); DispatchEngine would then claim it and RunLauncher's own
+        // already-merged guard would decline the dispatch but call this same method a second time
+        // for a brand-new run id, doubling the merge comment, the handoff, and the dependents-unblock
+        // (independent pre-PR review, cycle 3, adversarial lens). Finalizing the task to Done here,
+        // in the same transaction as the run's own completion, closes that door — Apply
+        // (TaskDependencyCompleted) only ever acts on a task still reading Blocked, so a task
+        // already Done from this point on can never be re-queued by a dependency clearing late.
+        if (task.State == TaskState.Blocked)
+        {
+            StreamState? taskFence = await session.Events.FetchStreamStateAsync(task.Id, cancellationToken);
+            if (taskFence is not null)
+            {
+                session.Events.Append(
+                    task.Id, expectedVersion: taskFence.Version + 1,
+                    TaskDecider.Complete(task, run.Id, task.PullRequestUrl, now));
+            }
+        }
+
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
