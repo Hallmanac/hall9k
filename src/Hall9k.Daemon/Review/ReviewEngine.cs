@@ -2058,44 +2058,56 @@ public sealed class ReviewEngine(
         // another exported really did meet both ends), and a RideAlong residual already on the
         // stream at some location must not suppress a genuinely different Fix-dispositioned finding
         // a still-active track reports at that same location, or vice versa.
-        // Cycle-scoped only when forcedRideAlongDisposition resolves to FixedUnreviewed (class
-        // sweep, independent pre-PR review, cycle 1, both lenses' finding #1): that is the one case
-        // where this set reads from the SAME stream bucket alreadyOnStreamFix below also reads from
-        // and writes into, so an unrelated, coincidentally-same-place FixedUnreviewed record from
-        // an earlier cycle could otherwise silently absorb a still-active track's genuinely new
-        // ride-along-turned-fixed-unreviewed finding this cycle, the identical shape of drop.
-        // Left unscoped when it resolves to RideAlong: two ride-along reports at the same place, in
-        // any two cycles, are the same below-the-fix-bar nit recurring — never a meaningfully
-        // different defect the way a Fix-dispositioned finding's severity can change between
-        // readings — so collapsing them across cycles there is the correct, intended behavior
-        // DeriveResidualTally's own PerDefect already applies to a settled RideAlong residual.
+        // Matched against ANY cycle whose own residual already carries this same forced
+        // disposition, in both the RideAlong and the FixedUnreviewed branches alike (independent
+        // pre-PR review, cycle 3, conformance finding #2, which named this branch alongside
+        // alreadyOnStreamFix below as the identical defect). Two reports of one place under the
+        // SAME disposition are one defect, whatever cycle either one landed on —
+        // DeriveResidualTally's own PerDefect already collapses them that way on rehydration — so
+        // this cycle's own inline count has to anticipate that collapse rather than force a second
+        // one in. This can never resurrect the reactivated-track drop a same-cycle-only scope once
+        // existed to close (class sweep, independent pre-PR review, cycle 1, both lenses' finding
+        // #1): that drop was a stale FixedUnreviewed record silently absorbing a genuinely NEW
+        // finding under a DIFFERENT disposition, and matching here is scoped to the SAME
+        // disposition only — cross-disposition confusion is a fact this filter's own outer
+        // `residual.Disposition == forcedRideAlongDisposition` check already rules out regardless
+        // of cycle.
         IReadOnlyList<ReviewResidual> alreadyOnStreamRideAlong =
-            [.. run.ReviewResiduals.Where(residual =>
-                residual.Disposition == forcedRideAlongDisposition
-                && (forcedRideAlongDisposition == ReviewResidualDisposition.RideAlong
-                    || residual.Cycle == run.ReviewCycle))];
-        // Matched against BOTH Fix-shaped dispositions, never against this cycle's own
-        // forcedFixDisposition alone (independent pre-PR review, cycle 1, both lenses): a track
-        // that concludes normally this same cycle always records its own Fix findings as
-        // FixedUnreviewed, whether or not a fix session actually read them
-        // (ReviewTrackPolicy.Decide always uses that disposition — a separate, pre-existing,
-        // routed-away defect this branch does not fix). So when no fix session ran this cycle and
-        // forcedFixDisposition is Unfixed, a Fix finding a sibling track already concluded on this
-        // cycle can already be on the stream as FixedUnreviewed; checking only Unfixed missed it
-        // and forced the identical finding a second time under a contradictory disposition —
-        // ResidualsFixed and ResidualsUnfixed both counting the same defect.
-        // Scoped to THIS cycle (independent pre-PR review, cycle 1, both lenses' finding #1): a
-        // track ReviewTrackReactivated later reawakens can leave a stale FixedUnreviewed residual
-        // from the cycle it first (wrongly) concluded on still sitting at the same location. Without
-        // the cycle bound, that stale record silently absorbs a genuinely new Unfixed finding the
-        // reawakened track reports years — or just cycles — later at the identical place, exactly
-        // the silent drop this method exists to close. A same-cycle match is still the only one this
-        // sweep ever needs: it exists solely to catch a sibling track's OWN this-cycle conclusion.
+            [.. run.ReviewResiduals.Where(residual => residual.Disposition == forcedRideAlongDisposition)];
+        // Matched against BOTH Fix-shaped dispositions when scoped to this cycle (independent
+        // pre-PR review, cycle 1, both lenses): a track that concludes normally this same cycle
+        // always records its own Fix findings as FixedUnreviewed, whether or not a fix session
+        // actually read them (ReviewTrackPolicy.Decide always uses that disposition — a separate,
+        // pre-existing, routed-away defect this branch does not fix). So when no fix session ran
+        // this cycle and forcedFixDisposition is Unfixed, a Fix finding a sibling track already
+        // concluded on this cycle can already be on the stream as FixedUnreviewed; checking only
+        // Unfixed missed it and forced the identical finding a second time under a contradictory
+        // disposition — ResidualsFixed and ResidualsUnfixed both counting the same defect.
+        // That same-cycle pair is cycle-scoped (independent pre-PR review, cycle 1, both lenses'
+        // finding #1): a track ReviewTrackReactivated later reawakens can leave a stale
+        // FixedUnreviewed residual from the cycle it first (wrongly) concluded on still sitting at
+        // the same location, and an unscoped match there would let that stale record silently
+        // absorb a genuinely new Unfixed finding the reawakened track reports years — or just
+        // cycles — later at the identical place, exactly the silent drop this method exists to
+        // close.
+        // Matched across EVERY cycle, though, whenever a residual's own disposition already equals
+        // what this cycle is about to force (independent pre-PR review, cycle 3, conformance
+        // finding #2): a sibling track that concluded normally on an EARLIER cycle already wrote
+        // its own FixedUnreviewed (or Unfixed) residual then, and DeriveResidualTally's own
+        // per-place dedup collapses it against a same-place, same-disposition entry forced here
+        // regardless of cycle — so this cycle's own inline count has to anticipate that collapse
+        // rather than add a second one for the same place (RunAggregate.PerDefect's own doc: "the
+        // tracks conclude separately, so both lenses can end on the same defect … this count
+        // collapses per place as well"). This can never resurrect the reactivated-track case just
+        // above: a stale residual's disposition there is FixedUnreviewed while the reawakened
+        // track's forced disposition is Unfixed (or the reverse), so the two never match on this
+        // clause.
         IReadOnlyList<ReviewResidual> alreadyOnStreamFix =
             [.. run.ReviewResiduals.Where(residual =>
-                residual.Cycle == run.ReviewCycle
-                && (residual.Disposition == ReviewResidualDisposition.FixedUnreviewed
-                    || residual.Disposition == ReviewResidualDisposition.Unfixed))];
+                (residual.Cycle == run.ReviewCycle
+                    && (residual.Disposition == ReviewResidualDisposition.FixedUnreviewed
+                        || residual.Disposition == ReviewResidualDisposition.Unfixed))
+                || residual.Disposition == forcedFixDisposition)];
 
         List<(ReviewLens Lens, ReviewResidual Residual)> forced = [];
         // Reference identity, not SamePlace: a Verify pass's own Findings list is the same
@@ -2130,28 +2142,50 @@ public sealed class ReviewEngine(
                     continue;
                 }
 
-                // A finding tagged for a track that has already concluded (ReviewTrackPolicy.Decide
-                // normally concluding it this very cycle, on a Verify pass this still-active lens
-                // also covers) was already handed to that track's own conclusion and already has
-                // its own residual on the stream. SamePlace cannot be trusted to catch that
-                // duplicate below: it deliberately treats two blank or lineless locations as
-                // different defects (RouteFindingsAsync's own doc says why), so an unplaced finding
-                // whose tagged track already concluded would otherwise be force-recorded a second
-                // time here, mis-attributed to whichever other active lens this outer loop happens
-                // to be iterating (independent pre-PR review, cycle 1, adversarial finding #2).
-                // Skipping it outright, before any location comparison, is the only thing that
-                // works for both a placed and an unplaced repeat alike.
-                if (finding.Track is { } concludedTrack && !run.ActiveReviewLenses.Contains(concludedTrack))
+                // A finding tagged for a track that has already concluded ON THIS CYCLE
+                // (ReviewTrackPolicy.Decide normally concluding it this very cycle, on a Verify
+                // pass this still-active lens also covers) was already handed to that track's own
+                // conclusion and already has its own residual on the stream. SamePlace cannot be
+                // trusted to catch that duplicate below: it deliberately treats two blank or
+                // lineless locations as different defects (RouteFindingsAsync's own doc says why),
+                // so an unplaced finding whose tagged track already concluded would otherwise be
+                // force-recorded a second time here, mis-attributed to whichever other active lens
+                // this outer loop happens to be iterating (independent pre-PR review, cycle 1,
+                // adversarial finding #2). Skipping it outright, before any location comparison, is
+                // the only thing that works for both a placed and an unplaced repeat alike.
+                // Bounded to THIS cycle's own conclusion, never an earlier one (independent pre-PR
+                // review, cycle 3, both lenses' finding #1): ConcludedReviewTracks holds each
+                // lens's own latest conclusion only — Apply(ReviewTrackConcluded) replaces it in
+                // place, and Apply(ReviewTrackReactivated) removes it outright — so an earlier-cycle
+                // entry here means the tagged track concluded cycles ago and was never reactivated
+                // since, which carries no residual for THIS still-active lens's own restated
+                // finding: that tag is a Verify pass restating "whichever track that finding was
+                // already reported under" (AgentPromptBuilder.AppendVerifyTrackTagContract), not
+                // proof a residual for it exists on the stream today. Skipping it there dropped it
+                // outright, since the fallback below only ever credits the currently-iterating
+                // active lens.
+                if (finding.Track is { } concludedTrack
+                    && !run.ActiveReviewLenses.Contains(concludedTrack)
+                    && run.ConcludedReviewTracks.Any(
+                        outcome => outcome.Lens == concludedTrack && outcome.Cycle == run.ReviewCycle))
                 {
                     continue;
                 }
 
                 // Attribute to the track the reviewer's own tag names, when that track is still
                 // active on this run; fall back to iteration order — the lens whose pass covers
-                // this finding first — only when the finding is untagged (cycle-3 finding: this
-                // used to always credit whichever active lens the outer loop reached first,
-                // regardless of what the finding's own track= tag actually said).
-                ReviewLens attributedLens = finding.Track ?? lens;
+                // this finding first — when the finding is untagged (cycle-3 finding: this used to
+                // always credit whichever active lens the outer loop reached first, regardless of
+                // what the finding's own track= tag actually said) or names a track that is no
+                // longer active (independent pre-PR review, cycle 3, both lenses' finding #1: the
+                // guard above only screens out THIS cycle's own already-recorded conclusion, so a
+                // tag naming a track that concluded cycles ago and was never reactivated still
+                // reaches here — crediting it to that long-gone track would attribute a residual to
+                // a lens this cycle's ReviewTrackConcluded loop below never iterates, silently
+                // dropping it exactly as skipping it outright would).
+                ReviewLens attributedLens = finding.Track is { } track && run.ActiveReviewLenses.Contains(track)
+                    ? track
+                    : lens;
 
                 ReviewResidualDisposition disposition = finding.Disposition == ReviewFindingDisposition.Fix
                     ? forcedFixDisposition
