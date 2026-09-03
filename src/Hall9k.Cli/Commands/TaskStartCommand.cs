@@ -1,9 +1,7 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Worktrees;
-using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -309,7 +307,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                     + (unmet.Count == 1 ? "y" : "ies") + " (--acknowledge-unmet-dependencies):[/]");
                 foreach (TaskDependency dependency in unmet)
                 {
-                    AnsiConsole.MarkupLineInterpolated($"[yellow]  - {dependency.Describe()}[/]");
+                    // ExternalText.OneLineMarkup, not MarkupLineInterpolated's own hole-escaping
+                    // alone (adversarial review, cycle 1): a dependency adopted with
+                    // --from-issue carries an objective anyone who can file an issue in that
+                    // repo wrote, and MarkupLineInterpolated only neutralises Spectre's own
+                    // markup syntax — it does nothing to strip a terminal control character or a
+                    // bidirectional override, which is exactly the distinction ExternalText
+                    // exists to draw, on the one screen whose whole purpose is getting the human
+                    // to confirm what they are overriding.
+                    AnsiConsole.MarkupLine($"[yellow]  - {ExternalText.OneLineMarkup(dependency.Describe())}[/]");
                 }
             }
         }
@@ -401,9 +407,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         if (unmet.Count > 0 && !acknowledgeUnmetDependencies)
         {
+            // Same class-sweep finding as the AnsiConsole warning list below (adversarial
+            // review, cycle 1): Program.cs prints this message with plain
+            // Console.Error.WriteLineAsync, so there is no Spectre markup to escape here, but a
+            // control character or bidirectional override in an adopted dependency's objective
+            // would reach the terminal exactly as raw. ExternalText.OneLine strips it without
+            // the markup-escaping OneLineMarkup would add for a surface that never parses markup.
             throw new DomainBusinessRuleException(
                 $"Task {task.Id} depends on {unmet.Count} task(s) that have not closed out: "
-                + string.Join("; ", unmet.Select(dependency => dependency.Describe())) + ". "
+                + string.Join("; ", unmet.Select(dependency => ExternalText.OneLine(dependency.Describe()))) + ". "
                 + "The platform advises rather than refuses here: "
                 + $"h9k task start {task.Id} --acknowledge-unmet-dependencies to start it anyway, once you have "
                 + $"confirmed that is what you want, or h9k task assign {task.Id} to hold it Blocked until they "
