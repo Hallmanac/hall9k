@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Epic;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
@@ -258,11 +259,19 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             .ToListAsync(cancellationToken);
         if (runs.Count > 0)
         {
+            // Loaded once for every run, not just the newest (task: h9k task show surfaces each
+            // run's coordinates): the worktree path and branch never change after dispatch, so
+            // this is the one read that answers both the table's new columns and the sessions
+            // block below, rather than a per-row LoadAsync each.
+            Dictionary<Guid, RunDetails> runDetailsById = (await session.LoadManyAsync<RunDetails>(
+                cancellationToken, [.. runs.Select(r => r.Id)])).ToDictionary(r => r.Id);
+
             AnsiConsole.MarkupLine("\n[bold]Runs[/]");
             Table runsTable = new Table().Border(TableBorder.Rounded);
-            runsTable.AddColumns("Run", "Gen", "State", "Model", "Dispatched", "PR", "Gates");
+            runsTable.AddColumns("Run", "Gen", "State", "Model", "Dispatched", "PR", "Gates", "Worktree", "Branch");
             foreach (RunListItem run in runs)
             {
+                RunDetails? runDetails = runDetailsById.GetValueOrDefault(run.Id);
                 // A run dispatched before the model chain existed recorded none; "-" says
                 // unknown rather than naming a model the run may never have used.
                 runsTable.AddRow(
@@ -272,14 +281,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     (run.Model == AgentModel.Unknown ? "-" : run.Model.Value).EscapeMarkup(),
                     run.DispatchedAt.ToLocalTime().ToString("g").EscapeMarkup(),
                     (run.PullRequestUrl ?? "-").EscapeMarkup(),
-                    FormatGateDurations(run.GateDurations));
+                    FormatGateDurations(run.GateDurations),
+                    (runDetails?.WorktreePath.IsNotBlank() == true ? runDetails.WorktreePath : "-").EscapeMarkup(),
+                    (runDetails?.Branch.IsNotBlank() == true ? runDetails.Branch : "-").EscapeMarkup());
             }
 
             AnsiConsole.Write(runsTable);
-            RunDetails? newestRun = await session.LoadAsync<RunDetails>(runs[^1].Id, cancellationToken);
+            RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
             WriteReviewOutcome(newestRun);
             WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
+            await WriteSessionsAsync(session, runs, runDetailsById, cancellationToken);
             await WriteGateDurationAnomaliesAsync(session, details.ProjectId, runs[^1], cancellationToken);
         }
 
@@ -491,6 +503,75 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.MarkupLine($"  {line}");
         }
     }
+
+    /// <summary>
+    /// The session identities each run's stream actually recorded (task: h9k task show surfaces
+    /// each run's coordinates), so stepping into or contacting a run's agents needs no
+    /// archaeology: the name printed here is the exact name that session's Claude Code process
+    /// launched under (verified against `claude --help` and empirically —
+    /// <see cref="Hall9k.Domain.Features.Run.SessionRoleName"/>'s own doc has the mechanism),
+    /// which is what another Claude Code session addresses it by. Liveness is observed the same
+    /// way the phase line already observes it (<see cref="ProcessSessionObserver"/>) — honest
+    /// about a process this machine cannot check rather than assuming either way.
+    /// <para>
+    /// Only a run whose stream last recorded an in-flight session prints anything here: a
+    /// finished run's <see cref="RunDetails.ActiveSessions"/> is cleared the moment its session
+    /// ended (<see cref="RunDetailsProjection"/>'s own doc), so silence for an older run is the
+    /// honest reading of "nothing was running the last time this run's stream was touched," not
+    /// a gap in this display.
+    /// </para>
+    /// </summary>
+    private static async Task WriteSessionsAsync(
+        IQuerySession session, IReadOnlyList<RunListItem> runs,
+        IReadOnlyDictionary<Guid, RunDetails> runDetailsById, CancellationToken cancellationToken)
+    {
+        List<(RunListItem Run, RunDetails Details)> withSessions = [.. runs
+            .Select(run => (Run: run, Details: runDetailsById.GetValueOrDefault(run.Id)))
+            .Where(pair => pair.Details is { ActiveSessions.Count: > 0 })
+            .Select(pair => (pair.Run, Details: pair.Details!))];
+        if (withSessions.Count == 0)
+        {
+            return;
+        }
+
+        Guid[] nodeIds = [.. withSessions.Select(pair => pair.Details.NodeId).Distinct()];
+        Dictionary<Guid, string> nodeMachines = (await session.Query<NodeDetails>()
+                .Where(n => n.Id.IsOneOf(nodeIds))
+                .ToListAsync(cancellationToken))
+            .ToDictionary(n => n.Id, n => n.MachineName);
+        string thisMachine = Environment.MachineName;
+
+        AnsiConsole.MarkupLine("\n[bold]Sessions[/]");
+        foreach ((RunListItem run, RunDetails details) in withSessions)
+        {
+            bool runOnThisMachine = nodeMachines.GetValueOrDefault(details.NodeId) == thisMachine;
+            foreach (ActiveSession active in details.ActiveSessions)
+            {
+                bool onThisMachine = active.MachineName.IsNotBlank()
+                    ? active.MachineName == thisMachine
+                    : runOnThisMachine;
+                SessionLiveness liveness = ProcessSessionObserver.Instance.Observe(
+                    active.ProcessId, active.StartedAt, onThisMachine);
+                string name = active.Name.IsNotBlank() ? active.Name : "-";
+                AnsiConsole.MarkupLine(
+                    $"  [dim]{TaskListCommand.ShortId(run.Id)}[/]  {name.EscapeMarkup()}  "
+                    + $"pid {active.ProcessId}  {LivenessMarkup(liveness)}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The same three phrases <see cref="TaskPhase"/>'s own liveness markup uses (its mapping is
+    /// private to that record), so a session named here reads identically to the phase line's own
+    /// "session alive" / "the recorded process is gone" / "session liveness not observed here" —
+    /// one vocabulary for what was actually observed, not two that could drift apart.
+    /// </summary>
+    private static string LivenessMarkup(SessionLiveness liveness) => liveness switch
+    {
+        SessionLiveness.Alive => "[dim]session alive[/]",
+        SessionLiveness.Gone => "[red]the recorded process is gone[/]",
+        _ => "[dim]session liveness not observed here[/]",
+    };
 
     /// <summary>
     /// The residuals that were meant to be routed away — to a draft bug task or the standing
