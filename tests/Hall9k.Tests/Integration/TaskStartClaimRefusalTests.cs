@@ -368,6 +368,59 @@ public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClas
         details.DependencyOverrideAcknowledged.Should().BeTrue();
     }
 
+    /// <summary>
+    /// The model chain reads the node's per-role and platform-default tiers through
+    /// OperatingSettingsResolver — the same durable settings h9k config show renders — rather than
+    /// bottoming out at AgentModel.PlatformFallback on the false premise that the CLI cannot reach
+    /// them (independent pre-PR review, cycle 1, both lenses): a node with
+    /// Hall9k__DefaultModel set resolves a start-it-mine session to that value, exactly as a
+    /// dispatcher-launched build on the same node would.
+    /// </summary>
+    [Fact]
+    public async Task A_queued_task_resolves_the_platform_default_model_from_the_environment()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
+        const string configuredDefaultModel = "claude-sonnet-5";
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+            seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(taskId, projectId, "Prove the model chain reads the node's own default",
+                    ["it is done"], TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        string? previousDefaultModel = Environment.GetEnvironmentVariable($"{OperatingSettingsResolver.EnvironmentPrefix}DefaultModel");
+        Environment.SetEnvironmentVariable($"{OperatingSettingsResolver.EnvironmentPrefix}DefaultModel", configuredDefaultModel);
+        Guid runId;
+        try
+        {
+            runId = await StartAsync(store, taskId, ownerId, acknowledgeUnmetDependencies: false, cts.Token);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable($"{OperatingSettingsResolver.EnvironmentPrefix}DefaultModel", previousDefaultModel);
+        }
+
+        await using IQuerySession verify = store.QuerySession();
+        RunDetails run = (await verify.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.Model.Value.Should().Be(configuredDefaultModel,
+            "the node's own configured default, not AgentModel.PlatformFallback, is what a dispatcher-launched build on this node would resolve to as well");
+    }
+
     private string CreateRepository()
     {
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-start-claim-{Guid.NewGuid():N}");
