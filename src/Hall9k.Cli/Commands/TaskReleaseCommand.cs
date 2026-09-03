@@ -60,9 +60,11 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             ? task.CurrentRunId
             : null;
         bool supersedeRun = false;
+        RunDetails? releasedRun = null;
         if (releasedRunId is { } currentRunId)
         {
             RunDetails? run = await session.LoadAsync<RunDetails>(currentRunId, cancellationToken);
+            releasedRun = run;
             if (run is null)
             {
                 // ClaimAndCutAsync commits TaskClaimed, then cuts the worktree, and only then
@@ -90,14 +92,20 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseInteractiveClaim(
             task, DateTimeOffset.UtcNow));
 
-        if (supersedeRun && releasedRunId is { } supersededRunId)
+        if (supersedeRun && releasedRunId is { } supersededRunId && releasedRun is { } supersededRun)
         {
             // Otherwise this run reads Running forever: it holds no TaskLease (an interactive
             // claim writes none) and its NodeId is the Guid.Empty sentinel, so neither
             // AdoptOrphansAsync's NodeId filter nor SweepExpiredLeasesAsync's lease scan will
             // ever retire it (adversarial review, cycle 1) — mirrors the lease-expiry requeue's
             // own retirement of the run it displaces (DispatchEngine.cs).
-            session.Events.Append(supersededRunId, new RunSuperseded(supersededRunId, task.LeaseGeneration + 1, DateTimeOffset.UtcNow));
+            DateTimeOffset supersededAt = DateTimeOffset.UtcNow;
+            // Release is only for a claim nothing has been done in yet, but a start-it-mine
+            // claim can reach here with tokens already spent (the commits-beyond-base check
+            // above only catches committed work) — its own stream.jsonl is otherwise never read
+            // back once this run is retired (conformance review, cycle 1, on h9k task start).
+            HeadlessTokenRecovery.AppendIfRecorded(session, supersededRun, supersededAt);
+            session.Events.Append(supersededRunId, new RunSuperseded(supersededRunId, task.LeaseGeneration + 1, supersededAt));
         }
         try
         {

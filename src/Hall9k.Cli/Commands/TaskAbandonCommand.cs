@@ -56,7 +56,12 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
             RunDetails? run = await session.LoadAsync<RunDetails>(currentRunId, cancellationToken);
             if (run is not null && (run.State == RunState.Dispatched || run.State == RunState.Running))
             {
-                session.Events.Append(currentRunId, new RunSuperseded(currentRunId, task.LeaseGeneration, DateTimeOffset.UtcNow));
+                DateTimeOffset supersededAt = DateTimeOffset.UtcNow;
+                // A start-it-mine claim abandoned mid-run had already spent tokens its own
+                // stream.jsonl is the only record of — otherwise never read back once this run
+                // is retired (conformance review, cycle 1, on h9k task start).
+                HeadlessTokenRecovery.AppendIfRecorded(session, run, supersededAt);
+                session.Events.Append(currentRunId, new RunSuperseded(currentRunId, task.LeaseGeneration, supersededAt));
             }
         }
 

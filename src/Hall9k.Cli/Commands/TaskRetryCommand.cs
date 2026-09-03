@@ -63,6 +63,15 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
             task, previousRunId, branch,
             settings.Reason ?? "Retry requested via h9k task retry.",
             DateTimeOffset.UtcNow, context.OwnerId));
+        // The failed run's own stream.jsonl, if it ever launched a headless session, is
+        // otherwise never read back once this run is left behind by the retry — a start-it-mine
+        // claim's only other read of it is h9k task deliver's own, which a failed run never
+        // reaches (conformance review, cycle 1, on h9k task start).
+        if (previousRun is not null)
+        {
+            HeadlessTokenRecovery.AppendIfRecorded(session, previousRun, DateTimeOffset.UtcNow);
+        }
+
         session.Delete<TaskLease>(taskId);
         try
         {
