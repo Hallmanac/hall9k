@@ -120,8 +120,8 @@ internal static class PullRequestBody
     /// <summary>
     /// What the run left unfixed, unlike a ride-along, because the platform had already decided it
     /// met the fix bar — an in-scope medium or high — and the loop simply ran out before a fix
-    /// session ever read it (Decisions Log #87, adversarial review, routed finding at
-    /// ReviewEngine.cs:1146: the shape it exists to name is a human resolving a capped park with
+    /// session ever read it (Decisions Log #87, adversarial review, the routed finding that opened
+    /// this task: the shape it exists to name is a human resolving a capped park with
     /// <c>h9k review resolve --merge-ready</c>, so this is the one line on the pull request itself
     /// saying so, rather than a settled line that reads as though only polish was left behind).
     /// Named the same way <see cref="RideAlongNote"/> names its own tally, for the same reason.

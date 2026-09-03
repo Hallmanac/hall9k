@@ -809,7 +809,14 @@ public sealed record ReviewSettled(      // the loop ended; PullRequestOpener ma
     int ResidualsRideAlong = 0,          // a ride-along (log #87) still unclaimed at settle time;
                                          //   0 for a stream that predates ride-alongs
     IReadOnlyList<ReviewRideAlongFinding>? // each ride-along named (severity + location), not just
-        RideAlongFindings = null);       //   counted (independent review, cycle 2); null if it predates this field
+        RideAlongFindings = null,        //   counted (independent review, cycle 2); null if it predates this field
+    int ResidualsUnfixed = 0,            // a Fix-dispositioned finding never handed to a fix
+                                         //   session (the routed finding that opened this task):
+                                         //   the opposite fact from a ride-along, so it is never
+                                         //   folded into ResidualsRideAlong; 0 for a stream that
+                                         //   predates the Unfixed disposition
+    IReadOnlyList<ReviewUnfixedFinding>? // each one named the same way RideAlongFindings names
+        UnfixedFindings = null);         //   its own tally; null if it predates this field
 public sealed record ReviewParked(       // budget spent, dispute, or no verdict: the human owns the
     Guid Id,                             // diff. Task stays Claimed, lease retained (the expiry sweep
     string Reason,                       // refreshes a parked lease, never requeues it — log #28).
@@ -1078,6 +1085,23 @@ track concludes. Either way
 per distinct location the same way it already does for `Routed` and `FixedUnreviewed`, and
 `ReviewSettled` and `h9k task show` report the count alongside the existing fixed/routed ones —
 recorded, never fixed, no cycle ever spent earning it one.
+
+**`ReviewResidualDisposition.Unfixed` is the opposite fact from a ride-along** (the routed
+finding that opened this task): a `Fix`-dispositioned finding — the platform's own decision that
+it had to be fixed here, not polish that never met the fix bar — belonging to a track that was
+still `Continues: true` (most often capped) when the run settled, so no fix session ever read it.
+`ReviewTrackPolicy.Decide` only ever turns a `fix` finding into a `FixedUnreviewed` residual on
+the branch where its own track concludes; a still-active track's `Fix` findings have no such
+residual until `ReviewEngine.SettleAsync`'s own forced-residual sweep, run when a human resolves
+a capped park with `h9k review resolve --merge-ready`, picks them up alongside the ride-alongs it
+was already force-concluding — `ReviewResidualDisposition.FixedUnreviewed` when a fix session
+actually ran this exact cycle over the merged findings document, `ReviewResidualDisposition.Unfixed`
+when none did, mirroring the ride-along split above rather than folding into it (recording it as
+`RideAlong` would misstate a finding the platform had already decided met the fix bar as one that
+never did). `RunAggregate.DeriveResidualTally` collapses `Unfixed` residuals per distinct location
+the same way it does for a ride-along, and `ReviewSettled` and `h9k task show` name each one
+(`ResidualsUnfixed`/`UnfixedFindings`) alongside the fixed/routed/ride-along counts — a defect
+graded above the fix bar that the loop simply never reached.
 
 **What stays per cycle rather than per track**: one fix session over every live track's
 findings, and one verdict re-prompt however many passes ended without a `VERDICT:` line or

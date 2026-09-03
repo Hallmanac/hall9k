@@ -550,8 +550,8 @@ public sealed class RunAggregateTests
         new(lens, 1, ReviewSeverity.Low, ReviewFindingScope.InScope, ReviewResidualDisposition.RideAlong, location);
 
     /// <summary>
-    /// The opposite fact from a ride-along (adversarial review, routed finding at
-    /// ReviewEngine.cs:1146): an <see cref="ReviewResidualDisposition.Unfixed"/> residual is a
+    /// The opposite fact from a ride-along (adversarial review, the routed finding that opened
+    /// this task): an <see cref="ReviewResidualDisposition.Unfixed"/> residual is a
     /// Fix-dispositioned finding — the platform's own decision that it had to be fixed here — that
     /// never reached a fix session. It counts, and is named, exactly like a ride-along, on its own
     /// tally so folding it into RideAlong's count never has to happen.

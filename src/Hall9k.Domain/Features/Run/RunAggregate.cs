@@ -1028,13 +1028,14 @@ public sealed class RunAggregate
     /// one on no evidence at all — the same reading the placed dedup gives an unplaced finding.
     /// </para>
     /// <para>
-    /// The four counts are deliberately not deduplicated against each other. Only the routing
+    /// The five counts are deliberately not deduplicated against each other. Only the routing
     /// pair is, because a failed routing and its retry are one export attempted twice. A defect
     /// one track fixed unreviewed and another exported really did meet both ends, and a human
     /// deciding how far to trust this pull request should be told about both — the same reading
-    /// applies to a ride-along (Decisions Log #87): it collapses per distinct location within
-    /// itself, exactly as <see cref="ReviewResidualDisposition.RideAlong"/>'s own doc says, but
-    /// never against the other three.
+    /// applies to a ride-along (Decisions Log #87) and to an <see cref="ReviewResidualDisposition.Unfixed"/>
+    /// finding (adversarial review, the routed finding that opened this task): each collapses per
+    /// distinct location within itself, exactly as <see cref="ReviewResidualDisposition.RideAlong"/>'s
+    /// own doc says, but never against the other four.
     /// </para>
     /// </summary>
     public ReviewResidualTally DeriveResidualTally()

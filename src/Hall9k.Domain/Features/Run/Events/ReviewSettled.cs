@@ -37,7 +37,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </para>
 /// <para>
 /// <see cref="ResidualsUnfixed"/> is the opposite fact from <see cref="ResidualsRideAlong"/>
-/// (adversarial review, routed finding at ReviewEngine.cs:1146): a
+/// (adversarial review, the routed finding that opened this task): a
 /// <see cref="ReviewFindingDisposition.Fix"/>-dispositioned finding — the platform's own decision
 /// that this one had to be fixed here — whose track was still active (most often capped) when the
 /// run settled without a fix session ever reading it, typically a human resolving a capped park
