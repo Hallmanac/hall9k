@@ -136,9 +136,11 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         if (assignee is null || assigned is null)
         {
             // h9k task work is refused outright for a pr-review task (TaskWorkCommand.ClaimAndCutAsync:
-            // "it has no diff of its own for an interactive session to build"), so the hint is named
-            // only where the claim would actually be accepted (independent pre-PR review, cycle 3).
-            string interactiveClaimHint = task.Type == TaskType.PrReview
+            // "it has no diff of its own for an interactive session to build") and for a task with an
+            // open dependency (PrepareInteractiveClaimFromPublished holds an interactive claim to the
+            // same bar h9k task assign already holds an assignment to), so the hint is named only
+            // where the claim would actually be accepted (independent pre-PR review, cycle 1 and 3).
+            string interactiveClaimHint = task.Type == TaskType.PrReview || graph.Resolve(task.BlockedBy).Any(dependency => !dependency.IsClosedOut)
                 ? string.Empty
                 : $" [dim](or h9k task work {shortId} to claim and work it yourself)[/]";
             AnsiConsole.MarkupLine(

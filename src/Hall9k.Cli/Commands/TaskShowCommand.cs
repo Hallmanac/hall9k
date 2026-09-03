@@ -202,10 +202,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.MarkupLine($"  • {criterion.EscapeMarkup()}");
         }
 
+        bool hasOpenDependency = false;
         if (details.BlockedBy.Count > 0)
         {
             IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
                 session, details.BlockedBy, cancellationToken);
+            hasOpenDependency = dependencies.Any(dependency => dependency.Blocks);
             AnsiConsole.MarkupLine(
                 "\n[bold]Blocked by[/] [dim](met only at true closeout: the pull request merged)[/]");
             // Each blocker is named in the lifecycle vocabulary, not the persisted one
@@ -295,7 +297,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         await WriteHandoffAsync(session, details, runs, cancellationToken);
 
-        AnnounceNextStep(details);
+        AnnounceNextStep(details, hasOpenDependency);
 
         if (details.State == TaskState.Failed)
         {
@@ -825,14 +827,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// steps (Decisions Log #34), so every state says which one it is waiting for rather than
     /// leaving the reader to remember the graph.
     /// </summary>
-    private static void AnnounceNextStep(TaskDetails details)
+    private static void AnnounceNextStep(TaskDetails details, bool hasOpenDependency)
     {
         string shortId = TaskListCommand.ShortId(details.Id);
         // h9k task work is refused outright for a pr-review task (TaskWorkCommand.ClaimAndCutAsync:
-        // "it has no diff of its own for an interactive session to build"), so the hint is named
-        // only where the claim would actually be accepted (DescribeDoneRemedy's own rule,
-        // independent pre-PR review, cycle 3).
-        string interactiveClaimHint = details.Type == TaskType.PrReview
+        // "it has no diff of its own for an interactive session to build") and for a task with an
+        // open dependency (PrepareInteractiveClaimFromPublished holds an interactive claim to the
+        // same bar h9k task assign already holds an assignment to), so the hint is named only
+        // where the claim would actually be accepted (DescribeDoneRemedy's own rule, independent
+        // pre-PR review, cycle 3 and adversarial lens cycle 1).
+        string interactiveClaimHint = details.Type == TaskType.PrReview || hasOpenDependency
             ? string.Empty
             : $" (or h9k task work {shortId} to claim and work it yourself)";
         string? next = details.State.Value switch

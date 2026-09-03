@@ -273,6 +273,149 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
         final.AssignedOwnerId.Should().Be(ownerId);
     }
 
+    /// <summary>
+    /// The atomic Published entry's own headline behavior (task 688a1ccf-h9k), driven through
+    /// <see cref="TaskWorkCommand.ClaimAndCutAsync"/> itself rather than the pure
+    /// <see cref="TaskWorkCommand.PrepareInteractiveClaimFromPublished"/> helper both the
+    /// conformance and adversarial review passes point at
+    /// (<see cref="TaskWorkClaimConcurrencyTests"/> already proves the helper's own math and the
+    /// race arbitration; nothing before this pinned the production wiring around it — the
+    /// dependency load at <c>ClaimAndCutAsync</c>'s own Published branch, the
+    /// <c>fence.Version + 2</c> fencing, and the two-event <c>Append</c> — against a real
+    /// Published task). Mirrors <see cref="A_queued_task_assigned_to_the_operator_appends_exactly_one_event"/>'s
+    /// shape but seeds Published only, with no prior assignment, so the claim itself must both
+    /// assign and claim.
+    /// </summary>
+    [Fact]
+    public async Task A_published_task_is_assigned_and_claimed_atomically_in_two_events()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Prove the Published entry appends assign and claim atomically",
+                ["it is done"], TaskType.Chore, null, null, null, Now, ownerId);
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, ownerId);
+
+            seed.Events.StartStream<TaskAggregate>(taskId, added, published);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            StreamState fence = (await session.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cts.Token))!;
+            task.State.Should().Be(TaskState.Published, "the entry under test is the Published one, not Queued");
+            BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
+
+            // See the class-level comment on the Queued-entry twin above: ClaimAndCutAsync's
+            // success path rings the doorbell, which resolves off HALL9K_CONNECTION_STRING
+            // rather than this fixture.
+            string? previousConnectionString =
+                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+            try
+            {
+                await TaskWorkCommand.ClaimAndCutAsync(
+                    store, session, task, fence, context, DomainId.New(),
+                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim), cts.Token);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
+            }
+        }
+
+        await using IQuerySession verify = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await verify.Events.FetchStreamAsync(taskId, token: cts.Token);
+        // Add + Publish seeded the stream (2 events); the atomic Published entry must add exactly
+        // two more — TaskAssigned then TaskClaimed, the shape the Queued entry's own twin above
+        // asserts must NOT appear beside its own single TaskClaimed.
+        stream.Should().HaveCount(4, "the Published entry appends the assignment and the claim together");
+        stream[^2].Data.Should().BeOfType<TaskAssigned>();
+        stream[^1].Data.Should().BeOfType<TaskClaimed>();
+
+        TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        final.State.Should().Be(TaskState.Claimed);
+        final.IsInteractiveClaim.Should().BeTrue();
+        final.AssignedOwnerId.Should().Be(ownerId);
+    }
+
+    /// <summary>
+    /// The dependency refusal the Published entry's own branch introduces
+    /// (<see cref="TaskWorkCommand.ClaimAndCutAsync"/> loads the dependency snapshot for a
+    /// Published task before either event is built), driven through <c>ClaimAndCutAsync</c>
+    /// itself rather than <see cref="TaskWorkCommand.PrepareInteractiveClaimFromPublished"/>
+    /// directly, so this also pins the real <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskDependencyQuery"/>
+    /// read the earlier refusal tests in this class never exercise (they hand-build the
+    /// <see cref="TaskDependency"/> list themselves).
+    /// </summary>
+    [Fact]
+    public async Task A_published_task_with_an_open_dependency_is_refused_through_ClaimAndCutAsync()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid blockerId = DomainId.New();
+        Guid ownerId = DomainId.New();
+
+        Guid projectId = DomainId.New();
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            // ClaimAndCutAsync loads TaskDetails/ProjectDetails unconditionally, before the
+            // dependency check fires (it lives inside PrepareInteractiveClaimFromPublished,
+            // called later) — so a project has to exist here even though this test never reaches
+            // the worktree cut that would actually need its repository.
+            seed.Store(new ProjectDetails { Id = projectId, RepositoryPath = "/dev/null", BaseBranch = "main" });
+
+            // A real stream, not a hand-built TaskDependency: ClaimAndCutAsync's Published branch
+            // reads TaskDependencyQuery.LoadAsync straight off Marten's own TaskListItem
+            // projection, so the blocker has to actually exist there.
+            seed.Events.StartStream<TaskAggregate>(blockerId, TaskDecider.Add(
+                blockerId, DomainId.New(), "The blocker, still open", ["it is done"], TaskType.Chore,
+                null, null, null, Now, ownerId));
+
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Waits on another task before an interactive claim",
+                ["it is done"], TaskType.Chore, null, null, null, Now, ownerId, blockedBy: [blockerId]);
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskDependency[] blockers =
+            [
+                new(blockerId, "The blocker, still open", TaskState.Draft, IsClosedOut: false,
+                    CurrentRunState: null, PullRequestUrl: null, TaskType.Chore, []),
+            ];
+            TaskPublished published = TaskDecider.Publish(task, new TaskDependencyGraph(blockers), Now, ownerId);
+
+            seed.Events.StartStream<TaskAggregate>(taskId, added, published);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        Func<Task> act = () => WorkAsync(store, taskId, ownerId, cts.Token);
+
+        await act.Should().ThrowAsync<DomainBusinessRuleException>()
+            .WithMessage("*depends on 1 task(s)*")
+            .Where(exception => exception.Message.Contains("The blocker, still open")
+                && exception.Message.Contains("h9k task assign"));
+    }
+
     private string CreateRepository()
     {
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-work-claim-{Guid.NewGuid():N}");
