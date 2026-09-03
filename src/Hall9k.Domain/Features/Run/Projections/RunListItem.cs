@@ -65,6 +65,7 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.ReconstructedAt,
         PullRequestUrl = @event.Data.PullRequestUrl,
+        RunDirectory = RunPaths.GlobalDirectory(@event.Data.Id),
     };
 
     public void Apply(IEvent<RunProcessStarted> @event, RunListItem view) => view.State = RunState.Running;
