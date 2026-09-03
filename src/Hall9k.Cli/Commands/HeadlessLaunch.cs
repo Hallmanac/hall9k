@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using Hall9k.Cli.DaemonControl;
-using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -87,6 +86,29 @@ internal static class HeadlessLaunch
         string pidFile = Path.Combine(Path.GetTempPath(), $"hall9k-task-start-pid-{Guid.NewGuid():N}");
         try
         {
+            // Proven live (adversarial review, cycle 1): the shell below backgrounds claude
+            // BEFORE it ever writes this pidfile ("... &\necho $! > pidfile"), so if that write
+            // fails — a stale exported TMPDIR naming a directory that no longer exists,
+            // Path.GetTempPath() returns it verbatim and unvalidated — claude is already running,
+            // unrecorded, with nothing downstream (RunSupervisor never adopts a run dispatched
+            // under the sentinel Guid.Empty node id) able to see the orphan. Preparing the
+            // pidfile's own directory and proving a write actually lands, before the shell ever
+            // runs, turns that failure into "claude never launches" instead of "claude launches
+            // and nobody ever finds out" — the one shape closes the stale-TMPDIR case outright
+            // (CreateDirectory recreates a merely-missing directory) and narrows every other cause
+            // to the same tiny window every other write to this path already carries.
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(pidFile)!);
+                File.WriteAllText(pidFile, string.Empty);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException(
+                    $"Could not prepare the detach wrapper's pidfile ({pidFile}) before launching claude: "
+                    + exception.Message);
+            }
+
             ProcessStartInfo shell = new()
             {
                 FileName = "/bin/sh",
