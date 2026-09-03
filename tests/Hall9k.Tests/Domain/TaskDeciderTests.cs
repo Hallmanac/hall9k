@@ -80,6 +80,62 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
     }
 
+    /// <summary>
+    /// Task: the review pipeline's stage composition becomes configuration recorded per run — a
+    /// build that sets nothing anywhere must run the exact pipeline today's does, so a task that
+    /// never names an override records none.
+    /// </summary>
+    [Fact]
+    public void Add_leaves_the_review_stage_composition_unset_when_unstated()
+    {
+        TaskAdded added = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Let the chain decide",
+            acceptanceCriteria: ["it is recorded"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New());
+
+        added.ReviewStageComposition.Should().BeNull("nothing set anywhere is the unchanged-defaults case");
+    }
+
+    [Fact]
+    public void Add_canonicalizes_a_review_stage_composition_override()
+    {
+        TaskAdded added = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Prototype fast",
+            acceptanceCriteria: ["it is recorded"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(),
+            reviewStageComposition: "skip-final-pass", reviewStageCompositionAcknowledged: true);
+
+        added.ReviewStageComposition.Should().Be("SkipFinalPass");
+    }
+
+    [Fact]
+    public void Add_refuses_a_composition_that_drops_a_lens_without_acknowledgment()
+    {
+        Action act = () => TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Prototype fast",
+            acceptanceCriteria: ["it is recorded"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(), reviewStageComposition: "adversarial-only");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*conformance lens*")
+            .WithMessage("*--accept-reduced-review*");
+    }
+
+    [Fact]
+    public void Add_treats_a_review_stage_composition_of_default_as_no_override()
+    {
+        TaskAdded added = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Let the chain decide",
+            acceptanceCriteria: ["it is recorded"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(), reviewStageComposition: " Default ");
+
+        added.ReviewStageComposition.Should().BeNull("'default' states no preference, the AgentModel convention");
+    }
+
     [Fact]
     public void OverrideReviewCaps_with_nothing_set_refuses()
     {

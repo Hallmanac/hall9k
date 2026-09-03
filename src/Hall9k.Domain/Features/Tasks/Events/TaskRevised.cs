@@ -32,4 +32,14 @@ public sealed record TaskRevised(
     /// a scheduling fact, not part of the readiness contract, so it is settable on a task that
     /// has already left Draft as long as nothing else in the same revision travels with it.
     /// </summary>
-    Optional<bool> QueuePriority = default);
+    Optional<bool> QueuePriority = default,
+    /// <summary>
+    /// This task's own override of which pre-PR review stages a run gets (task: the review
+    /// pipeline's stage composition becomes configuration recorded per run); present-with-null
+    /// clears the override so the project or node decides again. A composition that removes a
+    /// load-bearing guarantee is refused by <c>Handlers.TaskDecider.Revise</c> unless
+    /// <see cref="ReviewStageCompositionAcknowledged"/> says the consequence was accepted.
+    /// </summary>
+    Optional<string?> ReviewStageComposition = default,
+    /// <summary>Whether removing a load-bearing review guarantee was acknowledged at set time; clamped false when never actually needed.</summary>
+    bool ReviewStageCompositionAcknowledged = false);

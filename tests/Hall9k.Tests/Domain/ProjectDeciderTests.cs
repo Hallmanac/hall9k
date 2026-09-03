@@ -275,6 +275,78 @@ public sealed class ProjectDeciderTests
         act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
     }
 
+    /// <summary>
+    /// Task: the review pipeline's stage composition becomes configuration recorded per run —
+    /// the project-level door, h9k project set, canonicalizes an alias and 'default' clears it,
+    /// the same shape --model already has.
+    /// </summary>
+    [Fact]
+    public void Change_settings_carries_a_review_stage_composition_override_and_lets_default_clear_it()
+    {
+        ProjectAggregate project = Registered();
+
+        ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            reviewStageComposition: Optional<string?>.Of("conformance-only"), reviewStageCompositionAcknowledged: true);
+        project.Apply(set);
+        project.ReviewStageComposition.Should().Be("ConformanceOnly");
+
+        ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            reviewStageComposition: Optional<string?>.Of("default"));
+        project.Apply(cleared);
+        project.ReviewStageComposition.Should().BeNull("'default' hands the decision back to the node");
+
+        ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+        untouched.ReviewStageComposition.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
+    }
+
+    [Fact]
+    public void Change_settings_refuses_none_without_acknowledgment_naming_decision_92()
+    {
+        Action act = () => ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            reviewStageComposition: Optional<string?>.Of("none"));
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*Decisions Log #92*")
+            .WithMessage("*--accept-reduced-review*");
+    }
+
+    [Fact]
+    public void Change_settings_accepts_none_when_acknowledged_and_records_the_attestation()
+    {
+        ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            reviewStageComposition: Optional<string?>.Of("none"), reviewStageCompositionAcknowledged: true);
+
+        changed.ReviewStageComposition.Value.Should().Be("None");
+        changed.ReviewStageCompositionAcknowledged.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Never assert an unobserved fact (AGENTS.md) — the TaskPublished.UntrackedAttested clamp
+    /// idiom: an acknowledgment passed alongside a composition that never needed one is not
+    /// recorded, so the stream never claims a guarantee was traded away when none was.
+    /// </summary>
+    [Fact]
+    public void Change_settings_never_records_an_attestation_for_full_pipeline_even_if_acknowledgment_was_passed()
+    {
+        ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            reviewStageComposition: Optional<string?>.Of("full-pipeline"), reviewStageCompositionAcknowledged: true);
+
+        changed.ReviewStageComposition.Value.Should().Be("FullPipeline");
+        changed.ReviewStageCompositionAcknowledged.Should().BeFalse();
+    }
+
     private static ProjectAggregate Registered()
     {
         ProjectAggregate project = new();

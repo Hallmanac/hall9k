@@ -63,4 +63,20 @@ public sealed record ProjectSettingsChanged(
     /// clears it.
     /// </summary>
     Optional<int?> LifetimeReviewCycleBudget = default,
-    Optional<BranchNameTemplate> BranchNameTemplate = default);
+    Optional<BranchNameTemplate> BranchNameTemplate = default,
+    /// <summary>
+    /// This project's override of which pre-PR review stages a run gets (task: the review
+    /// pipeline's stage composition becomes configuration recorded per run); present-with-null
+    /// clears the override so the node decides again. A composition that removes a load-bearing
+    /// guarantee is refused by <c>Handlers.ProjectDecider.ChangeSettings</c> unless
+    /// <see cref="ReviewStageCompositionAcknowledged"/> says the consequence was accepted — see
+    /// <c>Hall9k.Domain.Features.Run.ReviewStageCompositionValidation</c>.
+    /// </summary>
+    Optional<string?> ReviewStageComposition = default,
+    /// <summary>
+    /// Whether removing a load-bearing review guarantee was acknowledged at set time (the
+    /// <c>TaskPublished.UntrackedAttested</c> attestation idiom); clamped to false by the decider
+    /// on any change that never actually needed the acknowledgment, so the stream never asserts
+    /// an unobserved fact.
+    /// </summary>
+    bool ReviewStageCompositionAcknowledged = false);

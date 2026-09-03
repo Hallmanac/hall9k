@@ -285,6 +285,109 @@ public sealed class TaskLifecycleTests
         task.EpicId.Should().BeNull("leaving is the same gate, with epicId cleared rather than set");
     }
 
+    /// <summary>
+    /// Task: the review pipeline's stage composition becomes configuration recorded per run —
+    /// the task-level door, h9k task revise, is Draft-only and canonicalizes an alias into the
+    /// value the resolver and h9k task show will read back.
+    /// </summary>
+    [Fact]
+    public void A_revision_sets_a_review_stage_composition_override_and_default_clears_it()
+    {
+        TaskAggregate task = Draft();
+
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            reviewStageComposition: Optional<string?>.Of("adversarial-only"), reviewStageCompositionAcknowledged: true));
+
+        task.ReviewStageComposition.Should().Be("AdversarialOnly", "the raw alias is canonicalized before it lands on the stream");
+
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            reviewStageComposition: Optional<string?>.Of("default")));
+
+        task.ReviewStageComposition.Should().BeNull("'default' clears the task override so the project or node decides");
+    }
+
+    [Fact]
+    public void A_revision_to_none_without_acknowledgment_is_refused_naming_the_consequence()
+    {
+        TaskAggregate task = Draft();
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            reviewStageComposition: Optional<string?>.Of("none"));
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*Decisions Log #92*")
+            .WithMessage("*--accept-reduced-review*");
+    }
+
+    [Fact]
+    public void A_revision_to_none_with_acknowledgment_records_the_attestation()
+    {
+        TaskAggregate task = Draft();
+
+        TaskRevised revised = TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            reviewStageComposition: Optional<string?>.Of("none"), reviewStageCompositionAcknowledged: true);
+
+        revised.ReviewStageComposition.Value.Should().Be("None");
+        revised.ReviewStageCompositionAcknowledged.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Never assert an unobserved fact (AGENTS.md): a human passing --accept-reduced-review
+    /// alongside a composition that never needed it must not have that recorded as though a real
+    /// guarantee were traded away and accepted, the TaskPublished.UntrackedAttested clamp idiom.
+    /// </summary>
+    [Fact]
+    public void A_revision_to_full_pipeline_never_records_an_attestation_even_if_acknowledgment_was_passed()
+    {
+        TaskAggregate task = Draft();
+
+        TaskRevised revised = TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            reviewStageComposition: Optional<string?>.Of("full-pipeline"), reviewStageCompositionAcknowledged: true);
+
+        revised.ReviewStageComposition.Value.Should().Be("FullPipeline");
+        revised.ReviewStageCompositionAcknowledged.Should().BeFalse(
+            "full-pipeline never needed an acknowledgment, so recording one would assert a fact nobody observed");
+    }
+
+    [Fact]
+    public void A_revision_to_an_unrecognized_composition_is_refused_with_the_recognized_values_quoted()
+    {
+        TaskAggregate task = Draft();
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            reviewStageComposition: Optional<string?>.Of("bogus"));
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*'bogus'*")
+            .WithMessage("*full-pipeline*")
+            .WithMessage("*conformance-only*");
+    }
+
+    [Fact]
+    public void Revising_only_the_review_stage_composition_counts_as_something_to_revise()
+    {
+        TaskAggregate task = Draft();
+
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            reviewStageComposition: Optional<string?>.Of("conformance-only"), reviewStageCompositionAcknowledged: true));
+
+        task.ReviewStageComposition.Should().Be("ConformanceOnly");
+    }
+
     [Fact]
     public void Revising_an_ordinary_task_to_pr_review_is_refused_since_it_carries_no_pull_request()
     {
