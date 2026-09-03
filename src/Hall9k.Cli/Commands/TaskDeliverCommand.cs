@@ -72,8 +72,16 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
 
         // An operator's own session, still attached in another terminal, may still be editing
         // this worktree — pushing and handing it into the standard pipeline out from under it
-        // risks delivering a tree mid-edit (adversarial review, cycle 1).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "deliver", settings.Force);
+        // risks delivering a tree mid-edit (adversarial review, cycle 1). Skipped when this
+        // invocation is that very session delivering itself on the operator's own go — the
+        // prompt-handoff model's ordinary shape once h9k task work no longer launches a blocking
+        // child process: the session is not racing this command, it is waiting on it, exactly the
+        // reasoning h9k task verify's own exemption already rests on
+        // (InteractiveSessionLiveness.IsSelfInvocation's own doc has both signals).
+        if (!InteractiveSessionLiveness.IsSelfInvocation(run))
+        {
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "deliver", settings.Force);
+        }
 
         if (run.State != RunState.Dispatched && run.State != RunState.Running)
         {
@@ -252,7 +260,10 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // from here would then hand this run to RunSupervisor.ResumeStrandedPipelinesAsync
         // (gates, review sessions) while that second session is still editing the same tree
         // (independent pre-PR review, cycle 8).
-        InteractiveSessionLiveness.EnsureNotAttachedElsewhere(runBeforeAppend, taskId, "deliver", settings.Force);
+        if (!InteractiveSessionLiveness.IsSelfInvocation(runBeforeAppend))
+        {
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(runBeforeAppend, taskId, "deliver", settings.Force);
+        }
 
         // The delivering node's own id, not the sentinel the claim was dispatched under: from
         // here the run travels the identical daemon-driven pipeline a headless run's own

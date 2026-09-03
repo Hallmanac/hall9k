@@ -35,6 +35,20 @@ internal static class InteractiveSessionLiveness
     /// </summary>
     public const string InteractiveRunEnvironmentVariable = "HALL9K_INTERACTIVE_RUN_ID";
 
+    /// <summary>
+    /// Set by Claude Code itself — not this platform — to the running `claude` process's own OS
+    /// process id, inherited by every Bash-tool child it spawns. Verified empirically against a
+    /// live Claude Code CLI session's own environment (2026-09-03), the same "verified rather than
+    /// assumed from memory" discipline <c>ClaudeSettingsFile</c>'s own doc comment already holds
+    /// its two Bash-tool env vars to. <see cref="TaskRegisterSessionCommand"/> reads it as the
+    /// process identity a directly-launched session got for free from <c>Process.Start()</c>'s own
+    /// return value; <see cref="IsSelfInvocation"/> reads it to recognise a self-registered
+    /// session asking this guard about itself, the counterpart of
+    /// <see cref="InteractiveRunEnvironmentVariable"/> for a session hall9k never spawned and so
+    /// never had the chance to inject that variable into.
+    /// </summary>
+    public const string ClaudeCodePidEnvironmentVariable = "CLAUDE_PID";
+
     // Mirrors ProcessManagerBase.StartTimeTolerance: start times can drift slightly between
     // recording and reading, and a match within this window means "same process", not a pid the
     // OS already recycled for something else.
@@ -106,8 +120,7 @@ internal static class InteractiveSessionLiveness
         // self-invocation: the attached session running this very command against itself, which
         // reads as "still attached" exactly like a second terminal would, but there is no second
         // terminal to exit (conformance review, cycle 1).
-        bool selfInvocation =
-            Environment.GetEnvironmentVariable(InteractiveRunEnvironmentVariable) == run.Id.ToString();
+        bool selfInvocation = IsSelfInvocation(run);
         throw new DomainConflictException(selfInvocation
             ? $"Task {taskId}'s interactive session (pid {session.ProcessId}) is this very session — you cannot "
               + $"{action} from inside it. Exit it first (Ctrl+D or /exit), then {action} from your own terminal."
@@ -129,6 +142,75 @@ internal static class InteractiveSessionLiveness
             // / Win32Exception: the pid now belongs to another (often privileged) process whose
             // start time this process cannot read — nothing the operator's session spawned.
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Whether the caller invoking this very command IS this run's own recorded interactive
+    /// session, rather than a second one — the case <see cref="EnsureNotAttachedElsewhere"/>'s own
+    /// alive branch names specially, and the pre-check <c>h9k task verify</c> already uses to skip
+    /// that guard entirely for the one caller safe to exempt (it is blocked waiting on the command
+    /// it just started, not racing it).
+    /// <para>
+    /// Two independent signals, either sufficient on its own: <see cref="InteractiveRunEnvironmentVariable"/>
+    /// is the direct-launch path's own — set on the child's environment at <c>Process.Start()</c>
+    /// time (<c>TaskWorkCommand.LaunchInteractiveClaudeAsync</c>), inherited by every descendant.
+    /// A self-registered session was never spawned by this platform, so that variable was never
+    /// injected into it; for that path, <see cref="ClaudeCodePidEnvironmentVariable"/> — read
+    /// straight from Claude Code's own environment, not something hall9k set — matching this run's
+    /// recorded <see cref="ActiveSession.ProcessId"/> is the equivalent observation: it is
+    /// literally the same OS process asking about itself. Checked only once the caller already
+    /// knows a live session is recorded on this machine (this method never claims one exists on
+    /// its own), so a coincidental CLAUDE_PID present in an unrelated shell can never manufacture a
+    /// false match against a run this session was never part of.
+    /// </para>
+    /// <para>
+    /// A bare pid match is not enough on its own, unlike <see cref="InteractiveRunEnvironmentVariable"/>'s
+    /// run-id comparison: a pid is a small, OS-recycled integer, so a registered session that
+    /// exited without ever calling deliver/handback/release (leaving its now-stale
+    /// <see cref="ActiveSession"/> entry on record — nothing here appends an ended event the way a
+    /// direct launch's own exit does) could have its old pid reassigned by the OS to a genuinely
+    /// unrelated later process, which would then wrongly read as this very session if only the pid
+    /// were compared. <see cref="IsAlive"/>'s own start-time tolerance check — the exact guard
+    /// pid-reuse already has everywhere else in this file — rules that out: a coincidentally
+    /// recycled pid almost never started at the recorded instant too.
+    /// </para>
+    /// </summary>
+    public static bool IsSelfInvocation(RunDetails run)
+    {
+        if (Environment.GetEnvironmentVariable(InteractiveRunEnvironmentVariable) == run.Id.ToString())
+        {
+            return true;
+        }
+
+        if (run.ActiveSessions.Find(session => session.Role == AgentRole.Interactive) is not { StartedAt: { } startedAt } interactive)
+        {
+            return false;
+        }
+
+        string? claudePid = Environment.GetEnvironmentVariable(ClaudeCodePidEnvironmentVariable);
+        return claudePid.IsNotBlank() && int.TryParse(claudePid, out int pid) && pid == interactive.ProcessId
+            && IsAlive(pid, startedAt);
+    }
+
+    /// <summary>
+    /// Mirrors <c>Hall9k.Daemon.ProcessManagement.ProcessManagerBase.ReadStartedAt</c> exactly, and
+    /// shared by <c>TaskWorkCommand</c> (a launch it just performed) and
+    /// <see cref="TaskRegisterSessionCommand"/> (a process it is only just learning about) rather
+    /// than duplicated a second time in the same project: <see cref="DateTimeOffset.MinValue"/> is
+    /// recorded instead of a plausible-looking guess when the process's own start time cannot be
+    /// read — AGENTS.md's "never guess at unobserved facts" — which guarantees no later liveness
+    /// check ever matches a real process's start time against it.
+    /// </summary>
+    public static DateTimeOffset ReadStartedAt(Process process)
+    {
+        try
+        {
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+        {
+            return DateTimeOffset.MinValue;
         }
     }
 }

@@ -67,10 +67,11 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         // rebuilding this same worktree right now — running gates here would collide with it in
         // shared obj/bin output exactly as the daemon's own gates and review sessions would
         // (adversarial review, cycle 1). Skipped when this invocation is that very session asking
-        // for itself (the environment variable h9k task work's own launch set): it is blocked
-        // waiting on this command to finish rather than racing it, so there is nothing to collide
-        // with (conformance review, cycle 2).
-        if (Environment.GetEnvironmentVariable(InteractiveSessionLiveness.InteractiveRunEnvironmentVariable) != runId.ToString())
+        // for itself (a direct launch's own injected env var, or a self-registered session's own
+        // CLAUDE_PID matching its recorded process — InteractiveSessionLiveness.IsSelfInvocation's
+        // own doc has both signals): it is blocked waiting on this command to finish rather than
+        // racing it, so there is nothing to collide with (conformance review, cycle 2).
+        if (!InteractiveSessionLiveness.IsSelfInvocation(run))
         {
             InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "verify", settings.Force);
         }
