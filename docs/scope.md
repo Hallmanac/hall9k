@@ -237,6 +237,16 @@ task-then-project-then-node-then-compiled-default order: `h9k config set` for th
 `h9k project set` for a per-project override, and `h9k task set-review-caps` for a per-task
 override that can be changed even while the task's run is already in progress.
 
+Which pre-PR review stages a run gets is itself a setting (`--review-stage-composition` at
+`h9k config set`, `h9k project set`, and `h9k task add`/`revise`, Decisions Log #129): the full
+pipeline (default), one lens only (`adversarial-only`/`conformance-only`), the mandatory final
+full pass skipped (`skip-final-pass`), or no pre-PR review at all (`none`). Resolved once, at
+each run's own dispatch, and frozen for that run's whole lifetime — unlike the cycle caps above,
+a mid-run change reaches only the task's next run — and recorded on the run's own stream, so
+`h9k task show` always answers which pipeline shape a given run actually ran under. A value that
+removes a load-bearing guarantee (Decisions Log #92, or a lens's own attention budget) is refused
+at set time unless acknowledged with `--accept-reduced-review`.
+
 ### Installation and release delivery
 
 A tagged commit on `main` becomes a GitHub release carrying self-contained `h9k` and `h9kd`
