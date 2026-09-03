@@ -201,16 +201,31 @@ behind an open dependency. `h9k task assign` and `h9k task publish --assign` are
 remain the headless dispatch triggers; there is no `--interactive` flag on `assign`. Whichever
 state it entered from, the claim itself is held by the human, not a process, so there is no lease
 and no heartbeat reclaim; closing the terminal is a normal way to leave, and running
-`h9k task work` again re-enters the same worktree, resuming the most recently recorded session's
-own conversation rather than starting a fresh one (falling back to a fresh session, announced,
-only when the recorded one cannot be resumed) (Decisions Log #103, #124):
+`h9k task work` again re-enters the same worktree (Decisions Log #103).
+
+By default `h9k task work` claims and cuts as above, then prints the worktree path, the branch,
+and a starting prompt (assembled through `WorkPromptBuilder`, the same code every path already
+uses) for the operator to paste into a Claude Code session started anywhere — it no longer
+launches or waits on the session itself (Decisions Log #126). The pasted session's own first act
+is the new agent-facing observation gate `h9k task register-session <id>`, which records its
+process identity (read from `CLAUDE_PID`, Claude Code's own environment variable) the way a direct
+launch's own launch-time recording always did; the double-booking and liveness guards below key
+off that record, and a session that never registers degrades honestly to a no-op rather than a
+false block, exactly as a claim nobody ever recorded a session against always has. `--direct-launch`
+keeps the prior behavior for one release — `h9k task work` itself launches a plain interactive
+Claude Code process and waits on it, resuming the most recently recorded session's own
+conversation rather than starting a fresh one (falling back to a fresh session, announced, only
+when the recorded one cannot be resumed — Decisions Log #124) — and is the only path the Windows
+script-shim refusal still gates, since a pasted prompt travels through no argv:
 
 ```bash
-h9k task work <id>          # claim a Published or Queued task, cut the same branch/worktree headless dispatch would, assemble the prompt through the same code, open an interactive session
-h9k task verify <id>        # run the project's gates on demand against the claim's worktree
-h9k task deliver <id>       # push and hand the claim into the standard delivery pipeline
-h9k task handback <id>      # release the claim to a headless agent partway through, resuming the branch
-h9k task release <id>       # give an untouched claim back to the dispatch queue
+h9k task work <id>                   # claim a Published or Queued task, cut the same branch/worktree headless dispatch would, print the worktree/branch/starting prompt
+h9k task work <id> --direct-launch   # the prior behavior for one release: launch and wait on the session here instead of printing a prompt
+h9k task register-session <id>       # the pasted session's own first act: register its process identity against the claim
+h9k task verify <id>                 # run the project's gates on demand against the claim's worktree
+h9k task deliver <id>                # push and hand the claim into the standard delivery pipeline
+h9k task handback <id>               # release the claim to a headless agent partway through, resuming the branch
+h9k task release <id>                # give an untouched claim back to the dispatch queue
 ```
 
 A deliberate human kick-off dispatches a Published or Queued task on the spot, headless, instead
