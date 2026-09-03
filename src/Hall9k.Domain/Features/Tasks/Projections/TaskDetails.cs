@@ -438,7 +438,12 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.CurrentRunId = null;
         view.ResumesFromHandback = false;
         view.DependencyOverrideAcknowledged = false;
-        view.State = TaskState.Queued;
+        // A deliberate start-it-mine claim (h9k task start --acknowledge-unmet-dependencies) can
+        // give the claim back while UnmetDependencies still names an open blocker — Claim never
+        // clears it, only Assign does — and Queued is only ever reachable with every dependency
+        // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
+        // it mirrors and lets the ordinary Blocked-state dependency sweep pick it back up.
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     public void Apply(IEvent<QuestionAsked> @event, TaskDetails view)
@@ -516,7 +521,10 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.DependencyOverrideAcknowledged = false;
-        view.State = TaskState.Queued;
+        // Same invariant the TaskRequeued handler above restores: Retry runs from Failed, and a
+        // deliberately-claimed Blocked task whose worktree cut failed can still carry an unmet
+        // dependency here.
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
         view.FinishedAt = null;
     }
 
@@ -531,7 +539,10 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.DependencyOverrideAcknowledged = false;
-        view.State = TaskState.Queued;
+        // Same invariant the TaskRequeued handler above restores: a handback out of a
+        // deliberately-claimed Blocked task must not resurface as Queued while a dependency is
+        // still on record unmet.
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
         view.FinishedAt = null;
     }
 

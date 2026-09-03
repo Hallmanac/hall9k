@@ -243,7 +243,12 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
-        view.State = TaskState.Queued;
+        // A deliberate start-it-mine claim (h9k task start --acknowledge-unmet-dependencies) can
+        // give the claim back while UnmetDependencies still names an open blocker — Claim never
+        // clears it, only Assign does — and Queued is only ever reachable with every dependency
+        // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
+        // it mirrors.
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     public void Apply(IEvent<QuestionAsked> @event, TaskListItem view) => view.State = TaskState.NeedsHuman;
@@ -278,7 +283,10 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // The retry answers the failure, so the board stops reporting it: what happened stays
         // on the stream and in h9k task show, which keeps the retry reason beside it.
         view.FailureReason = null;
-        view.State = TaskState.Queued;
+        // Retry runs from Failed, and a deliberately-claimed Blocked task whose worktree cut
+        // failed can still carry an unmet dependency here — Claim never clears UnmetDependencies,
+        // only Assign does, and Queued is only ever reachable with every dependency closed out.
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     // The interactive mirror of TaskRetried (TaskDetails.Apply(IEvent<TaskHandedBack>) does the
@@ -289,7 +297,9 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
-        view.State = TaskState.Queued;
+        // Same invariant above: a handback out of a deliberately-claimed Blocked task must not
+        // resurface as Queued while a dependency is still on record unmet.
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     public void Apply(IEvent<TaskResolved> @event, TaskListItem view)

@@ -587,6 +587,53 @@ public sealed class TaskDeciderTests
         task.State.Should().Be(TaskState.Claimed);
     }
 
+    /// <summary>
+    /// Claim never clears UnmetDependencies — only Assign does — so a deliberately-claimed
+    /// Blocked task (h9k task start --acknowledge-unmet-dependencies) still carries its open
+    /// blocker on record while Claimed. Giving that claim back must not resurface it as Queued:
+    /// TaskDecider.Claim's own doc states Queued is only reachable with every dependency closed
+    /// out, and DispatchEngine's queue query never re-checks dependencies itself (independent
+    /// pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void Requeue_of_a_deliberately_claimed_blocked_task_returns_to_blocked_not_queued()
+    {
+        TaskAggregate task = DeliberatelyClaimedBlockedTask(out Guid blockerId);
+
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.HumanRequested, Now));
+
+        task.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
+        task.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
+    }
+
+    /// <summary>Same invariant as the requeue case above, reached through h9k task handback instead.</summary>
+    [Fact]
+    public void HandBack_of_a_deliberately_claimed_blocked_task_returns_to_blocked_not_queued()
+    {
+        TaskAggregate task = DeliberatelyClaimedBlockedTask(out Guid blockerId);
+
+        task.Apply(TaskDecider.HandBack(task, task.CurrentRunId!.Value, "task/x", null, Now, Owner));
+
+        task.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
+        task.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
+    }
+
+    /// <summary>
+    /// Same invariant, reached through h9k task retry: the worktree cut behind a deliberate claim
+    /// can fail and record the task Failed without ever touching UnmetDependencies.
+    /// </summary>
+    [Fact]
+    public void Retry_of_a_deliberately_claimed_blocked_task_returns_to_blocked_not_queued()
+    {
+        TaskAggregate task = DeliberatelyClaimedBlockedTask(out Guid blockerId);
+        task.Apply(TaskDecider.Fail(task, task.CurrentRunId!.Value, "worktree cut failed", Now));
+
+        task.Apply(TaskDecider.Retry(task, task.CurrentRunId, "task/x", "trying again", Now, Owner));
+
+        task.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
+        task.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
+    }
+
     [Fact]
     public void ReleaseInteractiveClaim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {
@@ -1288,6 +1335,20 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = QueuedTask();
         task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        return task;
+    }
+
+    /// <summary>
+    /// A Blocked task claimed anyway through h9k task start's own override
+    /// (--acknowledge-unmet-dependencies): Claimed, but still carrying its one open blocker in
+    /// UnmetDependencies, because ClaimDeliberately never clears it — only Assign does.
+    /// </summary>
+    private static TaskAggregate DeliberatelyClaimedBlockedTask(out Guid blockerId)
+    {
+        TaskAggregate task = BlockedTask();
+        blockerId = task.UnmetDependencies.Single();
+        task.Apply(TaskDecider.ClaimDeliberately(
+            task, Owner, DomainId.New(), Now, dependencyOverrideAcknowledged: true));
         return task;
     }
 
