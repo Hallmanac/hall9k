@@ -16,6 +16,7 @@ using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Tasks.Rendering;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -238,14 +239,20 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
 
-        // The resolution chain (Decisions Log #33), minus the node-level per-role default: the
-        // CLI cannot read a live daemon's DaemonOptions.DefaultModel (Reference graph: Cli ->
-        // Domain + Connectors), so this resolves what it can — the task's own override, then the
-        // project's — and otherwise bottoms out at AgentModel.PlatformFallback exactly as the full
-        // chain would. Checked before anything is claimed: a broken model refuses up front rather
-        // than after the claim and worktree cut are already committed.
+        // The full resolution chain (Decisions Log #33): the CLI cannot reach a live daemon's
+        // in-memory DaemonOptions (Reference graph: Cli -> Domain + Connectors), but the node's
+        // per-role and platform-default tiers are durable settings, not daemon state — they live
+        // in the platform config file and environment, read through the same
+        // OperatingSettingsResolver h9k config show already renders them with, so a start-it-mine
+        // session resolves to exactly the model a dispatcher-launched build on this node would.
+        // Checked before anything is claimed: a broken model refuses up front rather than after
+        // the claim and worktree cut are already committed.
+        OperatingSettingsReport operatingSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
+        string? buildRoleDefault = operatingSettings.ModelByRole
+            .First(role => role.Role == nameof(RoleModelSettings.Build)).Model.Value;
         AgentModel model = AgentModel.Resolve(
-            taskOverride: taskDetails.Model, roleDefault: null, projectDefault: project.Model, platformDefault: null);
+            taskOverride: taskDetails.Model, roleDefault: buildRoleDefault, projectDefault: project.Model,
+            platformDefault: operatingSettings.DefaultModel.Value);
         if (!model.IsWellFormed)
         {
             throw new DomainConflictException(
@@ -358,7 +365,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 + $"It has been recorded Failed — h9k task retry {task.Id} to try again.");
         }
 
-        await Doorbell.RingAsync($"task-claimed-deliberately:{task.Id}", cancellationToken);
+        await Hall9k.Cli.Infrastructure.Doorbell.RingAsync($"task-claimed-deliberately:{task.Id}", cancellationToken);
         return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork, model);
     }
 
