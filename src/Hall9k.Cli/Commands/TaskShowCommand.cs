@@ -82,6 +82,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Lifetime review-cycle budget", $"{lifetimeReviewCycleBudget} [dim](task override)[/]");
         }
 
+        if (details.ReviewStageComposition is { } taskReviewStageComposition)
+        {
+            header.AddRow(
+                "Review stage composition", $"{taskReviewStageComposition.EscapeMarkup()} [dim](task override)[/]");
+        }
+
         if (details.SourceIdeaId is { } sourceIdeaId)
         {
             // The other half of promotion's two-way provenance (Decisions Log #35): the idea's
@@ -290,7 +296,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
             AnsiConsole.MarkupLine("\n[bold]Runs[/]");
             Table runsTable = new Table().Border(TableBorder.Rounded);
-            runsTable.AddColumns("Run", "Gen", "State", "Model", "Dispatched", "PR", "Gates");
+            runsTable.AddColumns("Run", "Gen", "State", "Model", "Stages", "Dispatched", "PR", "Gates");
             foreach (RunListItem run in runs)
             {
                 // A run dispatched before the model chain existed recorded none; "-" says
@@ -300,6 +306,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     run.LeaseGeneration.ToString(),
                     run.State.Value.EscapeMarkup(),
                     (run.Model == AgentModel.Unknown ? "-" : run.Model.Value).EscapeMarkup(),
+                    ReviewStageCompositionMarkup(run.ReviewStageComposition),
                     run.DispatchedAt.ToLocalTime().ToString("g").EscapeMarkup(),
                     (run.PullRequestUrl ?? "-").EscapeMarkup(),
                     FormatGateDurations(run.GateDurations));
@@ -458,6 +465,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// because there is nothing to show either way; <see cref="GateDuration"/>'s own null-vs-empty
     /// distinction is preserved on the read model for anything that needs to tell them apart.
     /// </summary>
+    /// <summary>
+    /// The stage composition this run's own stream recorded at dispatch (task: the review
+    /// pipeline's stage composition becomes configuration recorded per run) — dim for
+    /// FullPipeline, the shape every run had before this setting existed, so an operator's eye is
+    /// drawn only to a run that ran under something else.
+    /// </summary>
+    private static string ReviewStageCompositionMarkup(ReviewStageComposition composition) =>
+        composition == ReviewStageComposition.FullPipeline
+            ? "[dim]full[/]"
+            : $"[yellow]{composition.Value.EscapeMarkup()}[/]";
+
     private static string FormatGateDurations(List<GateDuration>? gateDurations) =>
         gateDurations is not { Count: > 0 } durations
             ? "-"

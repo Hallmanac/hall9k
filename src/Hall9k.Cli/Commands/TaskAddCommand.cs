@@ -126,10 +126,36 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "epic is refused. Optional — a task belongs to at most one epic, and most tasks belong "
             + "to none")]
         public string? Epic { get; init; }
+
+        [CommandOption("--review-stage-composition <COMPOSITION>")]
+        [Description(
+            "This task's own review stage composition, overriding every other level of the chain "
+            + "(task: the review pipeline's stage composition becomes configuration recorded per run) "
+            + "— full-pipeline, adversarial-only, conformance-only, skip-final-pass, or none. Resolved "
+            + "once at this task's run dispatch and frozen for that run's whole lifetime. Omit it — or "
+            + "pass 'default', which states no override — and the project's, then the node's, then the "
+            + "compiled default (full-pipeline) decide. skip-final-pass and none waive Decisions Log #92's "
+            + "mandatory pre-merge fresh-context read; adversarial-only, conformance-only, and none each "
+            + "drop a lens's own attention budget entirely — every one of those needs "
+            + "--accept-reduced-review.")]
+        public string? ReviewStageComposition { get; init; }
+
+        [CommandOption("--accept-reduced-review")]
+        [Description(
+            "Acknowledges the consequence --review-stage-composition just named, when the value passed "
+            + "removes a load-bearing review guarantee. Required for skip-final-pass, none, "
+            + "adversarial-only, or conformance-only; refused as meaningless otherwise.")]
+        public bool AcceptReducedReview { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        if (settings.AcceptReducedReview && settings.ReviewStageComposition is null)
+        {
+            throw new DomainValidationException(
+                "--accept-reduced-review has nothing to acknowledge without --review-stage-composition.");
+        }
+
         string? project = settings.Project;
         string? objective = settings.Objective;
         string? type = settings.Type;
@@ -211,6 +237,12 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         }
 
         AgentModel taskModel = TaskDecider.VetModel(AgentModel.FromInput(model));
+        // Vetted early, on the near side of the prompts below, for the same reason taskModel is
+        // (adversarial review, cycle 1 — the comment above this one says why): refusing an
+        // unusable value only at the decider would throw away the objective and criteria a human
+        // just finished typing.
+        string? reviewStageComposition = TaskDecider.VetReviewStageComposition(
+            settings.ReviewStageComposition, settings.AcceptReducedReview, "--review-stage-composition");
         Guid? epicId = epic.IsNotBlank()
             ? await EpicIdResolver.ResolveForMembershipAsync(session, epic, projectDetails.Id, cancellationToken)
             : null;
@@ -245,7 +277,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             context.OwnerId,
             taskModel,
             dependencies,
-            epicId: epicId);
+            epicId: epicId,
+            reviewStageComposition: reviewStageComposition,
+            reviewStageCompositionAcknowledged: settings.AcceptReducedReview);
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         await session.SaveChangesAsync(cancellationToken);
