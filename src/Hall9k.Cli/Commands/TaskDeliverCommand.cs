@@ -1,5 +1,7 @@
 using System.ComponentModel;
+using System.Text.Json;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -197,7 +199,18 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // every step after the operator finishes answering it, aborting a delivery that already
         // pushed with the branch stranded and no AgentSessionCompleted ever appended
         // (independent pre-PR review, cycle 7).
-        string handoff = settings.Handoff ?? PromptForHandoff();
+        //
+        // TryReadHeadlessHandoff first (adversarial review, cycle 1, on h9k task start): a
+        // start-it-mine claim's own agent writes its handoff into its final message exactly as a
+        // dispatcher-launched build does (WorkPromptBuilder's own AppendHandoffRules), but
+        // nothing on this node ever adopts that run to capture it the way RunSupervisor does for
+        // a headless dispatch — the operator sitting at this delivery was never attached to that
+        // session and cannot retype from memory what they never saw. An attended h9k task work
+        // claim never writes a stream.jsonl at all (LaunchInteractiveClaudeAsync attaches claude
+        // to this terminal directly, no --output-format stream-json), so this read finds nothing
+        // there and PromptForHandoff's own blank-default behavior is unchanged for that claim.
+        string? recoveredHandoff = TryReadHeadlessHandoff(run.RunDirectory);
+        string handoff = settings.Handoff ?? PromptForHandoff(recoveredHandoff);
         await WriteHandoffAsync(run.RunDirectory, handoff, CancellationToken.None);
 
         // Re-checked immediately before the append that hands this run to the daemon's
@@ -257,17 +270,90 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         return ExitCodes.Ok;
     }
 
-    private static string PromptForHandoff()
+    /// <summary>
+    /// Non-interactive: the recovered handoff stands in unedited for what an unattended prompt
+    /// can never answer for itself — a plain empty default here would still be the silent
+    /// discard the recovery above exists to close. Interactive: the recovered text is shown
+    /// first (as outside text — the agent's own words, sanitised the same way any other outside
+    /// text reaching this terminal is) rather than folded into the prompt's own default value,
+    /// since Spectre's TextPrompt renders its default through the same markup parser its prompt
+    /// text does, and this text was never vetted for that the way a literal here is.
+    /// </summary>
+    private static string PromptForHandoff(string? recoveredHandoff)
     {
         if (!AnsiConsole.Profile.Capabilities.Interactive)
         {
-            return string.Empty;
+            return recoveredHandoff ?? string.Empty;
         }
 
-        return AnsiConsole.Prompt(
+        if (recoveredHandoff.IsNotBlank())
+        {
+            AnsiConsole.MarkupLine("[dim]Recovered from the session's own transcript:[/]");
+            AnsiConsole.WriteLine(ExternalText.ForTerminal(recoveredHandoff));
+        }
+
+        string typed = AnsiConsole.Prompt(
             new TextPrompt<string>(
-                "[dim]Handoff for a dependent task or a resuming session (blank to leave unauthored):[/]")
+                "[dim]Handoff for a dependent task or a resuming session (blank to keep the recovered text above, "
+                + "if any):[/]")
                 .AllowEmpty());
+        return typed.IsNotBlank() ? typed : recoveredHandoff ?? string.Empty;
+    }
+
+    /// <summary>
+    /// A start-it-mine claim's own stream.jsonl carries the agent's authored handoff inside its
+    /// terminal "result" line's own "result" field — the same field
+    /// <c>Hall9k.Daemon.Execution.StreamJsonParser.TryParseResult</c> reads into
+    /// <c>AgentResult.Summary</c> for a headless-dispatched run, duplicated here at the field
+    /// level rather than referenced because the CLI cannot reference
+    /// <c>Hall9k.Daemon</c> (Reference graph: Cli -> Domain + Connectors). Null when the file is
+    /// absent (an attended h9k task work claim never writes one) or carries no parseable
+    /// handoff — never guessed at as empty (AGENTS.md: never guess at unobserved facts).
+    /// </summary>
+    private static string? TryReadHeadlessHandoff(string runDirectory)
+    {
+        string streamFile = RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(runDirectory));
+        if (!File.Exists(streamFile))
+        {
+            return null;
+        }
+
+        // The LAST result line wins, mirroring HandoffParser's own "last marker wins" rule: a
+        // headless `-p` session ordinarily emits exactly one, but nothing here depends on that.
+        string? summary = null;
+        try
+        {
+            foreach (string line in File.ReadLines(streamFile))
+            {
+                if (line.IsBlank())
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using JsonDocument document = JsonDocument.Parse(line);
+                    JsonElement root = document.RootElement;
+                    if (root.TryGetProperty("type", out JsonElement type) && type.GetString() == "result"
+                        && root.TryGetProperty("result", out JsonElement text) && text.ValueKind == JsonValueKind.String)
+                    {
+                        summary = text.GetString();
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Malformed transcript line — tolerated the same way StreamRenderer tolerates
+                    // one, since a stray unparseable line elsewhere in the file must not hide a
+                    // real result line this loop has not reached yet.
+                }
+            }
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+
+        return HandoffParser.Parse(summary);
     }
 
     private static async Task WriteHandoffAsync(string runDirectory, string handoff, CancellationToken cancellationToken)
