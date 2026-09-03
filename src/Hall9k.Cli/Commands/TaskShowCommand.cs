@@ -651,7 +651,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
     /// <summary>
     /// The opposite fact from <see cref="RideAlongClause"/> (Decisions Log #87, adversarial
-    /// review, routed finding at ReviewEngine.cs:1146): a finding the platform had already decided
+    /// review, the routed finding that opened this task): a finding the platform had already decided
     /// met the fix bar, whose track was still active when the run settled without a fix session
     /// ever reading it — most often a human resolving a capped park with `h9k review resolve
     /// --merge-ready`. Folding this into the ride-along count would understate it as polish nobody

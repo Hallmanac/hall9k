@@ -204,8 +204,8 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
-    /// The opposite fact from a ride-along (adversarial review, routed finding at
-    /// ReviewEngine.cs:1146): <see cref="ReviewSettled.ResidualsUnfixed"/> and
+    /// The opposite fact from a ride-along (adversarial review, the routed finding that opened
+    /// this task): <see cref="ReviewSettled.ResidualsUnfixed"/> and
     /// <see cref="ReviewSettled.UnfixedFindings"/> carry through to this view the same way their
     /// ride-along counterparts already do.
     /// </summary>

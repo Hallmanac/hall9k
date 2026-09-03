@@ -10,7 +10,7 @@ namespace Hall9k.Domain.Features.Run;
 /// for. Fixing unreviewed leaves more than one record for the same reason: both tracks can end
 /// on one defect, and one terminal cycle can state one place in two finding blocks.
 /// <para>
-/// The four counts collapse within themselves, never against each other. A defect one track
+/// The five counts collapse within themselves, never against each other. A defect one track
 /// fixed unreviewed and another exported met both ends, and both are worth reporting.
 /// </para>
 /// </summary>

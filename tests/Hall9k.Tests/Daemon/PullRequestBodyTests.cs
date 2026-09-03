@@ -298,8 +298,8 @@ public sealed class PullRequestBodyTests
     }
 
     /// <summary>
-    /// The opposite fact from a ride-along (adversarial review, routed finding at
-    /// ReviewEngine.cs:1146): a Fix-dispositioned finding the loop never handed to a fix session
+    /// The opposite fact from a ride-along (adversarial review, the routed finding that opened
+    /// this task): a Fix-dispositioned finding the loop never handed to a fix session
     /// at all, most often a human resolving a capped park with `h9k review resolve --merge-ready`.
     /// Before this test's own fix, nothing about it ever reached the pull request body — it was
     /// silently dropped by <c>ReviewEngine.SettleAsync</c>'s forced-residual loop.

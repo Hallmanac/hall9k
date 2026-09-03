@@ -189,8 +189,8 @@ public sealed class RunDetails
     public List<ReviewRideAlongFinding> ReviewRideAlongFindings { get; set; } = [];
     /// <summary>
     /// Fix-dispositioned findings never handed to a fix session at all — the opposite fact from
-    /// <see cref="ReviewResidualsRideAlong"/> (Decisions Log #87, adversarial review, routed
-    /// finding at ReviewEngine.cs:1146): the platform had already decided one of these had to be
+    /// <see cref="ReviewResidualsRideAlong"/> (Decisions Log #87, adversarial review, the routed
+    /// finding that opened this task): the platform had already decided one of these had to be
     /// fixed here, but the track carrying it was still active when the run settled, typically a
     /// human resolving a capped park with <c>h9k review resolve --merge-ready</c>.
     /// </summary>
