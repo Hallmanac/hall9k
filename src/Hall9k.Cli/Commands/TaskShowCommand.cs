@@ -268,10 +268,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
             AnsiConsole.MarkupLine("\n[bold]Runs[/]");
             Table runsTable = new Table().Border(TableBorder.Rounded);
-            runsTable.AddColumns("Run", "Gen", "State", "Model", "Dispatched", "PR", "Gates", "Worktree", "Branch");
+            runsTable.AddColumns("Run", "Gen", "State", "Model", "Dispatched", "PR", "Gates");
             foreach (RunListItem run in runs)
             {
-                RunDetails? runDetails = runDetailsById.GetValueOrDefault(run.Id);
                 // A run dispatched before the model chain existed recorded none; "-" says
                 // unknown rather than naming a model the run may never have used.
                 runsTable.AddRow(
@@ -281,12 +280,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     (run.Model == AgentModel.Unknown ? "-" : run.Model.Value).EscapeMarkup(),
                     run.DispatchedAt.ToLocalTime().ToString("g").EscapeMarkup(),
                     (run.PullRequestUrl ?? "-").EscapeMarkup(),
-                    FormatGateDurations(run.GateDurations),
-                    (runDetails?.WorktreePath.IsNotBlank() == true ? runDetails.WorktreePath : "-").EscapeMarkup(),
-                    (runDetails?.Branch.IsNotBlank() == true ? runDetails.Branch : "-").EscapeMarkup());
+                    FormatGateDurations(run.GateDurations));
             }
 
             AnsiConsole.Write(runsTable);
+            WriteCoordinates(runs, runDetailsById);
             RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
             WriteReviewOutcome(newestRun);
             WriteRideAlongFindings(newestRun);
@@ -501,6 +499,37 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         foreach (string line in lines)
         {
             AnsiConsole.MarkupLine($"  {line}");
+        }
+    }
+
+    /// <summary>
+    /// A run's worktree path and branch, as a per-run detail line rather than two more columns on
+    /// the Runs table (independent pre-PR review, cycle 1, conformance finding): an absolute
+    /// worktree path routinely runs 60+ characters, which forces the table to wrap in a default
+    /// 80-120 column terminal and squeezes every other column with it. This mirrors the shape
+    /// <see cref="WriteSessionsAsync"/> already uses for the same reason. A run whose coordinates
+    /// were never recorded (a stream written before this task, or a reconstructed record) prints
+    /// nothing for that run rather than a bare "-" line.
+    /// </summary>
+    private static void WriteCoordinates(
+        IReadOnlyList<RunListItem> runs, IReadOnlyDictionary<Guid, RunDetails> runDetailsById)
+    {
+        List<(RunListItem Run, RunDetails Details)> withCoordinates = [.. runs
+            .Select(run => (Run: run, Details: runDetailsById.GetValueOrDefault(run.Id)))
+            .Where(pair => pair.Details is { } details
+                && (details.WorktreePath.IsNotBlank() || details.Branch.IsNotBlank()))
+            .Select(pair => (pair.Run, Details: pair.Details!))];
+        if (withCoordinates.Count == 0)
+        {
+            return;
+        }
+
+        foreach ((RunListItem run, RunDetails details) in withCoordinates)
+        {
+            string worktree = details.WorktreePath.IsNotBlank() ? details.WorktreePath : "-";
+            string branch = details.Branch.IsNotBlank() ? details.Branch : "-";
+            AnsiConsole.MarkupLine(
+                $"  [dim]{TaskListCommand.ShortId(run.Id)}[/]  {worktree.EscapeMarkup()}  {branch.EscapeMarkup()}");
         }
     }
 
