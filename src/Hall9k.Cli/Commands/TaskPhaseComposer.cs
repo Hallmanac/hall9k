@@ -104,8 +104,25 @@ internal static class TaskPhaseComposer
             // The lever leads: TaskRowLayout.cs renders this line with Overflow.Ellipsis, so a
             // narrow terminal truncates the tail first — putting the actionable half first keeps
             // it visible even when the explanatory half is cut (adversarial review, cycle 2).
-            return new TaskPhase("building", SessionLiveness.NotApplicable,
-                "h9k task work re-enters this claim; closing the terminal is a normal way to leave");
+            //
+            // Both an operator's own h9k task work and a deliberate h9k task start dispatch carry
+            // this same Guid.Empty sentinel (TaskAggregate.IsInteractiveClaim's own discriminator
+            // does not tell them apart), but only the former is actually attended — a finished
+            // start-it-mine session's process really did just exit on its own, and nobody closed
+            // any terminal. SessionRoleName's own role suffix is what tells them apart: h9k task
+            // start names its session build, the same role a dispatcher-launched build carries,
+            // never interactive-claim (adversarial review, cycle 4, on h9k task start). Checked
+            // for the build suffix specifically, not the interactive-claim one: h9k task start is
+            // new to this branch, so every run recorded before it existed is an ordinary h9k task
+            // work claim regardless of what SessionName carries (blank, on a stream older than
+            // session naming itself) — that history reads as attended, the message this branch
+            // already gave before this distinction existed, rather than guessing headless from an
+            // absent name.
+            return run.SessionName.EndsWith("-" + SessionRoleName.Build, StringComparison.Ordinal)
+                ? new TaskPhase("building", SessionLiveness.NotApplicable,
+                    "h9k task deliver hands this session's work to the standard pipeline; a headless run exiting on its own is normal, not a lost process")
+                : new TaskPhase("building", SessionLiveness.NotApplicable,
+                    "h9k task work re-enters this claim; closing the terminal is a normal way to leave");
         }
 
         return run.State.Value switch
