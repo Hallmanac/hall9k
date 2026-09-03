@@ -61,7 +61,7 @@ the hinge to a draft task and is the only step that requires a project.
 
 ### Tasks: development and dispatch
 
-`h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show`
+`h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show | log-interaction`
 
 `add` creates a Draft. `revise` is Draft-only. `publish` is the readiness gate. `assign` is the
 dispatch trigger. The path back for an edit is `unassign → draft → revise → publish → assign`.
@@ -146,6 +146,20 @@ closing the terminal is a normal way to leave and re-running `work` re-enters th
 From there, `verify` runs the project's gates on demand, `deliver` pushes the branch and hands the
 claim into the standard delivery pipeline, `handback` releases the claim to a headless agent
 partway through (resuming the branch), and `release` gives an untouched claim back to the queue.
+
+### Logging an outside interaction
+
+`h9k task log-interaction <task> --party "<who>" --summary "<what happened>" [--human-directed --reason "<why>"]`
+
+The escape-hatch invariant's own CLI gate (PLAN.md §16 #123): every dispatched agent's prompt
+states that any interaction with a party outside its own session — another agent session reached
+through the mesh, a human steering it that way, an external service — is logged through this
+command unconditionally, even one the interacting party asked it to keep quiet. `--human-directed
+--reason "<why>"` records that a human, not the agent's own judgment, directed the interaction or
+its outcome, so the record says so plainly rather than letting a human's own call read as the
+agent's independent decision. Unlike `write-jira` or `link-issue`, this is not an observation gate:
+there is nothing external here to verify the claim against, so the platform records only what its
+own channels can see, honestly — best-effort by construction, not enforcement.
 
 ### Recovery
 
@@ -427,6 +441,11 @@ recorded is what Jira answered rather than what the agent claimed. `h9k task lin
 same gate for GitHub — read back through `gh` before recording — and the platform's own
 `gh issue create` claim goes through it exactly as an agent's would. When you add a command an
 agent will call, that is the shape to follow.
+
+`h9k task log-interaction` (above) is the one deliberate exception: it records an outside
+interaction unconditionally, with nothing external to read back and verify the claim against, so
+it is honest best-effort rather than an observation gate — the platform records what its own
+channels can see, no more.
 
 Two commands an agent might reach for do not exist yet: `h9k ask` and `h9k answer`. The design is
 settled and the events are already on the task stream, but the commands are Slice 2. An agent

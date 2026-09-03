@@ -5,7 +5,6 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
-using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -80,16 +79,21 @@ public sealed class TaskLogInteractionCommand : Hall9kAsyncCommand<TaskLogIntera
         // outlive the run it names): FetchStreamStateAsync returning null means no run stream
         // exists yet, and appending anyway would have Marten silently create one — a stream
         // holding ExternalInteractionLogged with no RunDispatched underneath it, an invalid run
-        // history. expectedVersion fences the append the same way h9k review resolve and h9k pr
-        // resolve fence theirs, so a concurrent writer loses loudly instead of interleaving.
-        StreamState? fence = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
+        // history. Unlike h9k review resolve or h9k pr resolve, nothing here is decided from the
+        // fetched state — this command appends a pure log entry, never a fact read back from the
+        // aggregate — so the append itself carries no expectedVersion: it lands after whatever the
+        // run stream's other, equally unfenced writers (ReviewDispatched, RunFailed, and the rest
+        // of ReviewEngine's and CloseoutEngine's own appends) already committed, the same
+        // unconstrained-append convention every other pure log entry on this stream already
+        // follows, rather than racing them for a version number neither side needs.
+        _ = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
             ?? throw new DomainConflictException(
                 $"Task {taskId}'s run {runId} has no run stream to log this interaction against.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         ExternalInteractionLogged logged = BuildEvent(settings, runId, context.OwnerId, DateTimeOffset.UtcNow);
-        session.Events.Append(runId, expectedVersion: fence.Version + 1, logged);
+        session.Events.Append(runId, logged);
         await session.SaveChangesAsync(cancellationToken);
 
         AnsiConsole.MarkupLine(settings.HumanDirected

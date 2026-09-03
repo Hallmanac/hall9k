@@ -1293,10 +1293,11 @@ public sealed class ReviewEngine(
                 // identical reason — stripping a reviewer's own re-report of an unfulfilled
                 // directive would erase the defect language the prompt just asked for and turn a
                 // confirmed, still-unfixed defect into a hollow Unknown verdict instead. The
-                // interaction's PARTY text is different: it is free text an agent chose, not a
-                // claim about whether a defect is real, so echoing it back never itself confirms a
-                // defect — it is stripped so it cannot spuriously supply NamesAFinding's own
-                // location gate for a needs-fixes verdict that names nothing real.
+                // interaction's PARTY text is included here too, on the same terms as a ruling
+                // reason (location preserved when the echoed span contains one — see
+                // HumanDirectedInteractionPartiesShown's own doc comment for why that is the
+                // correct, if narrower, guarantee rather than a stronger one this strip cannot
+                // actually provide).
                 [.. AgentPromptBuilder.RulingReasonsShown(context.PriorRulings),
                     .. AgentPromptBuilder.HumanDirectedInteractionPartiesShown(context.PriorHumanDirectedInteractions)]))
         {
@@ -2654,7 +2655,7 @@ public sealed class ReviewEngine(
     /// own history is not enough) — handed to a fresh review pass so it does not re-raise a
     /// question a human already settled (task: review prompts carry prior rulings) and does not
     /// re-litigate a human directive it already logged (task: the escape-hatch invariant,
-    /// Decisions Log #88, #122). Every human verdict on a review park, and every human-directed
+    /// Decisions Log #88, #123). Every human verdict on a review park, and every human-directed
     /// <see cref="ExternalInteractionLogged"/> — filtered to
     /// <see cref="ExternalInteractionRecord.HumanDirected"/> here rather than left to the prompt
     /// layer, since an agent-initiated interaction with nothing a human directed is audit trail
