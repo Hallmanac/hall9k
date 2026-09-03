@@ -580,8 +580,14 @@ next move on, renders dim as its own level. It is there so you can consciously i
 
 `h9k task work | verify | deliver | handback | release` (Decisions Log #103)
 
-An operator can work a Queued task in their own terminal instead of dispatching it headless. The
-claim is held by the human, not a process — there is no lease and no heartbeat reclaim — so
+An operator can work a Published or Queued task in their own terminal instead of dispatching it
+headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it
+to the operator's own owner and claims it interactively in one atomic event append, so the task is
+never observably Queued for the dispatcher to claim in between; a Published task whose dependencies
+have not all closed out is refused, naming the open blockers, the same bar dispatch itself holds an
+assignment to. `h9k task assign` and `h9k task publish --assign` are unchanged and remain the
+headless dispatch triggers. Whichever state it entered from, the claim itself is held by the human,
+not a process: there is no lease and no heartbeat reclaim, so
 closing the terminal is a normal way to leave, and re-running `h9k task work <id>` re-enters the
 same worktree and branch with a fresh session.
 
@@ -593,7 +599,7 @@ reclaim, only a question (Decisions Log #103).
 
 | Command | What it does |
 |---|---|
-| `h9k task work <id>` | Claims a Queued task, cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and opens a regular interactive Claude Code session. On a task you already hold, re-enters that same worktree instead of claiming again. |
+| `h9k task work <id>` | Claims a Published or Queued task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and opens a regular interactive Claude Code session. On a task you already hold, re-enters that same worktree instead of claiming again. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
 | `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
 | `h9k task handback <id>` | Releases the human claim and queues the task through normal dispatch, so a headless agent resumes the branch from wherever the operator left it. |

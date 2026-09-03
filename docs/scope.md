@@ -50,8 +50,12 @@ needs a human reading the Gates column's own raw numbers over time.
 
 ### Interactive claims
 
-`h9k task work <id>` lets an operator work a Queued task themselves instead of dispatching it
-headless: it claims the task, cuts the same branch and worktree headless dispatch would, and
+`h9k task work <id>` lets an operator work a Published or Queued task themselves instead of
+dispatching it headless. On a Published task assigned to nobody, it assigns the task to the
+operator's own owner and claims it interactively in one atomic event append, so the task is never
+observably Queued in between and the dispatcher can never win the race to it; a Published task
+whose dependencies have not all closed out is refused, naming the open blockers. Either way, it
+claims the task, cuts the same branch and worktree headless dispatch would, and
 opens a regular interactive Claude Code session attached to the operator's own terminal, its
 prompt assembled through the same code path a headless spawn's is, with the working rules swapped
 for an attached operator. The claim is held by the human rather than a

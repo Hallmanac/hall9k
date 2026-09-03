@@ -190,13 +190,21 @@ one branch named for the owning task's card and seven named `no-key-<slug>`, dis
 slug and by `ResolveBranchNameAsync`'s own collision retry when two slugs coincide. Nothing about
 that is broken, but it is worth knowing before dispatch rather than discovering it there.
 
-An operator can work a Queued task interactively instead of dispatching it headless — the claim
-is held by the human, not a process, so there is no lease and no heartbeat reclaim; closing the
-terminal is a normal way to leave, and running `h9k task work` again re-enters the same worktree
-(Decisions Log #103):
+An operator can work a Published or Queued task interactively instead of dispatching it headless
+(Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it to the
+operator's own owner and claims it interactively in one atomic event append: the task is never
+observably Queued in between, so the dispatcher, woken within moments by the doorbell notification
+a plain `h9k task assign` would have sent, can never win the race to it. A Published task whose
+dependencies have not all closed out is refused outright, naming the open blockers, the same bar
+`h9k task assign` itself holds an assignment to: the one-command path is not a way to start work
+behind an open dependency. `h9k task assign` and `h9k task publish --assign` are both unchanged and
+remain the headless dispatch triggers; there is no `--interactive` flag on `assign`. Whichever
+state it entered from, the claim itself is held by the human, not a process, so there is no lease
+and no heartbeat reclaim; closing the terminal is a normal way to leave, and running
+`h9k task work` again re-enters the same worktree (Decisions Log #103):
 
 ```bash
-h9k task work <id>          # claim it, cut the same branch/worktree headless dispatch would, assemble the prompt through the same code, open an interactive session
+h9k task work <id>          # claim a Published or Queued task, cut the same branch/worktree headless dispatch would, assemble the prompt through the same code, open an interactive session
 h9k task verify <id>        # run the project's gates on demand against the claim's worktree
 h9k task deliver <id>       # push and hand the claim into the standard delivery pipeline
 h9k task handback <id>      # release the claim to a headless agent partway through, resuming the branch
