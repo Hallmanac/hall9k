@@ -246,7 +246,8 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
-    /// Done tasks carrying a pull request whose recorded run has no run record at all —
+    /// Done tasks carrying a pull request whose recorded run has no run record at all, or whose
+    /// run record exists but will never be picked up by either RunDetails-driven query above —
     /// RunLauncher's declined-dispatch path (origin: 2026-08-28 needs-you cleanup) can complete
     /// a task's closeout without ever starting that run's stream, which leaves nothing here for
     /// the RunDetails-driven <c>orphaned</c> query above to ever find. Read from the task side
@@ -280,20 +281,37 @@ public sealed class CloseoutEngine(
         }
 
         Guid[] runIds = [.. doneWithPullRequest.Select(t => t.CurrentRunId)];
-        HashSet<Guid> recorded = [.. await query.Query<RunDetails>()
+        Dictionary<Guid, RunDetails> found = (await query.Query<RunDetails>()
             .Where(r => runIds.Contains(r.Id))
-            .Select(r => r.Id)
-            .ToListAsync(cancellationToken)];
+            .ToListAsync(cancellationToken))
+            .ToDictionary(r => r.Id);
 
-        return [.. doneWithPullRequest.Where(t => !recorded.Contains(t.CurrentRunId)).Select(t => t.Id)];
+        return [.. doneWithPullRequest
+            .Where(t => !found.TryGetValue(t.CurrentRunId, out RunDetails? run) || NeedsMissingRunSweep(run))
+            .Select(t => t.Id)];
     }
 
     private sealed record MissingRunCandidate(Guid Id, Guid CurrentRunId);
 
     /// <summary>
-    /// One read of a Done task's pull request when its own recorded run has no run record to
-    /// watch through — the companion to <see cref="InspectOrphanAsync"/> for a run that was never
-    /// even started rather than one that started and then died. Merge-only, like the orphan
+    /// True when no other sweep will ever complete this run's closeout on its own — the shape
+    /// task 1735bffc's own real history hit: an earlier generation opened the pull request
+    /// (completing the task's own <c>PullRequestUrl</c>), a later generation reused the same
+    /// task and failed without ever recording that pull-request number on ITS OWN run, so
+    /// neither the watched query above (wrong state entirely) nor the orphaned query above
+    /// (<c>state in (Failed, Killed)</c> AND <c>PullRequestNumber != null</c>) ever reads this
+    /// run again — an intact, terminal record that is nonetheless invisible to both. Completed
+    /// is excluded deliberately: that state means a closeout already ran to completion, so
+    /// there is nothing left here to finish.
+    /// </summary>
+    private static bool NeedsMissingRunSweep(RunDetails run) =>
+        run.State.IsTerminal && run.State != RunState.Completed && run.PullRequestNumber is null;
+
+    /// <summary>
+    /// One read of a Done task's pull request when its own recorded run is invisible to both
+    /// RunDetails-driven queries above — the companion to <see cref="InspectOrphanAsync"/> for a
+    /// run that either never started at all, or started, went terminal, and never recorded its
+    /// own pull-request number (<see cref="NeedsMissingRunSweep"/>). Merge-only, like the orphan
     /// path: nothing here dispatches a follow-up or invents a close-without-merge record onto a
     /// run stream that does not exist yet, so an open or closed-without-merge pull request is a
     /// true no-op and stays needs-you until a human or a future sweep observes a merge.
@@ -329,9 +347,14 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        // Revalidate: this task's run may have been reconstructed (or genuinely dispatched) by
-        // a sibling sweep, another node, or a fresh claim since the candidate list was read.
-        if (await session.LoadAsync<RunDetails>(runId, cancellationToken) is not null)
+        // Revalidate: this task's run may have been reconstructed, completed, or genuinely
+        // dispatched by a sibling sweep, another node, or a fresh claim since the candidate
+        // list was read. A run that already exists is still this sweep's to finish only when
+        // it still satisfies NeedsMissingRunSweep — anything else (still live, already carrying
+        // a pull-request number some other query will pick up, or already Completed) belongs
+        // to a different sweep or is already done.
+        RunDetails? existingRun = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (existingRun is not null && !NeedsMissingRunSweep(existingRun))
         {
             return InspectionOutcome.Skipped;
         }
