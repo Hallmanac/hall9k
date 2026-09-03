@@ -443,7 +443,13 @@ public sealed class TaskAggregate
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
-        State = TaskState.Queued;
+        // A deliberate start-it-mine claim (h9k task start --acknowledge-unmet-dependencies) can
+        // give the claim back while its dependency snapshot still names an open blocker — Claim
+        // never clears _unmetDependencies, only Assign does — and Queued is only reachable with
+        // every dependency closed out (TaskDecider.Claim's own doc). Landing back on Blocked
+        // instead preserves that invariant and lets TaskDependencyResolver's ordinary Blocked
+        // sweep pick the task back up once the blocker actually clears.
+        State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     public void Apply(QuestionAsked @event)
@@ -538,7 +544,9 @@ public sealed class TaskAggregate
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
-        State = TaskState.Queued;
+        // Same invariant Apply(TaskRequeued) restores: a handback out of a deliberately-claimed
+        // Blocked task must not resurface as Queued while a dependency is still on record unmet.
+        State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     public void Apply(TaskFailed @event) => State = TaskState.Failed;
@@ -565,7 +573,9 @@ public sealed class TaskAggregate
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
-        State = TaskState.Queued;
+        // Same invariant Apply(TaskRequeued) restores: Retry runs from Failed, and a deliberately-
+        // claimed Blocked task whose worktree cut failed can still carry an unmet dependency here.
+        State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     // Publication is a side errand rather than a lifecycle move: the task's state is untouched
