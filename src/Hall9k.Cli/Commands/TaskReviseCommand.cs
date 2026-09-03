@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -113,7 +114,8 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         [Description(
             "Acknowledges the consequence --review-stage-composition just named, when the value passed "
             + "removes a load-bearing review guarantee. Required for skip-final-pass, none, "
-            + "adversarial-only, or conformance-only; refused as meaningless otherwise")]
+            + "adversarial-only, or conformance-only; passed alongside any other value it is silently "
+            + "dropped rather than refused, since there is no consequence to acknowledge there")]
         public bool AcceptReducedReview { get; init; }
     }
 
@@ -246,6 +248,22 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         }
 
         AnsiConsole.MarkupLine($"[blue]Draft {shortId} revised[/]: {string.Join(", ", Changed(revised))}.");
+        // The refusal path names the consequence (TaskDecider.Revise's own call into
+        // ReviewStageCompositionValidation.VetInput); the accepted path has to name it too, or the
+        // only operator who ever reads it is the one who tried the command without
+        // --accept-reduced-review first (task: removing a load-bearing guarantee names the
+        // decision it overrides at set time and requires the consequence to be acknowledged in
+        // the command's own output; independent pre-PR review, cycle 1, both lenses).
+        // ReviewStageCompositionAcknowledged is already clamped true only when a value that
+        // genuinely needed it was actually accepted, so ReviewStageComposition.Value is guaranteed
+        // non-null here.
+        if (revised.ReviewStageCompositionAcknowledged
+            && ReviewStageCompositionValidation.DescribeAcceptedConsequence(
+                ReviewStageComposition.FromInput(revised.ReviewStageComposition.Value)) is { Length: > 0 } consequence)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]review-stage-composition consequence: {consequence}[/]");
+        }
+
         AnsiConsole.MarkupLine($"[dim]Next:[/] h9k task publish {shortId}");
         return ExitCodes.Ok;
     }

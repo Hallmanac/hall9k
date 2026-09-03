@@ -58,7 +58,9 @@ public static class TaskDecider
             id, projectId, objective, criteria, type, agentContext, constraints,
             externalReference, addedAt, addedByOwnerId, VetModel(model), dependencies,
             StartsAsDraft: true, SourceIdeaId: sourceIdeaId, EpicId: epicId,
-            ReviewStageComposition: normalizedComposition);
+            ReviewStageComposition: normalizedComposition,
+            ReviewStageCompositionAcknowledged: ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(
+                normalizedComposition, reviewStageCompositionAcknowledged));
     }
 
     /// <summary>

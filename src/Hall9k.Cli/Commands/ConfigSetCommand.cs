@@ -184,7 +184,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [Description(
             "Acknowledges the consequence --review-stage-composition just named, when the value passed "
             + "removes a load-bearing review guarantee (skip-final-pass, none, adversarial-only, or "
-            + "conformance-only). Required for those values; refused as meaningless otherwise.")]
+            + "conformance-only). Required for those values; passed alongside any other value it is "
+            + "silently dropped rather than refused, since there is no consequence to acknowledge there.")]
         public bool AcceptReducedReview { get; init; }
 
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
@@ -430,9 +431,20 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
 
         if (settings.ReviewStageComposition is { } composition)
         {
-            string normalized = ReviewStageComposition.Parse(composition).Value;
-            operating.ReviewStageComposition = normalized;
-            changed.Add($"review-stage-composition = {normalized}");
+            ReviewStageComposition parsed = ReviewStageComposition.Parse(composition);
+            operating.ReviewStageComposition = parsed.Value;
+            changed.Add($"review-stage-composition = {parsed.Value}");
+            // The refusal path names the consequence (ValidateAsync's own
+            // RefuseWithoutAcknowledgment call); the accepted path has to name it too, or the
+            // only operator who ever reads it is the one who tried the command without
+            // --accept-reduced-review first — which the documented example steers them away from
+            // doing (task: removing a load-bearing guarantee names the decision it overrides at
+            // set time and requires the consequence to be acknowledged in the command's own
+            // output; independent pre-PR review, cycle 1, both lenses).
+            if (ReviewStageCompositionValidation.DescribeAcceptedConsequence(parsed) is { Length: > 0 } consequence)
+            {
+                changed.Add($"review-stage-composition consequence: {consequence}");
+            }
         }
     }
 

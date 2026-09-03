@@ -455,17 +455,6 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     }
 
     /// <summary>
-    /// The Runs table's own Gates cell (task: gate wall-clock duration is recorded and
-    /// surfaced): each gate this run's most recently recorded verification pass or failure
-    /// carried, name and duration beside its own outcome. "-" covers two different observed
-    /// facts alike: a run recorded before this field existed or one that has not verified yet
-    /// (an unobserved duration, never a claimed zero), and a project with no verify commands
-    /// configured, which deliberately records an empty list (<c>VerificationRunner</c>'s own
-    /// "no gates configured" pass) rather than leaving the field unset. Both read as "-" here
-    /// because there is nothing to show either way; <see cref="GateDuration"/>'s own null-vs-empty
-    /// distinction is preserved on the read model for anything that needs to tell them apart.
-    /// </summary>
-    /// <summary>
     /// The stage composition this run's own stream recorded at dispatch (task: the review
     /// pipeline's stage composition becomes configuration recorded per run) — dim for
     /// FullPipeline, the shape every run had before this setting existed, so an operator's eye is
@@ -476,6 +465,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             ? "[dim]full[/]"
             : $"[yellow]{composition.Value.EscapeMarkup()}[/]";
 
+    /// <summary>
+    /// The Runs table's own Gates cell (task: gate wall-clock duration is recorded and
+    /// surfaced): each gate this run's most recently recorded verification pass or failure
+    /// carried, name and duration beside its own outcome. "-" covers two different observed
+    /// facts alike: a run recorded before this field existed or one that has not verified yet
+    /// (an unobserved duration, never a claimed zero), and a project with no verify commands
+    /// configured, which deliberately records an empty list (<c>VerificationRunner</c>'s own
+    /// "no gates configured" pass) rather than leaving the field unset. Both read as "-" here
+    /// because there is nothing to show either way; <see cref="GateDuration"/>'s own null-vs-empty
+    /// distinction is preserved on the read model for anything that needs to tell them apart.
+    /// </summary>
     private static string FormatGateDurations(List<GateDuration>? gateDurations) =>
         gateDurations is not { Count: > 0 } durations
             ? "-"

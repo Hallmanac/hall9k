@@ -191,13 +191,17 @@ public sealed class DaemonOptions
     /// This node's review stage composition (task: the review pipeline's stage composition
     /// becomes configuration recorded per run) — bound through the same "Hall9k" configuration
     /// section as the four review-cycle caps above, never a <see cref="DaemonOptionsBinding.ResolverOwnedKeys"/>
-    /// entry, so a hand-edited config file or an environment variable can carry a value
-    /// <c>ConfigurationBinder</c> throws on if it is not a recognized composition word — the same
-    /// shape those four caps already have. Task &gt; project &gt; node &gt; this compiled default
-    /// (<see cref="ReviewStageComposition.FullPipeline"/>) is <see cref="ReviewStageCompositionResolver"/>'s
-    /// own resolution order, resolved once at dispatch (<see cref="RunLauncher"/>) rather than
-    /// re-checked live the way the caps are — see <see cref="ReviewStageComposition"/>'s own doc
-    /// for why.
+    /// entry. Unlike those four caps, though, this is a plain <see cref="string"/>, so
+    /// <c>ConfigurationBinder</c> cannot throw on it the way it can on an unparseable int: a
+    /// hand-edited config file or an environment variable naming an unrecognized composition word
+    /// binds silently, and <see cref="ReviewStageCompositionResolver.Resolve"/> maps it to
+    /// <see cref="Hall9k.Domain.Features.Run.ReviewStageComposition.Unknown"/>, which reads as
+    /// <see cref="ReviewStageComposition.FullPipeline"/> — the safe direction, but a silent one
+    /// (independent pre-PR review, cycle 1, both lenses — this doc used to claim the crash-on-bad-
+    /// value behavior the four int caps genuinely have). Task &gt; project &gt; node &gt; this
+    /// compiled default is <see cref="ReviewStageCompositionResolver"/>'s own resolution order,
+    /// resolved once at dispatch (<see cref="RunLauncher"/>) rather than re-checked live the way
+    /// the caps are — see <see cref="ReviewStageComposition"/>'s own doc for why.
     /// </summary>
     public string ReviewStageComposition { get; set; } = Hall9k.Domain.Features.Run.ReviewStageComposition.FullPipeline.Value;
 

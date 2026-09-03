@@ -197,7 +197,11 @@ public sealed class ReviewEngine(
                         // this diff. The gates VerificationRunner already ran before this loop
                         // was ever entered are what this composition keeps; Decisions Log #92's
                         // guarantee is waived here, by the attestation recorded when this
-                        // composition was set (ReviewStageCompositionValidation).
+                        // composition was set (ReviewStageCompositionValidation). This config
+                        // surface is the input the parked kernel-versus-policy interpreter split
+                        // (2026-09-01 architecture review; Brian's ruling, 2026-09-02: this task
+                        // is the pragmatic settings-plus-engines cut, not that refactor) will
+                        // eventually read when it lands, PLAN.md Decisions Log #125.
                         await SettleWithNoReviewAsync(run, cancellationToken);
                         break;
                     }
@@ -364,7 +368,10 @@ public sealed class ReviewEngine(
                             // Log #92's mandatory fresh-context re-read immediately before merge,
                             // by the attestation recorded when this composition was set
                             // (ReviewStageCompositionValidation) — the gate above already ran full
-                            // over this tip; only the extra reviewer pass is what's skipped.
+                            // over this tip; only the extra reviewer pass is what's skipped. This
+                            // composition-aware conditional is also the parked kernel-versus-policy
+                            // interpreter split's input — see the composition-none branch above,
+                            // PLAN.md Decisions Log #125.
                             if (await ParkIfLifetimeBudgetExceededAsync(
                                 context, run, caps, SettleReason.NothingOwed, cancellationToken))
                             {
@@ -540,6 +547,28 @@ public sealed class ReviewEngine(
                     // immediately below rather than only on the next DriveAsync iteration.
                     caps = await ResolveReviewCapsAsync(context, cancellationToken);
 
+                    // Composition: none (independent pre-PR review, cycle 1, both lenses, high) —
+                    // OpeningLenses() is permanently empty for this composition, so
+                    // ActiveReviewLenses.Count == 0 here is not "every track concluded" the way it
+                    // is for every other composition; no track was ever opened to conclude. The
+                    // general check just below reads MaySettleReason, which stays null for as long
+                    // as FixDispatchedThisCycle is true (set by the fix session that landed this run
+                    // on Reverify in the first place, over a pre-gate dispute per Decisions Log #62 —
+                    // the only way composition none ever reaches Reverify at all) — with nobody ever
+                    // going to dispatch a lens to clear that flag, the general check can never fire
+                    // and DispatchReviewPassesAsync would dispatch an empty lens list forever. This
+                    // composition never touches the lifetime review-cycle budget either, the same as
+                    // the ReviewPhase.None branch above that settles this composition off cycle 1: no
+                    // review cycle is ever spent when no lens is ever dispatched. This
+                    // composition-aware conditional is also the parked kernel-versus-policy
+                    // interpreter split's input — see the composition-none branch above, PLAN.md
+                    // Decisions Log #125.
+                    if (run.ReviewStageComposition == ReviewStageComposition.None)
+                    {
+                        await SettleWithNoReviewAsync(run, cancellationToken);
+                        break;
+                    }
+
                     if (run.ActiveReviewLenses.Count == 0 && MaySettleReason(run) is { } reverifySettleReason)
                     {
                         if (await ParkIfLifetimeBudgetExceededAsync(
@@ -563,7 +592,9 @@ public sealed class ReviewEngine(
                     // composition becomes configuration recorded per run) — this is the "empty
                     // terminal case" (every track already concluded, a stray fix owed one more
                     // full-scope read) reaching Reverify straight rather than through Settling;
-                    // the waiver applies identically either way.
+                    // the waiver applies identically either way. This composition-aware conditional
+                    // is also the parked kernel-versus-policy interpreter split's input — see the
+                    // composition-none branch above, PLAN.md Decisions Log #125.
                     if (reverifyMode == ReviewMode.FinalFullPass && run.ReviewStageComposition.WaivesFinalFullPassGuarantee)
                     {
                         if (await ParkIfLifetimeBudgetExceededAsync(
@@ -2003,6 +2034,31 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
+    /// Composition: none (task: the review pipeline's stage composition becomes configuration
+    /// recorded per run) — settles the run straight off <see cref="ReviewPhase.None"/> with no
+    /// review pass ever dispatched, no track ever opened, and no gate run here (the gates
+    /// VerificationRunner already ran before <see cref="ReviewAsync"/> was ever entered are what
+    /// this composition keeps). Deliberately not <see cref="SettleAsync"/>: that method's own
+    /// residual tally and per-track conclusion bookkeeping all read <see cref="RunAggregate.ActiveReviewLenses"/>,
+    /// which is empty for this composition by construction (<see cref="ReviewStageComposition.OpeningLenses"/>),
+    /// so it would append nothing anyway — this is the honest, minimal record of that instead.
+    /// <see cref="ReviewSettlement.Settled"/>, never <see cref="ReviewSettlement.Clean"/>: nobody
+    /// read the final tip, so this composition can never make the narrower claim Clean means.
+    /// </summary>
+    private async Task SettleWithNoReviewAsync(RunAggregate run, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(run.Id, new ReviewSettled(
+            run.Id, run.ReviewCycle, ReviewSettlement.Settled,
+            ResidualsFixed: 0, ResidualsRouted: 0, ResidualsRoutingFailed: 0, now));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: review composition is none — settling with no reviewer ever dispatched (Decisions Log #92 waived)",
+            run.Id);
+    }
+
+    /// <summary>
     /// Writes down how the loop ended (log #63). The verdict the rest of the pipeline reads is
     /// MergeReady either way; this is the sentence beside it that says whether a reviewer
     /// confirmed the final tip or the severity gate ended the loop over findings nobody read
@@ -2070,31 +2126,6 @@ public sealed class ReviewEngine(
     /// <see cref="ReviewResidualDisposition.Unfixed"/> when none did.
     /// </para>
     /// </summary>
-    /// <summary>
-    /// Composition: none (task: the review pipeline's stage composition becomes configuration
-    /// recorded per run) — settles the run straight off <see cref="ReviewPhase.None"/> with no
-    /// review pass ever dispatched, no track ever opened, and no gate run here (the gates
-    /// VerificationRunner already ran before <see cref="ReviewAsync"/> was ever entered are what
-    /// this composition keeps). Deliberately not <see cref="SettleAsync"/>: that method's own
-    /// residual tally and per-track conclusion bookkeeping all read <see cref="RunAggregate.ActiveReviewLenses"/>,
-    /// which is empty for this composition by construction (<see cref="ReviewStageComposition.OpeningLenses"/>),
-    /// so it would append nothing anyway — this is the honest, minimal record of that instead.
-    /// <see cref="ReviewSettlement.Settled"/>, never <see cref="ReviewSettlement.Clean"/>: nobody
-    /// read the final tip, so this composition can never make the narrower claim Clean means.
-    /// </summary>
-    private async Task SettleWithNoReviewAsync(RunAggregate run, CancellationToken cancellationToken)
-    {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(run.Id, new ReviewSettled(
-            run.Id, run.ReviewCycle, ReviewSettlement.Settled,
-            ResidualsFixed: 0, ResidualsRouted: 0, ResidualsRoutingFailed: 0, now));
-        await session.SaveChangesAsync(cancellationToken);
-        logger.LogInformation(
-            "Run {RunId}: review composition is none — settling with no reviewer ever dispatched (Decisions Log #92 waived)",
-            run.Id);
-    }
-
     private async Task SettleAsync(RunAggregate run, CancellationToken cancellationToken)
     {
         // Derived before the conclusions below are appended, and unaffected by them: a track

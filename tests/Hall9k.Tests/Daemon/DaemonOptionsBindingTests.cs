@@ -356,5 +356,7 @@ public sealed class DaemonOptionsBindingTests
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxFinalFullPassRounds, SettingOrigin.Default, null),
             new ResolvedSetting<int>(OperatingSettings.DefaultLifetimeReviewCycleBudget, SettingOrigin.Default, null),
             new ResolvedSetting<long?>(spendBudgetTokens, SettingOrigin.Default, null),
-            new ResolvedSetting<string>(spendPeriod, SettingOrigin.Default, null));
+            new ResolvedSetting<string>(spendPeriod, SettingOrigin.Default, null),
+            new ResolvedSetting<string>(
+                Hall9k.Domain.Features.Run.ReviewStageComposition.FullPipeline.Value, SettingOrigin.Default, null));
 }

@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -127,7 +128,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "to none")]
         public string? Epic { get; init; }
 
-        [CommandOption("--review-stage-composition <COMPOSITION>")]
+        [CommandOption("--review-stage-composition <COMPOSITION|default>")]
         [Description(
             "This task's own review stage composition, overriding every other level of the chain "
             + "(task: the review pipeline's stage composition becomes configuration recorded per run) "
@@ -144,7 +145,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         [Description(
             "Acknowledges the consequence --review-stage-composition just named, when the value passed "
             + "removes a load-bearing review guarantee. Required for skip-final-pass, none, "
-            + "adversarial-only, or conformance-only; refused as meaningless otherwise.")]
+            + "adversarial-only, or conformance-only; passed alongside any other value it is silently "
+            + "dropped rather than refused, since there is no consequence to acknowledge there.")]
         public bool AcceptReducedReview { get; init; }
     }
 
@@ -292,6 +294,20 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         AnsiConsole.MarkupLine(
             $"[blue]Draft created[/] in '{projectDetails.Name.EscapeMarkup()}': " +
             $"{ExternalText.OneLineMarkup(added.Objective)}{modelNote} [dim]({taskId})[/]");
+        // The refusal path names the consequence (VetReviewStageComposition above); the accepted
+        // path has to name it too, or the only operator who ever reads it is the one who tried
+        // the command without --accept-reduced-review first (task: removing a load-bearing
+        // guarantee names the decision it overrides at set time and requires the consequence to
+        // be acknowledged in the command's own output; independent pre-PR review, cycle 1, both
+        // lenses). ReviewStageCompositionAcknowledged is already clamped true only when a value
+        // that genuinely needed it was actually accepted, so ReviewStageComposition is guaranteed
+        // non-null here.
+        if (added.ReviewStageCompositionAcknowledged
+            && ReviewStageCompositionValidation.DescribeAcceptedConsequence(
+                ReviewStageComposition.FromInput(added.ReviewStageComposition)) is { Length: > 0 } consequence)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]review-stage-composition consequence: {consequence}[/]");
+        }
         if (imported is not null)
         {
             AnsiConsole.MarkupLine(

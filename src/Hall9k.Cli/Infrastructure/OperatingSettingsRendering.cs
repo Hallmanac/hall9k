@@ -54,6 +54,8 @@ public static class OperatingSettingsRendering
                 $"{report.LifetimeReviewCycleBudget.Value} ({report.LifetimeReviewCycleBudget.DescribeOrigin()})"),
             ("spend-budget-tokens", DescribeSpendBudgetTokens(report)),
             ("spend-period", $"{report.SpendPeriod.Value} ({report.SpendPeriod.DescribeOrigin()})"),
+            ("review-stage-composition",
+                $"{report.ReviewStageComposition.Value} ({report.ReviewStageComposition.DescribeOrigin()})"),
         ];
 
         rows.AddRange(report.ModelByRole.Select(role => (

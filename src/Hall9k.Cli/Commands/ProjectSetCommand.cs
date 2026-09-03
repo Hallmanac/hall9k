@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -186,7 +187,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [Description(
             "Acknowledges the consequence --review-stage-composition just named, when the value passed "
             + "removes a load-bearing review guarantee. Required for skip-final-pass, none, "
-            + "adversarial-only, or conformance-only; refused as meaningless otherwise.")]
+            + "adversarial-only, or conformance-only; passed alongside any other value it is silently "
+            + "dropped rather than refused, since there is no consequence to acknowledge there.")]
         public bool AcceptReducedReview { get; init; }
     }
 
@@ -309,6 +311,21 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         await Doorbell.RingAsync($"project-changed:{details.Id}", cancellationToken);
 
         AnsiConsole.MarkupLine($"[green]Project '{details.Name.EscapeMarkup()}' settings updated.[/]");
+
+        // The refusal path names the consequence (ProjectDecider.ChangeSettings's own call into
+        // RefuseWithoutAcknowledgment); the accepted path has to name it too, or the only operator
+        // who ever reads it is the one who tried the command without --accept-reduced-review
+        // first (task: removing a load-bearing guarantee names the decision it overrides at set
+        // time and requires the consequence to be acknowledged in the command's own output;
+        // independent pre-PR review, cycle 1, both lenses). ReviewStageCompositionAcknowledged is
+        // already clamped true only when a value that genuinely needed it was actually accepted,
+        // so a non-null composition is guaranteed here.
+        if (changed.ReviewStageCompositionAcknowledged
+            && ReviewStageCompositionValidation.DescribeAcceptedConsequence(
+                ReviewStageComposition.FromInput(changed.ReviewStageComposition.Value)) is { Length: > 0 } consequence)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]review-stage-composition consequence: {consequence}[/]");
+        }
 
         // The home's AGENTS.md is a render of exactly the facts this command changes (the Jira
         // binding and the remote drive its tool list), so it is rewritten here rather than left

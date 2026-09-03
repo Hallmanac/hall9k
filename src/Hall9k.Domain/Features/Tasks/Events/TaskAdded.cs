@@ -46,6 +46,10 @@ public sealed record TaskAdded(
     /// This task's own override of which pre-PR review stages a run gets (task: the review
     /// pipeline's stage composition becomes configuration recorded per run); null defers to the
     /// project or node. Recorded normalized (the canonical composition word, never a raw alias) —
-    /// see <c>Handlers.TaskDecider.Add</c>.
+    /// see <c>Handlers.TaskDecider.Add</c>. A composition that removes a load-bearing guarantee is
+    /// refused by <c>TaskDecider.Add</c> unless <see cref="ReviewStageCompositionAcknowledged"/>
+    /// says the consequence was accepted.
     /// </summary>
-    string? ReviewStageComposition = null);
+    string? ReviewStageComposition = null,
+    /// <summary>Whether removing a load-bearing review guarantee was acknowledged at set time; clamped false when never actually needed.</summary>
+    bool ReviewStageCompositionAcknowledged = false);
