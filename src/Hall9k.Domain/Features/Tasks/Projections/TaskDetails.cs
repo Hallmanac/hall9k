@@ -130,6 +130,14 @@ public sealed class TaskDetails
     public Guid? ClaimedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
+    /// <summary>
+    /// Whether the current claim's <see cref="Events.TaskClaimed"/> recorded a human's deliberate
+    /// override of unmet dependency edges (<c>h9k task start --acknowledge-unmet-dependencies</c>,
+    /// task 8a56af78-h9k) — false for every ordinary claim, since only that one entry can ever be
+    /// true. Cleared the moment the claim ends (requeue, handback, retry, …), so this reads the
+    /// CURRENT claim only, never a past one.
+    /// </summary>
+    public bool DependencyOverrideAcknowledged { get; set; }
     public Guid? CurrentRunId { get; set; }
     public List<Guid> RunIds { get; set; } = [];
     public List<TaskQuestion> Conversation { get; set; } = [];
@@ -408,6 +416,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ClaimedByNodeId = @event.Data.NodeId;
         view.CurrentRunId = @event.Data.RunId;
         view.RunIds.Add(@event.Data.RunId);
+        view.DependencyOverrideAcknowledged = @event.Data.DependencyOverrideAcknowledged;
         view.State = TaskState.Claimed;
     }
 
@@ -428,6 +437,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.ResumesFromHandback = false;
+        view.DependencyOverrideAcknowledged = false;
         view.State = TaskState.Queued;
     }
 
@@ -483,6 +493,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.DependencyOverrideAcknowledged = false;
         view.State = TaskState.Queued;
         view.FinishedAt = null;
     }
@@ -504,6 +515,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ResumesFromHandback = false;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.DependencyOverrideAcknowledged = false;
         view.State = TaskState.Queued;
         view.FinishedAt = null;
     }
@@ -518,6 +530,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ResumesFromHandback = true;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.DependencyOverrideAcknowledged = false;
         view.State = TaskState.Queued;
         view.FinishedAt = null;
     }

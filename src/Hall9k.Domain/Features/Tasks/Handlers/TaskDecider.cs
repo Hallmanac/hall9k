@@ -668,6 +668,56 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// h9k task start's claim (task 8a56af78-h9k, "a deliberate human kick-off dispatches a task
+    /// on the spot"): a second sibling of <see cref="ClaimInteractively"/>, same sentinel
+    /// <see cref="Guid.Empty"/> <c>NodeId</c> and the identical reasoning — a deliberate human act
+    /// is outside the automation's budget, so it is ceiling-exempt exactly as an operator's own
+    /// attended claim already is (Decisions Log #103) — but this one launches headless rather than
+    /// attached to a terminal, so it is kept as its own decider method rather than folded into
+    /// <see cref="ClaimInteractively"/>'s name, which specifically means "the operator's own
+    /// attached session."
+    /// <para>
+    /// The one behavior <see cref="ClaimInteractively"/> does not have: a Blocked task claims here
+    /// too, but only when <paramref name="dependencyOverrideAcknowledged"/> is true — the human was
+    /// warned about the open dependency edges (by the caller, which has the full
+    /// <see cref="TaskDependency"/> descriptions this decider never sees) and chose to start anyway
+    /// (the idea's own ruling: "the platform advises rather than refuses... name the tasks meant to
+    /// land first, ask if sure, and let it be the human's call"). A Blocked task with no
+    /// acknowledgment still refuses — this is the defensive floor beneath the caller's own warn-and-
+    /// ask flow, not a substitute for it, since this decider has no dependency descriptions to warn
+    /// with itself.
+    /// </para>
+    /// </summary>
+    public static TaskClaimed ClaimDeliberately(
+        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool dependencyOverrideAcknowledged)
+    {
+        if (task.State == TaskState.Blocked)
+        {
+            if (!dependencyOverrideAcknowledged)
+            {
+                throw new DomainConflictException(
+                    $"Task {task.Id} is Blocked on unmet dependencies — h9k task start {task.Id} " +
+                    "--acknowledge-unmet-dependencies to start it anyway, once you have confirmed that is what you want.");
+            }
+        }
+        else if (task.State != TaskState.Queued)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value}, not Queued — it cannot be claimed.");
+        }
+
+        if (task.AssignedOwnerId != ownerId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is assigned to {(task.AssignedOwnerId is { } assignee ? assignee.ToString() : "nobody")}, " +
+                $"not to this owner ({ownerId}) — an operator claims only their own owner's work.");
+        }
+
+        return new TaskClaimed(
+            task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt, dependencyOverrideAcknowledged);
+    }
+
+    /// <summary>
     /// h9k task release: the operator gives an interactive claim back to the dispatch queue,
     /// exactly as <see cref="Requeue"/> already does for any other claimed task — refused when
     /// the current claim is a node's (running headless work), which releases through its own

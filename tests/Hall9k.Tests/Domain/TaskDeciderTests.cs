@@ -512,6 +512,82 @@ public sealed class TaskDeciderTests
     }
 
     [Fact]
+    public void ClaimDeliberately_of_a_queued_task_uses_the_empty_guid_sentinel_and_records_no_override()
+    {
+        TaskAggregate task = QueuedTask();
+        Guid runId = DomainId.New();
+
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, Owner, runId, Now, dependencyOverrideAcknowledged: false);
+
+        claimed.NodeId.Should().Be(Guid.Empty, "h9k task start holds no node — a human, not a machine");
+        claimed.LeaseGeneration.Should().Be(1);
+        claimed.RunId.Should().Be(runId);
+        claimed.DependencyOverrideAcknowledged.Should().BeFalse();
+
+        task.Apply(claimed);
+        task.State.Should().Be(TaskState.Claimed);
+        task.IsInteractiveClaim.Should().BeTrue("the same ceiling-exempt sentinel an operator's own claim uses");
+    }
+
+    [Fact]
+    public void ClaimDeliberately_of_a_different_owners_queued_task_conflicts()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.ClaimDeliberately(
+            task, DomainId.New(), DomainId.New(), Now, dependencyOverrideAcknowledged: false);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*own owner*");
+    }
+
+    [Fact]
+    public void ClaimDeliberately_of_an_already_claimed_task_conflicts()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.ClaimDeliberately(
+            task, Owner, DomainId.New(), Now, dependencyOverrideAcknowledged: false);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*not Queued*");
+    }
+
+    /// <summary>
+    /// The one behavior <see cref="TaskDecider.ClaimInteractively"/> does not have: a Blocked
+    /// task claims here too, but only with the acknowledgment — the defensive floor beneath
+    /// h9k task start's own warn-then-ask flow, which is what actually decides whether to pass
+    /// true (task 8a56af78-h9k).
+    /// </summary>
+    [Fact]
+    public void ClaimDeliberately_of_a_blocked_task_without_acknowledgment_conflicts()
+    {
+        TaskAggregate task = BlockedTask();
+
+        Action act = () => TaskDecider.ClaimDeliberately(
+            task, Owner, DomainId.New(), Now, dependencyOverrideAcknowledged: false);
+
+        act.Should().Throw<DomainConflictException>()
+            .WithMessage("*Blocked*")
+            .Where(exception => exception.Message.Contains("--acknowledge-unmet-dependencies"));
+    }
+
+    [Fact]
+    public void ClaimDeliberately_of_a_blocked_task_with_acknowledgment_claims_and_records_it()
+    {
+        TaskAggregate task = BlockedTask();
+        Guid runId = DomainId.New();
+
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, Owner, runId, Now, dependencyOverrideAcknowledged: true);
+
+        claimed.NodeId.Should().Be(Guid.Empty);
+        claimed.DependencyOverrideAcknowledged.Should().BeTrue();
+
+        task.Apply(claimed);
+        task.State.Should().Be(TaskState.Claimed);
+    }
+
+    [Fact]
     public void ReleaseInteractiveClaim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {
         TaskAggregate task = InteractivelyClaimedTask();
@@ -1193,6 +1269,18 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = PublishedTask();
         task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
+        return task;
+    }
+
+    private static TaskAggregate BlockedTask()
+    {
+        Guid blockerId = DomainId.New();
+        TaskDependency blocker = new(
+            blockerId, "A blocker still running", TaskState.Claimed, IsClosedOut: false,
+            CurrentRunState: null, PullRequestUrl: null, TaskType.Chore, []);
+        TaskAggregate task = DraftTask(blockerId);
+        task.Apply(TaskDecider.Publish(task, new TaskDependencyGraph([blocker]), Now, Owner));
+        task.Apply(TaskDecider.Assign(task, Owner, [blocker], Now, Owner));
         return task;
     }
 
