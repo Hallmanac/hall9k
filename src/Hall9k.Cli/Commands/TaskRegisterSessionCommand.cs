@@ -60,6 +60,10 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         [CommandArgument(0, "<ID>")]
         [Description("Task id (full, or an unambiguous fragment)")]
         public string Id { get; init; } = string.Empty;
+
+        [CommandOption("--force")]
+        [Description("Register even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
+        public bool Force { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -71,17 +75,41 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         TaskDetails task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        (Guid runId, int processId) = await RegisterAsync(session, task, settings.Force, cancellationToken);
+        await session.SaveChangesAsync(cancellationToken);
+
+        // Plain MarkupLine, not the Interpolated overload: taskId and processId are a Guid and an
+        // int, neither of which can carry a stray '[' that would need escaping, and the message is
+        // built with ordinary string concatenation across lines, which an interpolated-string
+        // literal cannot be split across while still binding to the FormattableString overload.
+        AnsiConsole.MarkupLine(
+            $"[green]Registered.[/] Task {taskId}'s run {runId} now shows a live interactive session (pid {processId}) — "
+            + "the double-booking and liveness guards (re-entry, verify, deliver, handback, release) key off it "
+            + "from here.");
+        return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The store round trip behind this command's guards and its append — split out of
+    /// <see cref="ExecuteAsync"/> exactly as <c>TaskLogInteractionCommand.AppendInteractionAsync</c>
+    /// is, so it is testable against a real store without going through <see cref="CliStore.Open"/>
+    /// or task-id fragment resolution. Does not save; the caller does, exactly like
+    /// <c>AppendInteractionAsync</c>'s own contract.
+    /// </summary>
+    internal static async Task<(Guid RunId, int ProcessId)> RegisterAsync(
+        IDocumentSession session, TaskDetails task, bool force, CancellationToken cancellationToken)
+    {
         if (task.State != TaskState.Claimed || !task.IsInteractiveClaim || task.CurrentRunId is not { } runId)
         {
             throw new DomainConflictException(
-                $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim "
+                $"Task {task.Id} is {task.State.Value} — only a task with an active interactive claim "
                 + "(h9k task work) registers a session against it.");
         }
 
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException(
-                $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
-                + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
+                $"Task {task.Id} is claimed interactively but run {runId} has no record — the process likely died "
+                + $"while preparing the worktree. h9k task release {task.Id} to give the claim back to the "
                 + "dispatch queue.");
 
         // Mirrors TaskVerifyCommand's own guard: once h9k task deliver or handback hands the run
@@ -92,28 +120,35 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         if (run.State != RunState.Dispatched && run.State != RunState.Running)
         {
             throw new DomainConflictException(
-                $"Task {taskId}'s run {runId} is already {run.State.Value} — it was handed off with "
-                + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {taskId} "
+                $"Task {task.Id}'s run {runId} is already {run.State.Value} — it was handed off with "
+                + $"h9k task deliver (or handback) and is now in the standard pipeline. h9k task show {task.Id} "
                 + "to see where it stands.");
         }
 
-        (int processId, DateTimeOffset startedAt) = ReadClaudeProcess(taskId);
+        // The second, unguarded door into the exact overwrite TaskWorkCommand.ReenterAsync's own
+        // check exists to prevent (adversarial + conformance review, cycle 1): without this, a
+        // prompt pasted twice — into a second terminal, deliberately or by re-pasting stale
+        // scrollback — registers a second session here with no check at all, and
+        // RunDetailsProjection.StartSession's single-slot ActiveSessions record silently
+        // overwrites the first session's liveness record with the second's, making the first
+        // invisible to verify/deliver/handback/release exactly as ReenterAsync's own comment
+        // warns. Skipped when this invocation is the same session re-registering (a retry, or a
+        // resumed prompt) — IsSelfInvocation's own CLAUDE_PID-plus-start-time match recognises
+        // that case — and a no-op when the prior session already exited (IsAlive reads Gone), the
+        // same honest degradation this command's own doc comment already promises for a task
+        // nobody ever recorded a session against.
+        if (!InteractiveSessionLiveness.IsSelfInvocation(run))
+        {
+            InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, task.Id, "register a session", force);
+        }
+
+        (int processId, DateTimeOffset startedAt) = ReadClaudeProcess(task.Id);
         Guid claudeSessionId = ReadClaudeSessionId();
-        string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim);
+        string sessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.InteractiveClaim);
 
         session.Events.Append(runId, new InteractiveSessionStarted(
             runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
-        await session.SaveChangesAsync(cancellationToken);
-
-        // Plain MarkupLine, not the Interpolated overload: taskId and processId are a Guid and an
-        // int, neither of which can carry a stray '[' that would need escaping, and the message is
-        // built with ordinary string concatenation across lines, which an interpolated-string
-        // literal cannot be split across while still binding to the FormattableString overload.
-        AnsiConsole.MarkupLine(
-            $"[green]Registered.[/] Task {taskId}'s run now shows a live interactive session (pid {processId}) — "
-            + "the double-booking and liveness guards (re-entry, verify, deliver, handback, release) key off it "
-            + "from here.");
-        return ExitCodes.Ok;
+        return (runId, processId);
     }
 
     /// <summary>
@@ -136,10 +171,11 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
                 + "cannot support the prompt-handoff model.");
         }
 
+        DateTimeOffset startedAt;
         try
         {
             using Process process = Process.GetProcessById(processId);
-            return (processId, InteractiveSessionLiveness.ReadStartedAt(process));
+            startedAt = InteractiveSessionLiveness.ReadStartedAt(process);
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
         {
@@ -147,6 +183,26 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
                 $"{InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable} names process {processId}, but it "
                 + $"could not be found on this machine's process table ({exception.Message}) — nothing to register.");
         }
+
+        // InteractiveSessionLiveness.ReadStartedAt itself swallows the identical exceptions the
+        // catch above guards against and returns DateTimeOffset.MinValue rather than rethrowing
+        // (its own doc comment: never guess at an unobserved fact), so the catch above never
+        // actually sees them for a pid the process table can find but whose start time it cannot
+        // read (a root-owned or elevated process this user cannot query, most commonly). Recording
+        // that sentinel here would be exactly the "sentinel that can never match" this command's
+        // own doc comment says it refuses to record — no liveness check would ever match it, and
+        // RunDetails.Apply(InteractiveSessionStarted) would stamp LastInteractiveActivityAt at
+        // MinValue, which AttentionComposer's stale-claim arm reads as centuries of silence
+        // (independent pre-PR review, adversarial lens, cycle 1).
+        if (startedAt == DateTimeOffset.MinValue)
+        {
+            throw new DomainConflictException(
+                $"{InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable} names process {processId}, but its "
+                + "start time could not be read on this machine (often a root-owned or elevated process a "
+                + "regular user cannot query) — nothing to register.");
+        }
+
+        return (processId, startedAt);
     }
 
     /// <summary>

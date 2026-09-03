@@ -74,7 +74,7 @@ public sealed class TaskPhaseSurfaceTests
 
     /// <summary>
     /// An interactive claim's own Dispatched window is no longer necessarily brief (Decisions Log
-    /// #124): by default h9k task work returns as soon as it prints the prompt, before anyone has
+    /// #125): by default h9k task work returns as soon as it prints the prompt, before anyone has
     /// pasted it anywhere, so a claim can sit Dispatched — with no session ever having registered —
     /// for as long as the operator takes to get to it. The generic "worktree and prompt being
     /// prepared" wording above describes a headless run's own brief pre-launch window, not this
