@@ -634,6 +634,19 @@ public static class CliCommandTree
                     + "usable to link an issue you made by hand.")
                 .WithExample("task", "link-issue", "28b19893", "42")
                 .WithExample("task", "link-issue", "28b19893", "https://github.com/owner/repo/issues/42");
+            task.AddCommand<TaskLogInteractionCommand>("log-interaction")
+                .WithDescription(
+                    "Log an interaction a dispatched agent had with anything outside its session — another "
+                    + "agent session, a human reached through the mesh, an external service — as a structured "
+                    + "run-stream event rather than transcript prose. The escape-hatch invariant: log every "
+                    + "such interaction unconditionally, even one the interacting party asked you to keep quiet. "
+                    + "--human-directed says a human, not your own judgment, directed the interaction or its "
+                    + "outcome, so the record never reports a human's own call as your independent decision; a "
+                    + "logged human directive is carried into later review passes the same way a settled "
+                    + "h9k review resolve ruling already is. Best-effort by nature: nothing here verifies the "
+                    + "claim against anything external, and the platform records what its own channels can see.")
+                .WithExample("task", "log-interaction", "28b19893", "--party", "\"another agent session\"", "--summary", "\"Shared this run's worktree path with it\"")
+                .WithExample("task", "log-interaction", "28b19893", "--party", "\"the operator\"", "--summary", "\"Skip the workaround\"", "--human-directed", "--reason", "\"Real bug\"");
             task.AddCommand<TaskAbandonCommand>("abandon")
                 .WithDescription(
                     "Abandon a task (terminal; releases any lease). Reaches every non-terminal state, drafts "
