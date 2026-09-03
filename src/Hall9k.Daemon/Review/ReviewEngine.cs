@@ -2003,7 +2003,7 @@ public sealed class ReviewEngine(
     /// <para>
     /// A still-active track's own <see cref="ReviewFindingDisposition.Fix"/>-dispositioned
     /// findings need the identical rescue, and for the identical reason (adversarial review,
-    /// routed finding at ReviewEngine.cs:1146: the cap-park-then-merge-ready shape this whole
+    /// the routed finding that opened this task: the cap-park-then-merge-ready shape this whole
     /// method exists for is exactly where a Fix finding goes missing — <c>ReviewTrackPolicy.Decide</c>
     /// only ever turns <c>fix</c> into a residual on the branch where the track concludes,
     /// never on the one where it keeps saying "continue"). Recording one as
@@ -2050,7 +2050,7 @@ public sealed class ReviewEngine(
         // A Fix-dispositioned finding gets the same fixed-unreviewed-or-not split a RideAlong one
         // does, but never RideAlong itself when no fix session ran: that would misstate a finding
         // the platform had already decided met the fix bar as one that never did (this method's
-        // own doc, adversarial review, routed finding at ReviewEngine.cs:1146).
+        // own doc, adversarial review, the routed finding that opened this task).
         ReviewResidualDisposition forcedFixDisposition =
             fixSessionRanThisCycle ? ReviewResidualDisposition.FixedUnreviewed : ReviewResidualDisposition.Unfixed;
         // Kept apart by disposition, not merged into one set: DeriveResidualTally's own dedup never
@@ -2060,9 +2060,20 @@ public sealed class ReviewEngine(
         // a still-active track reports at that same location, or vice versa.
         IReadOnlyList<ReviewResidual> alreadyOnStreamRideAlong =
             [.. run.ReviewResiduals.Where(residual => residual.Disposition == forcedRideAlongDisposition)];
-        IReadOnlyList<ReviewResidual> alreadyOnStreamFix = forcedFixDisposition == forcedRideAlongDisposition
-            ? alreadyOnStreamRideAlong
-            : [.. run.ReviewResiduals.Where(residual => residual.Disposition == forcedFixDisposition)];
+        // Matched against BOTH Fix-shaped dispositions, never against this cycle's own
+        // forcedFixDisposition alone (independent pre-PR review, cycle 1, both lenses): a track
+        // that concludes normally this same cycle always records its own Fix findings as
+        // FixedUnreviewed, whether or not a fix session actually read them
+        // (ReviewTrackPolicy.Decide always uses that disposition — a separate, pre-existing,
+        // routed-away defect this branch does not fix). So when no fix session ran this cycle and
+        // forcedFixDisposition is Unfixed, a Fix finding a sibling track already concluded on this
+        // cycle can already be on the stream as FixedUnreviewed; checking only Unfixed missed it
+        // and forced the identical finding a second time under a contradictory disposition —
+        // ResidualsFixed and ResidualsUnfixed both counting the same defect.
+        IReadOnlyList<ReviewResidual> alreadyOnStreamFix =
+            [.. run.ReviewResiduals.Where(residual =>
+                residual.Disposition == ReviewResidualDisposition.FixedUnreviewed
+                || residual.Disposition == ReviewResidualDisposition.Unfixed)];
 
         List<(ReviewLens Lens, ReviewResidual Residual)> forced = [];
         // Reference identity, not SamePlace: a Verify pass's own Findings list is the same
@@ -2154,8 +2165,8 @@ public sealed class ReviewEngine(
             .. forced.Where(entry => entry.Residual.Disposition == ReviewResidualDisposition.RideAlong)
                 .Select(entry => new ReviewRideAlongFinding(entry.Residual.Severity, entry.Residual.Location))];
         // The same naming for the opposite fact: a Fix-dispositioned finding never handed to a fix
-        // session at all (this method's own doc — adversarial review, routed finding at
-        // ReviewEngine.cs:1146).
+        // session at all (this method's own doc — adversarial review, the routed finding that
+        // opened this task).
         List<ReviewUnfixedFinding> unfixedFindings = [
             .. run.DeriveUnfixedResiduals().Select(residual => new ReviewUnfixedFinding(residual.Severity, residual.Location)),
             .. forced.Where(entry => entry.Residual.Disposition == ReviewResidualDisposition.Unfixed)

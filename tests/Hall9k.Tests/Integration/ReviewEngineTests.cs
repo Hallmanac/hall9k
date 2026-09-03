@@ -2841,8 +2841,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The exact shape the finding routed to this task describes (adversarial review, routed
-    /// finding at ReviewEngine.cs:1146): cycle N's own pass returns needs-fixes with an in-scope
+    /// The exact shape the finding routed to this task describes (adversarial review, the routed
+    /// finding that opened this task): cycle N's own pass returns needs-fixes with an in-scope
     /// High (Fix) and an in-scope Low (RideAlong). The track is capped, so the run parks in
     /// <c>ReviewPhase.FixNeeded</c> without ever dispatching a fix session over either finding.
     /// A human resolves the park with <c>h9k review resolve --merge-ready</c>, and the settled
@@ -2893,6 +2893,80 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 finding => finding.Severity == ReviewSeverity.High && finding.Location == "Api.cs:7");
         run.ReviewResidualsRideAlong.Should().Be(1, "the low finding at Shared.cs:9 still rides along as before");
         run.ReviewResidualsFixed.Should().Be(0, "no fix session ever ran over either finding");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses: a still-active track's forced-Unfixed
+    /// sweep must not re-record a Fix finding a SIBLING track already concluded on this same
+    /// cycle. Cycle 2 is one Verify pass covering both tracks; the severity gate applies from
+    /// this cycle, so adversarial's own in-scope medium at A.cs:1 no longer forces another
+    /// cycle and the track concludes here, normally, via <c>ReviewTrackPolicy.Decide</c> — which
+    /// always records a concluding track's own Fix findings as <c>FixedUnreviewed</c>, whether or
+    /// not a fix session ever reads them. Conformance's own finding at B.cs:2 still forces it to
+    /// continue, but it is already at its own two-cycle cap, so the run parks without a fix
+    /// session ever dispatching over either finding. Before this fix, <c>SettleAsync</c>'s own
+    /// dedup checked only the disposition this cycle's own forced sweep would use
+    /// (<c>Unfixed</c>, since no fix session ran) and missed the sibling's already-recorded
+    /// <c>FixedUnreviewed</c> residual at the identical location, so A.cs:1 was forced in a
+    /// second time as <c>Unfixed</c> — one defect counted as both fixed and left unfixed.
+    /// </summary>
+    [Fact]
+    public async Task A_track_concluding_this_cycle_suppresses_its_shared_fix_finding_from_a_sibling_forced_sweep()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: both tracks find something medium, so both stay active into cycle 2.
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:1\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=B.cs:2\nDefect: still present.\n\n"
+            + "VERDICT: needs-fixes",
+            "Tried.\n\nRESOLUTION: fixed",
+            // Cycle 2: one Verify pass stands in for both tracks. The gate applies from this
+            // cycle, so adversarial's own in-scope medium concludes the track right here instead
+            // of forcing a third cycle. Conformance's own finding still forces it to continue,
+            // but it is already at its cap, so no fix session ever dispatches over either one.
+            "FINDING: severity=medium; scope=in-scope; track=adversarial; at=A.cs:1\nDefect: still present.\n\n"
+            + "FINDING: severity=medium; scope=in-scope; track=conformance; at=B.cs:2\nDefect: still not met.\n\n"
+            + "VERDICT: needs-fixes");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions
+            {
+                MaxComplianceReviewCycles = 2,
+                MaxAdversarialReviewCycles = 5,
+                AdversarialSeverityGateFromCycle = 2,
+            })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("conformance is still continuing but already at its two-cycle cap");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsFixed.Should().Be(
+            1, "adversarial's own medium at A.cs:1 concluded normally this cycle and is recorded fixed-unreviewed");
+        run.ReviewResidualsUnfixed.Should().Be(
+            1, "conformance's own medium at B.cs:2 is still-active and genuinely never reached a fix session — "
+                + "A.cs:1 must not count here too, since it already has its own fixed-unreviewed residual");
+        run.ReviewUnfixedFindings.Should().ContainSingle(
+                "A.cs:1 already has its own residual; the forced sweep must recognize that and skip it")
+            .Which.Should().Match<ReviewUnfixedFinding>(
+                finding => finding.Severity == ReviewSeverity.Medium && finding.Location == "B.cs:2");
     }
 
     /// <summary>
@@ -3118,7 +3192,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// <c>RecordReviewPassAsync</c>'s own <c>fixSessionWillDispatch</c> already draws for a
     /// normally-concluding track, rather than ride-along, which would claim nobody ever looked.
     /// The disputed Fix finding itself (Api.cs:7) gets the identical treatment, for the identical
-    /// reason (adversarial review, routed finding at ReviewEngine.cs:1146): it too was handed to
+    /// reason (adversarial review, the routed finding that opened this task): it too was handed to
     /// this same fix session, so it records fixed-unreviewed rather than vanishing from the tally
     /// the way it once did.
     /// </summary>
