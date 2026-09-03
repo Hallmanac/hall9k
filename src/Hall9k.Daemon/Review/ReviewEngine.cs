@@ -1284,15 +1284,21 @@ public sealed class ReviewEngine(
                 output,
                 sawTaskContext ? context.Task.Objective : null,
                 sawTaskContext ? context.Task.AcceptanceCriteria : null,
-                // Unlike the objective and the acceptance criteria, settled rulings and logged
-                // human directives are printed into BOTH lenses' prompts
-                // (AgentPromptBuilder.AppendSettledRulings), so this strip is never gated on
-                // sawTaskContext. Both lists feed the identical echo-stripping purpose — a
-                // reviewer quoting a human's own reason text back is not a new finding — so they
-                // are concatenated into the one list NamesAFinding screens against, rather than
-                // widening that method's own parameter list for a second source of the same shape.
+                // Settled rulings and logged interaction parties are printed into BOTH lenses'
+                // prompts (AgentPromptBuilder.AppendSettledRulings), so this strip is never gated
+                // on sawTaskContext. A logged human directive's REASON is deliberately NOT in this
+                // list: it is an order, not a dismissal (AppendSettledRulings tells the reviewer to
+                // treat it "the same way a needs-fixes ruling above is treated"), and
+                // RulingReasonsShown itself excludes needs-fixes reasons from stripping for the
+                // identical reason — stripping a reviewer's own re-report of an unfulfilled
+                // directive would erase the defect language the prompt just asked for and turn a
+                // confirmed, still-unfixed defect into a hollow Unknown verdict instead. The
+                // interaction's PARTY text is different: it is free text an agent chose, not a
+                // claim about whether a defect is real, so echoing it back never itself confirms a
+                // defect — it is stripped so it cannot spuriously supply NamesAFinding's own
+                // location gate for a needs-fixes verdict that names nothing real.
                 [.. AgentPromptBuilder.RulingReasonsShown(context.PriorRulings),
-                    .. AgentPromptBuilder.HumanDirectedInteractionReasonsShown(context.PriorHumanDirectedInteractions)]))
+                    .. AgentPromptBuilder.HumanDirectedInteractionPartiesShown(context.PriorHumanDirectedInteractions)]))
         {
             // A needs-fixes verdict that names nothing is not a real answer (origin: ten
             // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact

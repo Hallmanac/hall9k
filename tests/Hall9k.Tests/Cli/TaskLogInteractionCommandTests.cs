@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
@@ -75,7 +76,7 @@ public sealed class TaskLogInteractionCommandTests
     {
         Guid runId = DomainId.New();
 
-        var logged = TaskLogInteractionCommand.BuildEvent(Settings(), runId, DomainId.New(), Now);
+        ExternalInteractionLogged logged = TaskLogInteractionCommand.BuildEvent(Settings(), runId, DomainId.New(), Now);
 
         logged.HumanDirected.Should().BeFalse();
         logged.Reason.Should().BeNull("nothing here required a reason for an agent's own interaction");
@@ -92,7 +93,7 @@ public sealed class TaskLogInteractionCommandTests
         Guid runId = DomainId.New();
         Guid ownerId = DomainId.New();
 
-        var logged = TaskLogInteractionCommand.BuildEvent(
+        ExternalInteractionLogged logged = TaskLogInteractionCommand.BuildEvent(
             Settings(party: "the operator", summary: "Skip the workaround", humanDirected: true, reason: "Real bug, ordered fixed"),
             runId, ownerId, Now);
 
@@ -108,7 +109,7 @@ public sealed class TaskLogInteractionCommandTests
     [Fact]
     public void Trims_party_summary_and_reason()
     {
-        var logged = TaskLogInteractionCommand.BuildEvent(
+        ExternalInteractionLogged logged = TaskLogInteractionCommand.BuildEvent(
             Settings(party: "  the operator  ", summary: "  Skip it  ", humanDirected: true, reason: "  Real bug  "),
             DomainId.New(), DomainId.New(), Now);
 

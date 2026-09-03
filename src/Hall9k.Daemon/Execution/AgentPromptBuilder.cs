@@ -1160,7 +1160,7 @@ public static class AgentPromptBuilder
 
     /// <summary>
     /// What a fresh-context review pass is told about questions this task has already settled
-    /// (task: review prompts carry prior rulings). Two sources, always in this order:
+    /// (task: review prompts carry prior rulings). Three sources, always in this order:
     /// <list type="number">
     /// <item>This task's own prior <c>h9k review resolve</c> verdicts, if any — bounded to the
     /// newest <see cref="MaxPriorRulings"/> and each reason summarized to
@@ -1174,6 +1174,11 @@ public static class AgentPromptBuilder
     /// latter is the human confirming the defect is real and ordering it fixed — telling a fresh
     /// pass to suppress a re-raise of that same wording would ship an incompletely-fixed defect
     /// the human already confirmed straight past the reviewer that would otherwise catch it.</item>
+    /// <item>This task's own logged human directives, if any (<c>h9k task log-interaction
+    /// --human-directed</c>, the 2026-09-01 escape-hatch ruling) — filtered to
+    /// <c>HumanDirected</c> and bounded the same way, a standing instruction rather than a
+    /// ruling on a review park, so the reviewer is told to treat it the same way a needs-fixes
+    /// ruling above is treated.</item>
     /// <item>This project's own repo doctrine, named unconditionally rather than quoted and
     /// deliberately generic (the daemon serves whatever project registered it, the same reason
     /// this method's own doctrine sentence hedges "AGENTS.md or CLAUDE.md, and whatever they
@@ -1246,18 +1251,22 @@ public static class AgentPromptBuilder
         {
             prompt.AppendLine("## Human directives logged mid-run on this task");
             prompt.AppendLine();
-            prompt.AppendLine("A human directed an outside interaction, or its outcome, on an earlier pass of this");
-            prompt.AppendLine("task (h9k task log-interaction --human-directed) — the escape-hatch invariant this");
-            prompt.AppendLine("platform holds every dispatched agent to (the 2026-09-01 ruling): logged so the");
-            prompt.AppendLine("record never reports a human's own call as an agent's independent decision. Treat");
-            prompt.AppendLine("each one below as a standing instruction, the same way a needs-fixes ruling above");
-            prompt.AppendLine("is treated — not evidence to weigh, an instruction a human already gave:");
+            prompt.AppendLine("An earlier pass of this task recorded the entries below as human-directed");
+            prompt.AppendLine("(h9k task log-interaction --human-directed) — the escape-hatch invariant this");
+            prompt.AppendLine("platform holds every dispatched agent to (the 2026-09-01 ruling), so a human's own");
+            prompt.AppendLine("call is never folded into an agent's report as though it were the agent's");
+            prompt.AppendLine("independent decision. This is a recorded claim, not an independently verified");
+            prompt.AppendLine("fact — the platform has nothing external to check it against, the same best-effort");
+            prompt.AppendLine("limit the logging invariant itself carries — so treat each one below as");
+            prompt.AppendLine("a standing instruction, the same way a needs-fixes ruling above is treated, unless");
+            prompt.AppendLine("something in the diff or this task's own history gives you a concrete reason to");
+            prompt.AppendLine("doubt this particular claim:");
             prompt.AppendLine();
             foreach (ExternalInteractionRecord interaction in humanDirectedOnly.TakeLast(MaxPriorRulings))
             {
                 string loggedAt = interaction.LoggedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 prompt.AppendLine(
-                    $"- {loggedAt}, with {RelayedText.OneLine(interaction.Party)}: {PrintedInteractionReason(interaction)}");
+                    $"- {loggedAt}, with {PrintedInteractionParty(interaction)}: {PrintedInteractionReason(interaction)}");
             }
 
             prompt.AppendLine();
@@ -1326,22 +1335,39 @@ public static class AgentPromptBuilder
             : "no reason recorded";
 
     /// <summary>
-    /// The logged human-directed interaction reasons this prompt actually prints (the newest
-    /// <see cref="MaxPriorRulings"/>, truncated exactly as <see cref="AppendSettledRulings"/>
-    /// prints them) — handed to <see cref="ReviewVerdictValidation.NamesAFinding"/> alongside
-    /// <see cref="RulingReasonsShown"/> so a reviewer's verbatim echo of a human's own logged
-    /// reason is stripped before validation the same way an echoed park-resolution reason already
-    /// is: reporting that a directive was followed is not itself a new finding.
+    /// The <c>--party</c> text exactly as <see cref="AppendSettledRulings"/> prints it —
+    /// bounded to <see cref="MaxRulingReasonLength"/> the same way every other agent-authored
+    /// free-text field in this section already is. Unlike <see cref="PrintedReason"/>'s field,
+    /// <c>--party</c> carries no length validation at the CLI (<c>TaskLogInteractionCommand.Validate</c>
+    /// checks only blankness), so an unbounded print here would let one entry's text dominate every
+    /// later review prompt for the task — the same "a ruling is a nudge, not a second history"
+    /// reasoning <see cref="AppendSettledRulings"/>'s own doc comment states for the reason field.
     /// </summary>
-    internal static IReadOnlyList<string> HumanDirectedInteractionReasonsShown(
+    private static string PrintedInteractionParty(ExternalInteractionRecord interaction) =>
+        RelayedText.Truncate(RelayedText.OneLine(interaction.Party).Trim(), MaxRulingReasonLength);
+
+    /// <summary>
+    /// The printed <c>--party</c> text this prompt actually shows (the newest
+    /// <see cref="MaxPriorRulings"/>, bounded exactly as <see cref="AppendSettledRulings"/> prints
+    /// it) — handed to <see cref="ReviewVerdictValidation.NamesAFinding"/> alongside
+    /// <see cref="RulingReasonsShown"/> so a reviewer's verbatim echo of the platform-injected
+    /// party text cannot manufacture <see cref="NamesAFinding"/>'s own location gate out of text
+    /// nobody found: <c>--party</c> is free text an agent chooses (a plausible reading of its own
+    /// description invites pasting a file path or a whole message into it), so echoing it back is
+    /// not evidence the reviewer located anything itself. Unlike <see cref="RulingReasonsShown"/>'s
+    /// reason text, this is never restricted to a dismissal-shaped ruling: a party string is
+    /// identifying information, not a claim about whether a defect is real, so there is no
+    /// needs-fixes-confirmation case where stripping it would erase defect language a human asked
+    /// the reviewer to check for.
+    /// </summary>
+    internal static IReadOnlyList<string> HumanDirectedInteractionPartiesShown(
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions) =>
         priorHumanDirectedInteractions is null
             ? []
             : [.. priorHumanDirectedInteractions
                 .Where(interaction => interaction.HumanDirected)
                 .TakeLast(MaxPriorRulings)
-                .Where(interaction => interaction.Reason.IsNotBlank())
-                .Select(PrintedInteractionReason)];
+                .Select(PrintedInteractionParty)];
 
     /// <summary>
     /// The structured-finding contract every review lens answers in (Decisions Log #63, #87).
@@ -2362,7 +2388,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  submission is safe — you do not need to search Jira for a duplicate yourself.");
         prompt.AppendLine("- The card's audience is people, not agents. Write it the way this team writes cards;");
         prompt.AppendLine("  the operational detail above stays on the Hall9k task, which is what owns it.");
-        AppendExternalInteractionLoggingRule(prompt, task.Id);
+        prompt.AppendLine("- The outside-interaction logging invariant every other dispatched prompt carries does");
+        prompt.AppendLine("  NOT apply here: `h9k task log-interaction` records against this task's active run, and");
+        prompt.AppendLine("  a publication session has none — this task has not been claimed. If you interact with");
+        prompt.AppendLine("  anything outside this session beyond the write-jira call above, say so plainly in");
+        prompt.AppendLine("  your final summary instead.");
         AppendAdoptedContextRule(prompt, task);
         prompt.AppendLine("- If you genuinely cannot create the card — no access, no rule saying where it goes,");
         prompt.AppendLine("  a required field nothing here answers — stop and say so plainly. Reporting that is a");
