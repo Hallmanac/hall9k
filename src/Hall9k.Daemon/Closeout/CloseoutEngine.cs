@@ -20,6 +20,7 @@ using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
+using Marten.Exceptions;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
@@ -389,13 +390,21 @@ public sealed class CloseoutEngine(
     /// follow-up whose pull request turned out to already be merged before the run ever spawned)
     /// and <see cref="InspectMissingRunAsync"/> above both reach here. A wholly unrecorded
     /// <paramref name="runId"/> gets a minimal run record reconstructed (<see
-    /// cref="RunRecordReconstructed"/>) before the ordinary merged-run closeout (<see
-    /// cref="CompleteCloseoutAsync"/>) runs; a <paramref name="runId"/> a concurrent caller has
-    /// already carried all the way to <see cref="RunState.Completed"/> — the declined-dispatch
-    /// path and the missing-run sweep can race the same run id, since the sweep is deliberately
-    /// not node-scoped (see <see cref="TasksWithMissingRunRecordsAsync"/>) — is left alone
-    /// instead: completing it a second time would double the merge comment, the handoff and the
-    /// dependents-unblock (independent pre-PR review, cycle 1).
+    /// cref="RunRecordReconstructed"/>) in the SAME <see cref="IDocumentSession.SaveChangesAsync"/>
+    /// call as the ordinary merged-run closeout (<see cref="CompleteCloseoutAsync"/>) that follows
+    /// it, rather than two separate commits: a failure between them would otherwise leave a run
+    /// reconstructed-but-not-completed forever invisible to every sweep (independent pre-PR
+    /// review, cycle 1), since none of the three candidate queries admits a run in that shape. A
+    /// <paramref name="runId"/> a concurrent caller has already carried all the way to <see
+    /// cref="RunState.Completed"/> — the declined-dispatch path and the missing-run sweep can race
+    /// the same run id, since the sweep is deliberately not node-scoped (see <see
+    /// cref="TasksWithMissingRunRecordsAsync"/>) — is left alone instead: completing it a second
+    /// time would double the merge comment, the handoff and the dependents-unblock. A concurrent
+    /// caller still mid-race — both readers saw no run record and both tried to reconstruct it —
+    /// is caught as <see cref="ExistingStreamIdCollisionException"/> from the single combined
+    /// commit below: Marten refuses the whole batch when the stream id collides, so the loser's
+    /// attempt lands as a no-op rather than a duplicate completion (independent pre-PR review,
+    /// cycle 1, adversarial finding).
     /// </summary>
     public async Task ReconstructAndCompleteAsync(
         IDocumentSession session,
@@ -412,13 +421,28 @@ public sealed class CloseoutEngine(
         if (run is null)
         {
             int pullRequestNumber = PullRequestUrls.ParseNumber(task.PullRequestUrl ?? string.Empty);
-            session.Events.StartStream<RunAggregate>(runId, new RunRecordReconstructed(
+            var reconstructed = new RunRecordReconstructed(
                 runId, task.Id, nodeId, ownerId, task.PullRequestUrl,
-                pullRequestNumber > 0 ? pullRequestNumber : null, now));
-            await session.SaveChangesAsync(cancellationToken);
-            run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
-                ?? throw new InvalidOperationException(
-                    $"Run {runId} was just reconstructed for task {task.Id} but its projection did not materialize.");
+                pullRequestNumber > 0 ? pullRequestNumber : null, now);
+            session.Events.StartStream<RunAggregate>(runId, reconstructed);
+
+            // Mirrors RunDetailsProjection.Create(IEvent<RunRecordReconstructed>) — the event
+            // just staged above is not committed yet, so its projection is not queryable until
+            // CompleteCloseoutAsync's own SaveChangesAsync lands it alongside the closeout
+            // events, which is the whole point of building the view in memory here instead of
+            // saving and reloading it.
+            run = new RunDetails
+            {
+                Id = reconstructed.Id,
+                TaskId = reconstructed.TaskId,
+                NodeId = reconstructed.NodeId,
+                OwnerId = reconstructed.OwnerId,
+                RunDirectory = RunPaths.GlobalDirectory(reconstructed.Id),
+                State = RunState.Dispatched,
+                DispatchedAt = reconstructed.ReconstructedAt,
+                PullRequestUrl = reconstructed.PullRequestUrl,
+                PullRequestNumber = reconstructed.PullRequestNumber,
+            };
         }
         else if (run.State == RunState.Completed)
         {
@@ -427,7 +451,19 @@ public sealed class CloseoutEngine(
             return;
         }
 
-        await CompleteCloseoutAsync(session, run, project, task, mergedAt, now, cancellationToken);
+        try
+        {
+            await CompleteCloseoutAsync(session, run, project, task, mergedAt, now, cancellationToken);
+        }
+        catch (ExistingStreamIdCollisionException)
+        {
+            // A concurrent winner reconstructed and completed this same run id first, inside
+            // the single transaction above — not a launch or sweep failure, just a race this
+            // call lost. There is nothing left here to do.
+            logger.LogDebug(
+                "Run {RunId} was reconstructed and completed by a concurrent closeout while this call was in flight",
+                runId);
+        }
     }
 
     /// <summary>
