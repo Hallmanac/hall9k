@@ -378,7 +378,7 @@ The full surface is in *Build / test / run* above. These are the ones the window
 h9k status                                   # the attention pane: needs-you, stalled, running, blocked
 h9k task list --state needs-you              # the pane bounds each section; this is the rest of one
 h9k task list --project hall9k --state draft # what is written but not yet gated
-h9k task show 28b19893                       # one task: contract, dependencies, runs, PR, conversation
+h9k task show 28b19893                       # one task: contract, dependencies, runs and their worktree/branch/sessions, PR, conversation
 h9k logs 28b19893                            # that task's newest run transcript (--raw for stream-json)
 h9k project list                             # every project with its tasks counted by attention bucket
 h9k daemon status                            # a quiet queue is usually this
