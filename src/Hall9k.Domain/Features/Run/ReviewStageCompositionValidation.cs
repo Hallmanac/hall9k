@@ -59,7 +59,27 @@ public static class ReviewStageCompositionValidation
     public static bool AcknowledgmentActuallyNeeded(string? normalizedComposition, bool acknowledged) =>
         acknowledged && normalizedComposition is { } value && ReviewStageComposition.FromInput(value).RequiresAcknowledgment;
 
-    private static string Consequence(ReviewStageComposition composition, string optionName)
+    /// <summary>
+    /// The consequence sentence a caller prints once a composition that removes a load-bearing
+    /// guarantee actually takes effect — with <paramref name="acknowledged"/> already true, so
+    /// the platform still states what was traded away even though nothing here refuses the set
+    /// (task: removing a load-bearing guarantee names the decision it overrides at set time and
+    /// requires the consequence to be acknowledged in the command's own output — the advice has
+    /// to reach the operator on the accepted path too, not only the refusal one an operator's own
+    /// documented examples steer them away from ever hitting). Blank for a composition that needs
+    /// no acknowledgment (<see cref="ReviewStageComposition.RequiresAcknowledgment"/> false), so a
+    /// caller can print it unconditionally without a separate guard.
+    /// </summary>
+    public static string DescribeAcceptedConsequence(ReviewStageComposition composition) =>
+        composition.RequiresAcknowledgment
+            ? $"{composition.Value} {ConsequenceText(composition)} — accepted via --accept-reduced-review."
+            : string.Empty;
+
+    private static string Consequence(ReviewStageComposition composition, string optionName) =>
+        $"{optionName} {composition.Value} {ConsequenceText(composition)}. The platform advises, the human "
+        + $"overrides, but never silently: pass --accept-reduced-review to confirm.";
+
+    private static string ConsequenceText(ReviewStageComposition composition)
     {
         string guarantee = composition.Value switch
         {
@@ -88,11 +108,8 @@ public static class ReviewStageCompositionValidation
             _ => string.Empty,
         };
 
-        string consequence = guarantee.IsNotBlank() && lens.IsNotBlank()
+        return guarantee.IsNotBlank() && lens.IsNotBlank()
             ? $"{guarantee}, and {lens}"
             : guarantee.IsNotBlank() ? guarantee : lens;
-
-        return $"{optionName} {composition.Value} {consequence}. The platform advises, the human "
-            + $"overrides, but never silently: pass --accept-reduced-review to confirm.";
     }
 }

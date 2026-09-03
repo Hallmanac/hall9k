@@ -166,6 +166,15 @@ public sealed record ConfigFileReadResult(
 /// <see cref="OperatingSettings.DefaultSpendPeriod"/> underneath it — so a later
 /// <c>h9k config set --spend-budget</c> with no <c>--spend-period</c> has an answer already.
 /// </param>
+/// <param name="ReviewStageComposition">
+/// This node's override of which pre-PR review stages a run gets (task: the review pipeline's
+/// stage composition becomes configuration recorded per run), resolved the same env-then-file-
+/// then-default way every other setting here is, so <c>h9k config show</c> can read back what
+/// <c>h9k config set --review-stage-composition</c> wrote — <see cref="OperatingSettings.ReviewStageComposition"/>'s
+/// own doc promises exactly that. Falls back to <see cref="Features.Run.ReviewStageComposition.FullPipeline"/>,
+/// the same compiled default <c>DaemonOptions.ReviewStageComposition</c> and <c>ReviewStageCompositionResolver</c>
+/// use, when nothing sets one or a set value is not one of the five recognized words.
+/// </param>
 public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxConcurrentAgentSessions,
     bool MaxConcurrentAgentSessionsIsFabricatedZero,
@@ -182,4 +191,5 @@ public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxFinalFullPassRounds,
     ResolvedSetting<int> LifetimeReviewCycleBudget,
     ResolvedSetting<long?> SpendBudgetTokens,
-    ResolvedSetting<string> SpendPeriod);
+    ResolvedSetting<string> SpendPeriod,
+    ResolvedSetting<string> ReviewStageComposition);

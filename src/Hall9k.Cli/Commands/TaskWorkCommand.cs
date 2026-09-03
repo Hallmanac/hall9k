@@ -729,9 +729,17 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // (task: the review pipeline's stage composition becomes configuration recorded per
             // run) — the node level has no live DaemonOptions to read from an interactive claim,
             // so this reads the same platform config file value RunLauncher's own dispatch
-            // eventually binds through DaemonOptions for a headless run.
+            // eventually binds through DaemonOptions for a headless run. The non-throwing
+            // TryReadOperatingSettingsAsync, not the write path's throwing ReadOperatingSettingsAsync
+            // (independent pre-PR review, cycle 1, adversarial lens): this call sits inside the
+            // post-claim block above, whose catch already records the claim Failed on any
+            // exception, and a malformed config file is exactly the case the rest of this
+            // subsystem is built to degrade gracefully on rather than fail a claim over — the same
+            // reason ConfigShowCommand and the daemon's own PlatformConfigFileSource both read
+            // through the non-throwing variant.
             Hall9k.Domain.Infrastructure.Persistence.OperatingSettings nodeSettings =
-                await Hall9k.Domain.Infrastructure.Persistence.PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+                (await Hall9k.Domain.Infrastructure.Persistence.PlatformConfigFile.TryReadOperatingSettingsAsync(
+                    cancellationToken)).Settings;
             ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
                 taskDetails.ReviewStageComposition, project.ReviewStageComposition, nodeSettings.ReviewStageComposition);
 

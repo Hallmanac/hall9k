@@ -95,12 +95,57 @@ public static class OperatingSettingsResolver
         ResolvedSetting<long?> spendBudgetTokens =
             ResolveSpendBudgetTokens(configured.SpendBudgetTokens, unusableEnvironmentVariables);
         ResolvedSetting<string> spendPeriod = ResolveSpendPeriod(configured.SpendPeriod, unusableEnvironmentVariables);
+        ResolvedSetting<string> reviewStageComposition =
+            ResolveReviewStageComposition(configured.ReviewStageComposition, unusableEnvironmentVariables);
 
         return new OperatingSettingsReport(
             concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
             shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables,
             maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds, lifetimeReviewCycleBudget,
-            spendBudgetTokens, spendPeriod);
+            spendBudgetTokens, spendPeriod, reviewStageComposition);
+    }
+
+    /// <summary>
+    /// This node's review stage composition (task: the review pipeline's stage composition
+    /// becomes configuration recorded per run) — the same five-recognized-word closed set
+    /// <see cref="Features.Run.ReviewStageComposition.FromInput"/> already reads, so an
+    /// unrecognized value here is treated as absent rather than ridden through the way
+    /// <see cref="ResolveString"/> would for a model name, mirroring <see cref="ResolveSpendPeriod"/>'s
+    /// own shape for a closed vocabulary.
+    /// </summary>
+    private static ResolvedSetting<string> ResolveReviewStageComposition(string? configured, List<string> unusable)
+    {
+        string environmentVariable = $"{EnvironmentPrefix}ReviewStageComposition";
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        {
+            Features.Run.ReviewStageComposition composition = Features.Run.ReviewStageComposition.FromInput(fromEnvironment);
+            if (composition != Features.Run.ReviewStageComposition.Unknown)
+            {
+                return new ResolvedSetting<string>(composition.Value, SettingOrigin.EnvironmentVariable, environmentVariable);
+            }
+
+            unusable.Add(
+                $"{environmentVariable} is set to \"{fromEnvironment}\", which is not a recognized review stage "
+                + "composition — it is treated as absent, and review-stage-composition falls back to the config "
+                + "file or default instead.");
+        }
+
+        if (configured is { Length: > 0 } value)
+        {
+            Features.Run.ReviewStageComposition composition = Features.Run.ReviewStageComposition.FromInput(value);
+            if (composition != Features.Run.ReviewStageComposition.Unknown)
+            {
+                return new ResolvedSetting<string>(composition.Value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
+            }
+
+            unusable.Add(
+                $"{Hall9kDatabase.ConfigFile} sets review-stage-composition to \"{value}\", which is not a "
+                + "recognized review stage composition — it is treated as absent, and review-stage-composition "
+                + "falls back to the default instead.");
+        }
+
+        return new ResolvedSetting<string>(
+            Features.Run.ReviewStageComposition.FullPipeline.Value, SettingOrigin.Default, null);
     }
 
     /// <summary>

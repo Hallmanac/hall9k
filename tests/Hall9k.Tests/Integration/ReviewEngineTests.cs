@@ -187,6 +187,50 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses (high): composition none reaching
+    /// <see cref="ReviewPhase.Reverify"/> — the one way it can, a pre-gate rebase or review-thread
+    /// dispute resumed with <c>h9k review resolve --needs-fixes</c> — used to dispatch
+    /// <see cref="ReviewStageComposition.OpeningLenses"/>'s permanently-empty list forever: no
+    /// event ever appended, so <c>DriveAsync</c> reloaded the identical state and re-ran the full
+    /// verification gate on every iteration, never settling and never opening the pull request.
+    /// The fix session itself must still run (the dispute's own fix, over the human's resolution),
+    /// but nothing after it may ever dispatch a reviewer for composition none.
+    /// </summary>
+    [Fact]
+    public async Task Composition_none_resuming_a_pre_gate_dispute_settles_after_the_fix_without_dispatching_a_reviewer()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(
+            store, cts.Token, ReviewStageComposition.None);
+
+        const string humanResolution = "Keep the daemon side's retry policy; it is the one this run actually ships.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanResolution, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new("Applied the human's decision and rebased cleanly.\n\nRESOLUTION: fixed");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the dispute's own fix is all composition none ever owes this run");
+        executor.Spawns.Should().ContainSingle(
+            "only the dispute's own fix session dispatches — composition none never dispatches a reviewer, "
+            + "and a second spawn here would mean the empty-lens dispatch bug is back");
+        executor.Spawns[0].Prompt.Should().Contain(
+            "rebase an existing pull request onto its base branch",
+            "the fix session must resume the rebase, not the generic review-fix prompt");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.ReviewSettlement.Should().Be(
+            ReviewSettlement.Settled, "nobody read the final tip, so this can never make the narrower Clean claim");
+    }
+
+    /// <summary>
     /// Adversarial-only never opens the conformance track, including on the cycle immediately
     /// before merge that would otherwise be a mandatory two-lens FinalFullPass.
     /// </summary>
@@ -5297,7 +5341,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// passed, a cycle already ran — must not (independent pre-PR review, cycle 2).
     /// </summary>
     private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedRebaseDisputeParkedRunAsync(
-        DocumentStore store, CancellationToken cancellationToken)
+        DocumentStore store, CancellationToken cancellationToken, ReviewStageComposition? composition = null)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -5333,7 +5377,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
-                worktreePath, "task/review-me", ExecutorMode.Subscription, Now, IsFollowUp: true),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now, IsFollowUp: true,
+                ReviewStageComposition: composition),
             new AgentSessionCompleted(runId, Now),
             new ReviewParked(runId,
                 "A follow-up could not honestly resolve a rebase conflict — both sides changed the same "

@@ -137,6 +137,18 @@ public sealed class OperatingSettings
     public int? LifetimeReviewCycleBudget { get; set; }
 
     /// <summary>
+    /// This node's review stage composition (task: the review pipeline's stage composition
+    /// becomes configuration recorded per run) — the config-file record <c>h9k config set
+    /// --review-stage-composition</c> writes and reads back for <c>h9k config show</c>, and what
+    /// an interactive dispatch (<c>Hall9k.Cli.Commands.TaskWorkCommand</c>, no live
+    /// <c>DaemonOptions</c> to read) resolves the node level from directly, the same file
+    /// <c>DaemonOptions.ReviewStageComposition</c> eventually binds from for a headless dispatch.
+    /// Null means unset — <see cref="Hall9k.Domain.Features.Run.ReviewStageCompositionResolver"/>
+    /// falls through to the compiled default.
+    /// </summary>
+    public string? ReviewStageComposition { get; set; }
+
+    /// <summary>
     /// This node's periodic token-spend budget (backlog: spend-governor step three, the
     /// 2026-09-01 architecture review's token-economics findings): once the current period's
     /// recorded spend — every input token <c>TokensRecorded</c> already prices, fresh, cache-read
@@ -170,18 +182,6 @@ public sealed class OperatingSettings
     /// choice about that trade-off possible, if one is ever made.
     /// </para>
     /// </summary>
-    /// <summary>
-    /// This node's review stage composition (task: the review pipeline's stage composition
-    /// becomes configuration recorded per run) — the config-file record <c>h9k config set
-    /// --review-stage-composition</c> writes and reads back for <c>h9k config show</c>, and what
-    /// an interactive dispatch (<c>Hall9k.Cli.Commands.TaskWorkCommand</c>, no live
-    /// <c>DaemonOptions</c> to read) resolves the node level from directly, the same file
-    /// <c>DaemonOptions.ReviewStageComposition</c> eventually binds from for a headless dispatch.
-    /// Null means unset — <see cref="Hall9k.Domain.Features.Run.ReviewStageCompositionResolver"/>
-    /// falls through to the compiled default.
-    /// </summary>
-    public string? ReviewStageComposition { get; set; }
-
     public long? SpendBudgetTokens { get; set; }
 
     /// <summary>
