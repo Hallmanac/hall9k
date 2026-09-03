@@ -142,7 +142,9 @@ not all closed out is refused, naming the open blockers. `h9k task assign` and
 `work` cuts the same branch and worktree headless dispatch would, assembles the prompt
 through the same code path (its working rules swapped for an attached operator), and opens a
 regular interactive Claude Code session — the claim is held by the human, not a process, so
-closing the terminal is a normal way to leave and re-running `work` re-enters the same worktree.
+closing the terminal is a normal way to leave and re-running `work` re-enters the same worktree,
+resuming the most recently recorded session's own conversation (falling back to a fresh session,
+announced, only when the recorded one cannot be resumed).
 From there, `verify` runs the project's gates on demand, `deliver` pushes the branch and hands the
 claim into the standard delivery pipeline, `handback` releases the claim to a headless agent
 partway through (resuming the branch), and `release` gives an untouched claim back to the queue.

@@ -60,14 +60,16 @@ opens a regular interactive Claude Code session attached to the operator's own t
 prompt assembled through the same code path a headless spawn's is, with the working rules swapped
 for an attached operator. The claim is held by the human rather than a
 process — no lease, no heartbeat reclaim — so closing the terminal is a normal way to leave, and
-running `h9k task work` again re-enters the same worktree and branch with a fresh session. It
+running `h9k task work` again re-enters the same worktree and branch, resuming the most recently
+recorded session's own conversation — falling back to a fresh session, announced rather than
+silent, only when the recorded one cannot be resumed. It
 occupies zero concurrency slots (the run's `NodeId` is the sentinel `Guid.Empty`, which the
 node's session-ceiling accounting never counts), so it starts even when the daemon's queue is
 full. `h9k task verify` runs the project's gates on demand against the claim's worktree; `h9k task
 deliver` pushes the branch and hands the run into the standard delivery pipeline — from there it
 is indistinguishable from a headless run; `h9k task handback` releases the claim to a headless
 agent partway through, resuming the same branch; `h9k task release` gives an untouched claim back
-to the dispatch queue. See [PLAN.md Decisions Log #103](../PLAN.md).
+to the dispatch queue. See [PLAN.md Decisions Log #103, #122, #124](../PLAN.md).
 
 ### The board
 

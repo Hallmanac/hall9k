@@ -3,7 +3,7 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// <summary>
 /// h9k task work launched an interactive Claude Code session attached to the operator's
 /// terminal. ClaudeSessionId is the id the CLI minted (a fresh claim) or the previously recorded
-/// id it resumed (`claude --resume`, a re-entry — PLAN.md §16 #122, amending #103's original
+/// id it resumed (`claude --resume`, a re-entry — PLAN.md §16 #124, amending #103's original
 /// "always fresh" choice), so it is a precise pointer rather than something scraped from a
 /// transcript the platform never reads (interactive sessions are not headless — there is no
 /// stream-json to parse). A run can carry more than one of these: closing the terminal leaves the

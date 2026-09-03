@@ -578,7 +578,7 @@ next move on, renders dim as its own level. It is there so you can consciously i
 
 ## Working a task interactively
 
-`h9k task work | verify | deliver | handback | release` (Decisions Log #103)
+`h9k task work | verify | deliver | handback | release` (Decisions Log #103, #122, #124)
 
 An operator can work a Published or Queued task in their own terminal instead of dispatching it
 headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it
@@ -589,7 +589,9 @@ assignment to. `h9k task assign` and `h9k task publish --assign` are unchanged a
 headless dispatch triggers. Whichever state it entered from, the claim itself is held by the human,
 not a process: there is no lease and no heartbeat reclaim, so
 closing the terminal is a normal way to leave, and re-running `h9k task work <id>` re-enters the
-same worktree and branch with a fresh session.
+same worktree and branch, resuming the most recently recorded session's own conversation —
+falling back to a fresh session, announced rather than silent, only when the recorded one cannot
+be resumed.
 
 Nothing reclaims a quiet claim automatically, but a long-untouched one is easy to forget about:
 once it has sat past `interactiveClaimStaleAfterDays` (three days by default, [configurable

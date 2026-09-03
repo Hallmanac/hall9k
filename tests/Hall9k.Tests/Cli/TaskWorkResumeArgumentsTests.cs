@@ -5,7 +5,7 @@ using Xunit;
 namespace Hall9k.Tests.Cli;
 
 /// <summary>
-/// Decisions Log #122 (amending #103): re-entering an interactive claim attempts
+/// Decisions Log #124 (amending #103): re-entering an interactive claim attempts
 /// <c>claude --resume &lt;recorded session id&gt;</c> before ever minting a fresh one. These
 /// assert the flag set directly, mirroring <c>ClaudeExecutorIsolationTests</c>'s own
 /// internal-for-policy-tests reasoning — the flag set IS the policy, worth checking without

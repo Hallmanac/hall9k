@@ -43,7 +43,7 @@ namespace Hall9k.Cli.Commands;
 /// heartbeat to renew or an expiry sweep to reclaim, and closing the terminal is a normal way to
 /// leave — the task stays Claimed and re-running this command resumes the most recently recorded
 /// interactive session's own conversation (`claude --resume`), falling back to a fresh one — said
-/// out loud, never silently — when the recorded one cannot be resumed (PLAN.md §16 #122, a
+/// out loud, never silently — when the recorded one cannot be resumed (PLAN.md §16 #124, a
 /// deliberate reversal of #103's original "always fresh" opening move). An interactive claim
 /// occupies zero concurrency slots: it never creates a node-owned run (RunDispatched records
 /// NodeId as the sentinel <see cref="Guid.Empty"/>,
