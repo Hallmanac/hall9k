@@ -658,7 +658,14 @@ public static class CliCommandTree
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
             task.AddCommand<TaskWorkCommand>("work")
                 .WithDescription(
-                    "Work a Queued task interactively: claims it, cuts the same branch and worktree headless "
+                    "Work a Published or Queued task interactively. On a Published task assigned to nobody, "
+                    + "this assigns it to your own owner and claims it interactively in one atomic event append, "
+                    + "the same collapsing h9k task publish --assign already does for publish and assign: the "
+                    + "task is never observably Queued in between, so the dispatcher (woken within moments by "
+                    + "the doorbell a plain h9k task assign would send) can never win the race to it. Refused, "
+                    + "naming the open blockers, when the task's dependencies have not all closed out — the "
+                    + "same bar dispatch itself holds an assignment to. On an already-Queued task assigned to "
+                    + "you, this claims it exactly as before: cuts the same branch and worktree headless "
                     + "dispatch would, assembles the prompt through the identical code path (its working rules "
                     + "swapped for an attached operator), and launches a regular interactive Claude Code session "
                     + "attached to this terminal. The claim is held by you, not a process — no liveness "
