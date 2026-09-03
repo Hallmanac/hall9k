@@ -198,6 +198,34 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
     }
 
     /// <summary>
+    /// A resolve with no --pr must stay exactly as inert as it was before this guard existed
+    /// (independent pre-PR review, cycle 2, medium): with no URL to check safety for, there is
+    /// nothing worth resolving the project's repository for at all, so a --repo-only project
+    /// (no --repo-url) must never pay ResolveProjectRepositoryUrlAsync's gh fallback just to
+    /// discard the answer immediately.
+    /// </summary>
+    [Fact]
+    public async Task A_resolve_with_no_pull_request_url_never_shells_out_to_gh()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        TaskAggregate task = await SeedFailedDispatchedRunWithoutRepositoryUrlAsync(store, ownerId, runId, cts.Token);
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{\"url\":\"https://github.com/x/y\"}");
+
+        await using IDocumentSession session = store.LightweightSession();
+        TaskResolveCommand.RunStreamPullRequestOutcome outcome =
+            await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
+                session, task, null, Now, cts.Token, gh.Runner);
+        await session.SaveChangesAsync(cts.Token);
+
+        outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.NotRecorded);
+        gh.Calls.Should().BeEmpty("no --pr was given, so there is nothing to resolve the repository for");
+    }
+
+    /// <summary>
     /// <see cref="TaskResolveCommand.SafePullRequestUrlWithoutRunStreamAsync"/> is the guard the
     /// task-stream side needs when there is no run stream at all: nothing on the run side can ever
     /// protect this task from CloseoutEngine's missing-run sweep, since no RunDetails row will ever

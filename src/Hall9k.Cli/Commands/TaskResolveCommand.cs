@@ -193,13 +193,23 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         CancellationToken cancellationToken,
         ProcessRunner? processRunner = null)
     {
-        if (task.CurrentRunId is not { } runId
-            || await session.Events.FetchStreamStateAsync(runId, cancellationToken) is null)
+        if (task.CurrentRunId is not { } runId)
         {
             return RunStreamPullRequestOutcome.NoRunStream;
         }
 
-        if (task.Type == TaskType.PrReview)
+        // Fenced the same way h9k pr resolve and h9k review resolve fence their own run-stream
+        // appends: expectedVersion makes a concurrent writer (the daemon, or a duplicate
+        // invocation of this command) fail loudly through TaskResolveCommand's own
+        // EventStreamUnexpectedMaxEventIdException catch, rather than silently stacking a second
+        // PullRequestRecordedOnFailedRun event on the same run.
+        StreamState? runStreamState = await session.Events.FetchStreamStateAsync(runId, cancellationToken);
+        if (runStreamState is null)
+        {
+            return RunStreamPullRequestOutcome.NoRunStream;
+        }
+
+        if (pullRequestUrl.IsBlank() || task.Type == TaskType.PrReview)
         {
             return RunStreamPullRequestOutcome.NotRecorded;
         }
@@ -212,7 +222,7 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
             return RunStreamPullRequestOutcome.NotRecorded;
         }
 
-        session.Events.Append(runId, pullRequestRecorded);
+        session.Events.Append(runId, expectedVersion: runStreamState.Version + 1, pullRequestRecorded);
         return RunStreamPullRequestOutcome.Recorded;
     }
 
