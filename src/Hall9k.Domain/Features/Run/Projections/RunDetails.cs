@@ -254,7 +254,11 @@ public sealed class RunDetails
     /// detaching, whichever happened most recently — which is what the staleness nudge (h9k
     /// status) measures a configured number of days against. Null until the claim's first
     /// <see cref="InteractiveSessionStarted"/>, so a caller falls back to <see cref="DispatchedAt"/>
-    /// (the claim's own start) rather than guessing at an unobserved touch.
+    /// (the claim's own start) rather than guessing at an unobserved touch. Set from each event's
+    /// own append <c>Timestamp</c>, not <see cref="InteractiveSessionStarted.StartedAt"/> (the
+    /// claude process's own start time): under the prompt-handoff default a session can be pasted
+    /// into a process that has been running for a while already, so that process's start time is
+    /// not when the claim was touched.
     /// <para>
     /// Also null on a document written before this field existed, even one whose claim has since
     /// been touched (independent pre-PR review, cycle 1): <see cref="RunDetailsProjection"/> is
@@ -695,7 +699,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.InteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
         view.InteractiveSessionCount++;
-        view.LastInteractiveActivityAt = @event.Data.StartedAt;
+        // @event.Timestamp (when this event was actually appended), not @event.Data.StartedAt
+        // (the claude process's own start time): a direct launch's StartedAt is ~milliseconds
+        // behind the append, but a self-registered session's is the pid's real start time, which
+        // can predate the register-session call — and this claim's touch — by however long that
+        // process was already running before the prompt was pasted into it (independent pre-PR
+        // review, conformance lens, cycle 1). LastInteractiveActivityAt means "the claim was
+        // touched", not "the process began existing".
+        view.LastInteractiveActivityAt = @event.Timestamp;
         // Mirrors RunResumed's own update: a start-it-mine claim re-entered with h9k task work
         // spawns under a different recorded name (the interactive-claim suffix, not build), and
         // without this the headless-versus-attended discriminator in TaskPhaseComposer keeps
