@@ -285,7 +285,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return context;
     }
 
-    private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ReenterAsync(
+    internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ReenterAsync(
         IDocumentSession session, TaskAggregate task, bool force, CancellationToken cancellationToken)
     {
         Guid runId = task.CurrentRunId
@@ -585,7 +585,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // happened (AGENTS.md: never guess at unobserved facts).
             return new DomainConflictException(
                 $"Task {taskId} changed while claiming it — it now reads {current.State.Value}, not Claimed. "
-                + "h9k status to see where it stands.");
+                + $"Most likely a benign concurrent append; h9k task work {taskId} to try again, or h9k status "
+                + "to see where it stands.");
         }
 
         OwnerDetails? owner = current.AssignedOwnerId is { } ownerId
