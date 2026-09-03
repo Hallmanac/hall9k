@@ -82,6 +82,14 @@ public sealed class TaskAggregate
     public int? MaxFinalFullPassRounds { get; private set; }
     /// <summary>This task's own override of the task-lifetime review-cycle budget; null defers to the project or node.</summary>
     public int? LifetimeReviewCycleBudget { get; private set; }
+    /// <summary>
+    /// This task's own override of which pre-PR review stages a run gets (task: the review
+    /// pipeline's stage composition becomes configuration recorded per run); null defers to the
+    /// project or node. Draft-only, set at <c>h9k task add</c> or revised at <c>h9k task revise</c>
+    /// — unlike the review-cycle caps above, deliberately not settable mid-run: see
+    /// <c>Hall9k.Domain.Features.Run.ReviewStageComposition</c>'s own doc for why.
+    /// </summary>
+    public string? ReviewStageComposition { get; private set; }
     public int LeaseGeneration { get; private set; }
     public Guid? ClaimedByNodeId { get; private set; }
 
@@ -277,6 +285,7 @@ public sealed class TaskAggregate
         AddedByOwnerId = @event.AddedByOwnerId;
         SourceIdeaId = @event.SourceIdeaId;
         EpicId = @event.EpicId;
+        ReviewStageComposition = @event.ReviewStageComposition;
         _blockedBy.Clear();
         _blockedBy.AddRange(@event.BlockedBy ?? []);
 
@@ -340,6 +349,11 @@ public sealed class TaskAggregate
         if (@event.QueuePriority.HasValue)
         {
             QueuePriorityMarked = @event.QueuePriority.Value;
+        }
+
+        if (@event.ReviewStageComposition.HasValue)
+        {
+            ReviewStageComposition = @event.ReviewStageComposition.Value;
         }
     }
 

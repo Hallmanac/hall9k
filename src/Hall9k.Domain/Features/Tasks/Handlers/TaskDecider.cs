@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -30,7 +31,9 @@ public static class TaskDecider
         AgentModel? model = null,
         IReadOnlyList<Guid>? blockedBy = null,
         Guid? sourceIdeaId = null,
-        Guid? epicId = null)
+        Guid? epicId = null,
+        string? reviewStageComposition = null,
+        bool reviewStageCompositionAcknowledged = false)
     {
         if (projectId == Guid.Empty)
         {
@@ -48,12 +51,27 @@ public static class TaskDecider
         // readiness contract is enforced once, at Publish, as an invariant of that state.
         string[] criteria = [.. acceptanceCriteria.Where(c => c.IsNotBlank())];
         Guid[] dependencies = Dependencies(id, blockedBy);
+        string? normalizedComposition = VetReviewStageComposition(
+            reviewStageComposition, reviewStageCompositionAcknowledged, "--review-stage-composition");
 
         return new TaskAdded(
             id, projectId, objective, criteria, type, agentContext, constraints,
             externalReference, addedAt, addedByOwnerId, VetModel(model), dependencies,
-            StartsAsDraft: true, SourceIdeaId: sourceIdeaId, EpicId: epicId);
+            StartsAsDraft: true, SourceIdeaId: sourceIdeaId, EpicId: epicId,
+            ReviewStageComposition: normalizedComposition);
     }
+
+    /// <summary>
+    /// Vets a task-level review stage composition input the same way <see cref="VetModel"/> vets a
+    /// model (task: the review pipeline's stage composition becomes configuration recorded per
+    /// run): a blank value states no preference and returns null unchanged; anything else must
+    /// parse to one of the five recognized compositions, and a composition that removes a
+    /// load-bearing guarantee is refused unless <paramref name="acknowledged"/> says so. Public for
+    /// the same reason <see cref="VetModel"/> is: <c>h9k task add</c> prompts for the objective and
+    /// acceptance criteria between reading its options and reaching this decider.
+    /// </summary>
+    public static string? VetReviewStageComposition(string? input, bool acknowledged, string optionName) =>
+        ReviewStageCompositionValidation.VetInput(input, acknowledged, optionName);
 
     /// <summary>
     /// The override reaches the executor's shell command line, so it is vetted here rather
@@ -271,11 +289,14 @@ public static class TaskDecider
         DateTimeOffset revisedAt,
         Guid revisedByOwnerId,
         Optional<Guid?> epicId = default,
-        Optional<bool> queuePriority = default)
+        Optional<bool> queuePriority = default,
+        Optional<string?> reviewStageComposition = default,
+        bool reviewStageCompositionAcknowledged = false)
     {
         bool onlyQueuePriorityChanging = queuePriority.HasValue
             && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
-            && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue;
+            && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
+            && !reviewStageComposition.HasValue;
 
         if (task.State != TaskState.Draft && !onlyQueuePriorityChanging)
         {
@@ -354,19 +375,26 @@ public static class TaskDecider
                 + "create a new task instead if the work is not a pull-request review.");
         }
 
+        Optional<string?> normalizedComposition = reviewStageComposition.HasValue
+            ? Optional<string?>.Of(ReviewStageCompositionValidation.VetInput(
+                reviewStageComposition.Value, reviewStageCompositionAcknowledged, "--review-stage-composition"))
+            : Optional<string?>.None;
+
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue
-            && !queuePriority.HasValue)
+            && !queuePriority.HasValue && !normalizedComposition.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
                 "--type, --model, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
-                "--queue-first, or --clear-queue-first.");
+                "--queue-first, --clear-queue-first, or --review-stage-composition.");
         }
 
         return new TaskRevised(
             task.Id, objective, criteria, agentContext, dependencies, type, chosenModel,
-            revisedAt, revisedByOwnerId, epicId, queuePriority);
+            revisedAt, revisedByOwnerId, epicId, queuePriority, normalizedComposition,
+            ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(
+                normalizedComposition.Value, reviewStageCompositionAcknowledged));
     }
 
     /// <summary>

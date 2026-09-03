@@ -126,6 +126,8 @@ public sealed class TaskDetails
     public int? MaxFinalFullPassRounds { get; set; }
     /// <summary>This task's own override of the task-lifetime review-cycle budget; null defers to the project or node.</summary>
     public int? LifetimeReviewCycleBudget { get; set; }
+    /// <summary>This task's own override of which pre-PR review stages a run gets; null defers to the project or node (task: the review pipeline's stage composition becomes configuration recorded per run).</summary>
+    public string? ReviewStageComposition { get; set; }
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
@@ -246,6 +248,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         AddedByOwnerId = @event.Data.AddedByOwnerId,
         SourceIdeaId = @event.Data.SourceIdeaId,
         EpicId = @event.Data.EpicId,
+        ReviewStageComposition = @event.Data.ReviewStageComposition,
     };
 
     public void Apply(IEvent<TaskPublished> @event, TaskDetails view)
@@ -297,6 +300,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         if (@event.Data.EpicId.HasValue)
         {
             view.EpicId = @event.Data.EpicId.Value;
+        }
+
+        if (@event.Data.ReviewStageComposition.HasValue)
+        {
+            view.ReviewStageComposition = @event.Data.ReviewStageComposition.Value;
         }
 
         view.Revisions++;

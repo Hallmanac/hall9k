@@ -41,4 +41,11 @@ public sealed record TaskAdded(
     IReadOnlyList<Guid>? BlockedBy = null,
     bool StartsAsDraft = false,
     Guid? SourceIdeaId = null,
-    Guid? EpicId = null);
+    Guid? EpicId = null,
+    /// <summary>
+    /// This task's own override of which pre-PR review stages a run gets (task: the review
+    /// pipeline's stage composition becomes configuration recorded per run); null defers to the
+    /// project or node. Recorded normalized (the canonical composition word, never a raw alias) —
+    /// see <c>Handlers.TaskDecider.Add</c>.
+    /// </summary>
+    string? ReviewStageComposition = null);

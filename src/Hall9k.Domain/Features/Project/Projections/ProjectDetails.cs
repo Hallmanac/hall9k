@@ -39,6 +39,12 @@ public sealed class ProjectDetails
     /// <summary>This project's override of the task-lifetime review-cycle budget; null defers to the node.</summary>
     public int? LifetimeReviewCycleBudget { get; set; }
     /// <summary>
+    /// This project's override of which pre-PR review stages a run gets (task: the review
+    /// pipeline's stage composition becomes configuration recorded per run); null defers to the
+    /// node. Task overrides this project value; this project value overrides the node.
+    /// </summary>
+    public string? ReviewStageComposition { get; set; }
+    /// <summary>
     /// The name this project's task branches are cut under; the default renders exactly the
     /// <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> name the platform cut before templates existed.
     /// </summary>
@@ -151,6 +157,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.LifetimeReviewCycleBudget.HasValue)
         {
             view.LifetimeReviewCycleBudget = @event.Data.LifetimeReviewCycleBudget.Value;
+        }
+
+        if (@event.Data.ReviewStageComposition.HasValue)
+        {
+            view.ReviewStageComposition = @event.Data.ReviewStageComposition.Value;
         }
 
         if (@event.Data.BranchNameTemplate.HasValue)

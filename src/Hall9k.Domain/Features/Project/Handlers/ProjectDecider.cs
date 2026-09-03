@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -66,7 +67,9 @@ public static class ProjectDecider
         Optional<int?> maxAdversarialReviewCycles = default,
         Optional<int?> maxFinalFullPassRounds = default,
         Optional<int?> lifetimeReviewCycleBudget = default,
-        Optional<BranchNameTemplate> branchNameTemplate = default)
+        Optional<BranchNameTemplate> branchNameTemplate = default,
+        Optional<string?> reviewStageComposition = default,
+        bool reviewStageCompositionAcknowledged = false)
     {
         if (repositoryPath.HasValue)
         {
@@ -148,6 +151,16 @@ public static class ProjectDecider
         ReviewCapValidation.RefuseNonPositiveCap(maxFinalFullPassRounds, "--max-final-full-pass-rounds");
         ReviewCapValidation.RefuseNonPositiveCap(lifetimeReviewCycleBudget, "--lifetime-review-cycle-budget");
 
+        // Blank or "default" clears the project override so the node decides again — the same
+        // clearing idiom every level-of-a-chain setting above already uses
+        // (ReviewStageCompositionValidation.VetInput). Anything else must be one of the five
+        // recognized compositions, and a value that removes a load-bearing guarantee must be
+        // acknowledged.
+        string? normalizedRaw = reviewStageComposition.HasValue
+            ? ReviewStageCompositionValidation.VetInput(
+                reviewStageComposition.Value, reviewStageCompositionAcknowledged, "--review-stage-composition")
+            : null;
+
         // Rendered here, not merely shape-checked: a template is refused at the command line only
         // if the thing that will actually cut branches refuses it, so validation runs the same
         // BranchNameTemplate.Render the dispatcher will run, over representative tasks. The
@@ -157,6 +170,14 @@ public static class ProjectDecider
         {
             branchNameTemplate = BranchNameTemplate.Parse(chosenTemplate.Value);
         }
+
+        // Normalized to the canonical value ("adversarial" round-trips as "AdversarialOnly") or to
+        // null (blank/"default" clears), the same discipline BranchNameTemplate's own
+        // Parse-before-recording gives its setting: what lands on the stream is what h9k project
+        // show and the resolver will read back, not whatever alias or clearing word a human typed.
+        Optional<string?> normalizedComposition = reviewStageComposition.HasValue
+            ? Optional<string?>.Of(normalizedRaw)
+            : Optional<string?>.None;
 
         return new ProjectSettingsChanged(
             project.Id,
@@ -178,7 +199,9 @@ public static class ProjectDecider
             maxAdversarialReviewCycles,
             maxFinalFullPassRounds,
             lifetimeReviewCycleBudget,
-            branchNameTemplate);
+            branchNameTemplate,
+            normalizedComposition,
+            ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(normalizedRaw, reviewStageCompositionAcknowledged));
     }
 
     /// <summary>
