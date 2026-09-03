@@ -137,7 +137,24 @@ public static class WorkPromptBuilder
 
         prompt.AppendLine("## Working rules");
         prompt.AppendLine();
-        prompt.AppendLine($"- You are in an isolated git worktree on branch `{branch}`. Work only here.");
+        if (requiresSelfRegistration)
+        {
+            // Unlike a direct launch or a headless dispatch, neither of which reaches this
+            // prompt without their process's own WorkingDirectory already set to worktreePath,
+            // the prompt-handoff default (h9k task work's own doc: "paste into a session started
+            // anywhere") gives no guarantee this session's cwd is the worktree at all — asserting
+            // "you are in" it here would be a false claim about a location this session was never
+            // actually placed in (independent pre-PR review, cycle 1, both lenses).
+            prompt.AppendLine($"- **This task's worktree is `{worktreePath}`, on branch `{branch}`.** This");
+            prompt.AppendLine("  prompt may have been pasted into a session started anywhere — before anything");
+            prompt.AppendLine($"  else, `cd \"{worktreePath}\"` and confirm with `git branch --show-current` that");
+            prompt.AppendLine($"  it reads `{branch}`. Work only there for the rest of this session.");
+        }
+        else
+        {
+            prompt.AppendLine($"- You are in an isolated git worktree on branch `{branch}`. Work only here.");
+        }
+
         prompt.AppendLine("- Implement the objective so every acceptance criterion is satisfied.");
         prompt.AppendLine("- Commit your work with clear messages. Do NOT push, do NOT open a pull request —");
         if (isInteractive)
