@@ -162,10 +162,12 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  delivery is `h9k task deliver`, run by the operator explicitly; nothing pushes or");
             prompt.AppendLine("  opens a pull request until then.");
             AppendCommitDisciplineRuleForInteractiveSession(prompt);
+            AppendSelfDeliveryRule(prompt);
             if (requiresSelfRegistration)
             {
                 AppendSelfRegistrationRule(prompt, task.Id);
                 AppendFindLiveAgentsRule(prompt, task.Id);
+                AppendPlatformSettingsReminderRule(prompt);
             }
         }
         else if (isDeliberateHeadlessStart)
@@ -726,6 +728,45 @@ public static class WorkPromptBuilder
     }
 
     /// <summary>
+    /// The escape hatch <c>Hall9k.Cli.Commands.InteractiveSessionLiveness.IsSelfInvocation</c>
+    /// opens (this project cannot reference the CLI, so it is named rather than linked): this very
+    /// session, not only the operator, may run <c>h9k task deliver</c>, <c>h9k task handback</c>, or
+    /// <c>h9k task release</c> against its own claim without the double-booking guard refusing it as
+    /// "still attached elsewhere" (Decisions Log #125 — "the prompt-handoff model's whole point is a
+    /// session that keeps running past the build and delivers itself on the operator's own go").
+    /// Two things follow from that which the guard itself cannot enforce, so the prompt states them
+    /// instead (independent pre-PR review, cycle 1, both lenses).
+    /// <para>
+    /// First: <c>h9k task deliver</c>'s own operator-facing handoff prompt
+    /// (<c>TaskDeliverCommand.PromptForHandoff</c>) blocks on an interactive terminal that a Bash
+    /// tool call structurally does not have — stdin and stdout are both redirected there — so a
+    /// self-delivery that omits <c>--handoff</c> silently writes a blank one, and a dependent task
+    /// starts from nothing. Passing <c>--handoff "&lt;text&gt;"</c> explicitly is the only way this
+    /// session's own handoff ever reaches a dependent.
+    /// </para>
+    /// <para>
+    /// Second: succeeding at any of the three commands hands this worktree to whatever comes next —
+    /// the platform's own gates and review sessions once delivered, a fresh headless run once handed
+    /// back — immediately, not once this session itself ends. Continuing to edit or run tests here
+    /// afterward races whichever process just took it over.
+    /// </para>
+    /// </summary>
+    public static void AppendSelfDeliveryRule(StringBuilder prompt)
+    {
+        prompt.AppendLine("- **You may deliver, hand back, or release this claim yourself**, from your own Bash");
+        prompt.AppendLine("  tool — `h9k task deliver`, `h9k task handback`, and `h9k task release` all recognise");
+        prompt.AppendLine("  this very session as the claim's own, rather than refusing it as still attached");
+        prompt.AppendLine("  elsewhere. Two things come with that. Pass `--handoff \"<text>\"` explicitly on");
+        prompt.AppendLine("  `h9k task deliver` — this session runs non-interactively from your own Bash tool,");
+        prompt.AppendLine("  so the operator-facing handoff prompt can never reach you, and omitting the flag");
+        prompt.AppendLine("  silently hands a dependent task nothing at all. And the moment any of the three");
+        prompt.AppendLine("  commands succeeds, stop working in this worktree: the platform's own gates and");
+        prompt.AppendLine("  review sessions (or a fresh headless run, for a handback) take it over right away,");
+        prompt.AppendLine("  and further edits or test runs here race them. If the operator has more for you to");
+        prompt.AppendLine("  do on this task, that is a new claim, not a continuation of this one.");
+    }
+
+    /// <summary>
     /// The prompt-handoff model's own connector rule (R4, idea fcaded0b's design rulings, Take the
     /// Wheel epic 9272e514's slice 7): <c>h9k task work</c> no longer launches this session and
     /// records its pid itself the way a direct launch's own <c>onStarted</c> callback did — it
@@ -768,6 +809,30 @@ public static class WorkPromptBuilder
         prompt.AppendLine($"  that name. If you do not already know which are live, `h9k task show {taskId}`");
         prompt.AppendLine("  lists this task's runs and every session each one currently has active, by name —");
         prompt.AppendLine("  query it rather than guessing at who else is out there.");
+    }
+
+    /// <summary>
+    /// Restates, rather than only recommends, the two platform-imposed settings
+    /// <c>Hall9k.Connectors.Prompts.ClaudeSettingsFile.Build</c> normally guarantees through
+    /// <c>--settings</c> — a direct launch always passes that flag itself, but a session started
+    /// this way was pasted into wherever the operator happened to start it, and
+    /// <c>h9k task work</c> only ever recommends the flag on the printed handoff rather than
+    /// enforcing it, so a session launched without it would otherwise never learn either rule from
+    /// anywhere (independent pre-PR review, adversarial lens, cycle 1). Read this rule as a
+    /// fallback for the case <c>--settings</c> was skipped, not as a replacement for recommending
+    /// it — the printed handoff still names the flag, and a session that does carry it is simply
+    /// told nothing new here.
+    /// </summary>
+    public static void AppendPlatformSettingsReminderRule(StringBuilder prompt)
+    {
+        prompt.AppendLine("- **Two platform rules apply here whether or not you were launched with the");
+        prompt.AppendLine("  recommended `--settings` file.** Never add a `Co-Authored-By` trailer to any");
+        prompt.AppendLine("  commit — a hard rule for agents (AGENTS.md \"Git rules\"). And size any slow Bash");
+        prompt.AppendLine("  tool command's timeout for this platform's own gates rather than trusting the");
+        prompt.AppendLine("  default: this project's own `dotnet test` gate can run 8 minutes or more, well");
+        prompt.AppendLine("  past Claude Code's stock 2-minute Bash timeout, so pass an explicit, generous");
+        prompt.AppendLine("  `timeout` on build/test commands rather than letting the default kill one");
+        prompt.AppendLine("  mid-run.");
     }
 
     /// <summary>

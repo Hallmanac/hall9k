@@ -149,6 +149,9 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         // headlessly (adversarial review, cycle 1). Skipped when this invocation is that very
         // session releasing itself on the operator's own go
         // (InteractiveSessionLiveness.IsSelfInvocation's own doc has both signals).
+        // WorkPromptBuilder.AppendSelfDeliveryRule is what tells a self-invoking session to stop
+        // editing this worktree the instant this succeeds — the task requeues for dispatch
+        // immediately (independent pre-PR review, conformance lens, cycle 1).
         if (!InteractiveSessionLiveness.IsSelfInvocation(run))
         {
             InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "release", settings.Force);

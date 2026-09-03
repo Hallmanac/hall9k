@@ -160,6 +160,47 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().Contain("nothing pushes or");
     }
 
+    [Fact]
+    public void Interactive_prompt_tells_a_self_delivering_session_to_pass_handoff_and_stop_afterward()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().Contain("--handoff", "the operator-facing handoff prompt can never reach a Bash tool call");
+        prompt.Should().Contain("stop working in this worktree");
+    }
+
+    [Fact]
+    public void Direct_launch_prompt_also_carries_the_self_delivery_rule()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true);
+
+        prompt.Should().Contain(
+            "stop working in this worktree",
+            "IsSelfInvocation's own CLAUDE_PID/InteractiveRunEnvironmentVariable exemption applies to a "
+            + "direct-launch child too, not only a self-registered session");
+    }
+
+    [Fact]
+    public void Only_self_registration_restates_the_co_author_and_timeout_invariants()
+    {
+        TaskDetails task = SomeTask();
+
+        string withSelfRegistration = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+        string withoutSelfRegistration = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true);
+
+        withSelfRegistration.Should().Contain("Co-Authored-By");
+        withoutSelfRegistration.Should().NotContain(
+            "Co-Authored-By", "--direct-launch always passes --settings itself, so nothing here can be skipped");
+    }
+
     private string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
         WorkPromptBuilder.Build(
             SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing",
