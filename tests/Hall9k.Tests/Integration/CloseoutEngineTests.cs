@@ -1330,6 +1330,52 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// A task claimed with <c>h9k task start --acknowledge-unmet-dependencies</c> can reach
+    /// Done while its blocker is still open; <c>TaskAggregate.Apply(TaskReopened)</c> lands such
+    /// a task Blocked, not Queued, on the very same reopen this monitor is about to dispatch.
+    /// Dispatching it anyway would supersede the only run watching the pull request while
+    /// nothing ever claims the now-Blocked task to pick up a follow-up — this asserts the fix:
+    /// the monitor parks instead, and the run stays watched (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </summary>
+    [Fact]
+    public async Task Failing_checks_on_a_task_with_an_unmet_dependency_park_instead_of_dispatching_a_follow_up()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewWithUnmetDependencyAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build (windows-latest)"] },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked,
+            "a reopen here would supersede the run without anything ever claiming the resulting Blocked task");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "the reopen never actually appended — the task never left Done");
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.CloseoutAttempts.Should().Be(0, "no automatic action actually dispatched, so nothing is spent");
+
+        // The next sweep still finds this run in the watched set (CloseoutParked is included
+        // there) and can still observe a merge — the whole point of parking instead of
+        // superseding.
+        FakeInspector mergedInspector = new() { Snapshot = FakeInspector.Quiet() with { IsMerged = true } };
+        await NewEngine(store, node, mergedInspector, worktrees).PollOnceAsync(cts.Token);
+        RunDetails runAfterMerge = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        runAfterMerge.State.Should().Be(RunState.Completed, "a parked run is still watched for the merge");
+    }
+
+    /// <summary>
     /// Backlog 44's whole point: GitHub's own CONFLICTING read dispatches a rebase follow-up
     /// through the same reopen pipeline as a failing check or unresolved thread, spending the
     /// same budget.
@@ -2863,6 +2909,76 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         session.Events.StartStream<RunAggregate>(lastClaimRunId,
             new RunDispatched(lastClaimRunId, taskId, node.NodeId, ownerId, task.LeaseGeneration, DomainId.New(),
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now, IsFollowUp: asFollowUp),
+            new AgentSessionCompleted(lastClaimRunId, Now),
+            new VerificationPassed(lastClaimRunId, Now),
+            new PullRequestOpened(lastClaimRunId, PullRequestUrl, 7, Now));
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, lastClaimRunId, worktree);
+    }
+
+    /// <summary>
+    /// The same shape as <see cref="SeedAwaitingReviewAsync"/>, but claimed deliberately
+    /// (<c>h9k task start --acknowledge-unmet-dependencies</c>) behind a blocker that never
+    /// closes out, then completed anyway — the exact fact pattern
+    /// <c>Reopen_of_a_deliberately_claimed_blocked_task_that_completed_returns_to_blocked_not_queued</c>
+    /// covers at the aggregate level, seeded here so the closeout monitor can be exercised
+    /// against it end to end.
+    /// </summary>
+    private static async Task<(Guid TaskId, Guid RunId, Worktree Worktree)> SeedAwaitingReviewWithUnmetDependencyAsync(
+        DocumentStore store,
+        NodeContext node,
+        GitWorktreeManager worktrees,
+        string repoPath,
+        CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = node.OwnerId;
+        Guid projectId = DomainId.New();
+        Guid blockerId = DomainId.New();
+
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out", BranchNameTemplate.Default, ExternalReference: null), cancellationToken);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        TaskDependency blocker = new(
+            blockerId, "A blocker still running", TaskState.Claimed, IsClosedOut: false,
+            CurrentRunState: null, PullRequestUrl: null, TaskType.Chore, []);
+        TaskDependencyGraph graph = new([blocker]);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
+            externalReference: null, Now, ownerId, blockedBy: [blockerId]);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now, graph);
+        List<object> taskEvents = [.. lifecycle];
+
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.ClaimDeliberately(task, ownerId, DomainId.New(), Now, dependencyOverrideAcknowledged: true);
+        task.Apply(claimed);
+        taskEvents.Add(claimed);
+        Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+            TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+        task.Apply(completed);
+        taskEvents.Add(completed);
+
+        task.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId,
+            "the seed's whole point is a task that reached Done with a dependency still open");
+
+        Guid lastClaimRunId = task.CurrentRunId!.Value;
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+
+        session.Events.StartStream<RunAggregate>(lastClaimRunId,
+            new RunDispatched(lastClaimRunId, taskId, node.NodeId, ownerId, task.LeaseGeneration, DomainId.New(),
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
             new AgentSessionCompleted(lastClaimRunId, Now),
             new VerificationPassed(lastClaimRunId, Now),
             new PullRequestOpened(lastClaimRunId, PullRequestUrl, 7, Now));
