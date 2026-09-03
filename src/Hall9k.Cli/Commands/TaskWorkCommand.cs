@@ -183,6 +183,20 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             ? "[dim]Resuming the recorded interactive session — exit it normally (Ctrl+D or /exit) to return here.[/]"
             : "[dim]Launching an interactive Claude Code session — exit it normally (Ctrl+D or /exit) to return here.[/]");
 
+        // A resume attaches to the same live conversation the operator already had; that
+        // conversation's own prior turns already produced the objective, acceptance criteria,
+        // context and working rules, so replaying the whole `prompt` document as a fresh user
+        // turn on every re-attach would duplicate a multi-thousand-token message every time —
+        // including the "review what's already in the worktree" guidance aimed at a fresh
+        // session inheriting someone else's state, which is redundant against a conversation
+        // that already knows that state (adversarial review, cycle 1, low). The fresh-session
+        // fallback below still passes `prompt` itself — it genuinely is a new conversation with
+        // nothing of its own to pick back up from.
+        const string reentryPrompt =
+            "You're back — an operator re-entered this task's interactive claim (`h9k task work`) "
+            + "after leaving the terminal. This is the same conversation, not a new task: pick up "
+            + "exactly where you left off.";
+
         // Local, not a private method: it closes over everything a single launch attempt needs
         // (worktree/prompt/settings from above, store/runId/sessionName for the two event
         // appends), so a resume attempt and its fresh-session fallback below are just two calls
@@ -208,7 +222,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 // really started a process with a real pid, so it is recorded and paired exactly
                 // like any other attempt rather than left invisible.
                 (attemptExitCode, sessionStartRecorded, resumeNotFound, exitedAt) = await LaunchInteractiveClaudeAsync(
-                    worktreePath, prompt, sessionIdToLaunch, settingsFile, project.SkipPermissions, runId,
+                    worktreePath, resume ? reentryPrompt : prompt, sessionIdToLaunch, settingsFile, project.SkipPermissions, runId,
                     sessionName, resume,
                     // CancellationToken.None: by the time this runs, process.Start() has already
                     // spawned a real, terminal-attached claude — a Ctrl-C landing in the window
@@ -859,7 +873,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // for hours, and this read must survive to the process's own exit — via the stream closing
         // when the child's stderr handle closes — regardless of what happens to the outer token in
         // between (mirrors process.WaitForExitAsync's own CancellationToken.None retry below).
-        Task<bool>? resumeNotFoundTask = resume
+        Task<(bool NotFound, string? WithheldText)>? resumeNotFoundTask = resume
             ? TeeAndDetectResumeNotFoundAsync(process)
             : null;
         DateTimeOffset startedAt = ReadStartedAt(process);
@@ -928,14 +942,33 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         bool resumeNotFound = false;
         if (resumeNotFoundTask is not null)
         {
-            Task firstToComplete = await Task.WhenAny(resumeNotFoundTask, Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None));
+            // The same window TeeAndDetectResumeNotFoundAsync itself waits on, not an
+            // independently-chosen duplicate of it — widening one without the other would grow
+            // the detection window while this wait still abandons the task on the old schedule,
+            // silently stopping the fallback from ever firing again (adversarial review, cycle 1,
+            // low).
+            Task firstToComplete = await Task.WhenAny(resumeNotFoundTask, Task.Delay(ResumeNotFoundDetectionWindow, CancellationToken.None));
             if (firstToComplete == resumeNotFoundTask)
             {
+                // Always awaited, never short-circuited by the exit code: `&&`'s short-circuit
+                // used to skip this await entirely whenever ExitCode was already 0, so a task that
+                // faulted after that point (Console.Error's own pipe gone, e.g. `| head`) was never
+                // observed and surfaced only as an unlogged TaskScheduler.UnobservedTaskException
+                // (adversarial review, cycle 1, low).
+                (bool markerMatched, string? withheldText) = await resumeNotFoundTask;
                 // TeeAndDetectResumeNotFoundAsync already teed anything that was not the not-found
                 // marker itself live as it arrived; ExitCode is the other half of the signal — the
                 // marker text alone, with no matching nonzero exit, is not treated as a genuine
                 // resume failure.
-                resumeNotFound = process.ExitCode != 0 && await resumeNotFoundTask;
+                resumeNotFound = process.ExitCode != 0 && markerMatched;
+                if (markerMatched && !resumeNotFound && withheldText is not null)
+                {
+                    // The two signals disagreed: the marker matched but the exit code did not
+                    // confirm it. The text was held back on the strength of the marker alone —
+                    // flush it now rather than leaving the operator with neither the error text
+                    // nor a fresh-session fallback (conformance review, cycle 1, low).
+                    await Console.Error.WriteAsync(withheldText);
+                }
             }
             else
             {
@@ -965,9 +998,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// (an ordinary long-running resume) or by EOF arriving inside it with other, unrelated text — and
     /// everything after is teed as it arrives. Resolves to whether the window's own text was the
     /// not-found marker; the caller still gates that on the exit code too, since this method alone
-    /// cannot see it.
+    /// cannot see it — and when the marker matched, the withheld text rides back with it (rather
+    /// than being discarded here), so the caller can still flush it to the terminal if the exit
+    /// code goes on to disagree with the marker (conformance review, cycle 1, low: a genuine
+    /// signal disagreement used to leave the operator with neither the error text nor a fallback,
+    /// since the text was dropped here before the exit code was ever known).
     /// </summary>
-    private static async Task<bool> TeeAndDetectResumeNotFoundAsync(Process process)
+    private static async Task<(bool NotFound, string? WithheldText)> TeeAndDetectResumeNotFoundAsync(Process process)
     {
         StringBuilder earlyBuffer = new();
         char[] buffer = new char[4096];
@@ -988,7 +1025,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                         await Console.Error.WriteAsync(text);
                     }
 
-                    return notFound;
+                    return (notFound, notFound ? text : null);
                 }
 
                 earlyBuffer.Append(buffer, 0, read);
@@ -1009,7 +1046,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             int read = await process.StandardError.ReadAsync(buffer, CancellationToken.None);
             if (read == 0)
             {
-                return false;
+                return (false, null);
             }
 
             await Console.Error.WriteAsync(new string(buffer, 0, read));
