@@ -598,9 +598,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     : runOnThisMachine;
                 SessionLiveness liveness = ProcessSessionObserver.Instance.Observe(
                     active.ProcessId, active.StartedAt, onThisMachine);
+                // A self-registered session's name comes from TaskRegisterSessionCommand reading
+                // ~/.claude/sessions/<pid>.json's own name field — the operator's own --name, or
+                // one Claude Code derived from the launch directory — not a platform-authored
+                // value, so it goes through ExternalText the same way an adopted issue's title
+                // does: EscapeMarkup alone neutralises only Spectre's own syntax, not a terminal
+                // control sequence or bidirectional override this session's own name could carry
+                // (independent pre-PR review, adversarial lens, cycle 1).
                 string name = active.Name.IsNotBlank() ? active.Name : "-";
                 AnsiConsole.MarkupLine(
-                    $"  [dim]{TaskListCommand.ShortId(run.Id)}[/]  {name.EscapeMarkup()}  "
+                    $"  [dim]{TaskListCommand.ShortId(run.Id)}[/]  {ExternalText.OneLineMarkup(name)}  "
                     + $"pid {active.ProcessId}  {LivenessMarkup(liveness)}");
             }
         }

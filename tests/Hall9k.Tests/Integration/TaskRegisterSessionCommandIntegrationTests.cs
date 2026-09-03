@@ -14,7 +14,9 @@ using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
 using JasperFx;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -139,7 +141,11 @@ public sealed class TaskRegisterSessionCommandIntegrationTests(PostgresFixture p
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.ActiveSessions.Should().ContainSingle(active => active.Role == AgentRole.Interactive
-            && active.ProcessId == Environment.ProcessId);
+            && active.ProcessId == Environment.ProcessId
+            && active.Name == string.Empty,
+            "no ~/.claude/sessions/<pid>.json exists for this test process, so the honest blank — not a "
+            + "fabricated task-shortid-role guess — is what gets recorded (independent pre-PR review, "
+            + "conformance lens, cycle 1)");
     }
 
     /// <summary>
@@ -232,6 +238,51 @@ public sealed class TaskRegisterSessionCommandIntegrationTests(PostgresFixture p
         await act.Should().NotThrowAsync();
     }
 
+    /// <summary>
+    /// The fence added by this fix (independent pre-PR review, adversarial lens, cycle 1): two
+    /// sessions racing the prompt pasted twice both load <c>RunDetails</c> while
+    /// <c>ActiveSessions</c> still reads empty, so both pass the double-booking check above and
+    /// both call <see cref="TaskRegisterSessionCommand.RegisterAsync"/> — without a fence on the
+    /// append, the second would silently overwrite the first session's own liveness record
+    /// (<c>RunDetailsProjection.StartSession</c>'s single-slot <c>ActiveSessions</c>) rather than
+    /// losing loudly at save time.
+    /// </summary>
+    [Fact]
+    public async Task Fences_two_concurrent_first_registrations_racing_the_same_empty_ActiveSessions()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, NodeContext node) = await SeedClaimedInteractiveTaskAsync(store, cts.Token);
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, Guid.Empty, node.OwnerId, 1, DomainId.New(), "/tmp/register-session-worktree",
+                "task/register-session-branch", ExecutorMode.Subscription, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        using EnvironmentVariableScope scope = EnvironmentVariableScope.Set(
+            (InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable, Environment.ProcessId.ToString()));
+
+        await using IDocumentSession first = store.LightweightSession();
+        await using IDocumentSession second = store.LightweightSession();
+        TaskDetails details1 = (await first.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        TaskDetails details2 = (await second.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+
+        // Both read ActiveSessions still empty (neither has appended yet), so both pass the
+        // double-booking check the same way the two-terminal race in the scenario above does.
+        await TaskRegisterSessionCommand.RegisterAsync(first, details1, force: false, cts.Token);
+        await TaskRegisterSessionCommand.RegisterAsync(second, details2, force: false, cts.Token);
+
+        await first.SaveChangesAsync(cts.Token);
+        Func<Task> losing = () => second.SaveChangesAsync(cts.Token);
+
+        await losing.Should().ThrowAsync<EventStreamUnexpectedMaxEventIdException>(
+            "the fence must catch the second registration at save time rather than let it silently overwrite "
+            + "the first session's own ActiveSessions record");
+    }
+
     private static async Task<(Guid TaskId, Guid RunId, NodeContext Node)> SeedClaimedInteractiveTaskAsync(
         DocumentStore store, CancellationToken cancellationToken)
     {
@@ -260,33 +311,4 @@ public sealed class TaskRegisterSessionCommandIntegrationTests(PostgresFixture p
         opts.Connection(postgres.ConnectionString);
         opts.ConfigureHall9k(AutoCreate.All);
     });
-
-    /// <summary>Saves and restores the named environment variables around a test, isolating it from every other.</summary>
-    [Collection("Hall9kHome")]
-    private sealed class EnvironmentVariableScope : IDisposable
-    {
-        private readonly (string Name, string? Previous)[] _saved;
-
-        private EnvironmentVariableScope((string Name, string? Previous)[] saved) => _saved = saved;
-
-        public static EnvironmentVariableScope Set(params (string Name, string? Value)[] values)
-        {
-            (string Name, string? Previous)[] saved =
-                [.. values.Select(value => (value.Name, Environment.GetEnvironmentVariable(value.Name)))];
-            foreach ((string name, string? value) in values)
-            {
-                Environment.SetEnvironmentVariable(name, value);
-            }
-
-            return new EnvironmentVariableScope(saved);
-        }
-
-        public void Dispose()
-        {
-            foreach ((string name, string? previous) in _saved)
-            {
-                Environment.SetEnvironmentVariable(name, previous);
-            }
-        }
-    }
 }
