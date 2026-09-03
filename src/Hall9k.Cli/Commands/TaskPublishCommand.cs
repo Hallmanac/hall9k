@@ -136,7 +136,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         if (assignee is null || assigned is null)
         {
             AnsiConsole.MarkupLine(
-                $"[dim]It is ready to assign but will not run until you say so:[/] h9k task assign {shortId}");
+                $"[dim]It is ready to assign but will not run until you say so:[/] h9k task assign {shortId} "
+                + $"[dim](or h9k task work {shortId} to claim and work it yourself)[/]");
             return ExitCodes.Ok;
         }
 

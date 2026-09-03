@@ -83,6 +83,34 @@ public sealed class TaskWorkClaimTests
         task.AssignedOwnerId.Should().BeNull();
     }
 
+    /// <summary>
+    /// A blocker that is dead (<see cref="TaskDependency.IsDead"/>) will never close out, so the
+    /// refusal must not promise it "queues itself the moment the last one's pull request merges"
+    /// — <see cref="TaskDependency.DescribeDeath"/>'s honest remedy is what belongs here instead
+    /// (independent pre-PR review, cycle 1: conformance finding at TaskWorkCommand.cs:546,
+    /// adversarial finding at TaskWorkCommand.cs:545 — the same defect from both lenses).
+    /// </summary>
+    [Fact]
+    public void A_published_task_with_a_dead_dependency_is_refused_without_a_false_merge_promise()
+    {
+        TaskDependency dead = DeadDependency();
+        TaskAggregate task = PublishedTask(dead.Id);
+
+        Action act = () => TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+            task, Owner, [dead], DomainId.New(), Now);
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .WithMessage("*depends on 1 task(s) that have not closed out*")
+            .Where(exception => exception.Message.Contains(dead.DescribeDeath())
+                    && !exception.Message.Contains("queues itself the moment"),
+                "a dead blocker's pull request will never merge, so the ordinary queues-itself "
+                + "promise must not be made for it");
+    }
+
+    private static TaskDependency DeadDependency() => new(
+        DomainId.New(), "A blocker that was abandoned", TaskState.Abandoned, IsClosedOut: false,
+        CurrentRunState: null, PullRequestUrl: null, TaskType.Chore, []);
+
     private static TaskAggregate PublishedTask(params Guid[] blockedBy)
     {
         TaskAggregate task = new();
