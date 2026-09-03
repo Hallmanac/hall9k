@@ -29,7 +29,8 @@ public static class WorkPromptBuilder
         string? blockerContext = null,
         string? resumeReason = null,
         bool isInteractive = false,
-        bool isHandback = false)
+        bool isHandback = false,
+        bool isDeliberateHeadlessStart = false)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -143,6 +144,19 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  delivery is `h9k task deliver`, run by the operator explicitly; nothing pushes or");
             prompt.AppendLine("  opens a pull request until then.");
             AppendCommitDisciplineRuleForInteractiveSession(prompt);
+        }
+        else if (isDeliberateHeadlessStart)
+        {
+            // Neither of the other two sentences is true here: a dispatcher-launched build is
+            // watched by RunSupervisor, and an attached h9k task work session is watched by the
+            // operator sitting at it — this run is neither, since h9k task start's own RunDispatched
+            // carries the ceiling-exempt Guid.Empty NodeId and so no monitor ever adopts it.
+            prompt.AppendLine("  nothing supervises this run once it starts, so verification and delivery are");
+            prompt.AppendLine("  yours to trigger by hand once you finish: `h9k task deliver` pushes the branch");
+            prompt.AppendLine("  and opens the pull request through the ordinary review pipeline (`h9k task");
+            prompt.AppendLine("  verify` checks the gates first if you want to look before delivering).");
+            AppendCheckpointCommitRules(prompt, project, worktreePath);
+            AppendSessionEndsAtFinalMessageRule(prompt);
         }
         else
         {

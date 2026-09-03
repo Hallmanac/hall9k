@@ -110,9 +110,13 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // isInteractive: false — the ordinary headless build prompt (checkpoint commits, the
         // self-review phase, the end-of-session recompose, the handoff rules): this session is
         // unattended exactly like a dispatcher-launched build, not an operator's own attended one.
+        // isDeliberateHeadlessStart: true — but unlike a dispatcher-launched build, nothing on this
+        // node watches this run (RunSupervisor never adopts the sentinel Guid.Empty NodeId), so the
+        // prompt tells the agent delivery is its own to trigger by hand rather than claiming the
+        // platform verifies and opens the PR after it finishes.
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
-            isInteractive: false);
+            isInteractive: false, isDeliberateHeadlessStart: true);
 
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
