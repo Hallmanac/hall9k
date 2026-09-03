@@ -149,6 +149,25 @@ From there, `verify` runs the project's gates on demand, `deliver` pushes the br
 claim into the standard delivery pipeline, `handback` releases the claim to a headless agent
 partway through (resuming the branch), and `release` gives an untouched claim back to the queue.
 
+### A deliberate human kick-off
+
+`h9k task start <id> [--acknowledge-unmet-dependencies]`
+
+`start` dispatches a Published or Queued task on the spot, headless, instead of waiting on the
+dispatch queue or working it interactively. It reuses `work`'s own claim shape exactly — the same
+ceiling-exempt sentinel `NodeId`, so every lever above (`verify`, `deliver`, `handback`, `release`,
+the stale-claim nudge, and re-entering with `work` itself) applies unchanged — but launches the
+agent headless and detached (`claude -p`) under the `<task-shortid>-build` name, addressable on the
+session mesh, rather than attached to the caller's terminal, and returns as soon as the process is
+confirmed alive rather than waiting for it to finish. Unlike `work`, an unmet dependency on a
+Published task does not refuse outright: the platform names every open blocker, and
+`--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. That
+override applies only at the moment of assignment — a task already sitting Blocked from an
+ordinary `h9k task assign` still refuses `start`. Refused otherwise on Draft, a pr-review task, a
+reopened task's follow-up branch, and any task that already carries a live claim; there is no
+re-entry path the way `work` has one — a fresh claim is all `start` ever makes. See
+[PLAN.md Decisions Log #124](../PLAN.md).
+
 ### Logging an outside interaction
 
 `h9k task log-interaction <task> --party "<who>" --summary "<what happened>" [--human-directed --reason "<why>"]`
