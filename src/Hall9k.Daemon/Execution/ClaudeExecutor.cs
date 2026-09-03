@@ -106,6 +106,13 @@ public sealed class ClaudeExecutor(
         yield return "-p";
         yield return "--output-format stream-json";
         yield return "--verbose";
+        // Verified against `claude --help` and confirmed empirically (task: every dispatched
+        // agent session launches under a human-readable id-and-role name): -n/--name sets the
+        // display name `~/.claude/sessions/<pid>.json` records, which is what `claude agents
+        // --json` and another session's cross-session mesh (ListAgents/SendMessage) address a
+        // session by. Set on every spawn, resumed or fresh, so a resumed session's name never
+        // reverts to a worktree-derived one mid-run.
+        yield return $"--name \"{request.SessionName}\"";
 
         // A resume re-enters the recorded session (log #5); --session-id is for fresh
         // sessions only and would conflict with it.

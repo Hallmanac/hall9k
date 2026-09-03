@@ -132,7 +132,10 @@ public sealed class ModelPolicyTests
         Guid runId = DomainId.New();
         AgentSpawnRequest request = new(
             runId, DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
-            AgentModel.FromInput("claude-opus-5[1m]"), SkipPermissions: true);
+            AgentModel.FromInput("claude-opus-5[1m]"), SkipPermissions: true)
+        {
+            SessionName = "test-build",
+        };
 
         string[] arguments = [.. ClaudeExecutor.Arguments(request)];
 
@@ -148,7 +151,10 @@ public sealed class ModelPolicyTests
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/worktree", "/tmp/run", "conclude", ExecutorMode.Subscription,
             AgentModel.Sonnet, SkipPermissions: false, SessionArtifactName: "review-1-abc",
-            ResumeSessionId: resumed);
+            ResumeSessionId: resumed)
+        {
+            SessionName = "test-review-conformance-1",
+        };
 
         string[] arguments = [.. ClaudeExecutor.Arguments(request)];
 
@@ -165,7 +171,10 @@ public sealed class ModelPolicyTests
             NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(), Options.Create(new DaemonOptions()));
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/worktree", "/tmp/run", "prompt", ExecutorMode.Subscription,
-            AgentModel.Unknown, SkipPermissions: false);
+            AgentModel.Unknown, SkipPermissions: false)
+        {
+            SessionName = "test-build",
+        };
 
         Func<Task> spawn = () => executor.SpawnAsync(request, cts.Token);
 

@@ -47,6 +47,19 @@ public sealed record AgentSpawnRequest(
     /// </summary>
     public IReadOnlyDictionary<string, string> Environment { get; init; } =
         ReadOnlyDictionary<string, string>.Empty;
+
+    /// <summary>
+    /// The name this session's Claude Code process launches under (task: every dispatched agent
+    /// session launches under a human-readable id-and-role name) — passed straight through to
+    /// <c>claude -n/--name</c>, verified against <c>claude --help</c> and confirmed empirically
+    /// to be what <c>~/.claude/sessions/&lt;pid&gt;.json</c> records as <c>name</c> and what
+    /// <c>claude agents --json</c> and another session's cross-session mesh
+    /// (<c>ListAgents</c>/<c>SendMessage</c>) address a session by. Required — not optional with
+    /// a default — because every dispatch site knows its own role
+    /// (<see cref="Hall9k.Domain.Features.Run.SessionRoleName"/>) and a session with no name is
+    /// exactly the accidental-worktree-name gap this field exists to close.
+    /// </summary>
+    public required string SessionName { get; init; }
 }
 
 public sealed record SpawnedAgent(int ProcessId, DateTimeOffset StartedAt);

@@ -103,16 +103,21 @@ public sealed class BlockerContextAssembler(
             Guid sessionId = DomainId.New();
             string artifactName = $"context-synthesis-{sessionId.ToString("N")[..8]}";
             AgentModel model = _options.ResolveModel(AgentRole.Synthesis, task.Model, project.Model);
+            string sessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.Synthesis);
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
                 runId, sessionId, worktreePath, runDirectory,
                 AgentPromptBuilder.BuildContextSynthesis(task, blockerCount, raw),
-                mode, model, project.SkipPermissions, artifactName), cancellationToken);
+                mode, model, project.SkipPermissions, artifactName)
+            {
+                SessionName = sessionName,
+            }, cancellationToken);
             unfinished = agent;
 
             await using (IDocumentSession dispatched = store.LightweightSession())
             {
                 dispatched.Events.Append(runId, new ContextSynthesisDispatched(
-                    runId, sessionId, blockerCount, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model));
+                    runId, sessionId, blockerCount, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model,
+                    sessionName));
                 await dispatched.SaveChangesAsync(cancellationToken);
             }
 

@@ -30,7 +30,10 @@ public sealed class ClaudeExecutorIsolationTests
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/pr-review-checkout", "/tmp/run", "prompt",
             ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false,
-            UntrustedWorkingDirectory: true);
+            UntrustedWorkingDirectory: true)
+        {
+            SessionName = "test-review-adversarial-1",
+        };
 
         string[] arguments = [.. ClaudeExecutor.Arguments(request)];
 
@@ -45,7 +48,10 @@ public sealed class ClaudeExecutorIsolationTests
     {
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", "/tmp/run", "prompt",
-            ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false);
+            ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+        {
+            SessionName = "test-build",
+        };
 
         string[] arguments = [.. ClaudeExecutor.Arguments(request)];
 
@@ -75,7 +81,10 @@ public sealed class ClaudeExecutorIsolationTests
 
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
-                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false);
+                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+            {
+                SessionName = "test-build",
+            };
 
             await executor.SpawnAsync(request, CancellationToken.None);
 

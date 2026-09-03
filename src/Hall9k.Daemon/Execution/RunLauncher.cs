@@ -201,11 +201,27 @@ public sealed class RunLauncher(
                 ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
                 : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(task), runId);
 
+            // The primary session's own name (task: every dispatched agent session launches
+            // under a human-readable id-and-role name) — decided here, once, from the same
+            // three-way split the prompt selection below re-derives for its own purpose, because
+            // AgentRole.Build alone cannot tell a rebase follow-up, a failing-checks follow-up,
+            // and an ordinary dispatch apart on later reads (RunDetails.SessionName's own doc).
+            string sessionRole = isPrReview
+                ? SessionRoleName.ReviewAdversarial(1)
+                : followUp is not null
+                    ? task.FollowUpKind == FollowUpKind.FailingChecks
+                        ? SessionRoleName.Checks
+                        : task.FollowUpKind == FollowUpKind.Rebase
+                            ? SessionRoleName.Rebase
+                            : SessionRoleName.Build
+                    : SessionRoleName.Build;
+            string sessionName = SessionRoleName.For(DomainId.Short(taskId), sessionRole);
+
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
                 IsFollowUp: followUp is not null, Model: model, RunDirectory: runDirectory,
-                PrReviewBaseRefName: prReviewFacts?.BaseRefName));
+                PrReviewBaseRefName: prReviewFacts?.BaseRefName, SessionName: sessionName));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
@@ -246,7 +262,10 @@ public sealed class RunLauncher(
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
                     runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, project.SkipPermissions,
-                    UntrustedWorkingDirectory: isPrReview),
+                    UntrustedWorkingDirectory: isPrReview)
+                {
+                    SessionName = sessionName,
+                },
                 cancellationToken);
 
             await using IDocumentSession startSession = store.LightweightSession();
