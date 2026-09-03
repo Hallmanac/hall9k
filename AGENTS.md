@@ -213,6 +213,30 @@ h9k task handback <id>      # release the claim to a headless agent partway thro
 h9k task release <id>       # give an untouched claim back to the dispatch queue
 ```
 
+A deliberate human kick-off dispatches a Published or Queued task on the spot, headless, instead
+of dispatching it interactively or waiting on the queue (Decisions Log #125, "Take the Wheel"
+epic 9272e514's start-it-mine mode): `h9k task start <id>` reuses `h9k task work`'s own claim
+shape exactly (the same ceiling-exempt sentinel, so every existing lever above — deliver, verify,
+handback, release, the stale-claim nudge, and re-entering via `h9k task work` itself — applies
+unchanged to a start-it-mine claim too) and the same atomic Published entry, but launches the
+agent headless (`claude -p`, Claude Code's own completion mode) and detached rather than attached
+to this terminal, under the slice-1 `<task-shortid>-build` name, addressable on the session mesh
+the moment it starts. Unlike `h9k task work`, an unmet dependency does not refuse outright here:
+the platform names every open blocker and advises, and `--acknowledge-unmet-dependencies` is the
+human's recorded override to start anyway (the epic's own ruling: "the platform advises, the human
+overrides, and the acknowledgment is recorded") — recorded on the resulting `TaskClaimed` and
+surfaced on `h9k task show` beside the blockers it overrode. The override applies only at the
+moment of assignment: a task already sitting Blocked from an ordinary `h9k task assign` still
+refuses `h9k task start`, flag or not. `h9k task start` refuses Draft (publish it first), a
+pr-review task, a reopened task's follow-up branch, and any task that already carries a live claim
+— there is no re-entry branch the way `h9k task work` has one; a fresh claim is all this command
+ever makes.
+
+```bash
+h9k task start <id>                              # dispatch a Published or Queued task headless, on the spot, ceiling-exempt
+h9k task start <id> --acknowledge-unmet-dependencies   # start a Published task anyway, despite named open blockers
+```
+
 `--from-issue` and `--from-jira` adopt existing external work (PLAN.md §3.1a, Decisions Log #60,
 #65): the item's title seeds the objective, its description becomes agent context, and the item is
 recorded as the task's `ExternalReference`. Acceptance criteria are never read out of a description;
