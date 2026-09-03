@@ -10,6 +10,7 @@ means, and how to get out of trouble.
 - [Configuration](#configuration)
 - [What "needs you" means](#what-needs-you-means)
 - [Working a task interactively](#working-a-task-interactively)
+- [A deliberate human kick-off](#a-deliberate-human-kick-off)
 - [The recovery levers](#the-recovery-levers)
 - [Reading a run](#reading-a-run)
 - [Known operational gaps](#known-operational-gaps)
@@ -373,7 +374,7 @@ ones worth knowing:
 | `Hall9k__MaxConcurrentTaskRuns` | 1 | The node's ceiling, counted directly in **task runs** (Decisions Log #111) — every value is meaningful. Retires `Hall9k__MaxConcurrentAgentSessions`, still read as a fallback (see below). |
 | `Hall9k__SessionCapPerRun` | 3 | How many agent sessions one run may hold simultaneously — a global default, overridable per task at any time with `h9k task set-session-cap`, even mid-run. A cap of 1 serializes the two review lenses instead of dispatching them together. |
 | `Hall9k__LeaseTimeout` | 60s | How long a lease survives without a heartbeat before the sweep requeues it |
-| `Hall9k__VerifyGateTimeout` | 15m | Per gate, and the same value sizes every headless dispatched session's own foreground command timeout (`ClaudeSettingsFile`), so raising this also raises how long a session's own `dotnet test`-shaped command may run before Claude Code's Bash tool would otherwise kill it. Two surfaces do not move with it: an interactive `h9k task work` claim, and `h9k task verify` run against one — both are CLI commands, and nothing on the CLI side reads this option today, so each always runs its own gates against the fixed 15-minute default regardless of what this is set to. |
+| `Hall9k__VerifyGateTimeout` | 15m | Per gate, and the same value sizes every headless dispatched session's own foreground command timeout (`ClaudeSettingsFile`), so raising this also raises how long a session's own `dotnet test`-shaped command may run before Claude Code's Bash tool would otherwise kill it. Three surfaces do not move with it: an interactive `h9k task work` claim, `h9k task verify` run against one, and `h9k task start` — all three are CLI commands, and nothing on the CLI side reads this option today, so each always runs its own gates against the fixed 15-minute default regardless of what this is set to. |
 | `Hall9k__PullRequestPollInterval` | 3m | How often the closeout monitor polls an open pull request |
 | `Hall9k__PullRequestPollBackoffMaxInterval` | 30m | The ceiling the poll interval backs off to when every attempted inspection in a sweep fails (e.g. `gh` rate-limited); resets on the next successful sweep |
 | `Hall9k__MaxAutomaticCloseoutRuns` | 6 | The lifetime ceiling: automatic closeout actions a pull request may spend across every obstruction before closeout parks and asks for you, whatever it grants along the way |
@@ -558,7 +559,7 @@ it:
 | the pull request is open and the task is unassigned | A follow-up reopened the task and it was then unassigned, so nothing will claim it | `h9k task assign` |
 | no run record is watching it for a merge | The pull request is open and no run is left to observe the merge | the pull request itself |
 | the run ended without a merge being observed | The run that owned an open pull request failed, or that pull request was closed unmerged | `h9k pr resolve`, or the pull request when it was closed unmerged |
-| an interactive claim (`h9k task work`) last recorded activity — or was claimed and has not recorded a touch since — long enough ago | An [interactive claim](#working-a-task-interactively) has sat past `interactiveClaimStaleAfterDays` with no attached session observed on this machine; nothing reclaims it, this is only a nudge | `h9k task work <id>` if it is still yours, or `h9k task handback <id>` to finish it headlessly |
+| an interactive claim (`h9k task work`) last recorded activity — or was claimed and has not recorded a touch since — long enough ago | An [interactive claim](#working-a-task-interactively) — including a [start-it-mine claim](#a-deliberate-human-kick-off) made with `h9k task start`, which raises the identical row — has sat past `interactiveClaimStaleAfterDays` with no attached session observed on this machine; nothing reclaims it, this is only a nudge | `h9k task work <id>` if it is still yours, or `h9k task handback <id>` to finish it headlessly |
 
 That is what the composer can say today, not a closed set: every cause is read off a record, so a
 new record adds a line here. Read the cause, then `h9k task show <id>`, then `h9k logs <id>` if
@@ -617,6 +618,35 @@ claim's session was recorded on a machine other than the one running the command
 cannot check whether it is still attached there. Confirm by hand on that machine that the session
 has exited (or that the machine is simply gone for good), then re-run with `--force` to proceed
 anyway.
+
+## A deliberate human kick-off
+
+`h9k task start <id> [--acknowledge-unmet-dependencies]` (Decisions Log #124)
+
+A deliberate human kick-off dispatches a Published or Queued task on the spot, headless, instead
+of dispatching it interactively (`h9k task work`, above) or waiting on the dispatch queue. `start`
+reuses `work`'s own claim shape exactly — the same ceiling-exempt sentinel `NodeId`, so `verify`,
+`deliver`, `handback`, `release`, the stale-claim nudge, and re-entering with `work` itself all
+apply unchanged to a start-it-mine claim too — but launches the agent headless and detached
+(`claude -p`, Claude Code's own completion mode) under the `<task-shortid>-build` name, addressable
+on the session mesh (`claude agents --json`, `SendMessage`) the moment it starts, rather than
+attached to the caller's own terminal, and returns as soon as the process is confirmed alive
+without waiting for it to finish.
+
+Unlike `h9k task work`, an unmet dependency does not refuse `start` outright: the platform names
+every open blocker and advises, and `--acknowledge-unmet-dependencies` is the human's recorded
+override to start anyway — recorded on the resulting claim and surfaced on `h9k task show` beside
+the blockers it overrode. The override applies only at the moment of assignment: a task already
+sitting Blocked from an ordinary `h9k task assign` still refuses `start`, flag or not. `start`
+refuses Draft (publish it first), a pr-review task, a reopened task's follow-up branch, and any
+task that already carries a live claim — there is no re-entry path the way `h9k task work` has one;
+a fresh claim is all `start` ever makes.
+
+Because nothing on this node is watching a start-it-mine run the way the daemon watches its own
+dispatched runs, the row it leaves behind reads the same as an interactive claim's: an untouched
+run sits at Working until a human runs `h9k task deliver`, `h9k task verify`, `h9k task work` (to
+attach), `h9k task handback`, or `h9k task release`, and the same stale-claim nudge described above
+fires once it has sat unattended past `interactiveClaimStaleAfterDays`.
 
 ## The recovery levers
 
