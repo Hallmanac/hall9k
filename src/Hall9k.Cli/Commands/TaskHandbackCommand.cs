@@ -70,7 +70,10 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // (adversarial review, cycle 1). Skipped when this invocation is that very session handing
         // itself back on the operator's own go (InteractiveSessionLiveness.IsSelfInvocation's own
         // doc has both signals) — the same reasoning h9k task verify's own exemption already rests
-        // on: it is waiting on this command, not racing it.
+        // on: it is waiting on this command, not racing it. WorkPromptBuilder.AppendSelfDeliveryRule
+        // is what tells a self-invoking session to stop editing this worktree the instant this
+        // succeeds — the follow-on headless run takes it over immediately (independent pre-PR
+        // review, conformance lens, cycle 1).
         if (!InteractiveSessionLiveness.IsSelfInvocation(run))
         {
             InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "hand back", settings.Force);

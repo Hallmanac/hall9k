@@ -77,7 +77,15 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // prompt-handoff model's ordinary shape once h9k task work no longer launches a blocking
         // child process: the session is not racing this command, it is waiting on it, exactly the
         // reasoning h9k task verify's own exemption already rests on
-        // (InteractiveSessionLiveness.IsSelfInvocation's own doc has both signals).
+        // (InteractiveSessionLiveness.IsSelfInvocation's own doc has both signals). Two things a
+        // self-delivering session needs and cannot get from this guard alone — WorkPromptBuilder's
+        // own AppendSelfDeliveryRule is where they actually land, since this command has no
+        // channel back into the session that already decided to call it: it must pass --handoff
+        // explicitly, since the operator-facing prompt below can never reach a non-interactive
+        // Bash tool call (the blank-handoff warning after the push below is the belt-and-suspenders
+        // half of that), and it must stop editing this worktree the moment delivery succeeds,
+        // since the platform's own pipeline takes it over immediately (independent pre-PR review,
+        // both lenses, cycle 1).
         if (!InteractiveSessionLiveness.IsSelfInvocation(run))
         {
             InteractiveSessionLiveness.EnsureNotAttachedElsewhere(run, taskId, "deliver", settings.Force);
@@ -219,6 +227,24 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // there and PromptForHandoff's own blank-default behavior is unchanged for that claim.
         HeadlessResult headlessResult = ReadHeadlessResult(run.RunDirectory);
         string handoff = settings.Handoff ?? PromptForHandoff(headlessResult.Handoff);
+        if (handoff.IsBlank() && settings.Handoff is null && !AnsiConsole.Profile.Capabilities.Interactive)
+        {
+            // The one case worth flagging rather than writing silently: a self-delivering agent
+            // session (the escape hatch InteractiveSessionLiveness.IsSelfInvocation opens — the
+            // prompt-handoff model's own point, Decisions Log #126) runs this command from its own
+            // Bash tool, whose stdio is never interactive, so PromptForHandoff above could not
+            // have asked and this is not an operator who simply pressed Enter at an empty prompt.
+            // This message prints to the same stdout the calling session's tool result carries, so
+            // an agent that forgot --handoff still sees it (independent pre-PR review, adversarial
+            // lens, cycle 1). A start-it-mine claim's own recovered handoff already made `handoff`
+            // non-blank above, so this only ever fires for an attended claim with nothing recovered.
+            AnsiConsole.MarkupLine(
+                "[yellow]Delivered with no handoff text — this terminal is non-interactive, so the handoff "
+                + "prompt could not ask. Pass --handoff \"<text>\" next time so a dependent task or a resuming "
+                + "session has something to start from.[/]");
+        }
+
+
         await WriteHandoffAsync(run.RunDirectory, handoff, CancellationToken.None);
 
         // Re-checked immediately before the append that hands this run to the daemon's
