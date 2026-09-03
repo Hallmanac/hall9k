@@ -118,14 +118,21 @@ public sealed class TokenBudgetRetryEngine(
             // Reuses the primary session's own recorded name (RunDispatched.SessionName) rather
             // than re-deriving it: a resume re-enters the same session, so it keeps the same
             // name it was dispatched under. A stream written before that field existed falls
-            // back to the one fact this method already reads to decide the isolation flag above
-            // — whether this is a pr-review task's own adversarial-lens primary session or an
-            // ordinary build — rather than guessing at a follow-up kind nothing here can recover.
+            // back to the identical three-way split RunLauncher used to pick the name in the
+            // first place — run.IsFollowUp and task.FollowUpKind are both already loaded here
+            // for the isolation flag above, so recovering the role costs nothing extra.
+            string sessionRole = task.Type == TaskType.PrReview
+                ? SessionRoleName.ReviewAdversarial(1)
+                : run.IsFollowUp
+                    ? task.FollowUpKind == FollowUpKind.FailingChecks
+                        ? SessionRoleName.Checks
+                        : task.FollowUpKind == FollowUpKind.Rebase
+                            ? SessionRoleName.Rebase
+                            : SessionRoleName.Build
+                    : SessionRoleName.Build;
             string sessionName = run.SessionName.IsNotBlank()
                 ? run.SessionName
-                : SessionRoleName.For(
-                    DomainId.Short(run.TaskId),
-                    task.Type == TaskType.PrReview ? SessionRoleName.ReviewAdversarial(1) : SessionRoleName.Build);
+                : SessionRoleName.For(DomainId.Short(run.TaskId), sessionRole);
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
                 run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, AgentPromptBuilder.BuildBudgetRetry(),
                 run.ExecutorMode, run.Model, project.SkipPermissions,
