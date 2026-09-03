@@ -154,6 +154,16 @@ public sealed class RunDetails
     /// </summary>
     public List<ReviewParkResolution> ReviewParkResolutions { get; set; } = [];
     /// <summary>
+    /// Every <see cref="Events.ExternalInteractionLogged"/> this run's agents have recorded,
+    /// oldest first (the escape-hatch invariant, idea fcaded0b's design rulings 4 and 5): whatever
+    /// outside interaction an agent had, logged unconditionally through <c>h9k task log-interaction</c>
+    /// rather than left to transcript prose. A human-directed entry here is what
+    /// <see cref="Hall9k.Daemon.Review.ReviewEngine"/> hands forward into a later review pass
+    /// through the same settled-rulings surface <see cref="ReviewParkResolutions"/> already rides
+    /// in on (Decisions Log #88).
+    /// </summary>
+    public List<ExternalInteractionRecord> ExternalInteractions { get; set; } = [];
+    /// <summary>
     /// How the review loop ended (Decisions Log #63): Clean when a reviewer read the final tip
     /// and found nothing, Settled when the severity gate, scope routing, or a human's park
     /// resolution ended it. Unknown while the loop runs, and Unknown forever for a run whose
@@ -525,6 +535,11 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         EndSessions(view);
         view.State = RunState.UnderReview;
     }
+
+    public void Apply(IEvent<ExternalInteractionLogged> @event, RunDetails view) =>
+        view.ExternalInteractions.Add(new ExternalInteractionRecord(
+            @event.Data.LoggedAt, @event.Data.Party, @event.Data.Summary, @event.Data.HumanDirected,
+            @event.Data.Reason));
 
     public void Apply(IEvent<PullRequestOpened> @event, RunDetails view)
     {

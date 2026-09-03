@@ -360,6 +360,35 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// The escape-hatch invariant's own record (task: every outside interaction a dispatched
+    /// agent has is logged unconditionally): <c>h9k task log-interaction</c> appends this event,
+    /// and <see cref="RunDetails.ExternalInteractions"/> is the read model
+    /// <see cref="Hall9k.Daemon.Review.ReviewEngine"/> queries by task to carry a human-directed
+    /// entry forward into a later review pass, the same way <see cref="ReviewParkResolutions"/>
+    /// already carries a settled park ruling forward.
+    /// </summary>
+    [Fact]
+    public void Run_details_keeps_every_logged_external_interaction_as_history()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<ExternalInteractionLogged>(new ExternalInteractionLogged(
+            id, Now, "another agent session", "Shared this run's worktree path with it", false, null,
+            DomainId.New())), view);
+        projection.Apply(new FakeEvent<ExternalInteractionLogged>(new ExternalInteractionLogged(
+            id, Now, "the operator", "Skip the workaround", true, "Real bug, ordered fixed",
+            DomainId.New())), view);
+
+        view.ExternalInteractions.Should().HaveCount(2, "every logged interaction is kept, not just the latest");
+        view.ExternalInteractions[0].Should().BeEquivalentTo(
+            new ExternalInteractionRecord(Now, "another agent session", "Shared this run's worktree path with it", false, null));
+        view.ExternalInteractions[1].Should().BeEquivalentTo(
+            new ExternalInteractionRecord(Now, "the operator", "Skip the workaround", true, "Real bug, ordered fixed"));
+    }
+
+    /// <summary>
     /// RunListItem gained no handlers for the pr-review task type's own two events
     /// (PrReviewEngine) when they landed, so it disagreed with RunDetails for the whole
     /// conformance-lens window — stuck reporting Verifying, a state meaning "the project's

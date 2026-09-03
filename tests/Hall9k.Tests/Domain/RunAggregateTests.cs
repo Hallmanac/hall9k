@@ -1365,4 +1365,27 @@ public sealed class RunAggregateTests
                 + "full-scope read — the boundary must stay unadvanced so a later full-scope pass still "
                 + "reads these commits");
     }
+
+    /// <summary>
+    /// Every Run event replays on this aggregate without a gap — the same convention every other
+    /// event in the stream upholds — even one, like this one, that changes no state the write path
+    /// fences on: <see cref="RunDetails.ExternalInteractions"/> is the read model anything that
+    /// actually needs the logged history queries.
+    /// </summary>
+    [Fact]
+    public void External_interaction_logged_replays_as_a_pure_no_op()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+
+        Action act = () => run.Apply(new ExternalInteractionLogged(
+            id, Now, "the operator", "Skip the workaround", true, "Real bug, ordered fixed", DomainId.New()));
+
+        act.Should().NotThrow();
+        run.State.Should().Be(RunState.Dispatched, "logging an interaction never advances the run's own state");
+    }
 }
