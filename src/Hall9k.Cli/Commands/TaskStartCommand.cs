@@ -185,9 +185,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // "checkable from here" from "recorded somewhere else" (InteractiveSessionLiveness),
             // since this claim's RunDispatched carries the same Guid.Empty sentinel an operator's
             // own claim does and so names no node of its own.
+            //
+            // CancellationToken.None, not the shared cancellationToken (adversarial review,
+            // cycle 1): by this point HeadlessLaunch.SpawnDetached has already spawned a real,
+            // detached claude process — a Ctrl-C landing in the window before this append
+            // completes must not turn into a lost append, the same reasoning
+            // TaskWorkCommand's own identical append already applies.
             startSession.Events.Append(runId, new InteractiveSessionStarted(
                 runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
-            await startSession.SaveChangesAsync(cancellationToken);
+            await startSession.SaveChangesAsync(CancellationToken.None);
         }
 
         AnsiConsole.MarkupLineInterpolated(
