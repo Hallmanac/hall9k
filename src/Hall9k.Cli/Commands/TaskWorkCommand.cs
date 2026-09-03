@@ -339,7 +339,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return ExitCodes.Ok;
     }
 
-    private static async Task<string?> LoadBlockerContextAsync(
+    /// <summary>Internal rather than private: <see cref="TaskStartCommand"/> shares this exact load (task 8a56af78-h9k).</summary>
+    internal static async Task<string?> LoadBlockerContextAsync(
         IDocumentSession session, TaskDetails taskDetails, CancellationToken cancellationToken)
     {
         if (taskDetails.BlockedBy.Count == 0)
@@ -750,9 +751,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// instead of cutting a fresh branch off the base, which would otherwise silently strand
     /// whatever was already committed there under a worktree nothing points at any more
     /// (conformance review, cycle 1). When the branch is gone everywhere, this falls back to a
-    /// fresh worktree exactly as the daemon's own path does.
+    /// fresh worktree exactly as the daemon's own path does. Internal rather than private:
+    /// <see cref="TaskStartCommand"/>'s own claim shares this exact worktree-resume logic
+    /// (task 8a56af78-h9k) rather than duplicating it.
     /// </summary>
-    private static async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
+    internal static async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
         IWorktreeManager worktrees, TaskDetails taskDetails, ProjectDetails project, Guid taskId, Guid runId,
         CancellationToken cancellationToken)
     {
