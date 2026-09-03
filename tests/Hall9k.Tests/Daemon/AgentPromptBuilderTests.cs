@@ -1070,7 +1070,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// Independent pre-PR review, cycle 2, adversarial finding: the FinalFullPass finding
-    /// contract already narrowed its own needs-fixes bar to a High alone (Decisions Log #113),
+    /// contract already narrowed its own needs-fixes bar to a High alone (Decisions Log #119),
     /// but the verdict contract appended a few lines later — the section a reviewer reads
     /// immediately before writing its verdict — kept stating the ordinary medium-or-high trigger
     /// unconditionally, so the same prompt told the reviewer two opposite rules. Both sections
@@ -1983,7 +1983,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// or the phase cannot catch the escape it exists for (cea5ae6e cycle 6, where the un-reached
     /// sibling arm was a pre-existing site on the base, not one the fix touched). What stays
     /// bounded is fixing, for a finding under any other disposition: a pre-existing site outside
-    /// this branch's own changes stays out-of-scope routing's to fix (#63, #99), named for that
+    /// this branch's own changes stays out-of-scope routing's to fix (#63, #117), named for that
     /// routing rather than fixed here. The one carve-out — a pre-existing sibling of a
     /// <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> finding is fixed in that same
     /// separate commit instead — is its own test below, since asserting it here would blur the
@@ -2003,7 +2003,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "enumeration widens to pre-existing siblings on the branch's base, not just sites the fix touched");
         prompt.Should().Contain(
             "is not yours to fix here",
-            "a pre-existing site outside this branch's own changes stays out-of-scope routing's to fix, per #63/#99");
+            "a pre-existing site outside this branch's own changes stays out-of-scope routing's to fix, per #63/#117");
         prompt.Should().Contain(
             "is the only path this sibling has of",
             "a pre-existing sibling is named in the summary because that is the only way it can ever reach a "

@@ -60,7 +60,7 @@ public sealed record ReviewFinding(
     /// own. Discovery and Verify are untouched — every earlier cycle still fixes a Medium the
     /// ordinary way, since the code is still converging there and the severity gate (adversarial's
     /// own multi-cycle convergence rule) is a separate question from this bar. This includes a
-    /// Medium-graded unmet-acceptance-criterion finding, deliberately: PLAN.md #113 says so
+    /// Medium-graded unmet-acceptance-criterion finding, deliberately: PLAN.md #119 says so
     /// explicitly, because that finding is otherwise promised the fix bar unconditionally
     /// (<c>AgentPromptBuilder.AppendFindingContract</c>'s non-FinalFullPass prompt text) and this
     /// mode is where that promise is overridden, not honored by accident. The criterion is still

@@ -88,7 +88,7 @@ Nothing, mechanically — the bootstrap script is the same either way. The two d
   else is one already running a Postgres on that port: install says what it skipped and
   writes nothing, doctor reports "no connection string configured" exactly as it always did,
   and the decision of which server to use is a human's. See *Connecting a database* below
-  (Decisions Log #99).
+  (Decisions Log #118).
 
 ## After bootstrap: staying current
 
@@ -108,7 +108,7 @@ fresh binaries — no repo checkout, no .NET SDK, on the machine that runs it. `
 ## Connecting a database
 
 `h9k` needs a Postgres connection string; nothing is *started* automatically, and nothing
-is guessed (Decisions Log #57, #58, #99). If nothing resolved before you ran the installer,
+is guessed (Decisions Log #57, #58, #118). If nothing resolved before you ran the installer,
 install already wrote the one connection string that matches the compose file it just wrote,
 so there is usually nothing left to configure by hand. The one case it deliberately leaves
 alone is a machine with something already listening on `localhost:5432`, your own native
@@ -220,7 +220,7 @@ worth knowing:
   Every other captured variable (`PATH`, `HALL9K_CLAUDE_PATH`) travels into the registration; the
   connection string is deliberately left out, because a durable copy belongs in the platform
   config file — `h9k install` writes its own guessed default there whenever nothing else resolves
-  (Decisions Log #99), and `h9k doctor`'s start-offer writes one too, but only after actually
+  (Decisions Log #118), and `h9k doctor`'s start-offer writes one too, but only after actually
   confirming a database came up — rather than a second, weaker plaintext copy in the launch
   script. If you configured Postgres purely by exporting the variable and `config.json`'s own
   value does not currently answer, `enable` warns you at enable time — an autostarted daemon would

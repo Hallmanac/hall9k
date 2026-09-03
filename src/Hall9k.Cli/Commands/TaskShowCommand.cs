@@ -361,7 +361,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// two different things, and this line is what keeps them apart: clean means a reviewer read
     /// the final tip and found nothing, while settled means the severity gate ended the loop
     /// over findings that were fixed but never read again, or routed away — to a draft bug task
-    /// of their own, or folded into the project's standing sweep draft (Decisions Log #99).
+    /// of their own, or folded into the project's standing sweep draft (Decisions Log #117).
     /// A reader deciding how much to trust a pull request should not have to dig through the run
     /// stream to learn which of those happened.
     /// </summary>
@@ -509,7 +509,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// earning them one, and recorded rather than fixed. Names the bar itself, not only the
     /// count: a reader asking why a cycle did not dispatch a fix run over these should not have
     /// to read the raw stream to learn what rule decided it. The bar is not one fixed severity
-    /// range, though (Decisions Log #113): an ordinary cycle rides along a Low or ungraded
+    /// range, though (Decisions Log #119): an ordinary cycle rides along a Low or ungraded
     /// finding, while the mandatory FinalFullPass immediately before the pull request opens
     /// tightens that same bar to High alone, so a residual it recorded may be a Medium — stating
     /// a single "medium/high" bar here would misdescribe that one. Normally there are none and

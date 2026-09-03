@@ -339,7 +339,7 @@ public sealed class ReviewTrackPolicyTests
     }
 
     /// <summary>
-    /// The out-of-scope Route-or-Fix split (Decisions Log #63, #99) reads only scope and whether
+    /// The out-of-scope Route-or-Fix split (Decisions Log #63, #117) reads only scope and whether
     /// the reviewer stated a grade below High — never the cycle's mode — so it is identical on a
     /// mandatory FinalFullPass cycle: an out-of-scope Medium or Low still routes, and an
     /// out-of-scope High is still cleanup-as-you-touch.

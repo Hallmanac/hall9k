@@ -23,7 +23,7 @@ public static class PlatformConfigFile
     /// The five leaves <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c> excludes from
     /// the daemon's own <c>ConfigurationBinder</c> call — the three concurrency settings
     /// (Decisions Log #111's follow-up) plus the periodic spend budget and its period (Decisions
-    /// Log #113) — named here independently by <see cref="OperatingSettings"/>'s own property
+    /// Log #120) — named here independently by <see cref="OperatingSettings"/>'s own property
     /// names — Domain cannot reference the Daemon project, so this list and the daemon's own
     /// cannot share a single source, but a rename of either would fail to compile rather than
     /// silently drift apart.

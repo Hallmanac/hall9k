@@ -1342,7 +1342,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
-    /// The severity gate the standing sweep adds (Decisions Log #99): a Medium out-of-scope
+    /// The severity gate the standing sweep adds (Decisions Log #117): a Medium out-of-scope
     /// finding still mints its own dedicated draft exactly as before, while a Low one folds into
     /// the project's one standing sweep draft instead of costing a build-gate-review pipeline of
     /// its own — so a serious pre-existing defect can never be buried in a polish pile, and the
@@ -2629,7 +2629,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// Task: a mandatory FinalFullPass records merge-ready when every finding it attaches is below
-    /// High (Decisions Log #113). The sibling test above scripts a Low; this scripts the case the
+    /// High (Decisions Log #119). The sibling test above scripts a Low; this scripts the case the
     /// narrowing actually exists for — an in-scope Medium, which an ordinary cycle would fix but a
     /// FinalFullPass rides along instead. Exercises the full path end to end: mode threaded into
     /// <c>RecordReviewPassAsync</c>'s reclassification, the empty-terminal conclusion of every
@@ -2689,7 +2689,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             line.Contains("settling at cycle 3")
             && line.Contains("bar settle")
             && line.Contains("Decisions Log #87")
-            && line.Contains("#113"),
+            && line.Contains("#119"),
             "the settle log must say the FinalFullPass bar concluded it, not just that the run settled");
     }
 

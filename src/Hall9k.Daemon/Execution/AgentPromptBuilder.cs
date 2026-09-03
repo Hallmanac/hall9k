@@ -1292,7 +1292,7 @@ public static class AgentPromptBuilder
     /// <para>
     /// <paramref name="mode"/> only changes the acceptance-criterion and needs-fixes-bar
     /// paragraphs below, and only on <see cref="ReviewMode.FinalFullPass"/> (Decisions Log
-    /// #113): everywhere else, "an unmet acceptance criterion always meets the fix bar" is
+    /// #119): everywhere else, "an unmet acceptance criterion always meets the fix bar" is
     /// still literally true, since <see cref="ReviewFinding.Disposition"/> only narrows that
     /// bar to High alone on a mandatory final pass. Stating that promise unconditionally on a
     /// FinalFullPass dispatch would tell the reviewer something the disposition machinery does
@@ -1339,7 +1339,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine("stated, is never `low` and never left ungraded: grade it `medium` at minimum, same");
             prompt.AppendLine("as any other cycle. This is the mandatory final pass immediately before the pull");
             prompt.AppendLine("request opens, though, and its own bar for earning a fix cycle is narrower than an");
-            prompt.AppendLine("earlier cycle's (Decisions Log #113): only a `high` finding, in-scope or out-of-scope,");
+            prompt.AppendLine("earlier cycle's (Decisions Log #119): only a `high` finding, in-scope or out-of-scope,");
             prompt.AppendLine("costs a fix-and-re-review cycle here. An in-scope `medium` you grade is still recorded");
             prompt.AppendLine("and named on the pull request as a residual for the owner to see — grade against the");
             prompt.AppendLine("anchors above, never to force an outcome.");
@@ -1372,7 +1372,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine("rather than manufacturing a needs-fixes verdict to make sure it gets read. The platform");
             prompt.AppendLine("still records it and decides on its own whether it is worth a session; on this mandatory");
             prompt.AppendLine("final pass, only a `high` finding, in-scope or out-of-scope, actually costs a");
-            prompt.AppendLine("fix-and-re-review cycle (Decisions Log #113). An in-scope `medium` or `low` finding");
+            prompt.AppendLine("fix-and-re-review cycle (Decisions Log #119). An in-scope `medium` or `low` finding");
             prompt.AppendLine("here is recorded and carried onto the pull request as a residual instead. An");
             prompt.AppendLine("out-of-scope `medium` or `low` finding keeps the verdict needs-fixes on its own and");
             prompt.AppendLine("still routes to its own draft task exactly as it would on any other cycle, but earns");
@@ -1598,7 +1598,7 @@ public static class AgentPromptBuilder
         {
             prompt.AppendLine("when at least one verified finding graded high stands, in-scope or out-of-scope. This");
             prompt.AppendLine("is the mandatory final pass immediately before the pull request opens, and its own");
-            prompt.AppendLine("bar is narrower than an earlier cycle's (Decisions Log #113): an in-scope medium or");
+            prompt.AppendLine("bar is narrower than an earlier cycle's (Decisions Log #119): an in-scope medium or");
             prompt.AppendLine("low finding here is recorded and carried onto the pull request as a residual instead");
             prompt.AppendLine("of costing a fix-and-re-review cycle. An out-of-scope medium or low finding still");
             prompt.AppendLine("routes to its own draft task exactly as it would on any other cycle, and does not by");
@@ -1692,7 +1692,7 @@ public static class AgentPromptBuilder
         {
             prompt.AppendLine("- A needs-fixes verdict must name at least one finding: a stated location (a file,");
             prompt.AppendLine("  or a file and line) and a description of the defect there, graded high — this is");
-            prompt.AppendLine("  the mandatory final pass, so its own bar is high alone (Decisions Log #113); a");
+            prompt.AppendLine("  the mandatory final pass, so its own bar is high alone (Decisions Log #119); a");
             prompt.AppendLine("  medium-, low-, or ungraded-only finding still belongs in your answer, attached");
             prompt.AppendLine("  under a merge-ready verdict rather than a needs-fixes one.");
         }

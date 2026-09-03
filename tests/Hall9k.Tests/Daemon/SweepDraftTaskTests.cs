@@ -10,7 +10,7 @@ namespace Hall9k.Tests.Daemon;
 
 /// <summary>
 /// The standing sweep an out-of-scope, low-severity review finding folds into instead of
-/// minting a draft of its own (Decisions Log #99).
+/// minting a draft of its own (Decisions Log #117).
 /// </summary>
 public sealed class SweepDraftTaskTests
 {

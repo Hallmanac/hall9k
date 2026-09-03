@@ -6,13 +6,20 @@ namespace Hall9k.Tests.Domain;
 /// Shared by every source-scanning guard test — <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>,
 /// <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>,
 /// <see cref="Hall9k.Tests.Domain.ProcessTerminationGuardTests"/> and
-/// <see cref="Hall9k.Tests.Domain.NodeBootstrapConventionGuardTests"/>, which is the full list
-/// today and is meant to be kept one — each walks a whole tree from its own file's location: the
-/// first two this test project, the third both <c>src/</c> and the whole <c>tests/</c> directory
-/// (decision #110 widened its scan to close a gap the narrower scan left open), the fourth
-/// <c>tests/</c> for the same reason. Each needs to tell a real source file from build output,
-/// and each strips comments and string literals before matching so quoted prose cannot be
-/// mistaken for real code.
+/// <see cref="Hall9k.Tests.Domain.NodeBootstrapConventionGuardTests"/> — each walks a whole tree
+/// from its own file's location: the first two this test project, the third both <c>src/</c> and
+/// the whole <c>tests/</c> directory (decision #110 widened its scan to close a gap the narrower
+/// scan left open), the fourth <c>tests/</c> for the same reason. Each needs to tell a real
+/// source file from build output, and each strips comments and string literals before matching so
+/// quoted prose cannot be mistaken for real code.
+/// <para>
+/// <see cref="Hall9k.Tests.Domain.DecisionsLogNumberingGuardTests"/> is a fifth consumer, and
+/// keeps this list from being "every tree-walking guard" alone: it uses <see cref="SourceDirectory"/>
+/// only, to resolve the repository root and locate PLAN.md, rather than walking a tree of source
+/// files, so it needs neither <see cref="IsBuildOutput"/> nor
+/// <see cref="StripCommentsAndStrings"/>. This is now the full list of consumers and is meant to
+/// be kept current whenever a new one is added.
+/// </para>
 /// </summary>
 internal static class TestSourceTree
 {

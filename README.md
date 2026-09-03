@@ -402,7 +402,7 @@ Nothing is *started* at install time (no prompt, no provisioning, Decisions Log 
 install does write the matching connection string to `config.json` when nothing else resolved
 and nothing is already listening on `localhost:5432` (a port in use might be a Postgres of your
 own, and install will not write its own credentials over a server it cannot identify; Decisions
-Log #99). If a command needs a database and cannot reach one, it runs `h9k doctor` for you
+Log #118). If a command needs a database and cannot reach one, it runs `h9k doctor` for you
 instead of failing raw; run it yourself any time to see the same diagnosis.
 `HALL9K_CONNECTION_STRING` is the highest-precedence of the three places a connection string can
 live (see [docs/operations.md](docs/operations.md#postgres) for the full precedence and the

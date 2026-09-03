@@ -29,13 +29,13 @@ h9k install                  # publish release binaries to ~/.hall9k/bin (no ser
 h9k update                   # refresh an already-installed machine from the latest GitHub release, no repo/SDK needed
 h9k uninstall [--purge-data] # take the platform off the machine; the database survives unless --purge-data (Decisions Log #83)
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
-h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days, review-cycle caps, a periodic token-spend budget (--spend-budget, --spend-period; backlog 59, Decisions Log #103, #111, #112, #113)
-h9k doctor [--yes]           # diagnose the database situation and what to do about it; --yes remediates non-interactively, for scripts and dispatched agents (Decisions Log #73, #74, #99)
+h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days, review-cycle caps, a periodic token-spend budget (--spend-budget, --spend-period; backlog 59, Decisions Log #103, #111, #112, #120)
+h9k doctor [--yes]           # diagnose the database situation and what to do about it; --yes remediates non-interactively, for scripts and dispatched agents (Decisions Log #73, #74, #118)
 h9k project add --name <n> --repo-url <url>   # register a project and create its home directory
 h9k project init <name>      # create, repair or refresh a project's home; idempotent
 h9k project list             # every project with its tasks counted by attention bucket
 h9k project show <name>      # one project: home, registration, settings, rollup, newest tasks
-h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #114)
+h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #121)
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
@@ -295,7 +295,7 @@ nothing a second time. Closeout comments a merged pull request onto a linked Git
 as it does a linked Jira card — never a transition, same reasoning as above.
 
 **A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
-#114). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
+#121). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
 tokens — `{shortid}` (the task's short id), `{slug}` (its objective, hyphenated, capped at 30
 characters) and `{key}` (the linked Jira key or GitHub issue number) — with everything else
 literal, so `--branch-template "{key}-{slug}"` cuts `ARX-14-add-rate-limiting`. The default is
@@ -400,7 +400,7 @@ prints the command's own help back at you, so one bad invocation costs one comma
 
 The dispatcher is deliberately mechanical. It takes queued tasks in order, up to the node's
 run ceiling (`--max-concurrent-task-runs`, #64, #111) and its periodic token-spend budget
-(`--spend-budget`, #113) — a motionless queue can be either gate holding, not just the ceiling —
+(`--spend-budget`, #120) — a motionless queue can be either gate holding, not just the ceiling —
 and it has **no idea whether two of them collide**. `--blocked-by` enforces
 sequencing, but only as declared: the graph is enforced, never inferred. Inferring it is the
 window's job, and it is real work.
@@ -492,7 +492,7 @@ The checkpoints, in the order the window sees them:
 
 1. **Agents build.** The dispatched run does the work in its own worktree, on
    `task/<id>-<slug>` — or on whatever the project's own branch template renders (Decisions Log
-   #114), which is the same name either way for a project that never set one.
+   #121), which is the same name either way for a project that never set one.
 2. **Gates run.** Build, test, lint, per the project's verify settings. A fix cycle's `dotnet
    test`-shaped gate is scoped to the tests reachable from that cycle's own touched commits
    (#98) whenever `TestScopeResolver` can map every touched file with confidence; it falls back
@@ -510,7 +510,7 @@ The checkpoints, in the order the window sees them:
    same-session re-prompt before parking, exactly like a pass that ended with no `VERDICT:` line
    at all. A needs-fixes verdict earns a fix-and-re-review cycle only when a finding is graded
    medium or high (Decisions Log #87) — narrower still on the mandatory FinalFullPass immediately
-   before the pull request opens, where only a High earns one (Decisions Log #113, described
+   before the pull request opens, where only a High earns one (Decisions Log #119, described
    below): both lenses now grade every finding, and a pass whose findings are all below that
    cycle's own bar is recorded merge-ready instead, with its findings carried along as
    **ride-alongs** rather than dropped or spent on a cycle of their own. A verdict is
@@ -565,7 +565,7 @@ The checkpoints, in the order the window sees them:
    this pull request is not fixing still has to land somewhere (#63): a
    Medium or higher mints a draft bug task of its own, unchanged, while a Low instead folds into
    the project's one standing sweep draft — the board shows it as `Sweep: consolidated
-   out-of-scope review findings` (Decisions Log #99) — so eight one-line pre-existing defects cost
+   out-of-scope review findings` (Decisions Log #117) — so eight one-line pre-existing defects cost
    one build-gate-review-PR pipeline instead of eight. Its footprint is wide by construction (it
    touches as many unrelated files as it has items), so it is groomed and published by a human and
    assigned alone, with no parallel siblings queued beside it, exactly as *the judgment the window
@@ -594,7 +594,7 @@ The checkpoints, in the order the window sees them:
    (a history rewrite between cycles), never a guessed one. Every full-scope read still starts
    exactly where the previous one left off, so #92's own rule still holds: no commit reaches the
    remote unread at full scope by a fresh context, only reread by fewer of them. That mandatory
-   pass also tightens its own in-scope fix bar to High alone (Decisions Log #113, origin: 3 High
+   pass also tightens its own in-scope fix bar to High alone (Decisions Log #119, origin: 3 High
    findings in 172 final passes, 101 of 104 needs-fixes final passes carrying no High at all): an
    in-scope Medium there rides along exactly as a Low already did, rather than earning a
    fix-and-reverify cycle of its own, and every ride-along the pass carries is named on the pull

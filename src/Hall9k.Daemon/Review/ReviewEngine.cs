@@ -843,7 +843,7 @@ public sealed class ReviewEngine(
         // earlier full-scope cycle has already read — AppendReviewMechanics decides that only for
         // ReviewMode.FinalFullPass, so passing sinceSha here for a Discovery dispatch (always null,
         // per every DispatchReviewPassesAsync caller) is inert. mode still changes the fix-bar
-        // wording too (Decisions Log #113, AppendFindingContract and AppendVerdictContract), so the
+        // wording too (Decisions Log #119, AppendFindingContract and AppendVerdictContract), so the
         // reviewer is told the true bar rather than the ordinary cycle's.
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
@@ -1197,7 +1197,7 @@ public sealed class ReviewEngine(
     /// Records one track's findings and verdict, and — when it was the cycle's last pass —
     /// concludes the cycle: every track decides whether it runs again, out-of-scope non-Highs
     /// are routed — a Medium to a draft bug task of its own, a Low folded into the project's
-    /// standing sweep (Decisions Log #87, #99) — the findings merge into one document, and the
+    /// standing sweep (Decisions Log #87, #117) — the findings merge into one document, and the
     /// milestones land in one transaction so the pass, the cycle, and the tracks can never
     /// disagree.
     /// </summary>
@@ -1620,7 +1620,7 @@ public sealed class ReviewEngine(
     /// anything, while a Low does not and instead folds into the project's one standing sweep
     /// draft (<see cref="SweepDraftTask"/>) — so a serious pre-existing defect can never be
     /// buried in a polish pile, and eight one-line Low findings cost one build-gate-review
-    /// pipeline instead of eight (Decisions Log #99).
+    /// pipeline instead of eight (Decisions Log #117).
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<RoutedFinding>> RouteFindingsAsync(
@@ -2743,7 +2743,7 @@ public sealed class ReviewEngine(
         /// A mandatory <see cref="ReviewMode.FinalFullPass"/> concluded merge-ready with every
         /// finding below the fix bar (Decisions Log #87) — settled by the severity bar's own
         /// definition of done, not by a reviewer confirming a tip with nothing on it at all. Since
-        /// a mandatory FinalFullPass tightens that bar to High alone (Decisions Log #113), this is
+        /// a mandatory FinalFullPass tightens that bar to High alone (Decisions Log #119), this is
         /// the common case for a final pass that finds a Medium: below-High, still a real finding,
         /// still carried forward as a residual rather than spending a fix-and-reverify cycle on it.
         /// </summary>
@@ -2791,7 +2791,7 @@ public sealed class ReviewEngine(
             SettleReason.Human => "a human's merge-ready resolution ended the loop",
             SettleReason.Bar =>
                 "the mandatory final full pass concluded merge-ready with every finding below High " +
-                "(Decisions Log #87, #113) — a below-High final-pass bar settle, not a reviewer " +
+                "(Decisions Log #87, #119) — a below-High final-pass bar settle, not a reviewer " +
                 "confirming a fully clean tip; its findings are recorded as residuals",
             SettleReason.NothingOwed => "nothing this cycle is owed a fix session",
             _ => throw new ArgumentOutOfRangeException(nameof(reason), reason, "Unrecognized settle reason."),
@@ -3485,7 +3485,7 @@ public sealed class ReviewEngine(
     /// treatment: name the reclassification and why, rather than the reclassified verdict alone.
     /// The "below the fix bar" phrase names the varying bar rather than the older fixed one
     /// (independent pre-PR review, cycle 10, conformance finding): a <see cref="ReviewMode.FinalFullPass"/>
-    /// ride-along can be a Medium, not only a Low or ungraded finding (Decisions Log #113).
+    /// ride-along can be a Medium, not only a Low or ungraded finding (Decisions Log #119).
     /// </para>
     /// </summary>
     private static string VerdictLabel(ReviewVerdict verdict, string rawText, ReviewMode mode) => verdict switch
@@ -3496,7 +3496,7 @@ public sealed class ReviewEngine(
                 + (verdict == ReviewVerdict.MergeReady
                     ? mode == ReviewMode.FinalFullPass
                         ? "every attached finding was RideAlong-dispositioned, below the mandatory final "
-                            + "pass's own narrower fix bar (medium/low/ungraded) on its own — Decisions Log #87, #113)"
+                            + "pass's own narrower fix bar (medium/low/ungraded) on its own — Decisions Log #87, #119)"
                         : "every attached finding was RideAlong-dispositioned, below the fix bar on its own "
                             + "— Decisions Log #87)"
                     : "it attached a finding beyond ride-alongs, which earns its own fix-and-re-review cycle "

@@ -43,7 +43,7 @@ public sealed class NodeDispatchLoad
 
     /// <summary>
     /// This node's periodic token-spend budget exactly as the sweep's own <c>DaemonOptions</c>
-    /// carries it (Decisions Log #113) — null when this node's daemon is unbudgeted. Frozen at
+    /// carries it (Decisions Log #120) — null when this node's daemon is unbudgeted. Frozen at
     /// daemon startup, the same as every value <c>DaemonOptionsBinding.ResolverOwnedKeys</c>
     /// excludes from <c>ConfigurationBinder</c>, so a config-file edit an operator makes without
     /// restarting the daemon shows up here as exactly what the dispatcher is still enforcing —

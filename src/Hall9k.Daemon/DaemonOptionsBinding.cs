@@ -168,7 +168,7 @@ internal static class DaemonOptionsBinding
 
     /// <summary>
     /// <see cref="AddIfIgnored(IConfigurationSection, string, string, string, int, List{string})"/>'s
-    /// own check, widened for <see cref="DaemonOptions.SpendBudgetTokens"/> (Decisions Log #113):
+    /// own check, widened for <see cref="DaemonOptions.SpendBudgetTokens"/> (Decisions Log #120):
     /// nullable, since "no budget" is itself a meaningful resolved value here rather than a
     /// ceiling nothing ever resolves to.
     /// </summary>
@@ -196,13 +196,13 @@ internal static class DaemonOptionsBinding
             + "another configuration source the daemon's operating-settings resolver does not read — the daemon "
             + $"dispatches {effectiveDescription} instead, since {flagLabel} is "
             + $"resolved only from the {OperatingSettingsResolver.EnvironmentPrefix}{key} environment variable and "
-            + $"the platform config file (Decisions Log #113). Set it through one of those instead: "
+            + $"the platform config file (Decisions Log #120). Set it through one of those instead: "
             + $"h9k config set {flag} <n>, or export {OperatingSettingsResolver.EnvironmentPrefix}{key}=<n>.");
     }
 
     /// <summary>
     /// <see cref="AddIfIgnored(IConfigurationSection, string, string, string, int, List{string})"/>'s
-    /// own check, widened for <see cref="DaemonOptions.SpendPeriod"/> (Decisions Log #113): a
+    /// own check, widened for <see cref="DaemonOptions.SpendPeriod"/> (Decisions Log #120): a
     /// string setting rather than a number, compared the same case-insensitive way
     /// <c>SpendPeriod.FromInput</c> itself normalizes it — trimmed the same way too, so a
     /// whitespace-padded value <c>SpendPeriod.FromInput</c> accepts as-is is not reported as
@@ -230,7 +230,7 @@ internal static class DaemonOptionsBinding
             + "another configuration source the daemon's operating-settings resolver does not read — the daemon "
             + $"dispatches on \"{effectiveValue}\" instead, since {flagLabel} is "
             + $"resolved only from the {OperatingSettingsResolver.EnvironmentPrefix}{key} environment variable and "
-            + $"the platform config file (Decisions Log #113). Set it through one of those instead: "
+            + $"the platform config file (Decisions Log #120). Set it through one of those instead: "
             + $"h9k config set {flag} <value>, or export {OperatingSettingsResolver.EnvironmentPrefix}{key}=<value>.");
     }
 }
