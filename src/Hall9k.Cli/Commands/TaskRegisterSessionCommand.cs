@@ -9,7 +9,9 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -77,7 +79,16 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         (Guid runId, int processId) = await RegisterAsync(session, task, settings.Force, cancellationToken);
-        await session.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s run changed while registering — most likely this same prompt was pasted into "
+                + $"more than one session at once. h9k task show {taskId} to see which session won.");
+        }
 
         // Plain MarkupLine, not the Interpolated overload: taskId and processId are a Guid and an
         // int, neither of which can carry a stray '[' that would need escaping, and the message is
@@ -145,10 +156,26 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
 
         (int processId, DateTimeOffset startedAt) = ReadClaudeProcess(task.Id);
         Guid claudeSessionId = ReadClaudeSessionId();
-        string sessionName = ReadClaudeSessionName(processId)
-            ?? SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.InteractiveClaim);
+        // Blank rather than a fabricated task-shortid-role guess when the real name cannot be
+        // read: ActiveSession.Name's own contract already defines blank as "nothing was ever
+        // observed" (a stream written before the field existed), and a guessed name would be one
+        // nothing answers to — the cross-session mesh and h9k task show both address a session by
+        // this exact field (independent pre-PR review, conformance lens, cycle 1).
+        string sessionName = ReadClaudeSessionName(processId) ?? string.Empty;
 
-        session.Events.Append(runId, new InteractiveSessionStarted(
+        // Fenced immediately before the append, not left as a bare check-then-act: without this,
+        // the prompt pasted into two sessions at once both pass the double-booking check above
+        // (both read ActiveSessions still empty or still theirs) and both append unconditionally,
+        // and RunDetailsProjection.StartSession's single-slot ActiveSessions record silently lets
+        // the second append overwrite the first session's liveness record — exactly the collision
+        // the check above exists to prevent, just narrowed rather than closed (independent pre-PR
+        // review, adversarial lens, cycle 1). The sibling commands on this same claim
+        // (TaskHandbackCommand, TaskReleaseCommand) already fence their own append the same way.
+        StreamState? fence = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
+            ?? throw new DomainConflictException(
+                $"Task {task.Id}'s run {runId} lost its run stream while registering — h9k task show {task.Id} "
+                + "to see where it stands.");
+        session.Events.Append(runId, expectedVersion: fence.Version + 1, new InteractiveSessionStarted(
             runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
         return (runId, processId);
     }
@@ -234,11 +261,12 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
     /// (ListAgents/SendMessage) and <c>h9k task show</c>'s own Sessions block both address a
     /// session by this file's own <c>name</c> field.
     /// <para>
-    /// Best-effort, the same honest-degradation shape <see cref="ReadClaudeSessionId"/> already
-    /// takes for its own non-liveness-critical field: this file is Claude Code's own runtime
-    /// state, not a contract this platform owns, so a missing file, a missing or blank
-    /// <c>name</c>, or a parse failure falls back to the role-vocabulary guess rather than
-    /// refusing registration over a fact no guard here is actually built on.
+    /// Best-effort, but unlike <see cref="ReadClaudeSessionId"/>'s own degrade-to-a-fresh-guess
+    /// shape: this file is Claude Code's own runtime state, not a contract this platform owns, so
+    /// a missing file, a missing or blank <c>name</c>, or a parse failure returns <see langword="null"/>
+    /// rather than refusing registration — and the caller records the honest blank
+    /// <see cref="ActiveSession.Name"/> already defines for "nothing was ever observed", not a
+    /// fabricated name nothing answers to (independent pre-PR review, conformance lens, cycle 1).
     /// </para>
     /// </summary>
     internal static string? ReadClaudeSessionName(int processId) =>
