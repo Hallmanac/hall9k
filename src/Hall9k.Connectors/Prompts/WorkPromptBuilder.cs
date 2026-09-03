@@ -686,8 +686,10 @@ public static class WorkPromptBuilder
     /// not already route through one of the platform's other observation-gate commands — is
     /// logged through the platform unconditionally, even one the interacting party asks the
     /// session to keep quiet. <c>h9k task log-interaction</c> is the CLI surface it lands through
-    /// (an agent-facing observation-gate command, same style as <c>h9k task write-jira</c>): what
-    /// reaches the run stream is structured, not left to transcript prose, and a human-directed
+    /// (an agent-facing command, structured the same way <c>h9k task write-jira</c> is — but,
+    /// unlike that one, not itself an observation gate: there is nothing external here to verify
+    /// the claim against): what reaches the run stream is structured, not left to transcript
+    /// prose, and a human-directed
     /// entry rides forward into a later review pass through the same settled-rulings surface a
     /// human's own <c>h9k review resolve</c> verdict already does (Decisions Log #88). Handed the
     /// task's own id directly (<paramref name="taskId"/>) rather than left for the agent to look

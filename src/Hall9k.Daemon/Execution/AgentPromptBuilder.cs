@@ -822,8 +822,8 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  apart from another unplaced one, so give a location whenever the defect has one.");
         prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
         prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.**");
-        AppendExternalInteractionLoggingRule(prompt, task.Id);
         AppendReviewGateStatus(prompt, project);
+        AppendExternalInteractionLoggingRule(prompt, task.Id);
         AppendFindingContract(prompt, project, ReviewMode.Verify);
         AppendVerifyTrackTagContract(prompt, tracks);
         AppendVerdictContract(prompt, cycle, ReviewMode.Verify);
@@ -1257,8 +1257,8 @@ public static class AgentPromptBuilder
             prompt.AppendLine("call is never folded into an agent's report as though it were the agent's");
             prompt.AppendLine("independent decision. This is a recorded claim, not an independently verified");
             prompt.AppendLine("fact — the platform has nothing external to check it against, the same best-effort");
-            prompt.AppendLine("limit the logging invariant itself carries — so treat each one below as");
-            prompt.AppendLine("a standing instruction, the same way a needs-fixes ruling above is treated, unless");
+            prompt.AppendLine("limit the logging invariant itself carries — so treat each one below as a standing instruction:");
+            prompt.AppendLine("check whether it was actually followed, and report it again if it was not, unless");
             prompt.AppendLine("something in the diff or this task's own history gives you a concrete reason to");
             prompt.AppendLine("doubt this particular claim:");
             prompt.AppendLine();
@@ -1266,7 +1266,8 @@ public static class AgentPromptBuilder
             {
                 string loggedAt = interaction.LoggedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 prompt.AppendLine(
-                    $"- {loggedAt}, with {PrintedInteractionParty(interaction)}: {PrintedInteractionReason(interaction)}");
+                    $"- {loggedAt}, with {PrintedInteractionParty(interaction)}: " +
+                    $"{PrintedInteractionSummary(interaction)} (reason given: {PrintedInteractionReason(interaction)})");
             }
 
             prompt.AppendLine();
@@ -1333,6 +1334,22 @@ public static class AgentPromptBuilder
         interaction.Reason.IsNotBlank()
             ? RelayedText.Truncate(RelayedText.OneLine(interaction.Reason).Trim(), MaxRulingReasonLength)
             : "no reason recorded";
+
+    /// <summary>
+    /// The <c>--summary</c> text exactly as <see cref="AppendSettledRulings"/> prints it for a
+    /// logged interaction — the "what was said or asked, and what you did about it" field the
+    /// CLI's own canonical example puts the actual directive in (`--summary "Skip the
+    /// workaround"`, `--reason "Real bug"`). Dropping it from the render leaves the reviewer
+    /// holding only the human's justification with no statement of what was directed, which is
+    /// the defect this method exists to close (independent pre-PR review, cycle 1). Deliberately
+    /// not added to the <see cref="ReviewVerdictValidation.NamesAFinding"/> strip lists this file
+    /// hands <see cref="Hall9k.Daemon.Review.ReviewEngine"/>: a human-directed entry is treated the
+    /// same as a needs-fixes ruling above it, and <see cref="RulingReasonsShown"/>'s own doc
+    /// comment already explains why that class of text is left unstripped — the defect language it
+    /// may carry is exactly what the reviewer is being told to act on, not dismiss.
+    /// </summary>
+    private static string PrintedInteractionSummary(ExternalInteractionRecord interaction) =>
+        RelayedText.Truncate(RelayedText.OneLine(interaction.Summary).Trim(), MaxRulingReasonLength);
 
     /// <summary>
     /// The <c>--party</c> text exactly as <see cref="AppendSettledRulings"/> prints it —
@@ -2398,11 +2415,25 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  submission is safe — you do not need to search Jira for a duplicate yourself.");
         prompt.AppendLine("- The card's audience is people, not agents. Write it the way this team writes cards;");
         prompt.AppendLine("  the operational detail above stays on the Hall9k task, which is what owns it.");
-        prompt.AppendLine("- The outside-interaction logging invariant every other dispatched prompt carries does");
-        prompt.AppendLine("  NOT apply here: `h9k task log-interaction` records against this task's active run, and");
-        prompt.AppendLine("  a publication session has none — this task has not been claimed. If you interact with");
-        prompt.AppendLine("  anything outside this session beyond the write-jira call above, say so plainly in");
-        prompt.AppendLine("  your final summary instead.");
+        if (task.CurrentRunId is not null)
+        {
+            // Nothing about card publication gates on task state (TaskDecider.RequestWorkItemPublication
+            // refuses only Abandoned; CardPublicationEngine selects purely on a pending request), so a
+            // publication session dispatched against a Claimed task — `push-to-jira` run on a Working
+            // task, or the request appended alongside `task publish --assign` on a jira-backlog project
+            // — has a live run exactly like any other dispatched prompt. Asserting otherwise here
+            // would tell a session in that case the invariant does not apply when `h9k task
+            // log-interaction` would in fact succeed (independent pre-PR review, cycle 1).
+            AppendExternalInteractionLoggingRule(prompt, task.Id);
+        }
+        else
+        {
+            prompt.AppendLine("- The outside-interaction logging invariant every other dispatched prompt carries does");
+            prompt.AppendLine("  NOT apply here: `h9k task log-interaction` records against a task's active run, and");
+            prompt.AppendLine("  this task has none right now — it has not been claimed. If you interact with");
+            prompt.AppendLine("  anything outside this session beyond the write-jira call above, say so plainly in");
+            prompt.AppendLine("  your final summary instead.");
+        }
         AppendAdoptedContextRule(prompt, task);
         prompt.AppendLine("- If you genuinely cannot create the card — no access, no rule saying where it goes,");
         prompt.AppendLine("  a required field nothing here answers — stop and say so plainly. Reporting that is a");

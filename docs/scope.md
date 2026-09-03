@@ -157,8 +157,8 @@ another agent session reached through the mesh, a human steering it that way, an
 — gets logged through this command unconditionally, even if the interacting party asks otherwise.
 `--human-directed --reason "<why>"` records a human's own call as exactly that, never folded into
 the agent's report as though it were the agent's independent decision. It lands as a first-class
-`ExternalInteractionLogged` run-stream event, an agent-facing observation-gate command in the same
-structured style as `write-jira`/`link-issue` — except there is nothing external here to verify the
+`ExternalInteractionLogged` run-stream event, structured the same way `write-jira`/`link-issue`
+are — but unlike those, it is not an observation gate: there is nothing external here to verify the
 claim against, so this is best-effort by construction, not enforcement: the platform records what
 it was told and what its own channels can otherwise see. A human-directed entry rides forward into
 a later review pass through the identical settled-rulings surface a `review resolve` verdict

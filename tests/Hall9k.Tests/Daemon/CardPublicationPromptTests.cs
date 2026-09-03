@@ -107,6 +107,37 @@ public sealed class CardPublicationPromptTests : IDisposable
             .And.Contain("you cannot fix it from here");
     }
 
+    /// <summary>
+    /// Nothing gates a publication request or its dispatch on task state (independent pre-PR
+    /// review, cycle 1, medium): a `push-to-jira` run against a Working task, or the request
+    /// `task publish --assign` appends alongside the assignment on a jira-backlog project,
+    /// routinely dispatches a publication session whose task IS claimed. That session has a
+    /// live run exactly like any other dispatched prompt, so the escape-hatch invariant applies
+    /// to it rather than being waived on an unobserved assumption.
+    /// </summary>
+    [Fact]
+    public void A_publication_session_against_a_claimed_task_carries_the_real_logging_invariant()
+    {
+        TaskDetails claimed = SomeTask();
+        claimed.CurrentRunId = Guid.NewGuid();
+
+        string prompt = Build(task: claimed);
+
+        prompt.Should().Contain("Log every outside interaction, unconditionally")
+            .And.Contain("h9k task log-interaction")
+            .And.NotContain("this task has not been claimed", "the task IS claimed here");
+    }
+
+    [Fact]
+    public void A_publication_session_against_an_unclaimed_task_states_the_narrower_exception()
+    {
+        string prompt = Build();
+
+        prompt.Should().Contain("NOT apply here")
+            .And.Contain("it has not been claimed")
+            .And.NotContain("Log every outside interaction, unconditionally");
+    }
+
     [Fact]
     public void The_report_back_command_is_forbidden_from_running_backgrounded()
     {
