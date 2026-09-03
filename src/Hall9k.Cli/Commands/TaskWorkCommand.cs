@@ -41,9 +41,12 @@ namespace Hall9k.Cli.Commands;
 /// dispatch itself holds an assignment to (<see cref="TaskDependency"/>). The claim is
 /// held by the human, not a process: no <c>TaskLease</c> is written, so there is nothing for a
 /// heartbeat to renew or an expiry sweep to reclaim, and closing the terminal is a normal way to
-/// leave — the task stays Claimed and re-running this command re-enters the same worktree and
-/// branch with a fresh session. An interactive claim occupies zero concurrency slots: it never
-/// creates a node-owned run (RunDispatched records NodeId as the sentinel <see cref="Guid.Empty"/>,
+/// leave — the task stays Claimed and re-running this command resumes the most recently recorded
+/// interactive session's own conversation (`claude --resume`), falling back to a fresh one — said
+/// out loud, never silently — when the recorded one cannot be resumed (PLAN.md §16 #122, a
+/// deliberate reversal of #103's original "always fresh" opening move). An interactive claim
+/// occupies zero concurrency slots: it never creates a node-owned run (RunDispatched records
+/// NodeId as the sentinel <see cref="Guid.Empty"/>,
 /// which <c>NodeLoad</c>'s ceiling measurement never counts), so it starts even when the daemon's
 /// session ceiling is fully consumed and never competes with headless dispatch throughput.
 /// </summary>
@@ -93,10 +96,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
-        // Minted once per invocation and carried through: the first claim records it as
-        // RunDispatched.SessionId — the same "session id is the first spawned session's own
-        // id" convention headless dispatch's RunLauncher follows — and every re-entry records
-        // its own fresh session under InteractiveSessionStarted regardless.
+        // Minted once per invocation, whether or not it ends up used: a fresh claim records it
+        // as RunDispatched.SessionId — the same "session id is the first spawned session's own
+        // id" convention headless dispatch's RunLauncher follows — and a re-entry keeps it in
+        // reserve as the fallback session id, used only if resuming the recorded conversation
+        // (below) turns out not to be possible.
         Guid claudeSessionId = DomainId.New();
 
         // Every re-entry launches under the same name (task: every dispatched agent session
@@ -105,7 +109,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // each time.
         string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim);
 
-        (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, bool crossMachineNoticeShown) = task.State == TaskState.Claimed && task.IsInteractiveClaim
+        (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, bool crossMachineNoticeShown, Guid? previousClaudeSessionId) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, settings.Force, cancellationToken)
             : await ClaimAndCutAsync(store, session, task, fence, context, claudeSessionId, sessionName, cancellationToken);
 
@@ -174,53 +178,110 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
-        AnsiConsole.MarkupLine("[dim]Launching an interactive Claude Code session — exit it normally (Ctrl+D or /exit) to return here.[/]");
+        AnsiConsole.MarkupLine(previousClaudeSessionId is not null
+            ? "[dim]Resuming the recorded interactive session — exit it normally (Ctrl+D or /exit) to return here.[/]"
+            : "[dim]Launching an interactive Claude Code session — exit it normally (Ctrl+D or /exit) to return here.[/]");
 
-        // InteractiveSessionStarted appends only once the process is actually alive (from inside
-        // LaunchInteractiveClaudeAsync's onStarted callback, with its real pid) rather than
-        // pre-emptively here: recording it before the process exists left ProcessId unobservable,
-        // so no other command could ever tell this worktree had a live attached session
-        // (adversarial review, cycle 1) — and a launch that never starts (the claude binary
-        // missing, the worktree vanishing) now never appends a started event with nothing to
-        // pair it, instead of needing an ended event to close a pairing that never really began.
-        int exitCode;
-        bool sessionStartRecorded;
-        try
+        // Local, not a private method: it closes over everything a single launch attempt needs
+        // (worktree/prompt/settings from above, store/runId/sessionName for the two event
+        // appends), so a resume attempt and its fresh-session fallback below are just two calls
+        // to the same attempt rather than two hand-duplicated blocks.
+        async Task<(int ExitCode, bool ResumeNotFound, Guid? PendingEndedSessionId)> AttemptAsync(
+            Guid sessionIdToLaunch, bool resume, Guid? pendingEndedSessionId = null)
         {
-            (exitCode, sessionStartRecorded) = await LaunchInteractiveClaudeAsync(
-                worktreePath, prompt, claudeSessionId, settingsFile, project.SkipPermissions, runId, sessionName,
-                // CancellationToken.None: by the time this runs, process.Start() has already
-                // spawned a real, terminal-attached claude — a Ctrl-C landing in the window before
-                // this append completes must not turn into a lost append (adversarial review,
-                // cycle 3), the same reasoning AppendSessionEndedAsync's own call already applies.
-                (processId, startedAt) => AppendSessionStartedAsync(store, runId, claudeSessionId, processId, startedAt, sessionName, CancellationToken.None),
-                cancellationToken);
-        }
-        catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
-        {
-            // The claude binary is missing, or the worktree directory vanished before the
-            // process could even start: nothing was recorded, so the claim is preserved with
-            // no run history to close out.
-            throw new DomainConflictException(
-                $"Could not launch the interactive Claude Code session for task {taskId}: {exception.Message} "
-                + $"The claim is preserved — h9k task work {taskId} to try again, or h9k task release {taskId} to give it back.");
+            int attemptExitCode;
+            bool sessionStartRecorded;
+            bool resumeNotFound;
+            try
+            {
+                // InteractiveSessionStarted appends only once the process is actually alive
+                // (from inside LaunchInteractiveClaudeAsync's onStarted callback, with its real
+                // pid) rather than pre-emptively here: recording it before the process exists
+                // left ProcessId unobservable, so no other command could ever tell this worktree
+                // had a live attached session (adversarial review, cycle 1) — and a launch that
+                // never starts (the claude binary missing, the worktree vanishing) now never
+                // appends a started event with nothing to pair it, instead of needing an ended
+                // event to close a pairing that never really began. This holds for a resume
+                // attempt too: a resume that turns out not to find a matching conversation still
+                // really started a process with a real pid, so it is recorded and paired exactly
+                // like any other attempt rather than left invisible.
+                (attemptExitCode, sessionStartRecorded, resumeNotFound) = await LaunchInteractiveClaudeAsync(
+                    worktreePath, prompt, sessionIdToLaunch, settingsFile, project.SkipPermissions, runId,
+                    sessionName, resume,
+                    // CancellationToken.None: by the time this runs, process.Start() has already
+                    // spawned a real, terminal-attached claude — a Ctrl-C landing in the window
+                    // before this append completes must not turn into a lost append (adversarial
+                    // review, cycle 3), the same reasoning AppendSessionEndedAsync's own call
+                    // already applies. pendingEndedSessionId, when this is the fallback attempt
+                    // following a not-found resume, rides in the same transaction as this
+                    // attempt's own Started event (adversarial review, cycle 1: appending them
+                    // separately left a window where ActiveSessions read empty — the failed
+                    // resume's Ended already landed, this attempt's Started had not yet — and a
+                    // second h9k task work from another terminal could pass
+                    // EnsureNotAttachedElsewhere and launch a second claude into this worktree).
+                    (processId, startedAt) => AppendSessionStartedAsync(
+                        store, runId, sessionIdToLaunch, processId, startedAt, sessionName, pendingEndedSessionId, CancellationToken.None),
+                    cancellationToken);
+            }
+            catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
+            {
+                // The claude binary is missing, or the worktree directory vanished before the
+                // process could even start: nothing was recorded, so the claim is preserved with
+                // no run history to close out. A pendingEndedSessionId this attempt never got to
+                // append stays unrecorded too — the same degraded-but-recoverable shape as
+                // sessionStartRecorded staying false below: EnsureNotAttachedElsewhere checks the
+                // recorded pid against the live process table, so a stale ActiveSessions entry
+                // for the earlier, now-dead resume attempt does not block a later re-entry.
+                throw new DomainConflictException(
+                    $"Could not launch the interactive Claude Code session for task {taskId}: {exception.Message} "
+                    + $"The claim is preserved — h9k task work {taskId} to try again, or h9k task release {taskId} to give it back.");
+            }
+
+            // Only when InteractiveSessionStarted actually landed (conformance review, cycle 4):
+            // a transient database error inside LaunchInteractiveClaudeAsync's own onStarted
+            // callback is swallowed there rather than propagated, so an ended event with no
+            // started event to pair it would otherwise be recorded — a shape
+            // InteractiveSessionStarted's own doc comment establishes only the other direction
+            // (an unmatched started is normal) as expected. Always CancellationToken.None: while
+            // the child was attached, Program.cs suppresses Ctrl-C entirely rather than
+            // cancelling the shared token, so a press during the session leaves it uncancelled
+            // by the time execution reaches here — but a press landing in the narrow window
+            // after InteractiveChildGuard is disposed and before this line runs still escalates
+            // and cancels it, and the interactive session's own exit is real regardless of that
+            // race — it must never be lost to a token cancelled by a keystroke that arrived too
+            // late to mean anything else (conformance review, cycle 1).
+            //
+            // A not-found resume is the one case this Ended is deferred rather than appended
+            // here: the caller always retries a not-found resume with a fallback attempt, so
+            // returning sessionIdToLaunch lets that fallback bundle this attempt's Ended with its
+            // own Started in one transaction instead of two, closing the window described above.
+            if (sessionStartRecorded && resumeNotFound)
+            {
+                return (attemptExitCode, resumeNotFound, sessionIdToLaunch);
+            }
+
+            if (sessionStartRecorded)
+            {
+                await AppendSessionEndedAsync(store, runId, sessionIdToLaunch, CancellationToken.None);
+            }
+
+            return (attemptExitCode, resumeNotFound, null);
         }
 
-        // Only when InteractiveSessionStarted actually landed (conformance review, cycle 4): a
-        // transient database error inside LaunchInteractiveClaudeAsync's own onStarted callback
-        // is swallowed there rather than propagated, so an ended event with no started event to
-        // pair it would otherwise be recorded — a shape InteractiveSessionStarted's own doc
-        // comment establishes only the other direction (an unmatched started is normal) as
-        // expected. Always CancellationToken.None: while the child was attached, Program.cs
-        // suppresses Ctrl-C entirely rather than cancelling the shared token, so a press during
-        // the session leaves it uncancelled by the time execution reaches here — but a press
-        // landing in the narrow window after InteractiveChildGuard is disposed and before this
-        // line runs still escalates and cancels it, and the interactive session's own exit is
-        // real regardless of that race — it must never be lost to a token cancelled by a
-        // keystroke that arrived too late to mean anything else (conformance review, cycle 1).
-        if (sessionStartRecorded)
+        // Only a re-entry ever carries a previously recorded session id (a fresh claim has
+        // nothing to resume). Resuming is attempted first, on the operator's own recorded
+        // conversation; the pre-minted claudeSessionId above is the fallback, used only if the
+        // attempt below reports the recorded conversation could not be found — announced, never
+        // silent, since silently swapping which conversation an operator is talking to would be
+        // exactly the kind of unobserved-fact guess AGENTS.md rules out.
+        (int exitCode, bool resumeNotFound, Guid? pendingEndedSessionId) = previousClaudeSessionId is { } previousSessionId
+            ? await AttemptAsync(previousSessionId, resume: true)
+            : await AttemptAsync(claudeSessionId, resume: false);
+        if (resumeNotFound)
         {
-            await AppendSessionEndedAsync(store, runId, claudeSessionId, CancellationToken.None);
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Task {taskId}'s recorded interactive session could not be resumed (no matching conversation found) — starting a fresh session instead.[/]");
+            (exitCode, _, _) = await AttemptAsync(claudeSessionId, resume: false, pendingEndedSessionId);
         }
 
         AnsiConsole.MarkupLineInterpolated(exitCode == 0
@@ -247,7 +308,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             AnsiConsole.MarkupLineInterpolated($"[dim]Task {taskId} is still claimed —[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task deliver {taskId}    push and hand into the standard delivery pipeline[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task verify {taskId}     run the project's gates on demand[/]");
-            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task work {taskId}       resume this worktree with a fresh session[/]");
+            AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task work {taskId}       resume this worktree, continuing the recorded conversation[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task handback {taskId}   let a headless agent finish from here[/]");
             AnsiConsole.MarkupLineInterpolated($"[dim]  h9k task release {taskId}    give it back to the dispatch queue[/]");
         }
@@ -285,7 +346,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return context;
     }
 
-    internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ReenterAsync(
+    internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown, Guid? PreviousClaudeSessionId)> ReenterAsync(
         IDocumentSession session, TaskAggregate task, bool force, CancellationToken cancellationToken)
     {
         Guid runId = task.CurrentRunId
@@ -329,12 +390,18 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Re-entering task {task.Id}'s interactive claim.[/]");
         // Whatever the earlier session left — committed or not — is already sitting in this
-        // worktree, so the prompt tells the fresh session to look for it exactly as a headless
-        // retry's own resumed worktree does (conformance review, cycle 1).
-        return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true, crossMachineNoticeShown);
+        // worktree, and re-entry now resumes that recorded conversation itself (--resume) rather
+        // than handing a fresh session the same prompt to rediscover it (Decisions Log #124).
+        // run.InteractiveClaudeSessionId is the most recently recorded InteractiveSessionStarted's
+        // own ClaudeSessionId — null only when no interactive session has ever actually started on
+        // this run (a first launch that died before the process came up), in which case there is
+        // nothing to resume and the caller mints a fresh one exactly as it always has; the same
+        // fresh-session path also runs, announced rather than silent, if a resume attempt reports
+        // the recorded conversation could not be found.
+        return (runId, run.WorktreePath, run.Branch, run.RunDirectory, ResumesPreviousWork: true, crossMachineNoticeShown, run.InteractiveClaudeSessionId);
     }
 
-    internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ClaimAndCutAsync(
+    internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown, Guid? PreviousClaudeSessionId)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, string sessionName, CancellationToken cancellationToken)
     {
@@ -516,7 +583,10 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         await Doorbell.RingAsync($"task-claimed-interactively:{task.Id}", cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[dim]Claimed task {task.Id} interactively.[/]");
-        return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork, CrossMachineNoticeShown: false);
+        // A fresh claim has no prior conversation to resume — PreviousClaudeSessionId is null
+        // unconditionally here, never populated from claudeSessionId itself, which names the
+        // session about to be launched for the first time, not one already recorded.
+        return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork, CrossMachineNoticeShown: false, PreviousClaudeSessionId: null);
     }
 
     /// <summary>
@@ -688,9 +758,19 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     private static async Task AppendSessionStartedAsync(
         DocumentStore store, Guid runId, Guid claudeSessionId, int processId, DateTimeOffset startedAt,
-        string sessionName, CancellationToken cancellationToken)
+        string sessionName, Guid? pendingEndedSessionId, CancellationToken cancellationToken)
     {
         await using IDocumentSession startSession = store.LightweightSession();
+        if (pendingEndedSessionId is { } endedSessionId)
+        {
+            // The fallback attempt's own Started, appended below, lands in the same transaction
+            // as the failed resume's Ended: RunDetailsProjection runs inline, so both apply to
+            // the document atomically and no reader ever observes the gap in between where
+            // ActiveSessions would otherwise read empty (adversarial review, cycle 1).
+            startSession.Events.Append(runId, new InteractiveSessionEnded(
+                runId, endedSessionId, DateTimeOffset.UtcNow, Turns: null, InputTokens: null, OutputTokens: null, CostUsd: null));
+        }
+
         // MachineName is what lets InteractiveSessionLiveness tell "this session, checkable on
         // this machine's own process table" from "a pid recorded by some other machine sharing
         // the database" (adversarial review, cycle 2) — an interactive claim's RunDispatched
@@ -714,9 +794,9 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         await endSession.SaveChangesAsync(cancellationToken);
     }
 
-    private static async Task<(int ExitCode, bool SessionStartRecorded)> LaunchInteractiveClaudeAsync(
+    private static async Task<(int ExitCode, bool SessionStartRecorded, bool ResumeNotFound)> LaunchInteractiveClaudeAsync(
         string worktreePath, string prompt, Guid sessionId, string settingsFile, bool skipPermissions, Guid runId,
-        string sessionName, Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
+        string sessionName, bool resume, Func<int, DateTimeOffset, Task> onStarted, CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -731,28 +811,24 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // that session is blocked waiting on the command it just started rather than racing it
         // (conformance review, cycle 2).
         process.StartInfo.EnvironmentVariables[InteractiveSessionLiveness.InteractiveRunEnvironmentVariable] = runId.ToString();
-        process.StartInfo.ArgumentList.Add("--session-id");
-        process.StartInfo.ArgumentList.Add(sessionId.ToString());
-        // Verified against `claude --help` and confirmed empirically (task: every dispatched
-        // agent session launches under a human-readable id-and-role name): -n/--name is what
-        // `~/.claude/sessions/<pid>.json` records as this session's name, which is what
-        // `claude agents --json` and another session's cross-session mesh
-        // (ListAgents/SendMessage) address it by.
-        process.StartInfo.ArgumentList.Add("--name");
-        process.StartInfo.ArgumentList.Add(sessionName);
-        process.StartInfo.ArgumentList.Add("--model");
-        process.StartInfo.ArgumentList.Add(AgentModel.Fable.Value);
-        process.StartInfo.ArgumentList.Add("--settings");
-        process.StartInfo.ArgumentList.Add(settingsFile);
-        if (skipPermissions)
+        foreach (string argument in BuildInteractiveArguments(sessionId, resume, sessionName, settingsFile, skipPermissions, prompt))
         {
-            process.StartInfo.ArgumentList.Add("--dangerously-skip-permissions");
+            process.StartInfo.ArgumentList.Add(argument);
         }
 
-        // A positional argument, passed through ArgumentList rather than a shell string: no
-        // shell escaping, so the prompt's own quotes and newlines travel to the child exactly
-        // as written. Claude Code starts interactively (no -p) with this as the opening message.
-        process.StartInfo.ArgumentList.Add(prompt);
+        // Captured (not inherited) only on a resume attempt: a --resume naming a session with no
+        // matching local conversation exits almost instantly with "No conversation found with
+        // session ID: <id>" on stderr (verified empirically against the claude binary) — the one
+        // signal this method has to tell a genuine resume failure from an ordinary session exit,
+        // since an interactive session has no stream-json result payload to read the way a
+        // headless run's ClaudeExecutor does. Read asynchronously from the moment the process
+        // starts, not after it exits: a long, successful resumed session writing anything at all
+        // to stderr over its lifetime must never fill the pipe and deadlock it. A fresh (non-resume)
+        // launch never redirects it, keeping today's full TTY passthrough exactly as it was.
+        if (resume)
+        {
+            process.StartInfo.RedirectStandardError = true;
+        }
 
         // Entered before Start() and held for the child's whole lifetime: Program.cs's global
         // Ctrl-C handler reads this to suppress its own escalate-to-terminate window while this
@@ -762,6 +838,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // action and terminate h9k before AppendSessionEndedAsync ever ran).
         using IDisposable interactiveChildScope = InteractiveChildGuard.Enter();
         process.Start();
+        // CancellationToken.None, not the caller's own token: a genuinely resumed session may run
+        // for hours, and this read must survive to the process's own exit — via the stream closing
+        // when the child's stderr handle closes — regardless of what happens to the outer token in
+        // between (mirrors process.WaitForExitAsync's own CancellationToken.None retry below).
+        Task<string>? stderrTask = resume
+            ? process.StandardError.ReadToEndAsync(CancellationToken.None)
+            : null;
         DateTimeOffset startedAt = ReadStartedAt(process);
         bool sessionStartRecorded = true;
         try
@@ -803,8 +886,109 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             await process.WaitForExitAsync(CancellationToken.None);
         }
 
-        return (process.ExitCode, sessionStartRecorded);
+        // Drained unconditionally, not only when the exit code says to look at it: the process
+        // has already exited by this point, but `process` is disposed (the `using` above) the
+        // moment this method returns, and a still-pending read against a disposed process's
+        // stream would fault the task with nobody ever observing it (self-review finding: a
+        // successful long-running resume — the ordinary, common case — never reached this line
+        // at all in an earlier draft, leaving its own stderr read to race the dispose).
+        //
+        // Bounded, not indefinite: process.WaitForExitAsync above only guarantees the direct
+        // child exited, not that its stderr pipe reached EOF, which needs every holder of the
+        // write handle to close it — this repo's own WindowsStandardHandleInheritance doc
+        // records exactly this shape once already ("the pipe never reached EOF because cmd.exe
+        // was still holding it open"). A descendant that inherited claude's stderr and outlives
+        // it (an MCP stdio server not dying with its parent is the ordinary case) would otherwise
+        // hang this read forever, and with InteractiveChildGuard still attached at that point,
+        // every further Ctrl-C is swallowed rather than reaching h9k. The only case this read
+        // exists to serve is the near-instant not-found exit PLAN.md §16 #123 itself describes as
+        // "near-instantly", so a wait of a few seconds past the child's own exit already covers
+        // it; past that, the read is abandoned (still observed below, so its eventual fault
+        // against the disposed process is never left unobserved) and this attempt is reported as
+        // an ordinary exit with no captured diagnostic (adversarial review, cycle 1).
+        bool resumeNotFound = false;
+        if (stderrTask is not null)
+        {
+            Task firstToComplete = await Task.WhenAny(stderrTask, Task.Delay(TimeSpan.FromSeconds(5), CancellationToken.None));
+            if (firstToComplete == stderrTask)
+            {
+                string standardError = await stderrTask;
+                resumeNotFound = process.ExitCode != 0 && IsResumeNotFoundError(standardError);
+                // The redirect above (resume only) already took stderr off the terminal, so any
+                // failure other than the recognised not-found text would otherwise vanish with no
+                // diagnostic and no fresh-session fallback — a fresh (non-resume) launch never
+                // redirects, so this is the resume path's own replacement for that passthrough
+                // (independent pre-PR review, cycle 1).
+                if (process.ExitCode != 0 && !resumeNotFound && standardError.Trim().Length > 0)
+                {
+                    AnsiConsole.MarkupLineInterpolated($"[yellow]{standardError.Trim()}[/]");
+                }
+            }
+            else
+            {
+                _ = stderrTask.ContinueWith(
+                    static faulted => _ = faulted.Exception,
+                    TaskScheduler.Default);
+            }
+        }
+
+        return (process.ExitCode, sessionStartRecorded, resumeNotFound);
     }
+
+    /// <summary>
+    /// Internal for policy tests, mirroring <c>ClaudeExecutor.Arguments</c>'s own reasoning
+    /// (Hall9k.Daemon): the flag set is the policy, worth asserting without spawning a process.
+    /// A resume re-enters the recorded conversation (<c>--resume</c>); <c>--session-id</c> and
+    /// <c>--model</c> are for a fresh session only and would conflict with it — a resumed session
+    /// keeps the model it started with, exactly as <c>ClaudeExecutor</c>'s own headless resume
+    /// branch (PLAN.md §16 #5) already does.
+    /// </summary>
+    internal static IEnumerable<string> BuildInteractiveArguments(
+        Guid sessionId, bool resume, string sessionName, string settingsFile, bool skipPermissions, string prompt)
+    {
+        if (resume)
+        {
+            yield return "--resume";
+            yield return sessionId.ToString();
+        }
+        else
+        {
+            yield return "--session-id";
+            yield return sessionId.ToString();
+            yield return "--model";
+            yield return AgentModel.Fable.Value;
+        }
+
+        // Verified against `claude --help` and confirmed empirically (task: every dispatched
+        // agent session launches under a human-readable id-and-role name): -n/--name is what
+        // `~/.claude/sessions/<pid>.json` records as this session's name, which is what
+        // `claude agents --json` and another session's cross-session mesh
+        // (ListAgents/SendMessage) address it by. Set on both branches, resumed or fresh, so a
+        // resumed session's name never reverts to whatever it was launched under originally.
+        yield return "--name";
+        yield return sessionName;
+        yield return "--settings";
+        yield return settingsFile;
+        if (skipPermissions)
+        {
+            yield return "--dangerously-skip-permissions";
+        }
+
+        // A positional argument, passed through ArgumentList rather than a shell string: no
+        // shell escaping, so the prompt's own quotes and newlines travel to the child exactly as
+        // written. Claude Code starts interactively (no -p) with this as the opening message,
+        // whether that message opens a fresh conversation or continues a resumed one.
+        yield return prompt;
+    }
+
+    /// <summary>
+    /// Internal for policy tests. The exact stderr text `claude --resume &lt;id&gt;` prints (and
+    /// nothing else, verified empirically) when no local conversation matches the given session
+    /// id — the signal <see cref="LaunchInteractiveClaudeAsync"/> uses to tell a genuine resume
+    /// failure from an ordinary session exit.
+    /// </summary>
+    internal static bool IsResumeNotFoundError(string standardError) =>
+        standardError.Contains("No conversation found with session ID", StringComparison.Ordinal);
 
     private static string ClaudeBinary() =>
         Environment.GetEnvironmentVariable("HALL9K_CLAUDE_PATH") ?? "claude";

@@ -685,8 +685,9 @@ public static class CliCommandTree
                     + "lease, no heartbeat reclaim, and the dispatcher never claims a task you hold this way. "
                     + "Occupies zero concurrency slots: it starts even when the daemon's session ceiling is fully "
                     + "consumed. Closing the terminal is a normal way to leave — the task stays claimed, and "
-                    + "running this again re-enters the same worktree and branch with a fresh session. Exits are "
-                    + "h9k task deliver (push and hand into the standard pipeline), h9k task release (give it "
+                    + "running this again resumes the most recently recorded session's own conversation, falling "
+                    + "back to a fresh one (announced, never silent) only when the recorded one cannot be resumed. "
+                    + "Exits are h9k task deliver (push and hand into the standard pipeline), h9k task release (give it "
                     + "back to the queue), or h9k task handback (let a headless agent finish from here). "
                     + "Re-entry is refused when the claim's session was recorded on another machine this one "
                     + "cannot check — --force attests you confirmed by hand that it has exited.")
