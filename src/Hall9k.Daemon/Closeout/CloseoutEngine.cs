@@ -1671,22 +1671,27 @@ public sealed class CloseoutEngine(
         // inside that window is never observed (independent pre-PR review, cycle 1, conformance
         // lens). Park instead: CloseoutParked stays in the watched query above, so merge/close
         // detection keeps running every sweep (InspectAndActAsync's own "gets merge/close
-        // detection only" branch) until a human clears the dependency or forces a follow-up with
-        // h9k pr resolve, which already tolerates the same Blocked landing.
+        // detection only" branch). Nothing else resumes the park — InspectAndActAsync returns
+        // early for a CloseoutParked run before it ever re-reads task.UnmetDependencies, so
+        // clearing the dependency alone does not dispatch a follow-up; only a human running
+        // h9k pr resolve does, which already tolerates the same Blocked landing.
         if (task.UnmetDependencies.Count > 0)
         {
             string dependencyNoun = task.UnmetDependencies.Count == 1 ? "dependency" : "dependencies";
             string dependencyParkReason =
                 $"{reason} Task {task.Id} still has {task.UnmetDependencies.Count} unmet {dependencyNoun} — " +
                 "an automatic follow-up would land it Blocked rather than dispatch, so the pull request stays " +
-                "parked here, watched, instead. Clear the dependency, or h9k pr resolve to force a follow-up anyway.";
+                "parked here, watched, instead. Nothing resumes this park on its own — clearing the dependency " +
+                "alone will not; h9k pr resolve is what forces a follow-up.";
             await ParkAsync(session, run, dependencyParkReason, now, cancellationToken);
             return;
         }
 
-        // The lifetime ceiling is checked first and absolutely: it is the true runaway
-        // backstop (Decisions Log #80, backlog 45), and no human engagement bypasses it —
-        // only h9k pr resolve does.
+        // The lifetime ceiling is checked next, ahead of everything below it: it is the true
+        // runaway backstop (Decisions Log #80, backlog 45), and no human engagement bypasses
+        // it — only h9k pr resolve does. (The unmet-dependency short-circuit above it runs
+        // first, since a task with a dependency this run cannot clear needs to park before the
+        // ceiling is ever consulted.)
         int automaticActionsSpent = await AutomaticActionsSpentAsync(session, task, cancellationToken);
         if (automaticActionsSpent >= _options.MaxAutomaticCloseoutRuns)
         {
