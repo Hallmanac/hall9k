@@ -73,7 +73,7 @@ internal static class HeadlessLaunch
             $"{claudeCommand} < \"{promptFile}\" > \"{streamFile}\" 2> \"{standardErrorFile}\"";
 
         return OperatingSystem.IsWindows()
-            ? SpawnDetachedWindows(worktreePath, redirected)
+            ? SpawnDetachedWindows(worktreePath, redirected, standardErrorFile)
             : SpawnDetachedUnix(worktreePath, redirected, standardErrorFile);
     }
 
@@ -107,7 +107,25 @@ internal static class HeadlessLaunch
                     $"The detach wrapper exited {wrapper.ExitCode} before recording claude's pid.");
             }
 
-            int processId = int.Parse(File.ReadAllText(pidFile).Trim());
+            string pidText;
+            try
+            {
+                pidText = File.ReadAllText(pidFile).Trim();
+            }
+            catch (IOException exception)
+            {
+                throw new InvalidOperationException(
+                    $"Could not read the detach wrapper's pidfile ({pidFile}) after it exited 0: "
+                    + exception.Message);
+            }
+
+            if (!int.TryParse(pidText, out int processId))
+            {
+                throw new InvalidOperationException(
+                    $"The detach wrapper's pidfile ({pidFile}) did not contain a valid process id "
+                    + (pidText.IsNotBlank() ? $"(read \"{pidText}\")." : "(it was empty)."));
+            }
+
             // Verified empirically (self-review, task 8a56af78-h9k): a missing claude binary does
             // NOT fail the wrapper above — "command not found" happens asynchronously inside the
             // backgrounded job (the shell forks it before evaluating $!, so the pid is real even
@@ -150,8 +168,19 @@ internal static class HeadlessLaunch
     /// cmd.exe itself until claude.exe exits, so the pid <see cref="Process.Start(ProcessStartInfo)"/>
     /// returns here is stable and immediately readable — it is simply cmd.exe's own, not
     /// claude.exe's, the same asymmetry the daemon's own <c>WindowsProcessManager</c> accepts.
+    /// <para>
+    /// The same near-instant-failure hazard the Unix path guards against applies here too, in a
+    /// different shape (independent pre-PR review, cycle 1, conformance lens): with
+    /// <c>claude</c> missing from PATH (or a moved <c>HALL9K_CLAUDE_PATH</c>), cmd.exe's own
+    /// <c>/c</c> parse fails immediately rather than blocking on claude.exe, so
+    /// <c>Process.Start</c> alone cannot tell that apart from a live headless session —
+    /// nothing downstream compensates, since <c>RunSupervisor</c> never adopts a run dispatched
+    /// under the sentinel <see cref="Guid.Empty"/> node id. The same settle window plus a
+    /// liveness recheck the Unix path already pays for closes the gap here too.
+    /// </para>
     /// </summary>
-    private static (int ProcessId, DateTimeOffset StartedAt) SpawnDetachedWindows(string worktreePath, string redirectedCommand)
+    private static (int ProcessId, DateTimeOffset StartedAt) SpawnDetachedWindows(
+        string worktreePath, string redirectedCommand, string standardErrorFile)
     {
         ProcessStartInfo shell = new()
         {
@@ -169,7 +198,23 @@ internal static class HeadlessLaunch
         using IDisposable handleGuard = WindowsStandardHandleInheritance.SuppressForChildProcesses();
         using Process process = Process.Start(shell)
             ?? throw new InvalidOperationException("Failed to start the detach wrapper (cmd.exe).");
-        return (process.Id, ReadStartedAt(process));
+        DateTimeOffset startedAt = ReadStartedAt(process);
+
+        // Mirrors the Unix path's own settle window exactly: a failure inside cmd.exe's /c
+        // parse (claude missing, or the worktree gone) exits near-instantly, so a brief pause
+        // gives that failure time to actually land before asking whether the process is still
+        // there — checking immediately would race it.
+        Thread.Sleep(150);
+        if (process.HasExited)
+        {
+            string hint = TryReadStandardError(standardErrorFile);
+            throw new InvalidOperationException(
+                $"The detached process (pid {process.Id}) had already exited by the time its liveness could "
+                + "be checked — most likely the claude binary could not be started."
+                + (hint.IsNotBlank() ? $" It reported: {hint}" : string.Empty));
+        }
+
+        return (process.Id, startedAt);
     }
 
     private static string ClaudeBinary() =>
