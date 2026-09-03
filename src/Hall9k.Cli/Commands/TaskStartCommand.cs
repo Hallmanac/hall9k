@@ -431,7 +431,12 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 + string.Join("; ", unmet.Select(dependency => ExternalText.OneLine(dependency.Describe()))) + ". "
                 + "The platform advises rather than refuses here: "
                 + $"h9k task start {task.Id} --acknowledge-unmet-dependencies to start it anyway, once you have "
-                + $"confirmed that is what you want, or {TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmet)} "
+                // A period, not ", or": DescribeUnmetDependencyAdvice's own text only reads as a
+                // second alternative (h9k task assign ... or) when every blocker can still close
+                // out on its own — when one is dead it returns a full declarative sentence
+                // instead, and splicing that after a hardcoded "or" here left it dangling
+                // (adversarial review, cycle 1, on h9k task start).
+                + $"confirmed that is what you want. {TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmet)} "
                 + $"h9k task show {task.Id} for the full picture.");
         }
 
