@@ -180,7 +180,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
     }
 
     /// <summary>What the revision actually touched, so the confirmation is a fact, not a shrug.</summary>
-    private static IEnumerable<string> Changed(TaskRevised revised)
+    internal static IEnumerable<string> Changed(TaskRevised revised)
     {
         if (revised.Objective.HasValue)
         {
@@ -213,7 +213,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         {
             yield return revised.Model.Value == AgentModel.Unknown
                 ? "model override cleared"
-                : $"model {revised.Model.Value?.Value}";
+                : $"model {revised.Model.Value?.Value.EscapeMarkup()}";
         }
 
         if (revised.EpicId.HasValue)
