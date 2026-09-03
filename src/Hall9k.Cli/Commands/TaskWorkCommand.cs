@@ -100,7 +100,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, bool crossMachineNoticeShown) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, settings.Force, cancellationToken)
-            : await ClaimAndCutAsync(store, session, task, fence, context, claudeSessionId, cancellationToken);
+            : await ClaimAndCutAsync(store, session, task, fence, context, claudeSessionId, sessionName, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -329,7 +329,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     private static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
-        Guid claudeSessionId, CancellationToken cancellationToken)
+        Guid claudeSessionId, string sessionName, CancellationToken cancellationToken)
     {
         if (task.State != TaskState.Queued)
         {
@@ -445,7 +445,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
-                IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory));
+                IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory, SessionName: sessionName));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
