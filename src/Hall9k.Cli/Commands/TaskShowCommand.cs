@@ -289,6 +289,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             WriteCoordinates(runs, runDetailsById);
             RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
             WriteReviewOutcome(newestRun);
+            WriteUnfixedFindings(newestRun);
             WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
             await WriteSessionsAsync(session, runs, runDetailsById, cancellationToken);
@@ -392,7 +393,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 "[green]merge-ready (clean)[/] [dim]— a reviewer read the final diff and found nothing[/]",
             var settlement when settlement == ReviewSettlement.Settled =>
                 $"[yellow]merge-ready (settled[/] [yellow]— {run.ReviewResidualsFixed} residual(s) fixed, "
-                + $"{run.ReviewResidualsRouted} routed{RideAlongClause(run)}{UnroutedClause(run)})[/] "
+                + $"{run.ReviewResidualsRouted} routed{RideAlongClause(run)}{UnfixedClause(run)}{UnroutedClause(run)})[/] "
                 + "[dim]— the loop ended without a clean re-read[/]",
             _ => "[green]merge-ready[/] [dim]— how it was reached was not recorded[/]",
         };
@@ -633,6 +634,41 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         ? $", {run.ReviewResidualsRideAlong} ride-along(s) — each below the fix bar of the cycle that recorded it "
           + "(low/ungraded on an ordinary cycle, medium/low/ungraded on the mandatory final pass) — and never claimed"
         : string.Empty;
+
+    /// <summary>
+    /// The opposite fact from <see cref="RideAlongClause"/> (Decisions Log #87, adversarial
+    /// review, routed finding at ReviewEngine.cs:1146): a finding the platform had already decided
+    /// met the fix bar, whose track was still active when the run settled without a fix session
+    /// ever reading it — most often a human resolving a capped park with `h9k review resolve
+    /// --merge-ready`. Folding this into the ride-along count would understate it as polish nobody
+    /// was owed; a settled line that never names it at all reads as though nothing serious was
+    /// left behind. Normally there are none and the line says nothing extra.
+    /// </summary>
+    private static string UnfixedClause(RunDetails run) => run.ReviewResidualsUnfixed > 0
+        ? $", {run.ReviewResidualsUnfixed} left unfixed — decided fix-here but never handed to a fix session"
+        : string.Empty;
+
+    /// <summary>
+    /// <see cref="UnfixedClause"/>'s findings themselves, named the same way
+    /// <see cref="WriteRideAlongFindings"/> names its own tally. A run settled before this field
+    /// existed has an empty list even when the count above is non-zero, an honest gap rather than
+    /// a reconstruction.
+    /// </summary>
+    private static void WriteUnfixedFindings(RunDetails? run)
+    {
+        if (run is null || run.ReviewUnfixedFindings.Count == 0)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine("\n[bold]Left unfixed[/]  [dim]decided fix-here but never handed to a fix session[/]");
+        foreach (ReviewUnfixedFinding finding in run.ReviewUnfixedFindings)
+        {
+            string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
+            string location = finding.Location.IsBlank() ? "no location stated" : finding.Location;
+            AnsiConsole.MarkupLine($"  [red]{severity}[/] — {ExternalText.OneLineMarkup(location)}");
+        }
+    }
 
     /// <summary>
     /// The ride-alongs themselves, named rather than left to the count above (independent pre-PR
