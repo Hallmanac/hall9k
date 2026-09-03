@@ -126,7 +126,7 @@ internal static class TaskPhaseComposer
         }
 
         // An interactive claim's own Dispatched window is no longer necessarily brief (Decisions
-        // Log #124): by default h9k task work returns as soon as it prints the worktree, branch,
+        // Log #125): by default h9k task work returns as soon as it prints the worktree, branch,
         // and starting prompt, before the operator has pasted it anywhere — so the generic
         // "worktree and prompt being prepared" wording below would misdescribe a fully-prepared
         // claim sitting untouched, possibly for a long while, as still mid-setup.

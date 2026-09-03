@@ -128,6 +128,36 @@ public sealed class InteractiveSessionLivenessTests
             "this process's real start time does not match the recorded one, so the matching pid is a coincidence, not this session");
     }
 
+    /// <summary>
+    /// The cross-machine bypass this method's own doc comment used to claim was impossible
+    /// (independent pre-PR review, both lenses, cycle 1, low): every one of today's four callers
+    /// invokes this method *before* <see cref="InteractiveSessionLiveness.EnsureNotAttachedElsewhere"/>
+    /// ever runs, so a bare pid-plus-start-time coincidence against a session recorded on a
+    /// *different* machine used to read as self-invocation and skip that guard's own cross-machine
+    /// --force refusal entirely. A pid this machine happens to share cannot make this machine's own
+    /// process the one recorded on a different one.
+    /// </summary>
+    [Fact]
+    public void Does_not_recognise_a_CLAUDE_PID_matching_the_recorded_pid_when_it_was_recorded_on_a_different_machine()
+    {
+        using Process current = Process.GetCurrentProcess();
+        int pid = current.Id;
+        DateTimeOffset startedAt = InteractiveSessionLiveness.ReadStartedAt(current);
+        RunDetails run = new()
+        {
+            Id = DomainId.New(),
+            ActiveSessions = [new ActiveSession(
+                AgentRole.Interactive, ReviewLens.Unknown, pid, startedAt, "some-other-machine")],
+        };
+
+        using EnvironmentVariableScope scope = EnvironmentVariableScope.Set(
+            (InteractiveSessionLiveness.InteractiveRunEnvironmentVariable, null),
+            (InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable, pid.ToString()));
+
+        InteractiveSessionLiveness.IsSelfInvocation(run).Should().BeFalse(
+            "the recorded session names a different machine, so this machine's own matching pid is a coincidence, not proof this is that session");
+    }
+
     [Fact]
     public void Does_not_recognise_a_CLAUDE_PID_when_no_interactive_session_is_recorded_at_all()
     {
@@ -142,7 +172,7 @@ public sealed class InteractiveSessionLivenessTests
     }
 
     [Fact]
-    public void Reads_a_live_processs_own_start_time()
+    public void Reads_a_live_process_own_start_time()
     {
         using Process current = Process.GetCurrentProcess();
 

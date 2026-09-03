@@ -230,14 +230,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     {
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
-        // Plain MarkupLine, not the Interpolated overload: settingsFile is a filesystem path this
-        // platform generated (never a stray '[' to escape in practice), and the message is built
-        // with ordinary string concatenation across lines, which an interpolated-string literal
-        // cannot be split across while still binding to the FormattableString overload.
+        // settingsFile can trace back to a user-set HALL9K_HOME, so it is escaped explicitly before
+        // landing in a plain (non-Interpolated) MarkupLine call — the message is built with
+        // ordinary string concatenation across lines, which an interpolated-string literal cannot
+        // be split across while still binding to the handler overload that would escape it itself.
+        string escapedSettingsFile = Markup.Escape(settingsFile);
         AnsiConsole.MarkupLine(
-            $"[dim]Settings file (recommended): {settingsFile} — pass --settings {settingsFile} to your own "
-            + "claude invocation for this platform's required conventions (no co-authored-by trailers, longer "
-            + "command-tool timeouts).[/]");
+            $"[dim]Settings file (recommended): {escapedSettingsFile} — pass --settings {escapedSettingsFile} to "
+            + "your own claude invocation for this platform's required conventions (no co-authored-by trailers, "
+            + "longer command-tool timeouts).[/]");
         AnsiConsole.MarkupLine(
             "[dim]Paste the prompt below into a Claude Code session started anywhere — its own terminal, this "
             + "one once you exit h9k, wherever suits you:[/]");
@@ -370,9 +371,23 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 return (attemptExitCode, resumeNotFound, (sessionIdToLaunch, exitedAt));
             }
 
+            // Re-read rather than assumed still Dispatched/Running: the widened self-invocation
+            // exemption (Decisions Log #125) lets this very child call h9k task deliver or handback
+            // on itself while still attached, which moves this run past Dispatched/Running under the
+            // same runId deliver's own AgentSessionCompleted append does — and RunDetailsProjection's
+            // EndSessions clears ActiveSessions unconditionally, with no role filter, so an
+            // unconditional append here would wipe the review/fix sessions the daemon's pipeline has
+            // already recorded on this exact stream by the time the child exits (independent pre-PR
+            // review, adversarial lens, cycle 1). A run still sitting at Dispatched/Running was never
+            // handed off, so this is the ordinary exit case exactly as before.
             if (sessionStartRecorded)
             {
-                await AppendSessionEndedAsync(store, runId, sessionIdToLaunch, CancellationToken.None);
+                RunDetails? runAfterExit = await session.LoadAsync<RunDetails>(runId, CancellationToken.None);
+                if (runAfterExit is not null
+                    && (runAfterExit.State == RunState.Dispatched || runAfterExit.State == RunState.Running))
+                {
+                    await AppendSessionEndedAsync(store, runId, sessionIdToLaunch, CancellationToken.None);
+                }
             }
 
             return (attemptExitCode, resumeNotFound, null);
@@ -501,8 +516,10 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Re-entering task {task.Id}'s interactive claim.[/]");
         // Whatever the earlier session left — committed or not — is already sitting in this
-        // worktree, and re-entry now resumes that recorded conversation itself (--resume) rather
-        // than handing a fresh session the same prompt to rediscover it (Decisions Log #124).
+        // worktree. Under --direct-launch, re-entry resumes that recorded conversation itself
+        // (--resume) rather than handing a fresh session the same prompt to rediscover it
+        // (Decisions Log #124); the prompt-handoff default (#125) never launches or resumes
+        // anything itself, so this value simply goes unused on that path.
         // run.InteractiveClaudeSessionId is the most recently recorded InteractiveSessionStarted's
         // own ClaudeSessionId. When none has ever landed for this run, this falls back to
         // run.SessionId — the id RunDispatched recorded before any process ever started, the same

@@ -710,7 +710,9 @@ public static class CliCommandTree
                     + "handback, release) key off this record from here on. Refuses rather than guessing when "
                     + "CLAUDE_PID is absent — not a session this platform can ever check, so nothing is recorded, "
                     + "the same honest degradation a session that never calls this at all already gets. Only for "
-                    + "a task you hold interactively (h9k task work).")
+                    + "a task you hold interactively (h9k task work). Also refused when another session is "
+                    + "already registered and still attached — --force attests you confirmed by hand that a "
+                    + "session recorded on another machine has actually exited.")
                 .WithExample("task", "register-session", "28b19893");
             task.AddCommand<TaskStartCommand>("start")
                 .WithDescription(

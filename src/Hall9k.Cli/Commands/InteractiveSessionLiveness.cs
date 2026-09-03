@@ -188,6 +188,19 @@ internal static class InteractiveSessionLiveness
             return false;
         }
 
+        // The recorded session's own machine has to match this one before a pid match means
+        // anything: without this, a caller invoking this method before EnsureNotAttachedElsewhere
+        // has ever run (every one of today's four callers does exactly that) could have its own
+        // CLAUDE_PID coincide with a pid-plus-start-time recorded on a *different* machine and
+        // read as this very session — bypassing the cross-machine --force refusal
+        // EnsureNotAttachedElsewhere exists to enforce (independent pre-PR review, both lenses,
+        // cycle 1). A blank MachineName (a stream written before the field existed) is treated as
+        // this machine, mirroring EnsureNotAttachedElsewhere's own blank-name handling.
+        if (interactive.MachineName.IsNotBlank() && interactive.MachineName != Environment.MachineName)
+        {
+            return false;
+        }
+
         string? claudePid = Environment.GetEnvironmentVariable(ClaudeCodePidEnvironmentVariable);
         return claudePid.IsNotBlank() && int.TryParse(claudePid, out int pid) && pid == interactive.ProcessId
             && IsAlive(pid, startedAt);
