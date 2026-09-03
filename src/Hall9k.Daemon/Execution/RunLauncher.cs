@@ -169,6 +169,15 @@ public sealed class RunLauncher(
             AgentModel model = options.Value.ResolveModel(
                 isPrReview ? AgentRole.Review : AgentRole.Build, task.Model, project.Model);
 
+            // Resolved once, here, and frozen on RunDispatched for this run's whole lifetime
+            // (task: the review pipeline's stage composition becomes configuration recorded per
+            // run) — unlike the review-cycle caps, which ReviewEngine re-resolves live every
+            // cycle, a composition change is structural (which tracks exist, whether the
+            // mandatory final pass runs) and must not reshape a run already in flight; see
+            // ReviewStageComposition's own doc for why.
+            ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
+                task.ReviewStageComposition, project.ReviewStageComposition, options.Value.ReviewStageComposition);
+
             // Resolved once, here, exactly like the worktree above: this run's directory is
             // under the task's own directory when the project has a home (backlog 49), and
             // every consumer reads the recorded value from here on rather than rederiving it.
@@ -221,7 +230,8 @@ public sealed class RunLauncher(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
                 IsFollowUp: followUp is not null, Model: model, RunDirectory: runDirectory,
-                PrReviewBaseRefName: prReviewFacts?.BaseRefName, SessionName: sessionName));
+                PrReviewBaseRefName: prReviewFacts?.BaseRefName, SessionName: sessionName,
+                ReviewStageComposition: reviewStageComposition));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
