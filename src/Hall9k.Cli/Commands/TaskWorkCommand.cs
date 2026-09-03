@@ -549,13 +549,36 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 $"Task {task.Id} depends on {unmet.Count} task(s) that have not closed out, the same bar "
                 + "dispatch itself holds an assignment to, so an interactive claim will not start it while "
                 + "they are open: " + string.Join("; ", unmet.Select(dependency => dependency.Describe())) + ". "
-                + $"h9k task assign {task.Id} to hold it Blocked until they clear (it queues itself the moment "
-                + $"the last one's pull request merges), or h9k task show {task.Id} for the full picture.");
+                + $"{DescribeUnmetDependencyAdvice(task.Id, unmet)} h9k task show {task.Id} for the full picture.");
         }
 
         task.Apply(assigned);
         TaskClaimed claimed = TaskDecider.ClaimInteractively(task, ownerId, runId, now);
         return (assigned, claimed);
+    }
+
+    /// <summary>
+    /// The advice half of the unmet-dependency refusal above. A dependency that can still reach
+    /// true closeout gets the ordinary "it queues itself" promise — the same one
+    /// <see cref="TaskAssignCommand.AnnounceAsync"/> already makes on the identical fact pattern —
+    /// but a dead one (<see cref="TaskDependency.IsDead"/>) never will, so making that promise for
+    /// it tells the operator to wait on a merge that can never happen; <see cref="TaskDependency.DescribeDeath"/>
+    /// already says the honest thing instead (independent pre-PR review, cycle 1).
+    /// </summary>
+    private static string DescribeUnmetDependencyAdvice(Guid taskId, IReadOnlyList<TaskDependency> unmet)
+    {
+        IReadOnlyList<TaskDependency> dead = [.. unmet.Where(dependency => dependency.IsDead)];
+        if (dead.Count == 0)
+        {
+            return $"h9k task assign {taskId} to hold it Blocked until they clear (it queues itself the moment "
+                + "the last one's pull request merges), or";
+        }
+
+        string deathAdvice = string.Join(" ", dead.Select(dependency => dependency.DescribeDeath() + "."));
+        return dead.Count == unmet.Count
+            ? deathAdvice
+            : deathAdvice + $" The rest queue themselves as they clear; h9k task assign {taskId} to hold it "
+              + "Blocked in the meantime, or";
     }
 
     /// <summary>
