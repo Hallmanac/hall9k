@@ -29,6 +29,14 @@ public sealed class RunAggregate
     public ExecutorMode ExecutorMode { get; private set; } = ExecutorMode.Unknown;
     /// <summary>The model the build session was spawned on, as resolved at dispatch (log #33). Unknown on streams written before the chain existed.</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
+    /// <summary>
+    /// Which pre-PR review stages this run gets, resolved once at dispatch and frozen for the
+    /// run's whole lifetime (task: the review pipeline's stage composition becomes configuration
+    /// recorded per run) — see this type's own doc for why this does not re-resolve live the way
+    /// the review-cycle caps do. FullPipeline on every stream
+    /// written before this field existed, byte-for-byte what those runs actually ran.
+    /// </summary>
+    public ReviewStageComposition ReviewStageComposition { get; private set; } = ReviewStageComposition.FullPipeline;
     public RunState State { get; private set; } = RunState.Unknown;
     public int? ProcessId { get; private set; }
     public DateTimeOffset? ProcessStartedAt { get; private set; }
@@ -160,7 +168,7 @@ public sealed class RunAggregate
     /// would re-conclude a track this same cycle already gave a real answer.
     /// </summary>
     public IReadOnlyList<ReviewLens> ActiveReviewLenses =>
-        [.. ReviewLens.CycleLenses.Where(lens => !_concludedReviewTracks.Any(track => track.Lens.Covers(lens)))];
+        [.. ReviewStageComposition.OpeningLenses().Where(lens => !_concludedReviewTracks.Any(track => track.Lens.Covers(lens)))];
 
     /// <summary>
     /// The lenses the CURRENT cycle's own dispatch, top-up, and conclusion bookkeeping must
@@ -178,7 +186,7 @@ public sealed class RunAggregate
     /// next cycle's own dispatch.
     /// </summary>
     public IReadOnlyList<ReviewLens> CurrentCycleLenses =>
-        CurrentCycleMode == ReviewMode.FinalFullPass ? ReviewLens.CycleLenses : ActiveReviewLenses;
+        CurrentCycleMode == ReviewMode.FinalFullPass ? ReviewStageComposition.OpeningLenses() : ActiveReviewLenses;
 
     /// <summary>
     /// The shape the most recently dispatched review cycle took (task: review cycles after the
@@ -529,6 +537,7 @@ public sealed class RunAggregate
         PrReviewBaseRefName = @event.PrReviewBaseRefName;
         ExecutorMode = @event.ExecutorMode;
         Model = @event.Model ?? AgentModel.Unknown;
+        ReviewStageComposition = @event.ReviewStageComposition ?? ReviewStageComposition.FullPipeline;
         DispatchedAt = @event.DispatchedAt;
         IsFollowUp = @event.IsFollowUp;
         State = RunState.Dispatched;

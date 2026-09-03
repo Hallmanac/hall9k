@@ -16,6 +16,14 @@ public sealed class RunListItem
     public RunState State { get; set; } = RunState.Unknown;
     /// <summary>The model the build session was spawned on, shown by h9k task show (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
+    /// <summary>
+    /// The pre-PR review stage composition this run actually ran under, resolved once at dispatch
+    /// and frozen for the run's whole lifetime (task: the review pipeline's stage composition
+    /// becomes configuration recorded per run), shown by h9k task show so no future investigation
+    /// ever has to guess which pipeline shape a session ran (the stranding investigation's
+    /// three-round lesson). FullPipeline on every stream written before this field existed.
+    /// </summary>
+    public ReviewStageComposition ReviewStageComposition { get; set; } = ReviewStageComposition.FullPipeline;
     public string? PullRequestUrl { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
@@ -79,6 +87,7 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         NodeId = @event.Data.NodeId,
         LeaseGeneration = @event.Data.LeaseGeneration,
         Model = @event.Data.Model ?? AgentModel.Unknown,
+        ReviewStageComposition = @event.Data.ReviewStageComposition ?? ReviewStageComposition.FullPipeline,
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.DispatchedAt,
         RunDirectory = @event.Data.RunDirectory.IsNotBlank()

@@ -160,6 +160,54 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Task: the review pipeline's stage composition becomes configuration recorded per run —
+    /// composition none skips the loop entirely: no reviewer is ever dispatched, and the run
+    /// settles straight off the gates VerificationRunner already ran before ReviewAsync started.
+    /// </summary>
+    [Fact]
+    public async Task Composition_none_settles_immediately_with_no_review_pass_ever_dispatched()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(
+            store, ["reviewed"], cts.Token, ReviewStageComposition.None);
+
+        ScriptedExecutor executor = new();
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("nothing left to wait for — the gates already ran and no reviewer is owed a look");
+        executor.Spawns.Should().BeEmpty("composition none never dispatches a reviewer");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.ReviewSettlement.Should().Be(
+            ReviewSettlement.Settled, "nobody read the final tip, so this can never make the narrower Clean claim");
+        run.ReviewCycle.Should().Be(0, "no cycle ever started");
+    }
+
+    /// <summary>
+    /// Adversarial-only never opens the conformance track, including on the cycle immediately
+    /// before merge that would otherwise be a mandatory two-lens FinalFullPass.
+    /// </summary>
+    [Fact]
+    public async Task Composition_adversarial_only_never_dispatches_the_conformance_lens()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(
+            store, ["reviewed"], cts.Token, ReviewStageComposition.AdversarialOnly);
+
+        ScriptedExecutor executor = new("Nothing here.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().ContainSingle("only the adversarial lens ever opens — one pass, not two");
+        executor.Spawns[0].Prompt.Should().Contain(
+            "assume this diff is wrong somewhere", "the one pass dispatched is the adversarial lens, never conformance");
+    }
+
+    /// <summary>
     /// Per-pass turns and input tokens must be readable from an ordinary production run, so both
     /// ride on <see cref="ReviewPassCompleted"/> itself rather than only on the separately-appended
     /// <see cref="TokensRecorded"/> event.
@@ -5104,8 +5152,19 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         DocumentStore store, CancellationToken cancellationToken) =>
         SeedVerifiedRunAsync(store, ["reviewed"], cancellationToken);
 
+    private Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedVerifiedRunAsync(
+        DocumentStore store, IReadOnlyList<string> acceptanceCriteria, CancellationToken cancellationToken) =>
+        SeedVerifiedRunAsync(store, acceptanceCriteria, cancellationToken, reviewStageComposition: null);
+
+    /// <summary>
+    /// <paramref name="reviewStageComposition"/> mirrors what RunLauncher itself resolves and
+    /// records at dispatch (task: the review pipeline's stage composition becomes configuration
+    /// recorded per run) — null omits it from RunDispatched entirely, the unchanged-defaults case
+    /// every other test in this file exercises.
+    /// </summary>
     private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedVerifiedRunAsync(
-        DocumentStore store, IReadOnlyList<string> acceptanceCriteria, CancellationToken cancellationToken)
+        DocumentStore store, IReadOnlyList<string> acceptanceCriteria, CancellationToken cancellationToken,
+        ReviewStageComposition? reviewStageComposition)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -5133,7 +5192,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
-                worktreePath, "task/review-me", ExecutorMode.Subscription, Now),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now,
+                ReviewStageComposition: reviewStageComposition),
             new AgentSessionCompleted(runId, Now),
             new VerificationPassed(runId, Now));
         await session.SaveChangesAsync(cancellationToken);
