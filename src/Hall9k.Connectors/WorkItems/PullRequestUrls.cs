@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Hall9k.Connectors.WorkItems;
 
 /// <summary>
@@ -43,4 +45,45 @@ public static class PullRequestUrls
 
     private static string TrimGitSuffix(string repository) =>
         repository.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? repository[..^4] : repository;
+
+    /// <summary>
+    /// Whether <paramref name="pullRequestUrl"/> is safe to treat as a task's own pull request
+    /// anywhere it can be watched for a merge — <c>TaskResolveCommand</c>'s run-stream and
+    /// task-stream paths, and <c>CloseoutEngine.InspectMissingRunAsync</c>, all share this one
+    /// check rather than each keeping its own copy (independent pre-PR review, cycle 1, medium:
+    /// the sweep read the pull request straight off the task stream with neither this guard nor
+    /// the pr-review type check its two siblings already enforced, so a foreign URL recorded
+    /// through <c>h9k task resolve --pr</c> with no run stream to protect it could reach the
+    /// sweep unchecked). False for a blank URL, one that does not parse to a real pull request
+    /// number (never guess a number, AGENTS.md's never-guess rule), or one naming a repository
+    /// other than <paramref name="projectRepositoryUrl"/>'s own — checked by host as well as
+    /// owner/repo, since <see cref="RepositoryFrom"/> alone reads path segments only and would
+    /// otherwise treat <c>https://gitlab.com/x/y/pull/24</c> as the same repository as a project
+    /// recorded at <c>https://github.com/x/y</c>. A mistyped, copy-pasted, or foreign URL must
+    /// never become a run's merge signal: a false match lets an unrelated pull request's merge
+    /// complete this task's closeout and delete this run's own branch out from under it
+    /// (adversarial review, cycle 1). The repository check is a courtesy: a project whose
+    /// repository cannot be resolved at all proceeds rather than blocking on information the
+    /// caller does not have.
+    /// </summary>
+    public static bool IsSafePullRequestUrl(
+        [NotNullWhen(true)] string? pullRequestUrl, Uri? projectRepositoryUrl)
+    {
+        if (pullRequestUrl.IsBlank() || ParseNumber(pullRequestUrl) <= 0)
+        {
+            return false;
+        }
+
+        if (projectRepositoryUrl is not null
+            && Uri.TryCreate(pullRequestUrl, UriKind.Absolute, out Uri? parsedPullRequestUrl)
+            && RepositoryFrom(projectRepositoryUrl) is { } projectRepository
+            && RepositoryFrom(parsedPullRequestUrl) is { } pullRequestRepository
+            && (!string.Equals(projectRepositoryUrl.Host, parsedPullRequestUrl.Host, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(projectRepository, pullRequestRepository, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return true;
+    }
 }

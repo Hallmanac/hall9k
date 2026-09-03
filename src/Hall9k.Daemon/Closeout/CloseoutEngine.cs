@@ -296,6 +296,16 @@ public sealed class CloseoutEngine(
     /// path: nothing here dispatches a follow-up or invents a close-without-merge record onto a
     /// run stream that does not exist yet, so an open or closed-without-merge pull request is a
     /// true no-op and stays needs-you until a human or a future sweep observes a merge.
+    /// <para>
+    /// Applies the same two guards <c>TaskResolveCommand</c> already enforces on the run-stream
+    /// path before a URL ever reaches this candidate set — a pr-review task's <c>PullRequestUrl</c>
+    /// names the pull request it reviewed, never one of its own, and
+    /// <see cref="PullRequestUrls.IsSafePullRequestUrl"/> refuses a URL naming a repository other
+    /// than the project's own (independent pre-PR review, cycle 1, medium: this sweep read
+    /// straight off the task stream with neither guard, so a foreign or pr-review URL
+    /// <c>TaskResolveCommand</c> judged safe to display only because no run stream existed to
+    /// protect could still reach a live inspection here).
+    /// </para>
     /// </summary>
     private async Task<InspectionOutcome> InspectMissingRunAsync(Guid candidateId, CancellationToken cancellationToken)
     {
@@ -311,6 +321,7 @@ public sealed class CloseoutEngine(
             candidateId, version: fence.Version, token: cancellationToken);
         if (task is null
             || task.State != TaskState.Done
+            || task.Type == TaskType.PrReview
             || task.PullRequestUrl.IsBlank()
             || task.CurrentRunId is not { } runId)
         {
@@ -332,6 +343,14 @@ public sealed class CloseoutEngine(
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         if (project is null)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
+        Uri? projectRepositoryUrl = project.RepositoryUrl
+            ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
+                project.RepositoryPath, cancellationToken);
+        if (!PullRequestUrls.IsSafePullRequestUrl(task.PullRequestUrl, projectRepositoryUrl))
         {
             return InspectionOutcome.Skipped;
         }

@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Diagnostics.CodeAnalysis;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
@@ -66,12 +65,13 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         // With no run stream at all, nothing on the run side will ever protect this task from
         // CloseoutEngine's missing-run sweep — TasksWithMissingRunRecordsAsync's own candidate
         // shape is PullRequestUrl != null && CurrentRunId != null with no RunDetails row ever
-        // materializing to drop it back out, and that sweep's own inspection applies neither the
-        // pr-review guard nor the repository-match guard the run-stream path above already
-        // enforces (fixing the sweep itself is routed to a task of its own). Recording the URL on
-        // the task stream at all is the one lever left that can make this task match that
-        // candidate shape, so it only happens when it is exactly as safe as the run-stream path
-        // above already requires (independent pre-PR review, cycle 1, medium).
+        // materializing to drop it back out. CloseoutEngine.InspectMissingRunAsync now applies the
+        // same pr-review guard and repository-match guard the run-stream path above already
+        // enforces (routed defect fix, independent pre-PR review, cycle 1 adversarial), so this is
+        // belt-and-suspenders rather than the only guard left — but recording the URL on the task
+        // stream at all is still the one lever that can make this task match that candidate shape,
+        // so it only happens when it is exactly as safe as the run-stream path above already
+        // requires (independent pre-PR review, cycle 1, medium).
         string? taskStreamPullRequestUrl = runStreamOutcome == RunStreamPullRequestOutcome.NoRunStream
             ? await SafePullRequestUrlWithoutRunStreamAsync(session, task, settings.PullRequestUrl, cancellationToken)
             : settings.PullRequestUrl;
@@ -152,10 +152,11 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         /// pre-PR review, cycle 1). Silent by design: the missing-run sweep watches this task's
         /// <c>PullRequestUrl</c> without needing a run stream at all — recorded on the task stream
         /// by <c>TaskDecider.Resolve</c> only when <see cref="SafePullRequestUrlWithoutRunStreamAsync"/>
-        /// judges it safe to (independent pre-PR review, cycle 1, medium: that sweep's own
-        /// inspection applies neither the pr-review guard nor the repository-match guard this
-        /// command enforces everywhere else, so an unsafe URL recorded here regardless would still
-        /// reach it).
+        /// judges it safe to (independent pre-PR review, cycle 1, medium). Belt-and-suspenders
+        /// rather than the only guard: <c>CloseoutEngine.InspectMissingRunAsync</c> now applies the
+        /// same pr-review guard and repository-match guard this command enforces everywhere else
+        /// (routed defect fix, independent pre-PR review, cycle 1 adversarial), but an unsafe URL
+        /// is still refused here first rather than relying on the sweep alone to catch it.
         /// </summary>
         NoRunStream,
 
@@ -232,13 +233,12 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
     /// (<see cref="RunStreamPullRequestOutcome.NoRunStream"/>): with no run stream, no
     /// <c>RunDetails</c> row will ever materialize to drop this task back out of
     /// <c>CloseoutEngine.TasksWithMissingRunRecordsAsync</c>'s own candidate shape
-    /// (<c>PullRequestUrl != null &amp;&amp; CurrentRunId != null</c>), and that sweep's own
-    /// inspection (<c>InspectMissingRunAsync</c>) applies neither the pr-review guard nor the
+    /// (<c>PullRequestUrl != null &amp;&amp; CurrentRunId != null</c>). That sweep's own
+    /// inspection (<c>InspectMissingRunAsync</c>) now applies the same pr-review guard and
     /// repository-match guard <see cref="BuildFailedRunPullRequestEvent"/> already enforces on the
-    /// run-stream path above — fixing the sweep itself is routed to a task of its own. Whether the
-    /// URL is even recorded here for display is therefore the only lever this command has left to
-    /// keep that sweep honest, so the same two guards apply here too (independent pre-PR review,
-    /// cycle 1, medium).
+    /// run-stream path above (routed defect fix, independent pre-PR review, cycle 1 adversarial),
+    /// but recording an unsafe URL here for display would still be wrong on its own terms, so the
+    /// same two guards apply here too regardless (independent pre-PR review, cycle 1, medium).
     /// </summary>
     internal static async Task<string?> SafePullRequestUrlWithoutRunStreamAsync(
         IDocumentSession session,
@@ -254,7 +254,7 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         Uri? projectRepositoryUrl = await ResolveProjectRepositoryUrlAsync(project, processRunner, cancellationToken);
-        return IsSafePullRequestUrl(pullRequestUrl, projectRepositoryUrl) ? pullRequestUrl : null;
+        return PullRequestUrls.IsSafePullRequestUrl(pullRequestUrl, projectRepositoryUrl) ? pullRequestUrl : null;
     }
 
     /// <summary>
@@ -294,48 +294,8 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
     /// </summary>
     public static PullRequestRecordedOnFailedRun? BuildFailedRunPullRequestEvent(
         Guid runId, string? pullRequestUrl, DateTimeOffset recordedAt, Uri? projectRepositoryUrl = null) =>
-        IsSafePullRequestUrl(pullRequestUrl, projectRepositoryUrl)
+        PullRequestUrls.IsSafePullRequestUrl(pullRequestUrl, projectRepositoryUrl)
             ? new PullRequestRecordedOnFailedRun(
                 runId, pullRequestUrl, PullRequestUrls.ParseNumber(pullRequestUrl), recordedAt)
             : null;
-
-    /// <summary>
-    /// Whether <paramref name="pullRequestUrl"/> is safe to treat as this task's own pull request
-    /// anywhere it can be watched for a merge — the run stream (<see cref="BuildFailedRunPullRequestEvent"/>)
-    /// or, with no run stream to protect it, the task stream itself
-    /// (<see cref="SafePullRequestUrlWithoutRunStreamAsync"/>). False for a blank URL, one that
-    /// does not parse to a real pull request number (never guess a number, AGENTS.md's never-guess
-    /// rule), or one naming a repository other than <paramref name="projectRepositoryUrl"/>'s own —
-    /// checked by host as well as owner/repo, since <see cref="PullRequestUrls.RepositoryFrom"/>
-    /// alone reads path segments only and would otherwise treat
-    /// <c>https://gitlab.com/x/y/pull/24</c> as the same repository as a project recorded at
-    /// <c>https://github.com/x/y</c> (adversarial review, cycle 1, medium). A mistyped or
-    /// copy-pasted URL from an unrelated repository must never become this run's merge signal:
-    /// CloseoutEngine inspects strictly by number against the project's own repository, and a
-    /// false match would let an unrelated pull request's merge complete this task's closeout and
-    /// delete this run's own branch out from under it (adversarial review, cycle 1). The
-    /// repository check is a courtesy, the same shape <c>RunLauncher.LaunchAsync</c>'s pr-review
-    /// repository check is: a project whose repository cannot be resolved at all proceeds rather
-    /// than blocking on information this command does not have.
-    /// </summary>
-    private static bool IsSafePullRequestUrl(
-        [NotNullWhen(true)] string? pullRequestUrl, Uri? projectRepositoryUrl)
-    {
-        if (pullRequestUrl.IsBlank() || PullRequestUrls.ParseNumber(pullRequestUrl) <= 0)
-        {
-            return false;
-        }
-
-        if (projectRepositoryUrl is not null
-            && Uri.TryCreate(pullRequestUrl, UriKind.Absolute, out Uri? parsedPullRequestUrl)
-            && PullRequestUrls.RepositoryFrom(projectRepositoryUrl) is { } projectRepository
-            && PullRequestUrls.RepositoryFrom(parsedPullRequestUrl) is { } pullRequestRepository
-            && (!string.Equals(projectRepositoryUrl.Host, parsedPullRequestUrl.Host, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(projectRepository, pullRequestRepository, StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
-
-        return true;
-    }
 }

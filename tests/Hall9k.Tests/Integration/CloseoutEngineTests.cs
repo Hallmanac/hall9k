@@ -1172,7 +1172,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     /// <summary>See the two tests above: RunLauncher's declined-dispatch shape, seeded directly on the task stream.</summary>
     private static async Task<(Guid TaskId, Guid RunId)> SeedTaskWithMissingRunRecordAsync(
-        DocumentStore store, NodeContext node, string repoPath, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext node, string repoPath, CancellationToken cancellationToken,
+        TaskType? taskType = null, string? pullRequestUrl = null, Uri? projectRepositoryUrl = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -1183,7 +1184,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
             TaskDecider.Add(
-                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
+                taskId, projectId, "Close me out", ["merged"], taskType ?? TaskType.Chore, null, null,
                 null, Now, ownerId),
             ownerId, Now);
         List<object> taskEvents = [.. lifecycle];
@@ -1192,18 +1193,105 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         task.Apply(claimed);
         taskEvents.Add(claimed);
         Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
-            TaskDecider.Complete(task, runId, PullRequestUrl, Now);
+            TaskDecider.Complete(task, runId, pullRequestUrl ?? PullRequestUrl, Now);
         task.Apply(completed);
         taskEvents.Add(completed);
 
         session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
 
         var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
-            projectId, ownerId, DomainId.New(), $"closeout-missing-run-{taskId:N}", repoPath, null, "main", Now);
+            projectId, ownerId, DomainId.New(), $"closeout-missing-run-{taskId:N}", repoPath,
+            projectRepositoryUrl, "main", Now);
         session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
 
         await session.SaveChangesAsync(cancellationToken);
         return (taskId, runId);
+    }
+
+    /// <summary>
+    /// The defect this guards against (routed pre-PR review finding, adversarial cycle 1,
+    /// medium): with no run stream to protect it, a foreign pull-request URL recorded on the
+    /// task stream by <c>h9k task resolve --pr</c> used to reach a live <c>gh pr view</c> call
+    /// here anyway, so that foreign pull request's own merge could complete this task's
+    /// closeout. The sweep now applies the same repository-match guard
+    /// <c>TaskResolveCommand</c> already enforces before ever calling the inspector.
+    /// </summary>
+    [Fact]
+    public async Task A_missing_runs_pull_request_naming_a_foreign_repository_is_never_inspected()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(
+            store, node, repoPath, cts.Token,
+            pullRequestUrl: "https://github.com/other-org/other-repo/pull/24",
+            projectRepositoryUrl: new Uri("https://github.com/x/y"));
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-2) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.MergesObserved.Should().Be(0, "a foreign repository's pull request must never become this task's merge signal");
+        sweep.Skipped.Should().Be(1);
+        inspector.StateInspections.Should().Be(0, "the repository mismatch is caught before gh is ever called");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamStateAsync(runId, cts.Token)).Should().BeNull(
+            "nothing is reconstructed off a pull request that was never this task's own");
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+
+        await RetireMissingRunTaskAsync(store, taskId, node.OwnerId, cts.Token);
+    }
+
+    /// <summary>
+    /// The other half of the same defect: a pr-review task's <c>PullRequestUrl</c> names the
+    /// pull request it reviewed, never one of its own (<c>TaskResolveCommand</c>'s own
+    /// pr-review guard), so this sweep must never watch it for a merge either.
+    /// </summary>
+    [Fact]
+    public async Task A_pr_review_tasks_missing_run_pull_request_is_never_inspected()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(
+            store, node, repoPath, cts.Token, taskType: TaskType.PrReview);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-2) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.MergesObserved.Should().Be(0, "a pr-review task's PullRequestUrl names the pull request it reviewed, not its own");
+        sweep.Skipped.Should().Be(1);
+        inspector.StateInspections.Should().Be(0, "the pr-review type is caught before gh is ever called");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamStateAsync(runId, cts.Token)).Should().BeNull();
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+
+        // Unlike every other missing-run shape this class retires with RetireMissingRunTaskAsync,
+        // a pr-review task's Done state genuinely has no domain lever back out — TaskDecider.Reopen
+        // refuses the type outright (its PullRequestUrl names the pull request it reviewed, not one
+        // to reopen), which is exactly the behavior under test here. With this sweep now skipping
+        // it forever (the same "sits in the watch set returning Skipped forever" shape the sweep
+        // already documents for a reopened-then-unassigned task), the only way to keep this shared
+        // fixture's later tests honest is a direct document delete — never a lever a real deployment
+        // has, purely test isolation.
+        await using IDocumentSession cleanup = store.LightweightSession();
+        cleanup.Delete<TaskListItem>(taskId);
+        await cleanup.SaveChangesAsync(cts.Token);
     }
 
     [Fact]
