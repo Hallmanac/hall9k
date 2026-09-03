@@ -1010,10 +1010,73 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The intact-record shape the proactive sweep used to miss entirely, mirroring task
+    /// 1735bffc's own final state: this run genuinely dispatched and failed — a real,
+    /// intact RunDetails row, not a missing one — but the pull request that eventually merged
+    /// was never recorded onto ITS OWN stream, only onto the task's. The orphan query
+    /// (Failed/Killed AND PullRequestNumber != null) never matches it, and
+    /// TasksWithMissingRunRecordsAsync's original "no record at all" reading did not either — it
+    /// took NeedsMissingRunSweep widening that candidate set to a run that IS terminal AND
+    /// carries no pull-request number of its own before this shape could ever be closed out
+    /// without a human hand-completing it.
+    /// </summary>
+    [Fact]
+    public async Task A_tasks_intact_but_terminal_run_with_no_pull_request_of_its_own_still_reaches_true_closeout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedResolvedFailedRunWithPullRequestAsync(
+            store, node, worktrees, repoPath, cts.Token, recordOnRun: false);
+        Guid dependentId = await SeedBlockedDependentAsync(store, node.OwnerId, taskId, cts.Token);
+
+        await using (IQuerySession before = store.QuerySession())
+        {
+            RunDetails beforeRun = (await before.LoadAsync<RunDetails>(runId, cts.Token))!;
+            beforeRun.State.Should().Be(RunState.Failed,
+                "the run genuinely dispatched and failed — the record is intact, not missing");
+            beforeRun.PullRequestNumber.Should().BeNull(
+                "this generation never recorded the pull request onto its own run stream");
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-2) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.MergesObserved.Should().Be(1,
+            "an intact but terminal run with no pull-request number of its own is still this sweep's to complete");
+        inspector.StateInspections.Should().Be(1);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed,
+            "the existing, intact run record is carried straight to true closeout — never reconstructed");
+        run.PullRequestMergedAt.Should().Be(Now.AddDays(-2));
+        run.WorktreePath.Should().NotBeEmpty("unlike the missing-record shape, this run genuinely dispatched");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+
+        TaskListItem dependent = (await query.LoadAsync<TaskListItem>(dependentId, cts.Token))!;
+        dependent.State.Should().Be(TaskState.Queued, "true closeout unblocks dependents exactly as any other merge does");
+    }
+
+    /// <summary>
     /// Mirrors what <c>h9k task resolve --pr</c> itself appends (TaskFailed then TaskResolved on
     /// the task stream, RunFailed then, when a pull request was named, PullRequestRecordedOnFailedRun
     /// on the run stream) — the run never passes through PullRequestOpened at all, the same shape
     /// a gate failure or a crash before any pull request existed leaves behind.
+    /// <paramref name="recordOnRun"/> is <c>true</c> for that ordinary shape; <c>false</c> mirrors
+    /// task 1735bffc's own real history instead — a resolve that named a pull request that never
+    /// made it onto this run's own stream (the still-unguarded write site the run-record
+    /// reconstruction work found but left for a later task), leaving the run's own
+    /// <see cref="RunDetails.PullRequestNumber"/> null despite the task carrying the real,
+    /// eventually-merged URL.
     /// </summary>
     private static async Task<(Guid TaskId, Guid RunId, Worktree Worktree)> SeedResolvedFailedRunWithPullRequestAsync(
         DocumentStore store,
@@ -1021,7 +1084,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         GitWorktreeManager worktrees,
         string repoPath,
         CancellationToken cancellationToken,
-        string? pullRequestUrl = PullRequestUrl)
+        string? pullRequestUrl = PullRequestUrl,
+        bool recordOnRun = true)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -1069,7 +1133,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             new VerificationFailed(runId, ["test"], Now),
             new RunFailed(runId, "the gates never went green", Now),
         ];
-        if (pullRequestUrl is not null)
+        if (pullRequestUrl is not null && recordOnRun)
         {
             runEvents.Add(new PullRequestRecordedOnFailedRun(runId, pullRequestUrl, 7, Now));
         }
