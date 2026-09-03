@@ -509,7 +509,12 @@ public sealed class TaskAggregate
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
-        State = TaskState.Queued;
+        // Same invariant Apply(TaskRequeued) restores: a deliberately-claimed Blocked task
+        // (h9k task start --acknowledge-unmet-dependencies) that reached Done/Reopened while
+        // still carrying an unmet dependency — Claim never clears _unmetDependencies, only
+        // Assign does — must not resurface as Queued while that dependency is still on record
+        // unmet, or a closeout-dispatched follow-up runs headless behind the still-open blocker.
+        State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     /// <summary>

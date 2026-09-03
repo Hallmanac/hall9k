@@ -63,6 +63,30 @@ public sealed class TaskDeliberateClaimRequeueProjectionTests
         view.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
     }
 
+    /// <summary>
+    /// The fourth exit: a deliberately-claimed Blocked task that completed still carries its open
+    /// blocker (Complete never touches UnmetDependencies), and Reopen must not resurface it as
+    /// Queued while that blocker is still on record unmet (independent pre-PR review, cycle 2,
+    /// verify pass).
+    /// </summary>
+    [Fact]
+    public void Task_details_returns_to_blocked_not_queued_on_reopen()
+    {
+        TaskDetailsProjection projection = new();
+        (Guid id, Guid blockerId, Guid runId, TaskDetails view) = ClaimedBlockedTaskDetails(projection);
+
+        projection.Apply(new FakeEvent<TaskCompleted>(new TaskCompleted(
+            id, runId, "https://github.com/x/y/pull/7", Now.AddHours(2))), view);
+        view.State.Should().Be(TaskState.Done);
+
+        projection.Apply(new FakeEvent<TaskReopened>(new TaskReopened(
+            id, runId, "task/x", "Unresolved review comments", Now.AddHours(3), DomainId.New(),
+            FollowUpKind.ReviewFeedback, Automatic: true)), view);
+
+        view.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
+        view.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
+    }
+
     [Fact]
     public void Task_list_item_returns_to_blocked_not_queued_on_requeue()
     {
@@ -99,6 +123,25 @@ public sealed class TaskDeliberateClaimRequeueProjectionTests
 
         projection.Apply(new FakeEvent<TaskRetried>(new TaskRetried(
             id, runId, "task/x", "trying again", Now.AddHours(3), DomainId.New())), view);
+
+        view.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
+        view.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
+    }
+
+    /// <summary>Same fourth-exit invariant as the TaskDetails case above, on the list-row projection.</summary>
+    [Fact]
+    public void Task_list_item_returns_to_blocked_not_queued_on_reopen()
+    {
+        TaskListItemProjection projection = new();
+        (Guid id, Guid blockerId, Guid runId, TaskListItem view) = ClaimedBlockedTaskListItem(projection);
+
+        projection.Apply(new FakeEvent<TaskCompleted>(new TaskCompleted(
+            id, runId, "https://github.com/x/y/pull/7", Now.AddHours(2))), view);
+        view.State.Should().Be(TaskState.Done);
+
+        projection.Apply(new FakeEvent<TaskReopened>(new TaskReopened(
+            id, runId, "task/x", "Unresolved review comments", Now.AddHours(3), DomainId.New(),
+            FollowUpKind.ReviewFeedback, Automatic: true)), view);
 
         view.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
         view.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
