@@ -134,8 +134,13 @@ public sealed class TaskDetails
     /// Whether the current claim's <see cref="Events.TaskClaimed"/> recorded a human's deliberate
     /// override of unmet dependency edges (<c>h9k task start --acknowledge-unmet-dependencies</c>,
     /// task 8a56af78-h9k) — false for every ordinary claim, since only that one entry can ever be
-    /// true. Cleared the moment the claim ends (requeue, handback, retry, …), so this reads the
-    /// CURRENT claim only, never a past one.
+    /// true. Cleared when the claim is given back to run again (requeue, handback, retry, …), so a
+    /// later, ordinary claim on the same task never inherits an earlier claim's override. Left set
+    /// when the claim instead ends the task's story (complete, resolve, fail, abandon), since it
+    /// stays a true fact about the run that just ended rather than something a later event
+    /// retracts — <c>h9k task show</c> renders it beside <c>BlockedBy</c> regardless of the task's
+    /// current state, so this can still read true on a Done, Failed, or Abandoned task; it is never
+    /// a reliable signal of whether a claim is live (`TaskState.Claimed` already answers that).
     /// </summary>
     public bool DependencyOverrideAcknowledged { get; set; }
     public Guid? CurrentRunId { get; set; }
