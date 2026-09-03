@@ -346,14 +346,21 @@ public sealed class PrReviewEngine(
         Guid sessionId = DomainId.New();
         string prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, run.Branch, ReviewLens.Conformance, baseBranch);
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
+        // pr-review has no cycle loop — one adversarial pass (the run's own primary session)
+        // and one conformance pass — so this reads as cycle 1 always, never RunDetails.ReviewCycle,
+        // which pr-review never sets.
+        string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.ReviewConformance(1));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
-            project.SkipPermissions, ConformanceArtifactName(sessionId), UntrustedWorkingDirectory: true),
+            project.SkipPermissions, ConformanceArtifactName(sessionId), UntrustedWorkingDirectory: true)
+        {
+            SessionName = sessionName,
+        },
             cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new PrReviewConformanceDispatched(
-            runId, sessionId, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model));
+            runId, sessionId, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model, sessionName));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: pr-review conformance lens dispatched (session {SessionId}, pid {ProcessId}, model {Model})",

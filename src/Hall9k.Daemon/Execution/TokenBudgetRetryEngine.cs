@@ -115,10 +115,24 @@ public sealed class TokenBudgetRetryEngine(
             // resume of that same session carries the same distrust forward — otherwise the
             // resumed --resume spawn would load the foreign checkout's own .claude/ config
             // and CLAUDE.md/AGENTS.md under the owner's credentials (adversarial review, cycle 2).
+            // Reuses the primary session's own recorded name (RunDispatched.SessionName) rather
+            // than re-deriving it: a resume re-enters the same session, so it keeps the same
+            // name it was dispatched under. A stream written before that field existed falls
+            // back to the one fact this method already reads to decide the isolation flag above
+            // — whether this is a pr-review task's own adversarial-lens primary session or an
+            // ordinary build — rather than guessing at a follow-up kind nothing here can recover.
+            string sessionName = run.SessionName.IsNotBlank()
+                ? run.SessionName
+                : SessionRoleName.For(
+                    DomainId.Short(run.TaskId),
+                    task.Type == TaskType.PrReview ? SessionRoleName.ReviewAdversarial(1) : SessionRoleName.Build);
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
                 run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, AgentPromptBuilder.BuildBudgetRetry(),
                 run.ExecutorMode, run.Model, project.SkipPermissions,
-                ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: task.Type == TaskType.PrReview), cancellationToken);
+                ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: task.Type == TaskType.PrReview)
+            {
+                SessionName = sessionName,
+            }, cancellationToken);
 
             // The retry's stdout redirect truncates the run's stream file fresh (log #2),
             // so the tail cursor has to restart at zero with it — otherwise the monitor

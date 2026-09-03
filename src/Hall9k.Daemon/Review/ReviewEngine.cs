@@ -852,17 +852,19 @@ public sealed class ReviewEngine(
         // Every lens is review work, so they resolve the same role in the chain (log #33) —
         // and each dispatch records the model it actually got, per pass.
         AgentModel model = _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
+        string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Review(lens, cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, executorMode, model,
             context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, lens))
         {
             Environment = ReviewSessionEnvironment,
+            SessionName = sessionName,
         }, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewDispatched(
             context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model, lens,
-            mode, headSha, sinceSha));
+            mode, headSha, sinceSha, sessionName));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: {Lens} agent dispatched with fresh context (cycle {Cycle}, mode {Mode}, session {SessionId}, pid {ProcessId}, model {Model})",
@@ -912,17 +914,20 @@ public sealed class ReviewEngine(
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
         // until an install sets --model-review-verify.
         AgentModel model = _options.ResolveVerifyReviewModel(context.Task.Model, context.Project.Model);
+        string sessionName = SessionRoleName.For(
+            DomainId.Short(context.TaskId), SessionRoleName.ReviewVerify(cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, executorMode, model,
             context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, ReviewLens.Verify))
         {
             Environment = ReviewSessionEnvironment,
+            SessionName = sessionName,
         }, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewDispatched(
             context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model,
-            ReviewLens.Verify, ReviewMode.Verify, headSha, sinceSha));
+            ReviewLens.Verify, ReviewMode.Verify, headSha, sinceSha, sessionName));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
             "Run {RunId}: verify agent dispatched over {Tracks} with the prior cycle's findings (cycle {Cycle}, session {SessionId}, pid {ProcessId}, model {Model})",
@@ -974,6 +979,8 @@ public sealed class ReviewEngine(
             return false;
         }
 
+        string sessionName = SessionRoleName.For(
+            DomainId.Short(context.TaskId), SessionRoleName.Review(verdictless.Lens, run.ReviewCycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, artifactId, context.Run.WorktreePath, context.Run.RunDirectory, prompt,
             context.Run.ExecutorMode, model,
@@ -981,12 +988,13 @@ public sealed class ReviewEngine(
             ResumeSessionId: resumeSessionId)
         {
             Environment = ReviewSessionEnvironment,
+            SessionName = sessionName,
         }, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewVerdictReprompted(
             context.RunId, artifactId, resumeSessionId, run.ReviewCycle,
-            agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model, verdictless.Lens));
+            agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model, verdictless.Lens, sessionName));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogWarning(
             "Run {RunId}: the {Lens} pass of cycle {Cycle} ended without a verdict — session {SessionId} resumed for the cycle's one re-prompt (pid {ProcessId})",
@@ -1126,15 +1134,19 @@ public sealed class ReviewEngine(
         }
 
         AgentModel model = escalated ? reviewModel : fixModel;
+        string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Fix(cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
-            context.Project.SkipPermissions, FixArtifactName(cycle, sessionId)), cancellationToken);
+            context.Project.SkipPermissions, FixArtifactName(cycle, sessionId))
+        {
+            SessionName = sessionName,
+        }, cancellationToken);
 
         DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, new ReviewFixDispatched(
             context.RunId, sessionId, cycle, agent.ProcessId, agent.StartedAt, dispatchedAt, model,
-            escalated, escalationReason));
+            escalated, escalationReason, sessionName));
 
         await session.SaveChangesAsync(cancellationToken);
         if (escalated)

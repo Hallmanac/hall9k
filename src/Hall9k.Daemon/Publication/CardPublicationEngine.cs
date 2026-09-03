@@ -590,7 +590,10 @@ public sealed class CardPublicationEngine(
             // WorkItemPublicationDispatched records so the prompt and stream stay findable.
             new AgentSpawnRequest(
                 sessionId, sessionId, checkout, RunPaths.GlobalDirectory(sessionId), prompt,
-                ExecutorMode.Subscription, model, project.SkipPermissions),
+                ExecutorMode.Subscription, model, project.SkipPermissions)
+            {
+                SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CardPublication),
+            },
             cancellationToken);
 
         // Everything past the spawn is handled here rather than by the sweep's catch-all, because
