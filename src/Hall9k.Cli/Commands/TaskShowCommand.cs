@@ -828,13 +828,20 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     private static void AnnounceNextStep(TaskDetails details)
     {
         string shortId = TaskListCommand.ShortId(details.Id);
+        // h9k task work is refused outright for a pr-review task (TaskWorkCommand.ClaimAndCutAsync:
+        // "it has no diff of its own for an interactive session to build"), so the hint is named
+        // only where the claim would actually be accepted (DescribeDoneRemedy's own rule,
+        // independent pre-PR review, cycle 3).
+        string interactiveClaimHint = details.Type == TaskType.PrReview
+            ? string.Empty
+            : $" (or h9k task work {shortId} to claim and work it yourself)";
         string? next = details.State.Value switch
         {
             "Draft" => details.AcceptanceCriteria.Count == 0
                 ? $"[dim]Next:[/] h9k task revise {shortId} --criteria \"…\" [dim]— publishing needs at least one[/]"
                 : $"[dim]Next:[/] h9k task publish {shortId} [dim]then[/] h9k task assign {shortId}",
-            "Published" => $"[dim]Next:[/] h9k task assign {shortId} [dim]— it will not run until you do "
-                + $"(or h9k task work {shortId} to claim and work it yourself)[/]",
+            "Published" => $"[dim]Next:[/] h9k task assign {shortId} [dim]— it will not run until you do"
+                + $"{interactiveClaimHint}[/]",
             "Blocked" => $"[dim]It queues itself when its dependencies close out. To stop waiting:[/] "
                 + $"h9k task unassign {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies",
             "Queued" => $"[dim]Waiting for a dispatch cycle on one of the assignee's nodes. To take it back:[/] h9k task unassign {shortId}",

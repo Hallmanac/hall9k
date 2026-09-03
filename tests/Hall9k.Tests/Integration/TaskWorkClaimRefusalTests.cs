@@ -33,6 +33,13 @@ namespace Hall9k.Tests.Integration;
 /// which needs a real repository for <see cref="TaskWorkCommand.ClaimAndCutAsync"/>'s own worktree
 /// cut) say so on themselves.
 /// </summary>
+// A_queued_task_assigned_to_the_operator_appends_exactly_one_event drives ClaimAndCutAsync all the
+// way to its success path, which rings the doorbell (Hall9k.Cli.Infrastructure.Doorbell). That
+// resolves its connection off the ambient HALL9K_CONNECTION_STRING rather than this fixture, so it
+// is pointed at the fixture for the duration of that one call. That is process-wide state, same as
+// DatabaseDoctorTests, so this joins the same collection to serialize against every other test that
+// redirects it (independent pre-PR review, cycle 3).
+[Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
@@ -233,8 +240,22 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
                 taskId, version: fence.Version, token: cts.Token))!;
             BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
-            await TaskWorkCommand.ClaimAndCutAsync(
-                store, session, task, fence, context, DomainId.New(), cts.Token);
+            // ClaimAndCutAsync's success path ends in Doorbell.RingAsync, which resolves its
+            // connection off HALL9K_CONNECTION_STRING rather than this fixture (see the class-level
+            // comment above), so it has to be pointed at the fixture for the one call that reaches it.
+            string? previousConnectionString =
+                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+            try
+            {
+                await TaskWorkCommand.ClaimAndCutAsync(
+                    store, session, task, fence, context, DomainId.New(),
+                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim), cts.Token);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
+            }
         }
 
         await using IQuerySession verify = store.QuerySession();
@@ -324,7 +345,8 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
         BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
         await TaskWorkCommand.ClaimAndCutAsync(
-            store, session, task, fence, context, DomainId.New(), cancellationToken);
+            store, session, task, fence, context, DomainId.New(),
+            SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim), cancellationToken);
     }
 
     private DocumentStore NewStore() => DocumentStore.For(opts =>

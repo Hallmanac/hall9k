@@ -577,8 +577,9 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         string deathAdvice = string.Join(" ", dead.Select(dependency => dependency.DescribeDeath() + "."));
         return dead.Count == unmet.Count
             ? deathAdvice
-            : deathAdvice + $" The rest queue themselves as they clear; h9k task assign {taskId} to hold it "
-              + "Blocked in the meantime, or";
+            : deathAdvice + " The live ones can still close out on their own, but this task will not queue "
+              + $"until the dead one is gone too — h9k task assign {taskId} only holds it Blocked, and "
+              + "waiting will not clear that on its own, or";
     }
 
     /// <summary>
