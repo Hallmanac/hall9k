@@ -225,9 +225,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
             // Recorded on the current claim's own TaskClaimed (task 8a56af78-h9k): a human
             // warned about the still-open blocker(s) above chose to start this task anyway with
-            // h9k task start --acknowledge-unmet-dependencies. Gated on the current claim rather
-            // than on BlockedBy alone, so this only ever shows for the claim that actually
-            // recorded the override — TaskDetails.Apply clears it the moment that claim ends.
+            // h9k task start --acknowledge-unmet-dependencies. Cleared only when the claim is
+            // given back to run again (requeue, handback, retry, …) — left set when the claim
+            // instead ends the task's story (complete, resolve, fail, abandon), so this can still
+            // read true on a Done, Failed, or Abandoned task (TaskDetails.DependencyOverrideAcknowledged's
+            // own doc comment).
             if (details.DependencyOverrideAcknowledged)
             {
                 AnsiConsole.MarkupLine(
