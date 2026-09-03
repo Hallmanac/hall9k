@@ -135,9 +135,15 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
         if (assignee is null || assigned is null)
         {
+            // h9k task work is refused outright for a pr-review task (TaskWorkCommand.ClaimAndCutAsync:
+            // "it has no diff of its own for an interactive session to build"), so the hint is named
+            // only where the claim would actually be accepted (independent pre-PR review, cycle 3).
+            string interactiveClaimHint = task.Type == TaskType.PrReview
+                ? string.Empty
+                : $" [dim](or h9k task work {shortId} to claim and work it yourself)[/]";
             AnsiConsole.MarkupLine(
-                $"[dim]It is ready to assign but will not run until you say so:[/] h9k task assign {shortId} "
-                + $"[dim](or h9k task work {shortId} to claim and work it yourself)[/]");
+                $"[dim]It is ready to assign but will not run until you say so:[/] h9k task assign {shortId}"
+                + interactiveClaimHint);
             return ExitCodes.Ok;
         }
 
