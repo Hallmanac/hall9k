@@ -112,7 +112,13 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // and its NodeId is the Guid.Empty sentinel, so neither AdoptOrphansAsync's NodeId
         // filter nor SweepExpiredLeasesAsync's lease scan will ever retire it (conformance and
         // adversarial review, cycle 1).
-        session.Events.Append(runId, new RunSuperseded(runId, task.LeaseGeneration + 1, DateTimeOffset.UtcNow));
+        DateTimeOffset supersededAt = DateTimeOffset.UtcNow;
+        // A start-it-mine claim's own stream.jsonl is otherwise never read back once its run is
+        // retired this way — h9k task deliver is the only other lever that reads it, so a
+        // headless session handed back mid-run had its token spend discarded permanently
+        // (conformance review, cycle 1, on h9k task start).
+        HeadlessTokenRecovery.AppendIfRecorded(session, run, supersededAt);
+        session.Events.Append(runId, new RunSuperseded(runId, task.LeaseGeneration + 1, supersededAt));
         try
         {
             await session.SaveChangesAsync(cancellationToken);
