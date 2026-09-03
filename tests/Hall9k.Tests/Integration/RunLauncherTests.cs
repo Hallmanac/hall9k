@@ -226,6 +226,87 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// The sibling of the missing-run sweep's own defect (routed pre-PR review finding fixed
+    /// alongside this one, self-review blast-radius sweep): whatever channel put an unsafe
+    /// PullRequestUrl on the task stream — a URL naming a different repository than the
+    /// project's own — this dispatch-time recheck must never resolve that foreign number inside
+    /// the project's own repository the way <c>gh pr view &lt;number&gt;</c> below would. Without
+    /// the guard, <see cref="MergedInspector"/>'s own "always merged" answer would wrongly close
+    /// this task out on an unrelated pull request instead of dispatching the real follow-up.
+    /// </summary>
+    [Fact]
+    public async Task A_reopened_tasks_foreign_repository_pull_request_never_reaches_the_merge_check()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid previousRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string branch = "task/foreign-pr";
+        const string foreignPullRequestUrl = "https://github.com/other-org/other-repo/pull/24";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            var registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"launcher-foreign-{taskId:N}", "/tmp/launcher-foreign-repo",
+                new Uri("https://github.com/x/y"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Reopened onto a foreign PR", ["never closes out on the wrong pull request"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                node.OwnerId, Now.AddHours(-1));
+            var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, previousRunId, Now.AddHours(-1));
+            aggregate.Apply(firstClaim);
+            // Whatever recorded this — TaskDecider.Complete stands in here for the CLI path this
+            // test's own doc comment describes; the point under test is what LaunchAsync does with
+            // an unsafe URL already on the stream, not how it got there.
+            var completed = TaskDecider.Complete(aggregate, previousRunId, foreignPullRequestUrl, Now.AddMinutes(-40));
+            aggregate.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                aggregate, previousRunId, branch, "Copilot threads.", FollowUpKind.ReviewFeedback,
+                automatic: true, Now.AddMinutes(-30), node.OwnerId);
+            aggregate.Apply(reopened);
+            var claimed = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            aggregate.Apply(claimed);
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, firstClaim, completed, reopened, claimed]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        inspector.Inspections.Should().Be(0,
+            "a foreign repository's pull request must never reach gh through the project's own repository path");
+        executor.Request.Should().NotBeNull(
+            "the guard skips the merge check, so the follow-up dispatches normally instead of wrongly closing out");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Claimed", "the real dispatch proceeded — this never closed out on the foreign pull request");
+        task.PullRequestUrl.Should().Be(foreignPullRequestUrl, "recording it on the task is exactly the pre-existing gap under test");
+    }
+
+    /// <summary>
     /// The generation fence (backlog 39): a launch dispatched under a generation the task
     /// has already moved past — the shape a catch-up double-booking or a claim-then-
     /// requeue-then-reclaim race leaves behind — must not close the task out from under

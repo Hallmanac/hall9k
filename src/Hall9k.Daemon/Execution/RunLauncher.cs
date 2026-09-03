@@ -294,6 +294,22 @@ public sealed class RunLauncher(
     /// dispatch": either this run closed the task out, or the PR is merged but this run's
     /// generation is stale, in which case the live generation owns the task and this run
     /// must not fall through to a fresh dispatch either.
+    /// <para>
+    /// Applies the same repository-match guard <see cref="PullRequestUrls.IsSafePullRequestUrl"/>
+    /// enforces everywhere else a task's own <c>PullRequestUrl</c> reaches <c>gh</c> (independent
+    /// pre-PR review sibling finding, self-review, medium): <c>TaskResolveCommand</c>'s own
+    /// "a run stream already existed" path records a mismatched <c>--pr</c> onto the task stream
+    /// verbatim, unguarded, reasoning only about the missing-run sweep's own candidate shape — a
+    /// task later reopened through <c>h9k pr resolve</c> (which resumes the real, already-pushed
+    /// branch off <c>RunDetails</c>, never the recorded URL, so the guard on <c>Reopen</c> itself
+    /// stops nothing here) still carries that unguarded URL into this very check on its next
+    /// dispatch, and without this guard <c>gh pr view &lt;number&gt;</c> below would resolve a
+    /// foreign URL's number inside the project's own repository, exactly the hazard the sibling
+    /// guards exist to prevent. A pr-review task's own <c>PullRequestUrl</c> can never carry a
+    /// live URL into this dispatch-time recheck (Reopen refuses the type outright, so a pr-review
+    /// task's Done state has no lever back to this method), so that half of the check is
+    /// belt-and-suspenders here rather than a closed exploit path the way the repository check is.
+    /// </para>
     /// </summary>
     private async Task<bool> TryCloseOutMergedPullRequestAsync(
         TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, Guid nodeId, Guid ownerId,
@@ -301,7 +317,15 @@ public sealed class RunLauncher(
     {
         string pullRequestUrl = task.PullRequestUrl!;
         int pullRequestNumber = PullRequestUrls.ParseNumber(pullRequestUrl);
-        if (pullRequestNumber <= 0)
+        if (pullRequestNumber <= 0 || task.Type == TaskType.PrReview)
+        {
+            return false;
+        }
+
+        Uri? projectRepositoryUrl = project.RepositoryUrl
+            ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
+                project.RepositoryPath, cancellationToken);
+        if (!PullRequestUrls.IsSafePullRequestUrl(pullRequestUrl, projectRepositoryUrl))
         {
             return false;
         }
