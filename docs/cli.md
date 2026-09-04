@@ -241,7 +241,7 @@ none|github-issues|jira`) and its routing guidance, the review re-request policy
 project-level review-cycle-cap overrides, the review stage composition (`--review-stage-composition`,
 below), the branch-name template (`--branch-template`,
 [below](#branch-naming)), the auto-pr-review speed (`--auto-pr-review
-off|normal|first|now`, [below](#pull-request-review)), and the home's location live.
+off|normal|first|now`, [above](#pull-request-review)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 

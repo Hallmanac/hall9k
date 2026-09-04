@@ -58,7 +58,7 @@ public sealed class TaskListItem
     /// record. What the auto-pr-review poll's unassignment check reads to tell an auto-created
     /// task apart from one a human minted by hand with h9k task add --from-pr — only the former
     /// is this feature's to recall (idea e5e98a33). Transient by design: a recall nulls it even
-    /// for a task whose run keeps going (<see cref="PullRequestReviewAssignmentRecalled.ConcludesBeforeDispatch"/>
+    /// for a task whose run keeps going (<see cref="PullRequestReviewAssignmentRecalled.Concluded"/>
     /// false), because its only reader (<c>ConcludeWithdrawnAsync</c>'s watched-task query) asks
     /// "is this still worth polling for a recall", which a task already recalled once answers no
     /// to regardless of how it later finishes. <see cref="WasAutoPrReviewCreated"/> is the
@@ -74,7 +74,7 @@ public sealed class TaskListItem
     /// cleared by a later <see cref="PullRequestReviewAssignmentRecalled"/> the way
     /// <see cref="AutoPrReviewAssigneeLogin"/> is. What <c>CreateOneAsync</c>'s own previousReview
     /// lookup reads instead of that transient field, so a task recalled mid-run with "the work
-    /// continues" (<see cref="PullRequestReviewAssignmentRecalled.ConcludesBeforeDispatch"/> false)
+    /// continues" (<see cref="PullRequestReviewAssignmentRecalled.Concluded"/> false)
     /// still answers a later genuine re-request with its own re-review note once it reaches Done or
     /// Abandoned, rather than reading as if auto-pr-review never touched it at all.
     /// </summary>
