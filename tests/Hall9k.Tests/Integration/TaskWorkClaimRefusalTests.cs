@@ -65,7 +65,7 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
         Func<Task> act = () => WorkAsync(store, taskId, ownerId, cts.Token);
 
         await act.Should().ThrowAsync<DomainConflictException>()
-            .WithMessage("*is Draft*Published or Queued*")
+            .WithMessage("*is Draft*Published, Queued, or Blocked*")
             .Where(exception => exception.Message.Contains("Publish it first"));
     }
 
@@ -75,7 +75,10 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
     /// that names the open blocker and points at <c>--acknowledge-unmet-dependencies</c>, the same
     /// shape the atomic Published entry's own refusal already had. The blocker is seeded as its
     /// own stream (mirrors <see cref="A_published_task_with_an_open_dependency_is_refused_through_ClaimAndCutAsync"/>),
-    /// because the Blocked entry now reads the same real <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskDependencyQuery"/>.
+    /// because the Blocked entry now reads the same real <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskDependencyQuery"/>
+    /// — and, like that sibling, a project has to exist too: <c>ClaimAndCutAsync</c> loads
+    /// <c>TaskDetails</c>/<c>ProjectDetails</c> unconditionally before the Blocked branch's own
+    /// refusal fires.
     /// </summary>
     [Fact]
     public async Task A_blocked_task_is_refused_and_named_the_open_dependency()
@@ -85,15 +88,18 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
         Guid taskId = DomainId.New();
         Guid blockerId = DomainId.New();
         Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
 
         await using (IDocumentSession seed = store.LightweightSession())
         {
+            seed.Store(new ProjectDetails { Id = projectId, RepositoryPath = "/dev/null", BaseBranch = "main" });
+
             seed.Events.StartStream<TaskAggregate>(blockerId, TaskDecider.Add(
                 blockerId, DomainId.New(), "The blocker, still open", ["it is done"], TaskType.Chore,
                 null, null, null, Now, ownerId));
 
             TaskAdded added = TaskDecider.Add(
-                taskId, DomainId.New(), "Waits on another task", ["it is done"], TaskType.Chore,
+                taskId, projectId, "Waits on another task", ["it is done"], TaskType.Chore,
                 null, null, null, Now, ownerId, blockedBy: [blockerId]);
             TaskAggregate task = new();
             task.Apply(added);
@@ -135,15 +141,25 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
         Guid taskId = DomainId.New();
         Guid blockerId = DomainId.New();
         Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
 
         await using (IDocumentSession seed = store.LightweightSession())
         {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+
             seed.Events.StartStream<TaskAggregate>(blockerId, TaskDecider.Add(
                 blockerId, DomainId.New(), "The blocker, still open", ["it is done"], TaskType.Chore,
                 null, null, null, Now, ownerId));
 
             TaskAdded added = TaskDecider.Add(
-                taskId, DomainId.New(), "Waits on another task", ["it is done"], TaskType.Chore,
+                taskId, projectId, "Waits on another task", ["it is done"], TaskType.Chore,
                 null, null, null, Now, ownerId, blockedBy: [blockerId]);
             TaskAggregate task = new();
             task.Apply(added);
@@ -189,15 +205,25 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
         Guid taskId = DomainId.New();
         Guid blockerId = DomainId.New();
         Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
 
         await using (IDocumentSession seed = store.LightweightSession())
         {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+
             seed.Events.StartStream<TaskAggregate>(blockerId, TaskDecider.Add(
                 blockerId, DomainId.New(), "The blocker, still open", ["it is done"], TaskType.Chore,
                 null, null, null, Now, ownerId));
 
             TaskAdded added = TaskDecider.Add(
-                taskId, DomainId.New(), "Waits on another task", ["it is done"], TaskType.Chore,
+                taskId, projectId, "Waits on another task", ["it is done"], TaskType.Chore,
                 null, null, null, Now, ownerId, blockedBy: [blockerId]);
             TaskAggregate task = new();
             task.Apply(added);
