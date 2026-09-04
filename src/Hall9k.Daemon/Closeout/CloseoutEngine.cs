@@ -258,12 +258,17 @@ public sealed class CloseoutEngine(
     /// <para>
     /// Every task that ever merged a pull request stays in this candidate set forever (nothing
     /// clears <c>PullRequestUrl</c>/<c>CurrentRunId</c> on a Done task), unlike the two
-    /// RunDetails-driven sweeps above, which are bounded by a transient run state. Projected to
-    /// the two scalar fields <see cref="InspectMissingRunAsync"/> actually needs — it re-derives
-    /// everything else from the task's own event stream — rather than materializing the full
-    /// <see cref="TaskListItem"/> document (objective, criteria, dependency lists) for every one
-    /// of them on every sweep (independent pre-PR review, cycle 1; same fix as <see
-    /// cref="ReviewRerequestCountAsync"/>'s <c>ReviewRerequestScalars</c>).
+    /// RunDetails-driven sweeps above, which are bounded by a transient run state. The
+    /// <c>TaskListItem</c> read is projected to the two scalar fields
+    /// <see cref="InspectMissingRunAsync"/> actually needs — it re-derives everything else from
+    /// the task's own event stream — rather than materializing the full document (objective,
+    /// criteria, dependency lists) for every one of them on every sweep (independent pre-PR
+    /// review, cycle 1; same fix as <see cref="ReviewRerequestCountAsync"/>'s
+    /// <c>ReviewRerequestScalars</c>). The matching <c>RunDetails</c> read pushes
+    /// <see cref="NeedsMissingRunSweep"/>'s own terminal-state test server-side via
+    /// <c>MatchesSql</c>, the same way <see cref="PollOnceAsync"/>'s own <c>orphaned</c> query
+    /// does, so a candidate set that only grows with the install's history still projects to
+    /// nothing heavier than an id per run (independent pre-PR review, cycle 1, both lenses).
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<Guid>> TasksWithMissingRunRecordsAsync(CancellationToken cancellationToken)
@@ -281,13 +286,21 @@ public sealed class CloseoutEngine(
         }
 
         Guid[] runIds = [.. doneWithPullRequest.Select(t => t.CurrentRunId)];
-        Dictionary<Guid, RunDetails> found = (await query.Query<RunDetails>()
+        HashSet<Guid> recorded = [.. await query.Query<RunDetails>()
             .Where(r => runIds.Contains(r.Id))
-            .ToListAsync(cancellationToken))
-            .ToDictionary(r => r.Id);
+            .Select(r => r.Id)
+            .ToListAsync(cancellationToken)];
+        HashSet<Guid> needsSweep = [.. await query.Query<RunDetails>()
+            .Where(r => runIds.Contains(r.Id))
+            .Where(r => r.PullRequestNumber == null)
+            .Where(r => r.MatchesSql(
+                "d.data ->> 'state' in (?, ?, ?)",
+                RunState.Failed.Value, RunState.Killed.Value, RunState.Superseded.Value))
+            .Select(r => r.Id)
+            .ToListAsync(cancellationToken)];
 
         return [.. doneWithPullRequest
-            .Where(t => !found.TryGetValue(t.CurrentRunId, out RunDetails? run) || NeedsMissingRunSweep(run))
+            .Where(t => !recorded.Contains(t.CurrentRunId) || needsSweep.Contains(t.CurrentRunId))
             .Select(t => t.Id)];
     }
 
@@ -428,6 +441,17 @@ public sealed class CloseoutEngine(
     /// commit below: Marten refuses the whole batch when the stream id collides, so the loser's
     /// attempt lands as a no-op rather than a duplicate completion (independent pre-PR review,
     /// cycle 1, adversarial finding).
+    /// <para>
+    /// An intact-but-terminal <paramref name="runId"/> (<see cref="NeedsMissingRunSweep"/>'s other
+    /// admitted shape) already has a stream, so <c>StartStream</c>'s own collision guard never
+    /// runs for it — two sweeps racing the same owner-unscoped candidate set can both load the
+    /// same not-yet-completed run and both try to complete it. The run stream's own version is
+    /// fenced the same way <see cref="RerequestReviewAfterFixesAsync"/> already fences a countersign
+    /// append: fetched here, before the (possibly slow) work in <see cref="CompleteCloseoutAsync"/>
+    /// runs, and carried in as its expected version so the loser's commit is refused rather than
+    /// silently doubling the merge comment, the handoff, and the dependents-unblock (independent
+    /// pre-PR review, cycle 1, both lenses).
+    /// </para>
     /// </summary>
     public async Task ReconstructAndCompleteAsync(
         IDocumentSession session,
@@ -441,6 +465,7 @@ public sealed class CloseoutEngine(
         CancellationToken cancellationToken)
     {
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        long? expectedRunVersion = null;
         if (run is null)
         {
             int pullRequestNumber = PullRequestUrls.ParseNumber(task.PullRequestUrl ?? string.Empty);
@@ -473,10 +498,26 @@ public sealed class CloseoutEngine(
                 "Run {RunId} was already completed by a concurrent closeout; not completing it twice", runId);
             return;
         }
+        else
+        {
+            // The stream already exists, so nothing here protects a second caller from loading
+            // the identical not-yet-completed run and racing this one to CompleteCloseoutAsync's
+            // own appends — see this method's own doc, second paragraph.
+            StreamState? runFence = await session.Events.FetchStreamStateAsync(runId, cancellationToken);
+            if (runFence is null)
+            {
+                logger.LogDebug(
+                    "Run {RunId} disappeared between the load above and its own fence; deferring to the next sweep",
+                    runId);
+                return;
+            }
+
+            expectedRunVersion = runFence.Version;
+        }
 
         try
         {
-            await CompleteCloseoutAsync(session, run, project, task, mergedAt, now, cancellationToken);
+            await CompleteCloseoutAsync(session, run, project, task, mergedAt, now, expectedRunVersion, cancellationToken);
         }
         catch (ExistingStreamIdCollisionException)
         {
@@ -486,6 +527,16 @@ public sealed class CloseoutEngine(
             logger.LogDebug(
                 "Run {RunId} was reconstructed and completed by a concurrent closeout while this call was in flight",
                 runId);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            // The intact-run counterpart of the collision above: a concurrent sweep advanced this
+            // run's stream past the version fenced just above before this call's own commit landed
+            // — completed it, superseded it, or otherwise moved it — so this call's attempt is a
+            // lost race rather than a fault. There is nothing left here to do.
+            logger.LogDebug(
+                "Run {RunId} advanced past its fenced version while this call was completing its closeout; "
+                + "another sweep got there first", runId);
         }
     }
 
@@ -575,7 +626,8 @@ public sealed class CloseoutEngine(
 
         if (snapshot.IsMerged)
         {
-            await CompleteCloseoutAsync(session, run, project, task, snapshot.MergedAt, DateTimeOffset.UtcNow, cancellationToken);
+            await CompleteCloseoutAsync(
+                session, run, project, task, snapshot.MergedAt, DateTimeOffset.UtcNow, expectedVersion: null, cancellationToken);
             return InspectionOutcome.MergeObserved;
         }
 
@@ -670,7 +722,8 @@ public sealed class CloseoutEngine(
 
         if (snapshot.IsMerged)
         {
-            await CompleteCloseoutAsync(session, run, project, task, snapshot.MergedAt, now, cancellationToken);
+            await CompleteCloseoutAsync(
+                session, run, project, task, snapshot.MergedAt, now, expectedVersion: null, cancellationToken);
             return InspectionOutcome.MergeObserved;
         }
 
@@ -1152,6 +1205,15 @@ public sealed class CloseoutEngine(
     /// guarantee: an unmerged run has no RunHandoffRecorded, so its summary can never travel
     /// to work that builds on code which never landed.
     /// </para>
+    /// <para>
+    /// <paramref name="expectedVersion"/> is the run stream's own fenced version, versioning
+    /// every append below when a caller has one to give — <see cref="ReconstructAndCompleteAsync"/>'s
+    /// own intact-run branch, the only caller whose candidate set is not node-scoped and can
+    /// therefore race a sibling sweep to this same run. <see cref="InspectAndActAsync"/> and
+    /// <see cref="InspectOrphanAsync"/> pass <c>null</c>: each already watches only runs this
+    /// node itself dispatched, so no other sweep on this node's own watch set can reach the same
+    /// run concurrently.
+    /// </para>
     /// </summary>
     private async Task CompleteCloseoutAsync(
         IDocumentSession session,
@@ -1160,12 +1222,20 @@ public sealed class CloseoutEngine(
         TaskAggregate task,
         DateTimeOffset? mergedAt,
         DateTimeOffset now,
+        long? expectedVersion,
         CancellationToken cancellationToken)
     {
         RunHandoffRecorded handoff = await ComposeHandoffAsync(session, run, now, cancellationToken);
-        session.Events.Append(run.Id, new PullRequestMerged(run.Id, mergedAt, now));
-        session.Events.Append(run.Id, handoff);
-        session.Events.Append(run.Id, new RunCompleted(run.Id, now));
+        PullRequestMerged merged = new(run.Id, mergedAt, now);
+        RunCompleted completed = new(run.Id, now);
+        if (expectedVersion is { } version)
+        {
+            session.Events.Append(run.Id, expectedVersion: version + 3, merged, handoff, completed);
+        }
+        else
+        {
+            session.Events.Append(run.Id, merged, handoff, completed);
+        }
 
         // A Blocked task reaches here only through the one case InspectAndActAsync and
         // InspectOrphanAsync both admit it for: Apply(TaskReopened) kept CurrentRunId pointing at
