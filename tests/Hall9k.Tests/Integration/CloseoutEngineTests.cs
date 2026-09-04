@@ -1599,7 +1599,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// <summary>
     /// Backlog 44's whole point: GitHub's own CONFLICTING read dispatches a rebase follow-up
     /// through the same reopen pipeline as a failing check or unresolved thread, spending the
-    /// same budget.
+    /// same budget — once the mechanical fast path (task fc85f609 recommendation 3) has tried and
+    /// genuinely failed to apply cleanly, which is why origin/main is moved forward here with a
+    /// real conflicting change rather than only faked through the inspector.
     /// </summary>
     [Fact]
     public async Task A_conflicting_pull_request_dispatches_an_automatic_rebase_follow_up_through_the_reopen_pipeline()
@@ -1611,6 +1613,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        SeedGenuineConflictOnMain(repoPath);
 
         FakeInspector inspector = new()
         {
@@ -1622,22 +1625,30 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.Superseded,
             "the reopen hands the PR to a successor, so the observed run retires in the same transaction");
+        run.LastMechanicalRebaseSucceeded.Should().BeFalse(
+            "origin/main genuinely moved with a conflicting change, so the mechanical rebase itself failed to apply");
+        run.LastMechanicalRebaseDetail.Should().Contain("did not apply cleanly");
 
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.State.Should().Be(TaskState.Queued, "the follow-up flows through the standard dispatch pipeline");
         task.FollowUpBranch.Should().Be(worktree.Branch);
         task.FollowUpKind.Should().Be(FollowUpKind.Rebase, "the launcher picks the rebase-onto-main prompt from it");
         task.FollowUpReason.Should().Contain("conflicts with its base branch");
+        task.FollowUpReason.Should().Contain("mechanical rebase fell back", "the fallback and why are on the record too");
 
         TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
         aggregate.CloseoutAttempts.Should().Be(1, "automatic reopens spend the bounded budget");
 
         Directory.Exists(worktree.Path).Should().BeTrue("the worktree is the follow-up workspace — never removed here");
+        TryGit(worktree.Path, "status --porcelain").Output.Trim().Should().BeEmpty(
+            "a failed mechanical rebase aborts, leaving the worktree exactly as the follow-up expects to find it");
     }
 
     /// <summary>
     /// A conflict is checked ahead of checks and threads: both readings are moot against a
-    /// diff about to be superseded by a rebase (backlog 44).
+    /// diff about to be superseded by a rebase (backlog 44). Origin/main carries a real
+    /// conflicting change so the mechanical fast path genuinely falls back rather than clearing
+    /// the obstruction outright.
     /// </summary>
     [Fact]
     public async Task A_conflicting_pull_request_is_dispatched_ahead_of_failing_checks_and_unresolved_threads()
@@ -1648,6 +1659,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        SeedGenuineConflictOnMain(repoPath);
 
         FakeInspector inspector = new()
         {
@@ -1663,6 +1675,103 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await using IQuerySession query = store.QuerySession();
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.FollowUpKind.Should().Be(FollowUpKind.Rebase, "the conflict wins priority over checks and threads");
+    }
+
+    /// <summary>
+    /// Task fc85f609 recommendation 3: a clean mechanical rebase (real git fetch + rebase +
+    /// force-with-lease push in the retained worktree, no model session, no local gates) clears
+    /// the obstruction outright — the task is never reopened, the run stays exactly where it was
+    /// for the very next sweep to re-inspect GitHub's own check result on the new head, and the
+    /// attempt is recorded on the run either way.
+    /// </summary>
+    [Fact]
+    public async Task A_conflicting_pull_request_that_rebases_cleanly_is_pushed_mechanically_without_reopening()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        // origin/main moves forward with a change to a file the task branch never touched —
+        // a real, cleanly-rebasable divergence, not merely a faked CONFLICTING read.
+        File.WriteAllText(Path.Combine(repoPath, "OTHER.md"), "unrelated change on main\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm \"main moved, no overlap\"");
+        Git(repoPath, "push -q origin main");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview,
+            "a clean mechanical rebase leaves the run exactly where it was for the next sweep to re-inspect");
+        run.LastMechanicalRebaseSucceeded.Should().BeTrue();
+        run.LastMechanicalRebaseDetail.Should().Contain("force-pushed cleanly");
+        run.LastMechanicalRebasePushedCommit.Should().NotBeNullOrEmpty();
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "the task is never reopened for a clean mechanical rebase");
+
+        (int exitCode, string output) = TryGit(repoPath, $"ls-remote origin refs/heads/{worktree.Branch}");
+        exitCode.Should().Be(0);
+        output.Trim().Split('\t')[0].Should().Be(run.LastMechanicalRebasePushedCommit,
+            "origin's branch tip is the mechanical rebase's own new head");
+
+        // The rebased branch now contains main's own new commit — proof this actually rebased
+        // rather than merely reporting success.
+        (int logExitCode, string logOutput) = TryGit(worktree.Path, $"log --format=%s origin/{worktree.Branch}");
+        logExitCode.Should().Be(0);
+        logOutput.Should().Contain("main moved, no overlap");
+    }
+
+    /// <summary>
+    /// A missing retained worktree is one of the two named fallback triggers (task fc85f609
+    /// recommendation 3, alongside a rebase that does not apply cleanly): the mechanical attempt
+    /// cannot even start, and the engine falls back byte-for-byte to the full reopen-and-review
+    /// lap exactly as it would for a genuine conflict.
+    /// </summary>
+    [Fact]
+    public async Task A_conflicting_pull_request_whose_retained_worktree_is_gone_falls_back_to_the_reopen_pipeline()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        Directory.Delete(worktree.Path, recursive: true);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastMechanicalRebaseSucceeded.Should().BeFalse();
+        run.LastMechanicalRebaseDetail.Should().Contain("worktree is missing");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued, "a missing worktree falls back to the ordinary reopen pipeline");
+        task.FollowUpKind.Should().Be(FollowUpKind.Rebase);
+    }
+
+    /// <summary>Pushes a commit to origin/main that touches the same file the task branch's own seed commit did, so a real rebase genuinely conflicts.</summary>
+    private static void SeedGenuineConflictOnMain(string repoPath)
+    {
+        File.WriteAllText(Path.Combine(repoPath, "WORK.md"), "a conflicting change from main\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm \"main moved, conflicting\"");
+        Git(repoPath, "push -q origin main");
     }
 
     [Fact]
@@ -2345,6 +2454,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             priorAutomaticReopens: 2, priorObstructionKey: "Rebase:deadbeef");
+        SeedGenuineConflictOnMain(repoPath);
 
         FakeInspector inspector = new()
         {
@@ -2385,6 +2495,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             priorAutomaticReopens: 2, priorObstructionKey: "Rebase:deadbeef");
+        SeedGenuineConflictOnMain(repoPath);
 
         FakeInspector inspector = new()
         {
