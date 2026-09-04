@@ -341,6 +341,30 @@ public sealed class PullRequestBodyTests
         body.Should().NotContain("Left unfixed").And.NotContain("unfixed");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, conformance finding: a run settled under a reduced
+    /// composition used to read exactly like a clean full-pipeline settle, with nothing on the
+    /// page where the merge decision actually happens saying no reviewer read the diff.
+    /// </summary>
+    [Fact]
+    public void A_run_settled_under_a_reduced_composition_names_it()
+    {
+        RunDetails run = Run();
+        run.ReviewStageComposition = ReviewStageComposition.None;
+
+        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().Contain("Review stage composition").And.Contain("None");
+    }
+
+    [Fact]
+    public void A_run_settled_under_the_full_pipeline_says_nothing_about_the_composition()
+    {
+        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null, sourceUrl: null);
+
+        body.Should().NotContain("Review stage composition");
+    }
+
     private static RunDetails Run() => new()
     {
         Id = DomainId.New(),

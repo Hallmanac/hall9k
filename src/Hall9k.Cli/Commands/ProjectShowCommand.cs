@@ -169,7 +169,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// of an int.
     /// </summary>
     private static string ReviewStageCompositionRow(ProjectDetails project) => project.ReviewStageComposition is { } value
-        ? value.EscapeMarkup()
+        ? value.Value.EscapeMarkup()
         : $"[dim]not set — the node decides (h9k config show), unless a task overrides it. Set one: "
           + $"h9k project set {project.Name.EscapeMarkup()} --review-stage-composition <COMPOSITION>[/]";
 

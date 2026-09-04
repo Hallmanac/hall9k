@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -127,7 +128,7 @@ public sealed class TaskDetails
     /// <summary>This task's own override of the task-lifetime review-cycle budget; null defers to the project or node.</summary>
     public int? LifetimeReviewCycleBudget { get; set; }
     /// <summary>This task's own override of which pre-PR review stages a run gets; null defers to the project or node (task: the review pipeline's stage composition becomes configuration recorded per run).</summary>
-    public string? ReviewStageComposition { get; set; }
+    public ReviewStageComposition? ReviewStageComposition { get; set; }
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>

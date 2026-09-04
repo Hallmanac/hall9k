@@ -110,6 +110,12 @@ internal static class PullRequestBody
             body.AppendLine(RideAlongNote(run));
         }
 
+        if (run.ReviewStageComposition != ReviewStageComposition.FullPipeline)
+        {
+            body.AppendLine();
+            body.AppendLine(ReducedReviewNote(run.ReviewStageComposition));
+        }
+
         long totalTokens = run.InputTokens + run.CacheReadInputTokens + run.CacheCreationInputTokens + run.OutputTokens;
         body.AppendLine();
         body.AppendLine("---");
@@ -203,6 +209,18 @@ internal static class PullRequestBody
         note.Append($"See `h9k task show {run.TaskId}` for the full review history.");
         return note.ToString();
     }
+
+    /// <summary>
+    /// The one line stating that this run's pre-PR review was reduced or skipped outright
+    /// (task: the review pipeline's stage composition becomes configuration recorded per run),
+    /// so the human doing the merge has the signal on the page where the merge decision actually
+    /// happens rather than only on `h9k task show`'s Stages column (independent pre-PR review,
+    /// cycle 1, conformance finding: a composition-`none` settle reads exactly like a clean
+    /// full-pipeline one here, with nothing saying no reviewer ever read the diff).
+    /// </summary>
+    private static string ReducedReviewNote(ReviewStageComposition composition) =>
+        $"**Review stage composition:** `{composition.Value}` — this run's pre-PR review was reduced "
+        + "from the full pipeline; see `h9k task show` for what that means.";
 
     /// <summary>
     /// The line that links the work back to the item it belongs to: a plain mention of that

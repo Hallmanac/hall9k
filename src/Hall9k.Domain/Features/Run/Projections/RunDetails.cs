@@ -45,6 +45,12 @@ public sealed class RunDetails
     public AgentModel Model { get; set; } = AgentModel.Unknown;
     /// <summary>The model of the latest review or fix session, so a tiered configuration stays visible per leg.</summary>
     public AgentModel ReviewModel { get; set; } = AgentModel.Unknown;
+    /// <summary>
+    /// Which pre-PR review stages this run got, resolved once at dispatch (see
+    /// <see cref="RunDispatched.ReviewStageComposition"/>'s own doc). FullPipeline for a run
+    /// dispatched before this field existed, the shape every run had then.
+    /// </summary>
+    public ReviewStageComposition ReviewStageComposition { get; set; } = ReviewStageComposition.FullPipeline;
     public RunState State { get; set; } = RunState.Unknown;
     public int? ProcessId { get; set; }
     public DateTimeOffset? ProcessStartedAt { get; set; }
@@ -309,6 +315,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         PrReviewBaseRefName = @event.Data.PrReviewBaseRefName,
         ExecutorMode = @event.Data.ExecutorMode,
         Model = @event.Data.Model ?? AgentModel.Unknown,
+        ReviewStageComposition = @event.Data.ReviewStageComposition ?? ReviewStageComposition.FullPipeline,
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.DispatchedAt,
         IsFollowUp = @event.Data.IsFollowUp,

@@ -107,7 +107,7 @@ public sealed class TaskDeciderTests
             addedAt: Now, addedByOwnerId: DomainId.New(),
             reviewStageComposition: "skip-final-pass", reviewStageCompositionAcknowledged: true);
 
-        added.ReviewStageComposition.Should().Be("SkipFinalPass");
+        added.ReviewStageComposition?.Value.Should().Be("SkipFinalPass");
     }
 
     [Fact]

@@ -5,11 +5,11 @@ using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
-using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -245,6 +245,12 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // just finished typing.
         string? reviewStageComposition = TaskDecider.VetReviewStageComposition(
             settings.ReviewStageComposition, settings.AcceptReducedReview, "--review-stage-composition");
+        // Vetted here too, on the near side of AdoptAsync's own gh call and the criteria prompt
+        // below, for the same reason the vet above is (independent pre-PR review, cycle 1,
+        // conformance lens): refusing this mismatch only at the decider would pay for a real
+        // network call and re-typed criteria and then throw both away.
+        Guid taskId = DomainId.New();
+        TaskDecider.RefuseCompositionOnPrReview(taskId, taskType, reviewStageComposition);
         Guid? epicId = epic.IsNotBlank()
             ? await EpicIdResolver.ResolveForMembershipAsync(session, epic, projectDetails.Id, cancellationToken)
             : null;
@@ -265,7 +271,6 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             criteria = criteria.Count > 0 ? criteria : AskForCriteria(imported, adoption);
         }
 
-        Guid taskId = DomainId.New();
         TaskAdded added = TaskDecider.Add(
             taskId,
             projectDetails.Id,

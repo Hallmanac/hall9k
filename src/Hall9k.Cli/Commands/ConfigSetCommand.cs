@@ -434,7 +434,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             ReviewStageComposition parsed = ReviewStageComposition.Parse(composition);
             operating.ReviewStageComposition = parsed.Value;
             changed.Add($"review-stage-composition = {parsed.Value}");
-            // The refusal path names the consequence (ValidateAsync's own
+            // The refusal path names the consequence (Validate's own
             // RefuseWithoutAcknowledgment call); the accepted path has to name it too, or the
             // only operator who ever reads it is the one who tried the command without
             // --accept-reduced-review first — which the documented example steers them away from

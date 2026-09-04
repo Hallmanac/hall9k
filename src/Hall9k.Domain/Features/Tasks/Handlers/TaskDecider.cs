@@ -59,7 +59,9 @@ public static class TaskDecider
             id, projectId, objective, criteria, type, agentContext, constraints,
             externalReference, addedAt, addedByOwnerId, VetModel(model), dependencies,
             StartsAsDraft: true, SourceIdeaId: sourceIdeaId, EpicId: epicId,
-            ReviewStageComposition: normalizedComposition,
+            ReviewStageComposition: normalizedComposition is { } normalizedWord
+                ? Run.ReviewStageComposition.FromInput(normalizedWord)
+                : null,
             ReviewStageCompositionAcknowledged: ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(
                 normalizedComposition, reviewStageCompositionAcknowledged));
     }
@@ -90,8 +92,15 @@ public static class TaskDecider
     /// lenses still dispatched). Refused here, in the one decider both <see cref="Add"/> and
     /// <see cref="Revise"/> reach, rather than threading composition awareness into
     /// <c>PrReviewEngine</c> itself.
+    /// <para>
+    /// Public for the same reason <see cref="VetModel"/> and <see cref="VetReviewStageComposition"/>
+    /// are: <c>h9k task add</c> knows the task's type before it prompts for acceptance criteria and
+    /// adopts the pull request, so it vets this mismatch there too, rather than paying for both and
+    /// discarding them when this decider throws (independent pre-PR review, cycle 1, conformance
+    /// lens).
+    /// </para>
     /// </summary>
-    private static void RefuseCompositionOnPrReview(Guid taskId, TaskType type, string? normalizedComposition)
+    public static void RefuseCompositionOnPrReview(Guid taskId, TaskType type, string? normalizedComposition)
     {
         if (normalizedComposition is null || type != TaskType.PrReview)
         {
@@ -429,9 +438,15 @@ public static class TaskDecider
                 "--queue-first, --clear-queue-first, or --review-stage-composition.");
         }
 
+        Optional<Run.ReviewStageComposition?> compositionForEvent = normalizedComposition.HasValue
+            ? Optional<Run.ReviewStageComposition?>.Of(normalizedComposition.Value is { } normalizedWord
+                ? Run.ReviewStageComposition.FromInput(normalizedWord)
+                : null)
+            : Optional<Run.ReviewStageComposition?>.None;
+
         return new TaskRevised(
             task.Id, objective, criteria, agentContext, dependencies, type, chosenModel,
-            revisedAt, revisedByOwnerId, epicId, queuePriority, normalizedComposition,
+            revisedAt, revisedByOwnerId, epicId, queuePriority, compositionForEvent,
             ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(
                 normalizedComposition.Value, reviewStageCompositionAcknowledged));
     }

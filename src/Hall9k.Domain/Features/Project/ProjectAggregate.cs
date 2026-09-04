@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Project;
@@ -48,7 +49,7 @@ public sealed class ProjectAggregate
     /// pipeline's stage composition becomes configuration recorded per run); null defers to the
     /// node. Task overrides this project value; this project value overrides the node.
     /// </summary>
-    public string? ReviewStageComposition { get; private set; }
+    public ReviewStageComposition? ReviewStageComposition { get; private set; }
     /// <summary>
     /// The name this project's task branches are cut under; the default renders exactly the
     /// <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> name the platform cut before templates existed.

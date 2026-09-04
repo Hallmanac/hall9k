@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Project.Events;
@@ -72,7 +73,7 @@ public sealed record ProjectSettingsChanged(
     /// <see cref="ReviewStageCompositionAcknowledged"/> says the consequence was accepted — see
     /// <c>Hall9k.Domain.Features.Run.ReviewStageCompositionValidation</c>.
     /// </summary>
-    Optional<string?> ReviewStageComposition = default,
+    Optional<ReviewStageComposition?> ReviewStageComposition = default,
     /// <summary>
     /// Whether removing a load-bearing review guarantee was acknowledged at set time (the
     /// <c>TaskPublished.UntrackedAttested</c> attestation idiom); clamped to false by the decider
