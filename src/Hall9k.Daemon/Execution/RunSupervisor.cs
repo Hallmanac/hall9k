@@ -89,17 +89,17 @@ public sealed class RunSupervisor(
     public void ResumeReviewLoop(RunDetails run, CancellationToken cancellationToken) =>
         ResumePipeline(run, cancellationToken);
 
-    /// <summary>
-    /// Startup adoption: every non-terminal run recorded for this node either gets its
-    /// monitor back (process alive, or result already on disk) or is failed honestly.
-    /// Returns the tally for the startup catch-up report.
-    /// </summary>
     private static readonly string[] AdoptableRunStates =
     [
         RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
         RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.BudgetParked.Value,
     ];
 
+    /// <summary>
+    /// Startup adoption: every non-terminal run recorded for this node either gets its
+    /// monitor back (process alive, or result already on disk) or is failed honestly.
+    /// Returns the tally for the startup catch-up report.
+    /// </summary>
     public async Task<OrphanAdoption> AdoptOrphansAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
@@ -189,6 +189,8 @@ public sealed class RunSupervisor(
         return new OrphanAdoption(adopted, failed);
     }
 
+    private static readonly string[] StrandedRunStates = [RunState.UnderReview.Value, RunState.Verifying.Value];
+
     /// <summary>
     /// The running-daemon counterpart of adoption for two cases where a run sits mid-pipeline
     /// with no monitor watching it: a resolved review park (a resolved park moves the run back
@@ -220,8 +222,6 @@ public sealed class RunSupervisor(
     /// ever finalizing it Done (independent pre-PR review, cycle 1, both lenses).
     /// </para>
     /// </summary>
-    private static readonly string[] StrandedRunStates = [RunState.UnderReview.Value, RunState.Verifying.Value];
-
     public async Task ResumeStrandedPipelinesAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
@@ -723,9 +723,27 @@ public sealed class RunSupervisor(
     /// evening, twice observed): every adopted case except ReviewParked skipped this, so
     /// the sweep requeued the very tasks adoption had just reattached, and both
     /// generations ran a full review cycle in parallel.
+    /// <para>
+    /// A sentinel-claimed run (<see cref="RunDetails.NodeId"/> is <see cref="Guid.Empty"/>,
+    /// Decisions Log #103, #125) never had a <see cref="TaskLease"/> written for it in the first
+    /// place — <see cref="LeaseHeartbeatService"/> only ever refreshes a lease whose
+    /// <c>NodeId</c> matches this node's own real id, so writing one here for the sentinel would
+    /// go stale and never be touched again, and <see cref="DispatchEngine.SweepExpiredLeasesAsync"/>
+    /// would requeue the still-live run out from under itself. Skipping the write here leaves the
+    /// task exactly as lease-free as a deliberate claim already is, which is what keeps the sweep
+    /// from ever seeing it at all (independent pre-PR review, cycle 1, conformance lens).
+    /// </para>
     /// </summary>
     private async Task RefreshAdoptedLeaseAsync(RunDetails run, CancellationToken cancellationToken)
     {
+        if (run.NodeId == Guid.Empty)
+        {
+            logger.LogInformation(
+                "Run {RunId} adopted in {State} under the sentinel claim — no lease to refresh",
+                run.Id, run.State.Value);
+            return;
+        }
+
         await using IDocumentSession session = store.LightweightSession();
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(run.TaskId, token: cancellationToken);
         if (task is null || task.State != TaskState.Claimed || task.CurrentRunId != run.Id)
