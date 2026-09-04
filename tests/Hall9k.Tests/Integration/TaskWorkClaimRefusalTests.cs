@@ -482,6 +482,100 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
     }
 
     /// <summary>
+    /// An interactive claim's node-level composition read used to go straight to the platform
+    /// config file, ignoring the Hall9k__ReviewStageComposition environment variable
+    /// OperatingSettingsResolver ranks above it (independent pre-PR review, cycle 1, adversarial
+    /// lens) — the same env-over-file precedence h9k config show and a headless dispatch on this
+    /// node already honor. Redirects HALL9K_HOME for the duration of this one test (unlike the rest
+    /// of this class, which never touches the config file) so the file write below lands in a
+    /// throwaway directory rather than whatever is actually installed on the machine running the
+    /// suite.
+    /// </summary>
+    [Fact]
+    public async Task A_queued_tasks_interactive_claim_resolves_the_composition_from_the_environment_over_the_file()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+            seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(taskId, projectId, "Prove the interactive claim honors the environment over the file",
+                    ["it is done"], TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        string home = Path.Combine(Path.GetTempPath(), $"hall9k-work-claim-composition-home-{Guid.NewGuid():N}");
+        string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+        string? previousComposition =
+            Environment.GetEnvironmentVariable($"{OperatingSettingsResolver.EnvironmentPrefix}ReviewStageComposition");
+        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+        try
+        {
+            // The file says None; the environment variable, which OperatingSettingsResolver ranks
+            // above the file, says full-pipeline — the divergence the fix closes.
+            await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.ReviewStageComposition = "None", cts.Token);
+            Environment.SetEnvironmentVariable(
+                $"{OperatingSettingsResolver.EnvironmentPrefix}ReviewStageComposition", "full-pipeline");
+
+            await using IDocumentSession session = store.LightweightSession();
+            StreamState fence = (await session.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cts.Token))!;
+            BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
+
+            string? previousConnectionString =
+                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+            Guid runId;
+            try
+            {
+                (runId, _, _, _, _, _, _) = await TaskWorkCommand.ClaimAndCutAsync(
+                    store, session, task, fence, context, DomainId.New(),
+                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
+                    acknowledgeUnmetDependencies: false, cts.Token);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
+            }
+
+            await using IQuerySession verify = store.QuerySession();
+            RunListItem run = (await verify.LoadAsync<RunListItem>(runId, cts.Token))!;
+            run.ReviewStageComposition.Should().Be(ReviewStageComposition.FullPipeline,
+                "the environment variable OperatingSettingsResolver ranks above the file, not the file's own None");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
+            Environment.SetEnvironmentVariable(
+                $"{OperatingSettingsResolver.EnvironmentPrefix}ReviewStageComposition", previousComposition);
+            try
+            {
+                if (Directory.Exists(home))
+                {
+                    Directory.Delete(home, recursive: true);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
     /// The atomic Published entry's own headline behavior (task 688a1ccf-h9k), driven through
     /// <see cref="TaskWorkCommand.ClaimAndCutAsync"/> itself rather than the pure
     /// <see cref="TaskWorkCommand.PrepareInteractiveClaimFromPublished"/> helper both the
