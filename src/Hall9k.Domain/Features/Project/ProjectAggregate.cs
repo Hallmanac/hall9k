@@ -55,6 +55,8 @@ public sealed class ProjectAggregate
     /// <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> name the platform cut before templates existed.
     /// </summary>
     public BranchNameTemplate BranchNameTemplate { get; private set; } = BranchNameTemplate.Default;
+    /// <summary>Whether a GitHub reviewer assignment to this install's own login auto-creates a pr-review task, and how fast it starts; Off is the platform's original behavior (idea e5e98a33).</summary>
+    public AutoPrReviewSpeed AutoPrReview { get; private set; } = AutoPrReviewSpeed.Off;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -168,6 +170,11 @@ public sealed class ProjectAggregate
         if (@event.ReviewStageComposition.HasValue)
         {
             ReviewStageComposition = @event.ReviewStageComposition.Value;
+        }
+
+        if (@event.AutoPrReview.HasValue)
+        {
+            AutoPrReview = @event.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
         }
     }
 }

@@ -50,6 +50,8 @@ public sealed class ProjectDetails
     /// <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> name the platform cut before templates existed.
     /// </summary>
     public BranchNameTemplate BranchNameTemplate { get; set; } = BranchNameTemplate.Default;
+    /// <summary>Whether a GitHub reviewer assignment to this install's own login auto-creates a pr-review task, and how fast it starts; Off is the platform's original behavior (idea e5e98a33).</summary>
+    public AutoPrReviewSpeed AutoPrReview { get; set; } = AutoPrReviewSpeed.Off;
     /// <summary>
     /// Where this project lives on disk (backlog 47). None for a project registered before homes
     /// existed, or one whose home has not been created on this machine.
@@ -168,6 +170,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.BranchNameTemplate.HasValue)
         {
             view.BranchNameTemplate = @event.Data.BranchNameTemplate.Value ?? BranchNameTemplate.Default;
+        }
+
+        if (@event.Data.AutoPrReview.HasValue)
+        {
+            view.AutoPrReview = @event.Data.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
