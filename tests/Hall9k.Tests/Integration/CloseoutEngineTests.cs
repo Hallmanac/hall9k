@@ -1765,6 +1765,48 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         task.FollowUpKind.Should().Be(FollowUpKind.Rebase);
     }
 
+    /// <summary>
+    /// GitHub's own <c>mergeable</c> read can say CONFLICTING against something other than
+    /// <c>project.BaseBranch</c> — a human retargeted the pull request onto a different base on
+    /// GitHub itself, the recurring stacked-PR shape AGENTS.md already documents as practice here
+    /// — while a rebase onto <c>project.BaseBranch</c> is a genuine no-op because the branch
+    /// already contains its tip. Without the progress check this would force-push the identical
+    /// no-op every sweep, forever, spending no budget and never parking (independent pre-PR
+    /// review, cycle 1, both lenses). Main is deliberately left untouched here, unlike every
+    /// sibling mechanical-rebase test, so the rebase genuinely has nothing to do.
+    /// </summary>
+    [Fact]
+    public async Task A_conflicting_pull_request_whose_rebase_makes_no_progress_falls_back_to_the_reopen_pipeline()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastMechanicalRebaseSucceeded.Should().BeFalse(
+            "a no-op rebase never actually addressed whatever GitHub reads as conflicting");
+        run.LastMechanicalRebaseDetail.Should().Contain("made no change");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued, "a no-progress rebase falls back to the ordinary reopen pipeline");
+        task.FollowUpKind.Should().Be(FollowUpKind.Rebase);
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.CloseoutAttempts.Should().Be(1,
+            "the fallback spends the ordinary automatic budget, unlike a bare success would have");
+    }
+
     /// <summary>Pushes a commit to origin/main that touches the same file the task branch's own seed commit did, so a real rebase genuinely conflicts.</summary>
     private static void SeedGenuineConflictOnMain(string repoPath)
     {
