@@ -303,16 +303,21 @@ public sealed class AutoPrReviewEngine(
         // never-guess-at-unobserved-facts rule forbids. TaskListItem carries no close/abandon
         // timestamp to report instead, so the honest fix is to say what is actually observed —
         // the task id and its outcome — and leave the date out rather than mislabel one.
-        // "an earlier request", never "this same standing request" (independent pre-PR review,
-        // cycle 1, adversarial lens): control only reaches here when IsGenuineReRequestAsync
-        // already found this request postdates the one previousReview was minted from, so by
-        // construction it is a different request, not the one already covered.
+        // Never "an earlier request" (independent pre-PR review, cycle 4, both lenses):
+        // control reaches here either because IsGenuineReRequestAsync compared timestamps and
+        // found this one postdates the one previousReview was minted from (genuinely a later
+        // request), or because previousReview's own stream predates
+        // PullRequestReviewAssignmentObserved.RequestedAt and there was nothing to compare
+        // against at all (the method's own documented conservative fallback) — a case this note
+        // cannot tell apart from the first without re-reading the stream itself, so it states
+        // only what is true either way: that the earlier task already reviewed this pull
+        // request, not that the request it reviewed was necessarily a distinct, earlier one.
         string? reReviewNote = previousReview is not null
             ? previousReview.State == TaskState.Abandoned
                 ? $"This is a re-review: an earlier auto-created task ({DomainId.Short(previousReview.Id)}) "
-                  + "reviewed an earlier request for this pull request and was abandoned."
-                : $"This is a re-review: task {DomainId.Short(previousReview.Id)} already reviewed an earlier "
-                  + "request for this pull request and closed Done."
+                  + "already reviewed this pull request and was abandoned."
+                : $"This is a re-review: task {DomainId.Short(previousReview.Id)} already reviewed this "
+                  + "pull request and closed Done."
             : null;
         string additionalContext = reReviewNote is null ? provenance : $"{provenance}\n{reReviewNote}";
         // Exactly as h9k task add --from-pr does (independent pre-PR review, cycle 1, conformance
