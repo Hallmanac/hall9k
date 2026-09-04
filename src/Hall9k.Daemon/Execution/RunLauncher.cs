@@ -166,7 +166,7 @@ public sealed class RunLauncher(
             // that can still reach them.
             if (isPrReview)
             {
-                await CleanUpPreviousPrReviewWorktreesAsync(taskId, project, nodeId, cancellationToken);
+                await CleanUpPreviousPrReviewWorktreesAsync(taskId, project, cancellationToken);
             }
 
             (Worktree worktree, bool resumesPreviousWork) = isPrReview
@@ -514,16 +514,23 @@ public sealed class RunLauncher(
     /// reach the old ones afterward — a pr-review run carries no PullRequestNumber, so
     /// CloseoutEngine's merge closeout never watches it, and a pr-review task refuses to
     /// reopen at all. This is the only point left in the run's whole lifecycle that still can.
+    /// Scoped to the task alone, never the dispatching node (independent pre-PR review, cycle
+    /// 1, both lenses): auto-pr-review's now speed launches a pr-review task's first run under
+    /// the ceiling-exempt Guid.Empty sentinel, and a later retry or requeue reclaims the task
+    /// under this daemon's own real node id — a node-scoped query would never see that
+    /// sentinel-dispatched predecessor and leak its worktree and tracking ref permanently.
+    /// The one-live-task-per-pull-request rule means every run this finds is already terminal
+    /// by the time a fresh one is about to launch, whichever node dispatched it.
     /// Best-effort throughout: a failed reclaim here costs nothing this dispatch needs.
     /// </summary>
     private async Task CleanUpPreviousPrReviewWorktreesAsync(
-        Guid taskId, ProjectDetails project, Guid nodeId, CancellationToken cancellationToken)
+        Guid taskId, ProjectDetails project, CancellationToken cancellationToken)
     {
         IReadOnlyList<RunDetails> previousRuns;
         await using (IQuerySession query = store.QuerySession())
         {
             previousRuns = await query.Query<RunDetails>()
-                .Where(r => r.TaskId == taskId && r.NodeId == nodeId)
+                .Where(r => r.TaskId == taskId)
                 .ToListAsync(cancellationToken);
         }
 
