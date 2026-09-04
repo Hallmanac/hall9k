@@ -194,6 +194,28 @@ public sealed class TaskLifecycleSurfaceTests
             .State.Should().Be(LifecycleState.Delivered, "a follow-up run works on already-delivered work");
     }
 
+    /// <summary>
+    /// TaskDecider.Revise's own Draft-only gate lets the queue-first marker through on a
+    /// currently-Claimed task (Decisions Log #127), which reads as LifecycleState.Working, not
+    /// Published — the one lifecycle word PublishedFacts.Compose used to refuse to say anything
+    /// about at all, so the marker was recorded on the stream but invisible everywhere on the
+    /// board until the task's next turn in the queue (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </summary>
+    [Fact]
+    public void A_marked_task_says_so_even_while_working()
+    {
+        Guid runId = DomainId.New();
+        TaskListItem working = StatusFixtures.Task(TaskState.Claimed, runId);
+        working.QueuePriorityMarked = true;
+
+        TaskStatusRow row = StatusFixtures.Compose(working, StatusFixtures.Run(runId, RunState.Running));
+
+        row.State.Should().Be(LifecycleState.Working);
+        row.Facts.Should().ContainSingle()
+            .Which.Should().Contain("marked queue-first");
+    }
+
     [Fact]
     public void An_abandoned_task_reads_as_archived_whichever_word_the_stream_records()
     {
