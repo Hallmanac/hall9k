@@ -66,23 +66,26 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
 
         // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
         // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
-        // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), already running headlessly
-        // under this daemon's own RunSupervisor. Running the project's build/test gates here would
-        // execute the untrusted pull-request-head worktree's own code under the operator's account —
-        // exactly the boundary RunLauncher's UntrustedWorkingDirectory flag and ClaudeExecutor's own
+        // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), driven headlessly by this
+        // daemon's own RunSupervisor. Running the project's build/test gates here would execute the
+        // untrusted pull-request-head worktree's own code under the operator's account — exactly the
+        // boundary RunLauncher's UntrustedWorkingDirectory flag and ClaudeExecutor's own
         // settings/hooks/MCP stripping exist to hold (independent pre-PR review, cycle 6, conformance
-        // lens). Mirrors TaskHandbackCommand's and TaskReleaseCommand's identical guard. Checked
-        // after the run-record load above, not before: a crashed Now-speed launch (no RunDispatched
-        // ever committed) has no run to be "already running headlessly" in, and this guard used to
-        // fire unconditionally on task.Type alone ahead of that load, overclaiming an unobserved
-        // "running" fact for exactly the case the no-record message above exists to describe
-        // honestly instead (independent pre-PR review, cycle 7, conformance lens).
+        // lens). Mirrors TaskHandbackCommand's and TaskReleaseCommand's identical guard, but stays
+        // unconditional on run state where those two exempt a terminal run: neither of them has an
+        // untrusted worktree to protect, while there is no run state at all in which executing this
+        // one's gates locally becomes safe. Checked after the run-record load above, not before: a
+        // crashed Now-speed launch (no RunDispatched ever committed) has no run to be "already
+        // running headlessly" in, and this guard used to fire unconditionally on task.Type alone
+        // ahead of that load, overclaiming an unobserved "running" fact for exactly the case the
+        // no-record message above exists to describe honestly instead (independent pre-PR review,
+        // cycle 7, conformance lens). The message is composed from the run's own observed state for
+        // the same reason: a run parked ReviewParked or BudgetParked is not running either, and a
+        // fixed "already running headlessly" sentence overclaimed it the same way (independent
+        // pre-PR review, cycle 8, class sweep off the release/handback findings).
         if (task.Type == TaskType.PrReview)
         {
-            throw new DomainConflictException(
-                $"Task {taskId} is a pr-review task dispatched by auto-pr-review's now speed — it is "
-                + "already running headlessly under the daemon's own supervision, not an interactive "
-                + $"claim to verify. h9k task show {taskId} to see where it stands.");
+            throw PrReviewSentinelClaim.Refuse(taskId, run.State, "verify");
         }
 
         // An operator's own session, still attached in another terminal, is editing and possibly
