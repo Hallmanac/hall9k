@@ -48,4 +48,43 @@ public sealed class GateInfrastructureFailureClassifierTests
     public void MatchingExcerpt_is_null_for_a_real_failure() =>
         GateInfrastructureFailureClassifier.MatchingExcerpt("Xunit.Sdk.EqualException: expected true, was false")
             .Should().BeNull();
+
+    [Fact]
+    public void An_unresolved_gate_wait_at_the_very_end_of_the_output_classifies_as_a_timeout_infrastructure_failure() =>
+        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(
+                "some earlier test output\n" +
+                "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
+                "(842s elapsed, 4 max concurrent) — every permit is currently held " +
+                "(by this process's own other classes, or by another process on this machine)")
+            .Should().BeTrue();
+
+    [Fact]
+    public void A_gate_wait_line_from_early_in_a_long_run_does_not_classify_a_later_unrelated_timeout() =>
+        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(
+                "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
+                "(3s elapsed, 4 max concurrent) — every permit is currently held " +
+                "(by this process's own other classes, or by another process on this machine)"
+                + new string('x', 5_000) +
+                "Assert.Equal() Failure\nExpected: 3\nActual:   4")
+            .Should().BeFalse("the run got well past the wait and hung or failed for an unrelated reason");
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("Assert.Equal() Failure\nExpected: 3\nActual:   4")]
+    public void An_absent_or_ordinary_timeout_output_is_never_guessed_as_an_unresolved_gate_wait(string? timeoutOutput) =>
+        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(timeoutOutput).Should().BeFalse();
+
+    [Fact]
+    public void UnresolvedGateWaitExcerpt_carries_the_marker() =>
+        GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(
+                "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
+                "(842s elapsed, 4 max concurrent) — every permit is currently held " +
+                "(by this process's own other classes, or by another process on this machine)")
+            .Should().Contain("Waiting on cross-process container gate");
+
+    [Fact]
+    public void UnresolvedGateWaitExcerpt_is_null_when_the_marker_never_appears() =>
+        GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt("Assert.Equal() Failure")
+            .Should().BeNull();
 }
