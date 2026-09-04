@@ -706,7 +706,15 @@ The checkpoints, in the order the window sees them:
    with `h9k review resolve --merge-ready` directly, and the task reaches Done there instead —
    still without any pull request ever opening or merging.
 5. **Copilot and the human review it.** The closeout monitor reads unresolved threads and
-   dispatches follow-up runs to answer them, bounded by a retry budget (#22, #62).
+   dispatches follow-up runs to answer them, bounded by a retry budget (#22, #62). A branch
+   obstructed only by a conflict with its own base is not always one of those follow-ups: closeout
+   tries a mechanical fetch+rebase+force-push first, in the run's retained worktree, with no agent
+   session and no local gates — GitHub's own CI on the push is the authoritative gate here, so a
+   local run would only duplicate it (#131). A clean apply is pushed with no reopen at all; only a
+   genuine failure (a real conflict, an unusable worktree, a refused push, or a pull request
+   retargeted to a base other than the project's own) falls back to the ordinary follow-up dispatch
+   above. `h9k task show` prints a **Mechanical rebase** line either way, so a branch rewritten
+   under an open pull request is never silent about who did it or when.
 6. **The human merges.** The platform never merges. The observed merge is true closeout: it is the
    moment the run completes, dependents unblock, and the worktree is removed. The task was already
    Done; what the merge changes is everything around it.
