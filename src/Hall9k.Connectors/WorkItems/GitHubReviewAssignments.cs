@@ -16,6 +16,21 @@ public sealed record ReviewRequestedPullRequest(int Number, string Url, string T
 public sealed record ReviewRequestActor(string? Login, DateTimeOffset? RequestedAt);
 
 /// <summary>
+/// Which half of a login's reviewer-request history <see cref="GitHubReviewAssignments.FindMostRecentRequestActorAsync"/>
+/// should walk the timeline for: <see cref="Requested"/> for who most recently asked for this
+/// login as a reviewer (the assignment's own provenance), <see cref="Removed"/> for who most
+/// recently withdrew that request (a recall's own provenance). The two are never the same
+/// timeline entry — asking for the most recent match of either kind, as a single lookup once
+/// did, attributes a request's own requester as its recaller whenever no removal exists at all
+/// (independent pre-PR review, adversarial lens, cycle 1).
+/// </summary>
+public enum ReviewTimelineEventKind
+{
+    Requested,
+    Removed,
+}
+
+/// <summary>
 /// The discovery half of the auto-pr-review feature (idea e5e98a33): finding which open pull
 /// requests currently request this install's own login as a reviewer, in a repository nothing
 /// has adopted a task from yet — the one read nothing in this codebase already does, since every
@@ -44,6 +59,7 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
             pullRequest(number: $number) {
               timelineItems(last: 20, itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT]) {
                 nodes {
+                  __typename
                   ... on ReviewRequestedEvent {
                     createdAt
                     actor { login }
@@ -142,12 +158,19 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
     /// <summary>
     /// Who most recently requested or withdrew <paramref name="login"/> as a reviewer on this
     /// pull request, and when GitHub recorded it — the provenance a newly observed assignment or
-    /// recall is recorded against. Best-effort: a <c>gh</c> failure or a timeline this method
-    /// cannot read returns an actor whose fields are both null rather than throwing, since a
-    /// missing "who" must never block recording the "what" and "when" the caller already knows.
+    /// recall is recorded against. <paramref name="kind"/> restricts the walk to that one half of
+    /// the timeline: the most recent event of either kind, regardless of which, would attribute a
+    /// request's own requester as its recaller whenever the pull request carries no removal event
+    /// at all (independent pre-PR review, adversarial lens, cycle 1) — a caller recording who
+    /// requested asks for <see cref="ReviewTimelineEventKind.Requested"/>, a caller recording who
+    /// recalled asks for <see cref="ReviewTimelineEventKind.Removed"/>, and neither ever sees the
+    /// other's kind of event. Best-effort: a <c>gh</c> failure or a timeline this method cannot
+    /// read returns an actor whose fields are both null rather than throwing, since a missing
+    /// "who" must never block recording the "what" and "when" the caller already knows.
     /// </summary>
     public async Task<ReviewRequestActor> FindMostRecentRequestActorAsync(
-        string owner, string name, int number, string login, string workingDirectory, CancellationToken cancellationToken)
+        string owner, string name, int number, string login, ReviewTimelineEventKind kind,
+        string workingDirectory, CancellationToken cancellationToken)
     {
         ProcessResult result;
         try
@@ -175,27 +198,45 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
 
         try
         {
-            return ParseMostRecentRequestActor(result.StandardOutput, login);
+            return ParseMostRecentRequestActor(result.StandardOutput, login, kind);
         }
-        catch (JsonException)
+        catch (Exception exception) when (
+            exception is JsonException or KeyNotFoundException or InvalidOperationException)
         {
             return new ReviewRequestActor(null, null);
         }
     }
 
     /// <summary>Split from the gh call so the mapping is testable against recorded gh output.</summary>
-    internal static ReviewRequestActor ParseMostRecentRequestActor(string json, string login)
+    internal static ReviewRequestActor ParseMostRecentRequestActor(string json, string login, ReviewTimelineEventKind kind)
     {
         using JsonDocument document = JsonDocument.Parse(json);
-        JsonElement nodes = document.RootElement.GetProperty("data").GetProperty("repository")
-            .GetProperty("pullRequest").GetProperty("timelineItems").GetProperty("nodes");
+        if (!document.RootElement.TryGetProperty("data", out JsonElement data)
+            || !data.TryGetProperty("repository", out JsonElement repository)
+            || repository.ValueKind != JsonValueKind.Object
+            || !repository.TryGetProperty("pullRequest", out JsonElement pullRequest)
+            || pullRequest.ValueKind != JsonValueKind.Object
+            || !pullRequest.TryGetProperty("timelineItems", out JsonElement timelineItems)
+            || !timelineItems.TryGetProperty("nodes", out JsonElement nodes)
+            || nodes.ValueKind != JsonValueKind.Array)
+        {
+            // A pull request GraphQL cannot resolve (a stale number in a repository that has
+            // moved or renamed) returns "pullRequest": null rather than an error, with no
+            // "timelineItems" to walk — honestly unattributed rather than a guess.
+            return new ReviewRequestActor(null, null);
+        }
+
+        string expectedTypeName = kind == ReviewTimelineEventKind.Requested
+            ? "ReviewRequestedEvent"
+            : "ReviewRequestRemovedEvent";
 
         // timelineItems' own `last:` ordering is oldest-first, so the most recent match is found
         // walking backward from the end rather than taking nodes[0].
         for (int index = nodes.GetArrayLength() - 1; index >= 0; index--)
         {
             JsonElement node = nodes[index];
-            if (!node.TryGetProperty("requestedReviewer", out JsonElement reviewer)
+            if (ReadString(node, "__typename") != expectedTypeName
+                || !node.TryGetProperty("requestedReviewer", out JsonElement reviewer)
                 || reviewer.ValueKind != JsonValueKind.Object
                 || ReadString(reviewer, "login") is not { } reviewerLogin
                 || !string.Equals(reviewerLogin, login, StringComparison.OrdinalIgnoreCase))
