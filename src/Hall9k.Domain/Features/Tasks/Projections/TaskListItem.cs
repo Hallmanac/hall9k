@@ -275,6 +275,9 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.FollowUpKind = FollowUpKind.Unknown;
         view.State = TaskState.Done;
+        // Mirrors TaskAggregate.Apply(TaskCompleted): a marker set while this same claim was
+        // live never routes back through Apply(TaskClaimed), so nothing else here clears it.
+        view.QueuePriorityMarked = false;
     }
 
     public void Apply(IEvent<TaskReopened> @event, TaskListItem view)
@@ -328,12 +331,17 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.PullRequestUrl = @event.Data.PullRequestUrl ?? view.PullRequestUrl;
         view.FollowUpKind = FollowUpKind.Unknown;
         view.State = TaskState.Done;
+        // Mirrors TaskAggregate.Apply(TaskResolved): same reasoning as Apply(TaskCompleted) above.
+        view.QueuePriorityMarked = false;
     }
 
     public void Apply(IEvent<TaskAbandoned> @event, TaskListItem view)
     {
         view.FollowUpKind = FollowUpKind.Unknown;
         view.State = TaskState.Abandoned;
+        // Mirrors TaskAggregate.Apply(TaskAbandoned): a dead end, so a marker set earlier in
+        // this task's life must not survive to be read back.
+        view.QueuePriorityMarked = false;
     }
 
     // Only the auth-failure flag and its reason matter to this row (AttentionComposer.Compose):

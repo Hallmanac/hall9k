@@ -230,7 +230,11 @@ public sealed class TaskAggregate
     /// not a handback-only flag: <c>h9k task revise --queue-first</c> sets it directly, and
     /// <c>h9k task handback --first</c> sets it as part of handing a claim back. Cleared the
     /// moment the run it earned actually dispatches (<see cref="Apply(TaskClaimed)"/>), so it
-    /// never outlives the turn it bought.
+    /// never outlives the turn it bought — and cleared the same way when the turn it was waiting
+    /// for never comes: a task that reaches Done (<see cref="Apply(TaskCompleted)"/>,
+    /// <see cref="Apply(TaskResolved)"/>) or Abandoned (<see cref="Apply(TaskAbandoned)"/>)
+    /// without ever routing back through another claim would otherwise carry a marker set
+    /// earlier in its life straight into a state nothing will ever dispatch again.
     /// </summary>
     public bool QueuePriorityMarked { get; private set; }
 
@@ -520,6 +524,11 @@ public sealed class TaskAggregate
         FollowUpKind = FollowUpKind.Unknown;
         RetryBranch = null;
         State = TaskState.Done;
+        // A marker set while this same claim was live (h9k task revise --queue-first on a
+        // Claimed task) never goes through Apply(TaskClaimed) again, so nothing else clears it —
+        // without this it would survive Done and misreport a finished task as still buying a
+        // future dispatch turn (independent pre-PR review, cycle 1, adversarial lens).
+        QueuePriorityMarked = false;
     }
 
     public void Apply(TaskReopened @event)
@@ -622,6 +631,10 @@ public sealed class TaskAggregate
         FollowUpKind = FollowUpKind.Unknown;
         RetryBranch = null;
         State = TaskState.Done;
+        // Same reasoning as Apply(TaskCompleted): a resolved task reaches Done without ever
+        // routing back through Apply(TaskClaimed), so a marker set earlier in its life would
+        // otherwise survive it.
+        QueuePriorityMarked = false;
     }
 
     public void Apply(TaskRetried @event)
@@ -741,6 +754,9 @@ public sealed class TaskAggregate
         FollowUpKind = FollowUpKind.Unknown;
         RetryBranch = null;
         State = TaskState.Abandoned;
+        // Same reasoning as Apply(TaskCompleted): a marker set earlier in this task's life is a
+        // dead end here — Abandoned never reopens — so it must not survive to be read back.
+        QueuePriorityMarked = false;
 
         // A publication nobody has started yet is one of those markers, for the reason
         // TaskDecider.RequestWorkItemPublication refuses to make one: filing a card for abandoned

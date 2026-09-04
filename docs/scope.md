@@ -74,9 +74,11 @@ the sentinel `Guid.Empty`, which the node's session-ceiling accounting never cou
 even when the daemon's queue is full. `h9k task verify` runs the project's gates on demand against
 the claim's worktree; `h9k task deliver` pushes the branch and hands the run into the standard
 delivery pipeline — from there it is indistinguishable from a headless run; `h9k task handback`
-releases the claim to a headless agent partway through, resuming the same branch; `h9k task
+releases the claim to a headless agent partway through, resuming the same branch (`--first` marks
+it queue-first for the next free dispatch slot, `--now` dispatches it immediately instead,
+ceiling-exempt, through `h9k task start`'s own mechanism — refused together); `h9k task
 release` gives an untouched claim back to the dispatch queue. See
-[PLAN.md Decisions Log #103, #122, #124, #126](../PLAN.md).
+[PLAN.md Decisions Log #103, #122, #124, #126, #127](../PLAN.md).
 
 ### A deliberate human kick-off
 
@@ -91,7 +93,11 @@ the process is confirmed alive. Unlike `h9k task work`, an unmet dependency on a
 does not refuse outright: the platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. That
 override only applies at the moment of assignment — a task already sitting Blocked from an
-ordinary `h9k task assign` still refuses. Refused otherwise on Draft, a pr-review task, a reopened
+ordinary `h9k task assign` still refuses, UNLESS every one of its still-open blockers was already
+warned-and-acknowledged at an earlier deliberate claim on this same assignment cycle (the shape
+`h9k task handback --now` produces: a claim once acknowledged, handed back, and picked back up) —
+the acknowledgment carries forward rather than needing to be given again. Refused otherwise on
+Draft, a pr-review task, a reopened
 task's follow-up branch, and any task that already has a live claim; there is no re-entry path the
 way `h9k task work` has one. Giving the claim back (`handback`, `release`, `retry`, or `pr resolve`
 reopening it) lands the task on Blocked rather than Queued when the acknowledged dependency is

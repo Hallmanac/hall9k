@@ -143,13 +143,12 @@ public sealed class TaskLifecycleTests
         act.Should().Throw<DomainConflictException>().WithMessage("*only a draft can be revised*");
     }
 
-    /// <summary>Nothing here will ever be queued again, so marking it is refused rather than silently recorded.</summary>
+    /// <summary>Abandoned is the one state Reopen never runs from, so marking it is refused rather than silently recorded.</summary>
     [Fact]
-    public void Revise_of_a_done_task_setting_only_queue_priority_refuses()
+    public void Revise_of_an_abandoned_task_setting_only_queue_priority_refuses()
     {
         TaskAggregate task = Queued();
-        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
-        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/x/y/pull/1", Now));
+        task.Apply(TaskDecider.Abandon(task, "Stopped believing in it", Now, Owner));
 
         Action act = () => TaskDecider.Revise(
             task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
@@ -157,6 +156,27 @@ public sealed class TaskLifecycleTests
             epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true));
 
         act.Should().Throw<DomainConflictException>().WithMessage("*nothing here will ever be queued again*");
+    }
+
+    /// <summary>
+    /// Done is precisely and exclusively the state Reopen runs from (TaskDecider.Reopen), so the
+    /// marker stays settable there too — for the follow-up run a later reopen might dispatch
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public void Revise_of_a_done_task_setting_only_queue_priority_succeeds()
+    {
+        TaskAggregate task = Queued();
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/x/y/pull/1", Now));
+
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true)));
+
+        task.QueuePriorityMarked.Should().BeTrue();
+        task.State.Should().Be(TaskState.Done, "the marker changes nothing else about the task");
     }
 
     /// <summary>
@@ -176,6 +196,44 @@ public sealed class TaskLifecycleTests
         task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
 
         task.QueuePriorityMarked.Should().BeFalse("the run it earned just dispatched");
+    }
+
+    /// <summary>
+    /// A marker set on a currently-Claimed task (Decisions Log #127's own allowance) buys a
+    /// future turn that never arrives if the run simply finishes — without this it would survive
+    /// into Done and misreport a finished task as still waiting for one (independent pre-PR
+    /// review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void Completing_a_marked_claim_clears_the_queue_first_marker()
+    {
+        TaskAggregate task = Queued();
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true)));
+        task.QueuePriorityMarked.Should().BeTrue();
+
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/x/y/pull/1", Now));
+
+        task.QueuePriorityMarked.Should().BeFalse("the task reached Done without ever earning another claim");
+    }
+
+    /// <summary>Same reasoning as completing a marked claim, but for the walked-away exit.</summary>
+    [Fact]
+    public void Abandoning_a_marked_task_clears_the_queue_first_marker()
+    {
+        TaskAggregate task = Queued();
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true)));
+        task.QueuePriorityMarked.Should().BeTrue();
+
+        task.Apply(TaskDecider.Abandon(task, "Stopped believing in it", Now, Owner));
+
+        task.QueuePriorityMarked.Should().BeFalse();
     }
 
     /// <summary>

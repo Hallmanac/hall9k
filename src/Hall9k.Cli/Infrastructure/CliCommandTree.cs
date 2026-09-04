@@ -481,14 +481,21 @@ public static class CliCommandTree
             task.AddCommand<TaskReviseCommand>("revise")
                 .WithDescription(
                     "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies. "
-                    + "Draft-only by design — a published task promises it may be assigned at any moment and a "
-                    + "assigned one promises a node may read it at any moment, and editing would break both. "
-                    + "Each option passed replaces that part; each one left off is left alone.")
+                    + "Draft-only for all of those — a published task promises it may be assigned at any moment "
+                    + "and an assigned one promises a node may read it at any moment, and editing them would break "
+                    + "both. --queue-first/--clear-queue-first is the one exception (Decisions Log #127): a "
+                    + "scheduling fact, not part of the readiness contract, settable on a call that names nothing "
+                    + "else in any live state — Queued, Blocked, a currently Claimed task (for its next turn in "
+                    + "the queue), even a Done one (for the follow-up run a later reopen might dispatch); refused "
+                    + "only on Abandoned, which nothing ever requeues from. Each option passed replaces that part; "
+                    + "each one left off is left alone.")
                 .WithExample("task", "revise", "28b19893", "--criteria", "\"h9k status shows the blocked reason\"")
                 .WithExample("task", "revise", "28b19893", "--blocked-by", "3f2a91b2", "--blocked-by", "91bd44c0")
                 .WithExample("task", "revise", "28b19893", "--clear-dependencies")
                 .WithExample("task", "revise", "28b19893", "--epic", "3f2a91b2")
-                .WithExample("task", "revise", "28b19893", "--clear-epic");
+                .WithExample("task", "revise", "28b19893", "--clear-epic")
+                .WithExample("task", "revise", "28b19893", "--queue-first")
+                .WithExample("task", "revise", "28b19893", "--clear-queue-first");
             task.AddCommand<TaskSetReviewCapsCommand>("set-review-caps")
                 .WithDescription(
                     "Override one or more of this task's four review-cycle caps — the conformance and "
@@ -768,11 +775,18 @@ public static class CliCommandTree
                     "Hand an interactive claim to a headless agent partway through: refuses on uncommitted "
                     + "files (you are present to commit), releases your claim, and queues the task through "
                     + "normal dispatch. Mechanically the existing follow-up resume-existing-branch flow — the "
-                    + "next headless run resumes your branch instead of starting clean. Refused when the claim's "
+                    + "next headless run resumes your branch instead of starting clean. Pickup speed is a "
+                    + "three-way choice (Decisions Log #127): no flag is the normal rotation, byte-for-byte "
+                    + "today's behavior; --first records the queue-first marker so the next free dispatch slot "
+                    + "takes this task regardless of assignment age; --now dispatches it immediately instead, "
+                    + "ceiling-exempt, through the same mechanism h9k task start uses. --first and --now are "
+                    + "refused together — pass one. Refused when the claim's "
                     + "session was recorded on another machine this one cannot check — --force attests you "
                     + "confirmed by hand that it has exited.")
                 .WithExample("task", "handback", "28b19893")
-                .WithExample("task", "handback", "28b19893", "--reason", "\"Need to step away; the migration script is drafted but untested\"");
+                .WithExample("task", "handback", "28b19893", "--reason", "\"Need to step away; the migration script is drafted but untested\"")
+                .WithExample("task", "handback", "28b19893", "--first")
+                .WithExample("task", "handback", "28b19893", "--now");
         });
     }
 
