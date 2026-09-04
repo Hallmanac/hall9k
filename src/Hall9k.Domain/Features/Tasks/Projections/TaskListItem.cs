@@ -52,6 +52,14 @@ public sealed class TaskListItem
     /// dispatches for this task, mirroring <see cref="TaskAggregate.QueuePriorityMarked"/>.
     /// </summary>
     public bool QueuePriorityMarked { get; set; }
+    /// <summary>
+    /// Mirrors <see cref="TaskAggregate.AutoPrReviewAssigneeLogin"/>: the login this task's own
+    /// auto-created reviewer assignment currently believes is requested, or null when none is on
+    /// record. What the auto-pr-review poll's unassignment check reads to tell an auto-created
+    /// task apart from one a human minted by hand with h9k task add --from-pr — only the former
+    /// is this feature's to recall (idea e5e98a33).
+    /// </summary>
+    public string? AutoPrReviewAssigneeLogin { get; set; }
     /// <summary>Declared dependency edges — the cheap re-evaluation query filters on this.</summary>
     public List<Guid> BlockedBy { get; set; } = [];
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
@@ -377,4 +385,10 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     // as an adopted one does — the two funnel exits meet on this field (PLAN.md §3.1a).
     public void Apply(IEvent<WorkItemLinked> @event, TaskListItem view) =>
         view.ExternalReference = @event.Data.Reference.ToString();
+
+    public void Apply(IEvent<PullRequestReviewAssignmentObserved> @event, TaskListItem view) =>
+        view.AutoPrReviewAssigneeLogin = @event.Data.AssigneeLogin;
+
+    public void Apply(IEvent<PullRequestReviewAssignmentRecalled> @event, TaskListItem view) =>
+        view.AutoPrReviewAssigneeLogin = null;
 }

@@ -248,6 +248,17 @@ public sealed class TaskAggregate
     public bool QueuePriorityMarked { get; private set; }
 
     /// <summary>
+    /// The GitHub login this task's own auto-created reviewer assignment currently believes is
+    /// requested (idea e5e98a33), or null when no assignment is currently on record — either
+    /// because this task was never auto-created, or because the assignment was recalled. This is
+    /// the poll's own comparison point (the <see cref="TaskReopened.KnownPendingReviewRequestLogins"/>
+    /// pattern applied here): set by <see cref="Apply(Events.PullRequestReviewAssignmentObserved)"/>,
+    /// cleared by <see cref="Apply(Events.PullRequestReviewAssignmentRecalled)"/>, so a withdrawn
+    /// assignment is never re-observed as a fresh recall on every later poll.
+    /// </summary>
+    public string? AutoPrReviewAssigneeLogin { get; private set; }
+
+    /// <summary>
     /// Blocker ids a human has already acknowledged as open and chosen to claim across anyway
     /// (<see cref="Handlers.TaskDecider.ClaimDeliberately"/>'s or
     /// <see cref="Handlers.TaskDecider.ClaimInteractively"/>'s own Blocked-entry branch,
@@ -762,6 +773,13 @@ public sealed class TaskAggregate
     public void Apply(JiraMergeNoticeQueued @event) => HasQueuedJiraMergeNotice = true;
 
     public void Apply(JiraMergeNoticeAttempted @event) => HasQueuedJiraMergeNotice = false;
+
+    public void Apply(PullRequestReviewAssignmentObserved @event) => AutoPrReviewAssigneeLogin = @event.AssigneeLogin;
+
+    // State is never touched here (see the event's own doc comment): the caller that appends
+    // this decides Concluded from the state it read before appending, and a following
+    // TaskAbandoned (never this Apply) is what actually moves State when it concluded the task.
+    public void Apply(PullRequestReviewAssignmentRecalled @event) => AutoPrReviewAssigneeLogin = null;
 
     private void ClearPendingJiraWrite()
     {
