@@ -65,10 +65,17 @@ internal static class CrossProcessContainerGate
             DateTimeOffset now = DateTimeOffset.UtcNow;
             if (now >= nextLogAt)
             {
+                // Deliberately does not name "another process on this machine" as the holder:
+                // unlike GitWorktreeManager.AcquireCrossProcessLockAsync, this gate has no
+                // in-process semaphore in front of it, so this process's own other test classes
+                // are routinely the contenders too (this file's own doc comment above names
+                // "this one's own next class" as a legitimate holder) — stating only what was
+                // actually observed (independent pre-PR review, cycle 1).
                 Console.Error.WriteLine(
                     $"Waiting on cross-process container gate {gateDirectory} " +
                     $"({(now - waitStarted).TotalSeconds:0}s elapsed, {maxConcurrent} max concurrent) " +
-                    "— another process on this machine holds every permit");
+                    "— every permit is currently held (by this process's own other classes, " +
+                    "or by another process on this machine)");
                 nextLogAt = now.AddSeconds(5);
             }
 
