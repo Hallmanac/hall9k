@@ -204,15 +204,23 @@ internal static class InteractiveSessionLiveness
         // A deliberate h9k task start claim records its InteractiveSessionStarted under the
         // identical AgentRole.Interactive this check already filtered on above (TaskStartCommand
         // mirrors h9k task work's own append exactly), so a bare role-plus-pid match alone cannot
-        // tell the two apart. Its session answers to the SessionRoleName.Build suffix, never
-        // SessionRoleName.InteractiveClaim (TaskPhaseComposer already keys the identical
-        // distinction off this same field) — excluding it here matters because that session's own
-        // prompt (isDeliberateHeadlessStart) never received AppendSelfDeliveryRule and states
-        // deliver/verify refuse unconditionally from inside it, so letting CLAUDE_PID wave a
-        // start-it-mine session's own unattended deliver past the guard would deliver mid-work,
-        // with a blank handoff and no stop-editing rule ever stated to it (adversarial review,
-        // cycle 1).
-        if (!run.SessionName.EndsWith("-" + SessionRoleName.InteractiveClaim, StringComparison.Ordinal))
+        // tell the two apart. Excluding it here matters because that session's own prompt
+        // (isDeliberateHeadlessStart) never received AppendSelfDeliveryRule and states deliver/
+        // verify refuse unconditionally from inside it, so letting CLAUDE_PID wave a start-it-mine
+        // session's own unattended deliver past the guard would deliver mid-work, with a blank
+        // handoff and no stop-editing rule ever stated to it (adversarial review, cycle 1).
+        // Checked for the SessionRoleName.Build suffix specifically, the same polarity
+        // TaskPhaseComposer already uses for the identical distinction and for the identical
+        // reason: run.SessionName is not a stable "which claim kind is this" tag, it is the most
+        // recently recorded session's own name, and h9k task register-session (this same guard's
+        // other caller, once an operator's own h9k task work re-enters a start-it-mine claim)
+        // deliberately overwrites it with that session's real, un-role-shaped Claude Code name —
+        // so requiring a positive InteractiveClaim-suffix match here would wrongly exclude the
+        // ordinary, fully-attended prompt-handoff session the moment it registers itself. Once
+        // re-entry has touched it, the suffix reads as something other than "-build" and this
+        // exemption correctly applies again, because a re-entered session's own prompt always
+        // carries AppendSelfDeliveryRule too (h9k task work is isInteractive: true on every path).
+        if (run.SessionName.EndsWith("-" + SessionRoleName.Build, StringComparison.Ordinal))
         {
             return false;
         }

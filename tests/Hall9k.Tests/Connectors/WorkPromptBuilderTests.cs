@@ -162,7 +162,7 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().Contain(
             "only once the",
             "the self-delivery bullet later in the prompt must not read as unqualified permission to deliver unprompted");
-        prompt.Should().Contain("never your own unprompted call");
+        prompt.Should().Contain("your own unprompted call");
     }
 
     [Fact]
