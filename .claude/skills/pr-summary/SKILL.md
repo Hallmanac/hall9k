@@ -1,6 +1,6 @@
 ---
 name: pr-summary
-description: Generate a pull-request title and description from the commits on the current branch. Use when a branch's work is finished and needs a PR body — the output is text only; it never opens the PR.
+description: Generate a pull-request title and description from the commits on the current branch. Use to replace an already-open PR's body, or to draft one for a PR opened outside Hall9k's own dispatch — never as a build session's own closing summary, since the daemon composes a fresh PR's body itself. Output is text only; it never opens the PR.
 ---
 
 # PR Summary Generator
@@ -14,9 +14,10 @@ are forbidden from doing so.
 **Use this skill to produce a full pull-request body, never as a build session's own closing
 summary.** When the daemon opens a fresh PR it composes the body itself — the work-item mention,
 the acceptance criteria, and the run/token footer are all written automatically, with whatever the
-session's own final message said folded in underneath, unchanged, as `## Agent summary`. Invoking
-this skill for that final message nests a second work-item line and a second, necessarily invented
-footer inside the daemon's real ones; that is not what this skill is for. Its two legitimate uses
+session's own final message said folded in underneath (truncated to 4,000 characters and defused
+of closing keywords and control characters) as `## Agent summary`. Invoking this skill for that
+final message nests a second work-item line and a second, necessarily invented footer inside the
+daemon's real ones; that is not what this skill is for. Its two legitimate uses
 are a description for a PR opened outside Hall9k's own dispatch entirely, and replacing the body on
 an already-open PR — read the current body first (`gh pr view <number> --json body -q .body`),
 because it carries the real footer and, whenever the review loop left something behind, a
@@ -53,9 +54,10 @@ drafted text back for a human to apply either way.
    - What here would a competent developer be puzzled by, disagree with, or waste time
      re-deriving? That is the only "why" worth writing down.
 
-4. **Ask only what you cannot determine.** If the reason for a decision is genuinely not in the
-   commits, the diff, the linked work item, or the code comments, say so under "For the reviewer"
-   rather than inventing one.
+4. **Name what you cannot determine, rather than inventing it.** If the reason for a decision is
+   genuinely not in the commits, the diff, the linked work item, or the code comments, say so under
+   "For the reviewer" — a dispatched session has no one to ask; `h9k ask`/`h9k answer` are Slice 2
+   and not built yet (AGENTS.md).
 
 5. **Write the body** per "How it should read" below, then output the final title and description
    in a fenced code block so it can be copied or consumed verbatim.
@@ -65,8 +67,8 @@ drafted text back for a human to apply either way.
 **Audience**: a colleague reviewing this on GitHub who hasn't read the diff yet.
 
 **The work-item line, conditional and first.** One line, `Work item: <url>`, only when step 2
-found one — the linked Jira card if the project binds Jira, else a linked GitHub issue, else the
-line is omitted entirely rather than left empty or guessed at.
+found one — a task carries at most one external reference, so use whichever it carries; when
+neither is present, the line is omitted entirely rather than left empty or guessed at.
 
 **Then a sentence or two of orientation.** What this PR is and where it came from — a review, a
 ticket, a bug someone hit, a field report. Get into it from there. No `## Summary` heading
@@ -99,29 +101,42 @@ most valuable part of the description:
   vague "more to do here", but the actual tracking reference.
 - **Judgment calls**, with the reasoning behind them, so a reviewer who'd have chosen differently
   can see why this one was made rather than re-deriving it from the diff.
+- **A carried-forward residual note**, when replacing an already-open PR's body: whatever
+  `**Left unfixed:**` or `Review ride-alongs:` paragraph (Decisions Log #87) the current body
+  already carries survives into this section unchanged, per the note at the top of this skill.
 
-Leave the section out entirely when none of the three apply; an empty or padded heading isn't
-worth the reviewer's scroll.
+Leave the section out entirely only when none of the four apply — including no carried-forward
+residual note to place; an empty or padded heading isn't worth the reviewer's scroll.
 
-**A short provenance note plus the run/token footer, together, at the very end — carried forward,
-never invented.** This pair only ever applies when you are replacing an already-open PR's body
-(see above): a fresh PR's footer is written by the daemon itself, computed from the run's own
-accounting after the run ends, which is not a number a still-running session can know. The
-already-open PR already carries the real pair; read it back rather than composing new ones:
-- The provenance note verbatim: "Composed by an agent session from Hall9k task `<id>`." — it says
-  the work was agent-assisted and points at where to find the full record (`h9k task show <id>` /
-  `h9k logs <id>`), and stops there. It never narrates what the session did step by step, and never
-  reproduces build or test output.
-- The footer line — ``Hall9k run `<run-id>` · <tokens> tokens`` — with its token count reformatted
-  using underscore separators (`18_401_309` rather than the daemon's own ungrouped `18401309`).
-  This is this skill's own convention, not yet the platform's: the daemon's PR-open formatter and
-  `h9k status`'s own spend-pressure line render token counts differently from each other today
-  (ungrouped and comma-grouped, respectively), and unifying them is draft task `9f6284bc` —
-  underscore-grouping here is a deliberate deviation from both until that lands, not a claim that
-  either already matches it.
+**A short provenance note, plus the run/token footer — the note composed from what you actually
+know, the footer carried forward, never invented.** Both only apply to the second legitimate use
+above, replacing the body on an already-open Hall9k PR: that is the only case where you have both
+a task id (from `task.md`) and an existing footer to read back.
+- The provenance note verbatim, with the task id you were actually given (from `task.md`'s
+  frontmatter, or the caller's own context): "Composed by an agent session from Hall9k task `<id>`."
+  Compose it yourself — the daemon never writes one, on a fresh PR or an already-open one, so there
+  is nothing to read back here, only the task id itself, which you do know and state plainly rather
+  than guess at. It says the work was agent-assisted and points at where to find the full record
+  (`h9k task show <id>` / `h9k logs <id>`), and stops there. It never narrates what the session did
+  step by step, and never reproduces build or test output.
+- The footer line — ``Hall9k run `<run-id>` · <tokens> tokens`` — only when replacing an
+  already-open PR's body: read it back from the current body (`gh pr view <number> --json body -q
+  .body`) rather than composing a new one. Unlike the provenance note, this one you cannot compose
+  yourself even with the run id in hand: `PullRequestBody.Build` sums the run's own token
+  accounting at the moment the daemon opens the PR, while the run is still live, so the figure is a
+  snapshot that goes stale as the same PR gathers later review and follow-up work (draft task
+  `9f6284bc` names the field incident this caused: a footer that kept naming the original run and
+  its original token count through twelve later generations). Carry the existing figure forward
+  rather than trying to recompute it, reformatting it with underscore separators (`18_401_309`
+  rather than the daemon's own ungrouped `18401309`). This reformatting is this skill's own
+  convention, not yet the platform's: the daemon's PR-open formatter and `h9k status`'s own
+  spend-pressure line render token counts differently from each other today (ungrouped and
+  comma-grouped, respectively), and unifying them is draft task `9f6284bc` — underscore-grouping
+  here is a deliberate deviation from both until that lands, not a claim that either already
+  matches it.
 
-Omit both when this description isn't replacing a Hall9k-opened pull request at all — there's no
-run and no existing footer to carry forward.
+Omit both for the first legitimate use above, a PR opened entirely outside Hall9k's own dispatch —
+there's no task id to compose the note from and no existing footer to carry forward.
 
 ## Keep out
 
@@ -144,16 +159,18 @@ run and no existing footer to carry forward.
 
 ## Example
 
-The shape end to end — title, work-item line, orientation, grouped bullets with inline whys, a
-reviewer section, and, as when replacing an already-open PR's body, the provenance note and footer
-carried forward from the PR being replaced:
+The shape end to end: title, work-item line, orientation, grouped bullets with inline whys, a
+reviewer section, and, as when replacing an already-open PR's body, a composed provenance note plus
+the footer carried forward from the PR being replaced. Also note the house style this skill and
+every other authored PR description follows: no em dashes (`~/.claude/CLAUDE.md`), commas or
+periods or parentheses instead.
 
 ```
 Title: Compose PR bodies a colleague would write, not a run transcript
 
 Work item: https://github.com/Hallmanac/hall9k/issues/184
 
-The pull request (PR) that opened for #1990 read as an agent transcript — title restated, the
+PR #1990's daemon-composed body read as an agent transcript: title restated, the
 acceptance-criteria checklist, a run narration, then build/test output. This PR is the fix: the
 canonical pr-summary skill now composes a body a colleague would write instead.
 
@@ -167,7 +184,7 @@ Most of the change is to the skill's own instructions:
 - A new `For the reviewer` section carries the things worth flagging by name, rather than leaving
   them implicit in the diff.
 
-The provenance note stays short by design — a pointer, not a transcript — because the run record
+The provenance note stays short by design (a pointer, not a transcript), because the run record
 already holds the full one.
 
 ## For the reviewer
