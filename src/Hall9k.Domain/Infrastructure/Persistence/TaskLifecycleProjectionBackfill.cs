@@ -94,9 +94,10 @@ public static class TaskLifecycleProjectionBackfill
     /// <para>
     /// Without this marker, a <see cref="TaskListItem"/> document written before the field
     /// existed sorts <c>NULL</c> for <c>OrderByDescending(QueuePriorityMarked)</c>
-    /// (<see cref="Dispatch.DispatchEngine.ClaimEligibleAsync"/>), and PostgreSQL's default
-    /// <c>DESC</c> ordering puts <c>NULL</c> <em>first</em> — ahead of a genuinely marked row —
-    /// which is exactly backwards from what the marker is for.
+    /// (<c>Hall9k.Daemon.Dispatch.DispatchEngine.ClaimEligibleAsync</c> — not linked as a
+    /// <c>cref</c> since <c>Hall9k.Domain</c> references no Hall9k project and cannot resolve
+    /// it), and PostgreSQL's default <c>DESC</c> ordering puts <c>NULL</c> <em>first</em> —
+    /// ahead of a genuinely marked row — which is exactly backwards from what the marker is for.
     /// </para>
     /// </summary>
     private const string StaleListOnlyDocument =

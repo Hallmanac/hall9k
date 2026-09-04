@@ -87,7 +87,11 @@ h9k task draft        ->  Draft       refused from Queued/Blocked onward (unassi
 The edit-after-the-fact path is therefore `unassign → draft → revise → publish → assign`, each
 step an explicit act. Revision is Draft-only because every later state carries a promise that
 editing would break: Published promises the task satisfies the contract and may be assigned at
-any moment, and an assigned task promises a node may read it at any moment.
+any moment, and an assigned task promises a node may read it at any moment. The one exception is
+`--queue-first`/`--clear-queue-first`: a scheduling fact rather than part of the readiness
+contract, so a call that names only it is let through in any live state except Abandoned —
+Queued, Blocked, a currently Claimed task (for its next turn in the queue), even a Done one (for
+the follow-up run a later reopen might dispatch) — see [PLAN.md Decisions Log #127](../PLAN.md).
 
 **The readiness contract** is enforced once, at publish, as an invariant of that state rather
 than a toll booth at creation. It wants an outcome-phrased objective and at least one checkable

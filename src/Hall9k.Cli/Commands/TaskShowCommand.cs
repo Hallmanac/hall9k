@@ -353,7 +353,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         if (row is { Facts.Count: > 0 })
         {
-            standing.AddRow("[bold]Waiting on[/]",
+            // PublishedFacts.Compose states the queue-first marker wherever it is set, Published
+            // row or not (Decisions Log #127), so a non-Published row's Facts is the marker and
+            // only the marker — "Waiting on" would misdescribe a task that is running, done, or
+            // otherwise not actually waiting on anything (independent pre-PR review, cycle 1,
+            // conformance and adversarial lenses).
+            string label = row.State == LifecycleState.Published ? "Waiting on" : "Queue priority";
+            standing.AddRow($"[bold]{label}[/]",
                 string.Join(" [dim]·[/] ", row.Facts.Select(fact => $"[dim]{fact.EscapeMarkup()}[/]")));
         }
 

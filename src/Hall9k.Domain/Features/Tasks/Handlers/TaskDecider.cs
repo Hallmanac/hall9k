@@ -253,9 +253,11 @@ public static class TaskDecider
     /// <paramref name="queuePriority"/> is the one exception to the Draft-only gate (task
     /// 45136b29, idea fcaded0b's R7 ruling): it is a scheduling fact, not part of the readiness
     /// contract the gate otherwise protects, so a call that touches only this field is let
-    /// through regardless of state — settable on a Queued, Blocked, or even a currently Claimed
-    /// task, for its next turn in the queue. A call that names it alongside anything else still
-    /// needs the full ceremony; nothing here lets a wider revision hitch a ride on the exception.
+    /// through regardless of state — settable on a Queued, Blocked, a currently Claimed task
+    /// (for its next turn in the queue), or even a Done one (for the follow-up run a later
+    /// Reopen might dispatch) — refused only on Abandoned, the one state nothing ever requeues
+    /// from. A call that names it alongside anything else still needs the full ceremony; nothing
+    /// here lets a wider revision hitch a ride on the exception.
     /// </para>
     /// </summary>
     public static TaskRevised Revise(
@@ -290,7 +292,12 @@ public static class TaskDecider
                 });
         }
 
-        if (onlyQueuePriorityChanging && task.State.IsTerminal)
+        // Done is not the dead end IsTerminal groups it with here: Reopen (below) runs from
+        // Done exclusively, so a marker set while this task was still Claimed — the one case
+        // Revise itself lets through — must stay settable and clearable on it, for the follow-up
+        // run reopening might dispatch. Only Abandoned is a genuine dead end nothing ever
+        // requeues from (independent pre-PR review, cycle 1, conformance lens).
+        if (onlyQueuePriorityChanging && task.State == TaskState.Abandoned)
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — nothing here will ever be queued again, so a "

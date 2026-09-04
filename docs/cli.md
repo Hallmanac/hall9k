@@ -63,7 +63,10 @@ the hinge to a draft task and is the only step that requires a project.
 
 `h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show | log-interaction`
 
-`add` creates a Draft. `revise` is Draft-only. `publish` is the readiness gate. `assign` is the
+`add` creates a Draft. `revise` is Draft-only, with one exception: `--queue-first`/
+`--clear-queue-first` sets or clears a task-level scheduling marker — the next free dispatch slot
+takes this task regardless of assignment age — and is settable in any live state except Abandoned
+(Decisions Log #127). `publish` is the readiness gate. `assign` is the
 dispatch trigger. The path back for an edit is `unassign → draft → revise → publish → assign`.
 `set-session-cap <id> <cap>` overrides how many agent sessions this task's own run may hold
 simultaneously — settable any time, even mid-run — in place of the node's global default.
@@ -152,7 +155,11 @@ closing the terminal is a normal way to leave and re-running `work` re-enters th
 by default with a fresh prompt. From there, `verify` runs the project's gates on demand, `deliver`
 pushes the branch and hands the claim into the standard delivery pipeline, `handback` releases the
 claim to a headless agent partway through (resuming the branch), and `release` gives an untouched
-claim back to the queue.
+claim back to the queue. `handback`'s pickup speed is a three-way choice (Decisions Log #127): no
+flag is the normal rotation, unchanged; `--first` records the queue-first marker so the next free
+dispatch slot takes the task regardless of assignment age; `--now` dispatches it immediately
+instead, ceiling-exempt, through the same mechanism `h9k task start` uses — refused together with
+`--first`.
 
 ### A deliberate human kick-off
 
@@ -169,7 +176,12 @@ confirmed alive rather than waiting for it to finish. Unlike `work`, an unmet de
 Published task does not refuse outright: the platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. That
 override applies only at the moment of assignment — a task already sitting Blocked from an
-ordinary `h9k task assign` still refuses `start`. Refused otherwise on Draft, a pr-review task, a
+ordinary `h9k task assign` still refuses `start`, UNLESS every one of its still-open blockers was
+already warned-and-acknowledged at an earlier deliberate claim on this same assignment cycle
+(the shape `h9k task handback --now` produces: a claim once acknowledged, handed back, and picked
+back up) — the acknowledgment carries forward rather than needing to be given again, and is never
+invented fresh against a task that has simply been sitting Blocked since an ordinary
+`h9k task assign`. Refused otherwise on Draft, a pr-review task, a
 reopened task's follow-up branch, and any task that already carries a live claim; there is no
 re-entry path the way `work` has one — a fresh claim is all `start` ever makes. Giving the claim
 back (`handback`, `release`, `retry`, or `pr resolve` reopening it) lands the task on Blocked
