@@ -284,12 +284,19 @@ public sealed class AutoPrReviewEngine(
               + (actor.RequestedAt is { } at ? $" at {at:yyyy-MM-dd HH:mm:ss}Z" : string.Empty) + "."
             : $"GitHub reviewer assignment observed: {login} was requested as a reviewer (the actor who "
               + "requested it could not be read from GitHub's own timeline).";
+        // Never previousReview.AddedAt (independent pre-PR review, cycle 1, both lenses):
+        // TaskListItem.AddedAt is written once, at TaskAdded, and no Apply ever moves it — it is
+        // the earlier task's creation time, not the date it closed or was abandoned, and stating
+        // it as the closing date is exactly the plausible-but-unobserved fill-in AGENTS.md's
+        // never-guess-at-unobserved-facts rule forbids. TaskListItem carries no close/abandon
+        // timestamp to report instead, so the honest fix is to say what is actually observed —
+        // the task id and its outcome — and leave the date out rather than mislabel one.
         string? reReviewNote = previousReview is not null
             ? previousReview.State == TaskState.Abandoned
                 ? $"This is a re-review: an earlier auto-created task ({DomainId.Short(previousReview.Id)}) "
-                  + $"covered this same standing request and was abandoned on {previousReview.AddedAt:yyyy-MM-dd}."
+                  + "covered this same standing request and was abandoned."
                 : $"This is a re-review: task {DomainId.Short(previousReview.Id)} already reviewed this pull "
-                  + $"request and closed Done on {previousReview.AddedAt:yyyy-MM-dd}."
+                  + "request and closed Done."
             : null;
         string additionalContext = reReviewNote is null ? provenance : $"{provenance}\n{reReviewNote}";
         // Exactly as h9k task add --from-pr does (independent pre-PR review, cycle 1, conformance
