@@ -647,6 +647,49 @@ public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClas
             "the node's own configured default, not AgentModel.PlatformFallback, is what a dispatcher-launched build on this node would resolve to as well");
     }
 
+    /// <summary>
+    /// h9k task start is a third run-dispatch site alongside RunLauncher and TaskWorkCommand
+    /// (PLAN.md #127), and used to be the one that never resolved the setting at all — a run it
+    /// dispatched always recorded FullPipeline regardless of what the project or node set
+    /// (independent pre-PR review, cycle 1, conformance lens). Pinning the project-level override
+    /// reaching RunListItem.ReviewStageComposition (the field h9k task show's Stages column reads)
+    /// through this exact code path is what closes that gap.
+    /// </summary>
+    [Fact]
+    public async Task A_queued_task_resolves_the_projects_review_stage_composition()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+                ReviewStageComposition = "AdversarialOnly",
+            });
+            seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(taskId, projectId, "Prove h9k task start resolves the project's own composition",
+                    ["it is done"], TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        Guid runId = await StartAsync(store, taskId, ownerId, acknowledgeUnmetDependencies: false, cts.Token);
+
+        await using IQuerySession verify = store.QuerySession();
+        RunListItem run = (await verify.LoadAsync<RunListItem>(runId, cts.Token))!;
+        run.ReviewStageComposition.Should().Be(ReviewStageComposition.AdversarialOnly,
+            "the project's own override, not the FullPipeline default this dispatch site used to record regardless of what was set");
+    }
+
     private string CreateRepository()
     {
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-start-claim-{Guid.NewGuid():N}");
