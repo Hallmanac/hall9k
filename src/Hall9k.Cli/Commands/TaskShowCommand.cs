@@ -85,7 +85,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         if (details.ReviewStageComposition is { } taskReviewStageComposition)
         {
             header.AddRow(
-                "Review stage composition", $"{taskReviewStageComposition.EscapeMarkup()} [dim](task override)[/]");
+                "Review stage composition", $"{taskReviewStageComposition.Value.EscapeMarkup()} [dim](task override)[/]");
         }
 
         if (details.SourceIdeaId is { } sourceIdeaId)

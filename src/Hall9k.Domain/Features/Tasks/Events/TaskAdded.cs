@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Tasks.Events;
@@ -50,6 +51,6 @@ public sealed record TaskAdded(
     /// refused by <c>TaskDecider.Add</c> unless <see cref="ReviewStageCompositionAcknowledged"/>
     /// says the consequence was accepted.
     /// </summary>
-    string? ReviewStageComposition = null,
+    ReviewStageComposition? ReviewStageComposition = null,
     /// <summary>Whether removing a load-bearing review guarantee was acknowledged at set time; clamped false when never actually needed.</summary>
     bool ReviewStageCompositionAcknowledged = false);

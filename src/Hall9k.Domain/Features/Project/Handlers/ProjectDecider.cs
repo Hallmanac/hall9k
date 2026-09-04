@@ -175,9 +175,11 @@ public static class ProjectDecider
         // to null (blank/"default" clears), the same discipline BranchNameTemplate's own
         // Parse-before-recording gives its setting: what lands on the stream is what h9k project
         // show and the resolver will read back, not whatever alias or clearing word a human typed.
-        Optional<string?> normalizedComposition = reviewStageComposition.HasValue
-            ? Optional<string?>.Of(normalizedRaw)
-            : Optional<string?>.None;
+        Optional<ReviewStageComposition?> normalizedComposition = reviewStageComposition.HasValue
+            ? Optional<ReviewStageComposition?>.Of(normalizedRaw is { } normalizedWord
+                ? ReviewStageComposition.FromInput(normalizedWord)
+                : null)
+            : Optional<ReviewStageComposition?>.None;
 
         return new ProjectSettingsChanged(
             project.Id,

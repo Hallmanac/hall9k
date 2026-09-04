@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -89,7 +90,7 @@ public sealed class TaskAggregate
     /// — unlike the review-cycle caps above, deliberately not settable mid-run: see
     /// <c>Hall9k.Domain.Features.Run.ReviewStageComposition</c>'s own doc for why.
     /// </summary>
-    public string? ReviewStageComposition { get; private set; }
+    public ReviewStageComposition? ReviewStageComposition { get; private set; }
     public int LeaseGeneration { get; private set; }
     public Guid? ClaimedByNodeId { get; private set; }
 

@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Tasks.Events;
@@ -40,6 +41,6 @@ public sealed record TaskRevised(
     /// load-bearing guarantee is refused by <c>Handlers.TaskDecider.Revise</c> unless
     /// <see cref="ReviewStageCompositionAcknowledged"/> says the consequence was accepted.
     /// </summary>
-    Optional<string?> ReviewStageComposition = default,
+    Optional<ReviewStageComposition?> ReviewStageComposition = default,
     /// <summary>Whether removing a load-bearing review guarantee was acknowledged at set time; clamped false when never actually needed.</summary>
     bool ReviewStageCompositionAcknowledged = false);

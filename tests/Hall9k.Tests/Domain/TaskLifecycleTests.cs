@@ -300,7 +300,7 @@ public sealed class TaskLifecycleTests
             Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
             reviewStageComposition: Optional<string?>.Of("adversarial-only"), reviewStageCompositionAcknowledged: true));
 
-        task.ReviewStageComposition.Should().Be("AdversarialOnly", "the raw alias is canonicalized before it lands on the stream");
+        task.ReviewStageComposition?.Value.Should().Be("AdversarialOnly", "the raw alias is canonicalized before it lands on the stream");
 
         task.Apply(TaskDecider.Revise(
             task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
@@ -335,7 +335,7 @@ public sealed class TaskLifecycleTests
             Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
             reviewStageComposition: Optional<string?>.Of("none"), reviewStageCompositionAcknowledged: true);
 
-        revised.ReviewStageComposition.Value.Should().Be("None");
+        revised.ReviewStageComposition.Value?.Value.Should().Be("None");
         revised.ReviewStageCompositionAcknowledged.Should().BeTrue();
     }
 
@@ -354,7 +354,7 @@ public sealed class TaskLifecycleTests
             Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
             reviewStageComposition: Optional<string?>.Of("full-pipeline"), reviewStageCompositionAcknowledged: true);
 
-        revised.ReviewStageComposition.Value.Should().Be("FullPipeline");
+        revised.ReviewStageComposition.Value?.Value.Should().Be("FullPipeline");
         revised.ReviewStageCompositionAcknowledged.Should().BeFalse(
             "full-pipeline never needed an acknowledgment, so recording one would assert a fact nobody observed");
     }
@@ -385,7 +385,7 @@ public sealed class TaskLifecycleTests
             Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
             reviewStageComposition: Optional<string?>.Of("conformance-only"), reviewStageCompositionAcknowledged: true));
 
-        task.ReviewStageComposition.Should().Be("ConformanceOnly");
+        task.ReviewStageComposition?.Value.Should().Be("ConformanceOnly");
     }
 
     [Fact]

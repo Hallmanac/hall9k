@@ -290,7 +290,7 @@ public sealed class ProjectDeciderTests
             Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             reviewStageComposition: Optional<string?>.Of("conformance-only"), reviewStageCompositionAcknowledged: true);
         project.Apply(set);
-        project.ReviewStageComposition.Should().Be("ConformanceOnly");
+        project.ReviewStageComposition?.Value.Should().Be("ConformanceOnly");
 
         ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
@@ -326,7 +326,7 @@ public sealed class ProjectDeciderTests
             Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             reviewStageComposition: Optional<string?>.Of("none"), reviewStageCompositionAcknowledged: true);
 
-        changed.ReviewStageComposition.Value.Should().Be("None");
+        changed.ReviewStageComposition.Value?.Value.Should().Be("None");
         changed.ReviewStageCompositionAcknowledged.Should().BeTrue();
     }
 
@@ -343,7 +343,7 @@ public sealed class ProjectDeciderTests
             Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             reviewStageComposition: Optional<string?>.Of("full-pipeline"), reviewStageCompositionAcknowledged: true);
 
-        changed.ReviewStageComposition.Value.Should().Be("FullPipeline");
+        changed.ReviewStageComposition.Value?.Value.Should().Be("FullPipeline");
         changed.ReviewStageCompositionAcknowledged.Should().BeFalse();
     }
 
