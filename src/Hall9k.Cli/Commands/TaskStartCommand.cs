@@ -408,10 +408,26 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
                 : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(taskDetails), runId);
 
+            // Resolved once, here, and frozen on RunDispatched for this run's whole lifetime
+            // (task: the review pipeline's stage composition becomes configuration recorded per
+            // run), exactly as RunLauncher and TaskWorkCommand's own dispatch sites already do —
+            // this third dispatch site was the one PLAN.md #127 overlooked (independent pre-PR
+            // review, cycle 1, conformance lens). operatingSettings was already resolved above for
+            // the model, through the same OperatingSettingsResolver that honors the
+            // Hall9k__ReviewStageComposition environment variable ahead of the platform config
+            // file, so this reads the node level identically to a headless dispatch on this
+            // machine — unlike TaskWorkCommand's own interactive claim, which reads the config
+            // file directly and can disagree with it (independent pre-PR review, cycle 1,
+            // adversarial lens, on that command).
+            ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
+                taskDetails.ReviewStageComposition, project.ReviewStageComposition,
+                operatingSettings.ReviewStageComposition.Value);
+
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
-                IsFollowUp: false, Model: model, RunDirectory: runDirectory, SessionName: sessionName));
+                IsFollowUp: false, Model: model, RunDirectory: runDirectory, SessionName: sessionName,
+                ReviewStageComposition: reviewStageComposition));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
