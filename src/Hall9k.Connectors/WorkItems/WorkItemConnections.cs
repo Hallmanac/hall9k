@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Credentials;
+using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -48,9 +49,17 @@ public static class WorkItemConnections
     /// GitHub adoption — exit non-zero quoting a Jira refusal, while the daemon's sibling call
     /// site (<c>PullRequestOpener.SourceUrlAsync</c>) degraded correctly.
     /// </para>
+    /// <para>
+    /// <paramref name="processRunner"/> is threaded into the GitHub providers built here rather
+    /// than left at their own default (independent pre-PR review, cycle 1, adversarial lens): a
+    /// caller that already carries an injected <see cref="ProcessRunner"/> — a test double, or a
+    /// daemon component's own — must have it actually used here, or every importer this method
+    /// builds shells out to the real <c>gh</c> regardless of what the caller passed in.
+    /// </para>
     /// </summary>
     public static async Task<WorkItemImporter> ImporterAsync(
-        IQuerySession session, CancellationToken cancellationToken, JiraRequester? requester = null)
+        IQuerySession session, CancellationToken cancellationToken, JiraRequester? requester = null,
+        ProcessRunner? processRunner = null)
     {
         JiraWorkItemProvider? jira;
         Func<DomainException> refusal = () => new DomainNotFoundException(NoJiraConnection);
@@ -68,14 +77,14 @@ public static class WorkItemConnections
         }
 
         return jira is null
-            ? new WorkItemImporter(new GitHubWorkItemProvider(), new GitHubPullRequestProvider())
+            ? new WorkItemImporter(new GitHubWorkItemProvider(processRunner), new GitHubPullRequestProvider(processRunner))
             {
                 Unusable = new Dictionary<WorkItemProvider, Func<DomainException>>
                 {
                     [WorkItemProvider.Jira] = refusal,
                 },
             }
-            : new WorkItemImporter(new GitHubWorkItemProvider(), new GitHubPullRequestProvider(), jira);
+            : new WorkItemImporter(new GitHubWorkItemProvider(processRunner), new GitHubPullRequestProvider(processRunner), jira);
     }
 
     /// <summary>
