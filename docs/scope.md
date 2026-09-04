@@ -194,6 +194,16 @@ been directed — `--needs-fixes` is refused outright, since there is no diff of
 a fix session to act on — and completion never observes a merge, because there is no pull request
 of this task's own to merge.
 
+A project can opt in to starting that same `pr-review` task automatically: `h9k project set
+<name> --auto-pr-review off|normal|first|now` (default off) has the daemon poll GitHub, on the
+closeout monitor's own interval-with-backoff shape, for open pull requests in that project's repo
+requesting this install's own login — read back from `gh` fresh every sweep — and mint, publish,
+and start the task the review assignment names, at the chosen speed (`normal` joins the ordinary
+queue, `first` marks it queue-first, `now` claims it immediately, ceiling-exempt). One live task
+per pull request; a withdrawn assignment concludes the task honestly before its run dispatches, or
+is recorded as an observation only once it has. No scheduling code of its own: every speed reuses
+a general dispatch lever, and the review itself is unchanged.
+
 ### Outside-interaction logging
 
 `h9k task log-interaction <task> --party "<who>" --summary "<what happened>"` is the escape-hatch

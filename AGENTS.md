@@ -37,6 +37,7 @@ h9k project list             # every project with its tasks counted by attention
 h9k project show <name>      # one project: home, registration, settings, rollup, newest tasks
 h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #121)
 h9k project set <name> --review-stage-composition <VALUE|default>   # which pre-PR review stages a run gets: full-pipeline (default), adversarial-only, conformance-only, skip-final-pass, none — also settable at node (h9k config set) and task (h9k task add/revise), task > project > node > default, frozen at each run's own dispatch; a value that removes a guarantee needs --accept-reduced-review (Decisions Log #129)
+h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub reviewer assignment to this install's own login auto-starts a pr-review task; default off (Decisions Log #34's amendment, #133)
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
@@ -385,6 +386,25 @@ drift between those two moments is the same failure a hand-renamed branch caused
 node on 2026-08-31, where the push hit a refspec that no longer existed and the task parked Failed.
 A task carrying no linked item renders `{key}` as `no-key` — nothing was observed, said out loud,
 rather than an empty segment or an invented card number.
+
+**A pull request GitHub assigns to this install's own login is a go signal in its own right, on a
+project that opts in** (idea e5e98a33, Decisions Log #34's own amendment, #133): `h9k project set
+<project> --auto-pr-review off|normal|first|now` (default `off`, today's behavior byte-for-byte)
+makes the daemon poll GitHub, on the closeout monitor's own interval-with-backoff shape, for open
+pull requests in that project's repo requesting this install's own login — read back from `gh`
+fresh every sweep, never a cached name — and mint, publish, and start a pr-review task exactly as
+`h9k task add --from-pr` would, recording the GitHub assignment as provenance rather than a human
+typing the command. The three non-off speeds are the general dispatch levers, not new scheduling
+code: `normal` joins the ordinary queue, `first` also sets the queue-first marker (#127), and `now`
+claims it immediately, ceiling-exempt, through the same sentinel-node-id mechanism `h9k task start`
+uses (#103, #125) — so a human re-speeds any auto-created task afterward with the identical general
+levers. One live task per pull request, the same one-item-one-live-task rule adoption already
+enforces (PLAN.md §3.1a): a re-request after an earlier auto-created review closed Done mints a
+fresh task, noted as a re-review. An assignment withdrawn before the run dispatches concludes the
+task honestly (abandoned, the go signal recalled by the same authority that gave it); withdrawn
+after the run is Claimed or parked, it is recorded as an observation only — findings already
+produced are never discarded for a reviewer reshuffle. The pr-review run itself (#99) is entirely
+untouched: this changes only when a review starts, never what it does once it has.
 
 CI runs build + test on ubuntu and windows for every push/PR to main.
 
