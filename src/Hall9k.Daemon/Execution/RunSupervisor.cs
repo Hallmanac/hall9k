@@ -94,17 +94,26 @@ public sealed class RunSupervisor(
     /// monitor back (process alive, or result already on disk) or is failed honestly.
     /// Returns the tally for the startup catch-up report.
     /// </summary>
+    private static readonly string[] AdoptableRunStates =
+    [
+        RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
+        RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.BudgetParked.Value,
+    ];
+
     public async Task<OrphanAdoption> AdoptOrphansAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         Guid nodeId = node.NodeId;
-        IReadOnlyList<RunDetails> candidates = await query.Query<RunDetails>()
+        IReadOnlyList<RunDetails> ownNode = await query.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
             .Where(r => r.MatchesSql(
                 "d.data ->> 'state' in (?, ?, ?, ?, ?, ?)",
-                RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
-                RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.BudgetParked.Value))
+                AdoptableRunStates[0], AdoptableRunStates[1], AdoptableRunStates[2],
+                AdoptableRunStates[3], AdoptableRunStates[4], AdoptableRunStates[5]))
             .ToListAsync(cancellationToken);
+        IReadOnlyList<RunDetails> sentinelPrReview = await SentinelPrReviewCandidatesAsync(
+            query, AdoptableRunStates, cancellationToken);
+        List<RunDetails> candidates = [.. ownNode, .. sentinelPrReview];
 
         int adopted = 0;
         int failed = 0;
@@ -195,24 +204,43 @@ public sealed class RunSupervisor(
     /// discriminator) only up to the point it is delivered: <c>h9k task deliver</c> records the
     /// delivering node's own id on <c>AgentSessionCompleted</c>, so <c>NodeLoad</c> counts it
     /// against that node's concurrency ceiling from Verifying onward (Decisions Log #103's own
-    /// fix — a delivered run must count, or the ceiling undercounts). No widening for
-    /// <c>NodeId == Guid.Empty</c> here: <c>DeliveredByNodeId</c> is new alongside this feature,
-    /// so no stream predating it exists, and every run reaching Verifying or UnderReview has
-    /// already been delivered and therefore already carries a real node id — a widening would
-    /// only ever let another node's daemon match and drive this run concurrently, exactly the
-    /// cross-node isolation <see cref="AdoptOrphansAsync"/>'s own <c>NodeId == nodeId</c> filter
-    /// is careful to preserve (conformance review, cycle 4). Runs already being driven are in
-    /// the monitor set and are never double-entered.
+    /// fix — a delivered run must count, or the ceiling undercounts). No widening for a build
+    /// task's own interactive <c>NodeId == Guid.Empty</c> here: <c>DeliveredByNodeId</c> is new
+    /// alongside this feature, so no stream predating it exists, and every build-task run reaching
+    /// Verifying or UnderReview has already been delivered and therefore already carries a real
+    /// node id — a widening would only ever let another node's daemon match and drive this run
+    /// concurrently, exactly the cross-node isolation <see cref="AdoptOrphansAsync"/>'s own
+    /// <c>NodeId == nodeId</c> filter is careful to preserve (conformance review, cycle 4). Runs
+    /// already being driven are in the monitor set and are never double-entered.
+    /// <para>
+    /// A pr-review task's own park resolution is the one case that IS widened
+    /// (<see cref="SentinelPrReviewCandidatesAsync"/>): it never goes through <c>h9k task
+    /// deliver</c>, so it never gains a <c>DeliveredByNodeId</c> to graduate off the sentinel —
+    /// without the widening, a resolved pr-review park would sit UnderReview forever with nothing
+    /// ever finalizing it Done (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
     /// </summary>
+    private static readonly string[] StrandedRunStates = [RunState.UnderReview.Value, RunState.Verifying.Value];
+
     public async Task ResumeStrandedPipelinesAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         Guid nodeId = node.NodeId;
-        IReadOnlyList<RunDetails> stranded = await query.Query<RunDetails>()
+        IReadOnlyList<RunDetails> ownNode = await query.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
             .Where(r => r.MatchesSql(
-                "d.data ->> 'state' in (?, ?)", RunState.UnderReview.Value, RunState.Verifying.Value))
+                "d.data ->> 'state' in (?, ?)", StrandedRunStates[0], StrandedRunStates[1]))
             .ToListAsync(cancellationToken);
+        // A pr-review "now"-speed run's own park resolution (h9k review resolve --merge-ready)
+        // moves it to UnderReview through PrReviewDelivered, never through h9k task deliver, so
+        // it never gains the real DeliveredByNodeId the doc comment above relies on to make
+        // widening unnecessary for the interactive-build-task case: without this, such a run
+        // would sit UnderReview with its resolve verdict on the stream and nothing ever finalizing
+        // it Done (independent pre-PR review, cycle 1, both lenses — the restart-stranding finding
+        // applies here too, since the daemon never even needs to restart for this path to matter).
+        IReadOnlyList<RunDetails> sentinelPrReview = await SentinelPrReviewCandidatesAsync(
+            query, StrandedRunStates, cancellationToken);
+        IReadOnlyList<RunDetails> stranded = [.. ownNode, .. sentinelPrReview];
 
         foreach (RunDetails run in stranded.Where(r => !_monitors.ContainsKey(r.Id)))
         {
@@ -223,6 +251,54 @@ public sealed class RunSupervisor(
                 run.Id, run.State.Value);
             ResumePipeline(run, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Every run carrying the ceiling-exempt <see cref="Guid.Empty"/> sentinel (Decisions Log
+    /// #103, #125) whose owning task is a pr-review task, in one of <paramref name="states"/>.
+    /// The sentinel ordinarily means "a human owns this claim, not a daemon" — but <c>h9k task
+    /// work</c> and <c>h9k task start</c> both refuse a pr-review task outright
+    /// (<c>TaskWorkCommand.cs</c>, <c>TaskStartCommand.cs</c>: "it has no diff of its own... it
+    /// dispatches headlessly against the pull request instead"), so a pr-review task was never a
+    /// human's claim to begin with. The only caller that ever launches one under this sentinel is
+    /// this daemon's own auto-pr-review "now" speed (idea e5e98a33, PLAN.md §16 #128,
+    /// <c>AutoPrReviewEngine.CreateOneAsync</c>, via <c>RunLauncher.LaunchAsync</c> — the sole
+    /// caller that ever passes <see cref="Guid.Empty"/> to it), spawned in-process by whichever
+    /// node's daemon ran that sweep. On the default single-daemon install (AGENTS.md: "On the
+    /// default install there is one database and one daemon") that node is always this one, so
+    /// adopting it here closes the gap neither the ordinary <c>NodeId == nodeId</c> filter above
+    /// nor the lease-expiry sweep (no <see cref="Domain.Features.Tasks.Documents.TaskLease"/> is
+    /// ever written for a deliberate claim) would otherwise ever see again. A genuine multi-node
+    /// install running auto-pr-review from more than one node is a narrower, pre-existing
+    /// limitation this does not solve — both nodes already race the same GitHub poll before this
+    /// method ever runs — and fails safely rather than silently: a pid recorded by a different
+    /// machine is never alive on this one, so the worst case is an honest "died without a result"
+    /// rather than corrupted state.
+    /// </summary>
+    private async Task<IReadOnlyList<RunDetails>> SentinelPrReviewCandidatesAsync(
+        IQuerySession query, string[] states, CancellationToken cancellationToken)
+    {
+        string placeholders = string.Join(", ", states.Select(_ => "?"));
+        IReadOnlyList<RunDetails> sentinel = await query.Query<RunDetails>()
+            .Where(r => r.NodeId == Guid.Empty)
+            .Where(r => r.MatchesSql($"d.data ->> 'state' in ({placeholders})", states))
+            .ToListAsync(cancellationToken);
+        if (sentinel.Count == 0)
+        {
+            return [];
+        }
+
+        List<RunDetails> prReview = [];
+        foreach (RunDetails run in sentinel)
+        {
+            TaskDetails? owner = await query.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
+            if (owner?.Type == TaskType.PrReview)
+            {
+                prReview.Add(run);
+            }
+        }
+
+        return prReview;
     }
 
     private async Task MonitorAsync(
