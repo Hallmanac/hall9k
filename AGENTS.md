@@ -248,17 +248,20 @@ Published entry, but launches the
 agent headless (`claude -p`, Claude Code's own completion mode) and detached rather than attached
 to this terminal, under the slice-1 `<task-shortid>-build` name, addressable on the session mesh
 the moment it starts. Shares `h9k task work`'s own warn-then-acknowledge shape for an unmet
-dependency: the platform names every open blocker and advises, and
+dependency, on a Published task and on an already-Blocked one alike (Decisions Log #127, closing
+the gap #125 deliberately left open — that gap was about re-entering a live claim, which
+`h9k task start` still never does, not about withholding a carried-forward acknowledgment from a
+fresh claim on a Blocked task): the platform names every open blocker and advises, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to start anyway (the epic's own
 ruling: "the platform advises, the human overrides, and the acknowledgment is recorded") —
 recorded on the resulting `TaskClaimed` and surfaced on `h9k task show` beside the blockers it
-overrode. The override applies only at the moment of assignment: a task already sitting Blocked
-from an ordinary `h9k task assign` still refuses `h9k task start`, flag or not — `h9k task work`
-claims a Blocked task instead (Decisions Log #126), honoring an acknowledgment `h9k task start`
-already gave it if one is on record. `h9k task start` refuses Draft (publish it first), a
-pr-review task, a reopened task's follow-up branch, and any task that already carries a live claim
-— there is no re-entry branch the way `h9k task work` has one; a fresh claim is all this command
-ever makes. Giving such a claim back before it finishes — `h9k task handback`, `h9k task release`,
+overrode. Not needed twice: an acknowledgment this task already carries from an earlier claim on
+the same still-open blockers is honored without asking again, whichever of `h9k task start` or
+`h9k task work` gave it. `h9k task start` refuses Draft (publish it first), a pr-review task, a
+reopened task's follow-up branch, and any task that already carries a live claim — there is no
+re-entry branch the way `h9k task work` has one; a fresh claim is all this command ever makes, and
+a fresh claim on an already-Blocked task is exactly what its own Blocked entry is, not a re-entry.
+Giving such a claim back before it finishes — `h9k task handback`, `h9k task release`,
 `h9k task retry`, or `h9k pr resolve`'s own reopen — lands the task on Blocked rather than Queued
 whenever the acknowledged dependency is still open, since claiming never clears it, only assigning
 does; each of those commands names the still-open blocker(s) rather than claiming a run that will
@@ -270,7 +273,7 @@ other way.
 
 ```bash
 h9k task start <id>                              # dispatch a Published or Queued task headless, on the spot, ceiling-exempt
-h9k task start <id> --acknowledge-unmet-dependencies   # start a Published task anyway, despite named open blockers
+h9k task start <id> --acknowledge-unmet-dependencies   # start a task anyway, despite named open blockers
 ```
 
 `--from-issue` and `--from-jira` adopt existing external work (PLAN.md §3.1a, Decisions Log #60,

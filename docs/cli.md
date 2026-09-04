@@ -176,22 +176,19 @@ identical terms an interactive one already gets — but launches the
 agent headless and detached (`claude -p`) under the `<task-shortid>-build` name, addressable on the
 session mesh, rather than attached to the caller's terminal, and returns as soon as the process is
 confirmed alive rather than waiting for it to finish. Shares `work`'s own warn-then-acknowledge
-shape for an unmet dependency on a Published task: the platform names every open blocker, and
-`--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. That
-override applies only at the moment of assignment — a task already sitting Blocked from an
-ordinary `h9k task assign` still refuses `start`, UNLESS every one of its still-open blockers was
-already warned-and-acknowledged at an earlier deliberate claim on this same assignment cycle
-(the shape `h9k task handback --now` produces: a claim once acknowledged, handed back, and picked
-back up) — the acknowledgment carries forward rather than needing to be given again, and is never
-invented fresh against a task that has simply been sitting Blocked since an ordinary
-`h9k task assign`. Refused otherwise on Draft, a pr-review task, a
-reopened task's follow-up branch, and any task that already carries a live claim; there is no
-re-entry path the way `work` has one — a fresh claim on an already-Blocked task is exactly what
-that carry-forward branch is. Giving the claim
-back (`handback`, `release`, `retry`, or `pr resolve` reopening it) lands the task on Blocked
-rather than Queued when the acknowledged dependency is still open, since only `h9k task assign`
-clears that snapshot — and the acknowledgment itself stays on record for whichever command
-reclaims it next. See [PLAN.md Decisions Log #125](../PLAN.md).
+shape for an unmet dependency, on a Published task and on an already-Blocked one alike (a task
+already sitting Blocked from an ordinary `h9k task assign`, or from a handed-back/retried
+deliberate claim): the platform names every open blocker, and
+`--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. Not needed
+twice: an acknowledgment this task already carries from an earlier claim on the same still-open
+blockers is honored without asking again, whichever of `start` or `work` gave it. Refused otherwise
+on Draft, a pr-review task, a reopened task's follow-up branch, and any task that already carries a
+live claim; there is no re-entry path the way `work` has one — a fresh claim on an already-Blocked
+task is exactly what its Blocked entry is, not a re-entry. Giving the claim back (`handback`,
+`release`, `retry`, or `pr resolve` reopening it) lands the task on Blocked rather than Queued when
+the acknowledged dependency is still open, since only `h9k task assign` clears that snapshot — and
+the acknowledgment itself stays on record for whichever command reclaims it next. See
+[PLAN.md Decisions Log #125, #127](../PLAN.md).
 
 ### Logging an outside interaction
 

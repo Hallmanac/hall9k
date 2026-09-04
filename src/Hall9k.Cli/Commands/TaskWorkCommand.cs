@@ -672,24 +672,6 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             claimed = TaskDecider.ClaimInteractively(task, context.OwnerId, runId, claimedAt);
         }
 
-        if (unmet.Count > 0)
-        {
-            AnsiConsole.MarkupLine(carriedForward
-                ? $"[yellow]Claiming task {task.Id} despite {unmet.Count} unmet dependenc"
-                  + (unmet.Count == 1 ? "y" : "ies")
-                  + " — already acknowledged by an earlier claim on this task, so nothing new was asked:[/]"
-                : $"[yellow]Claiming task {task.Id} despite {unmet.Count} unmet dependenc"
-                  + (unmet.Count == 1 ? "y" : "ies") + " (--acknowledge-unmet-dependencies):[/]");
-            foreach (TaskDependency dependency in unmet)
-            {
-                // ExternalText.OneLineMarkup, not MarkupLineInterpolated's own hole-escaping alone
-                // (mirrors h9k task start's own identical warning list, adversarial review, cycle 1
-                // there): a dependency adopted with --from-issue carries an objective anyone who
-                // can file an issue in that repo wrote.
-                AnsiConsole.MarkupLine($"[yellow]  - {ExternalText.OneLineMarkup(dependency.Describe())}[/]");
-            }
-        }
-
         long claimedVersion = fence.Version + (assigned is null ? 1 : 2);
         if (assigned is null)
         {
@@ -713,6 +695,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                     $"Task {task.Id} changed while claiming it — check h9k status and try again.")
                 : await DescribeAssignAndClaimRaceLossAsync(store, task.Id, cancellationToken);
         }
+
+        // Printed only once the claim is actually committed: printing it earlier would leave a
+        // lost optimistic-concurrency race (the catch above) showing a warning that implies the
+        // claim proceeded despite blockers when nothing was in fact committed (review, PR #192).
+        PrintUnmetDependencyWarning("Claiming", task.Id, unmet, carriedForward);
 
         // Cut only after the claim is safely committed. A failure from here on has already
         // committed the claim, so leaving the task stuck Claimed with no run record would need
@@ -894,8 +881,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         IReadOnlyList<TaskDependency> dead = [.. unmet.Where(dependency => dependency.IsDead)];
         if (dead.Count == 0)
         {
+            // "It", not "it" (independent pre-PR review, cycle 1, both lenses): the alreadyAssigned
+            // form is spliced directly after a full stop, so a lowercase pronoun there starts a
+            // sentence with no antecedent — the non-alreadyAssigned form gets away with lowercase
+            // only because it opens with the literal command name.
             return alreadyAssigned
-                ? "it queues itself the moment the last one's pull request merges, or"
+                ? "It queues itself the moment the last one's pull request merges, or"
                 : $"h9k task assign {taskId} to hold it Blocked until they clear (it queues itself the moment "
                   + "the last one's pull request merges), or";
         }
@@ -911,6 +902,46 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             : $"h9k task assign {taskId} only holds it Blocked, and waiting will not clear that on its own, or";
         return deathAdvice + " The live ones can still close out on their own, but this task will not queue "
             + $"until the dead one is gone too — {liveAdvice}";
+    }
+
+    /// <summary>
+    /// The warning printed once a claim proceeds despite unmet dependencies — shared by
+    /// <c>h9k task work</c> and <c>h9k task start</c> (adopted by <see cref="TaskStartCommand"/>
+    /// for its own Published and Blocked entries) so the two never drift. Always names every
+    /// unmet blocker, then follows with <see cref="TaskDependency.DescribeDeath"/> for any that
+    /// are dead: the refusal path already says that a dead blocker will never close out
+    /// (<see cref="DescribeUnmetDependencyAdvice"/>), and a claim that proceeds — fresh or
+    /// carried forward — needs the identical honesty, not just the blocker's bare
+    /// <see cref="TaskDependency.Describe"/> state (independent pre-PR review, cycle 1,
+    /// adversarial lens: a carried-forward acknowledgment given against a live blocker that has
+    /// since died would otherwise proceed with no honest advice ever printed for it).
+    /// </summary>
+    internal static void PrintUnmetDependencyWarning(
+        string verb, Guid taskId, IReadOnlyList<TaskDependency> unmet, bool carriedForward)
+    {
+        if (unmet.Count == 0)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine(carriedForward
+            ? $"[yellow]{verb} task {taskId} despite {unmet.Count} unmet dependenc"
+              + (unmet.Count == 1 ? "y" : "ies")
+              + " — already acknowledged by an earlier claim on this task, so nothing new was asked:[/]"
+            : $"[yellow]{verb} task {taskId} despite {unmet.Count} unmet dependenc"
+              + (unmet.Count == 1 ? "y" : "ies") + " (--acknowledge-unmet-dependencies):[/]");
+        foreach (TaskDependency dependency in unmet)
+        {
+            // ExternalText.OneLineMarkup, not MarkupLineInterpolated's own hole-escaping alone: a
+            // dependency adopted with --from-issue carries an objective anyone who can file an
+            // issue in that repo wrote.
+            AnsiConsole.MarkupLine($"[yellow]  - {ExternalText.OneLineMarkup(dependency.Describe())}[/]");
+        }
+
+        foreach (TaskDependency dependency in unmet.Where(dependency => dependency.IsDead))
+        {
+            AnsiConsole.MarkupLine($"[yellow]  {ExternalText.OneLineMarkup(dependency.DescribeDeath())}.[/]");
+        }
     }
 
     /// <summary>

@@ -35,15 +35,15 @@ namespace Hall9k.Cli.Commands;
 /// observably Queued in between. Unmet dependencies do not refuse outright the way
 /// <c>h9k task work</c>'s claim does: the platform advises, naming every open blocker, and
 /// <c>--acknowledge-unmet-dependencies</c> is the human's recorded override to start anyway (the
-/// idea's own ruling, fcaded0b: "the platform advises rather than refuses"). Draft, a task
+/// idea's own ruling, fcaded0b: "the platform advises rather than refuses"). An already-Blocked
+/// task — assigned by a plain <c>h9k task assign</c>, or landed there by a handed-back or retried
+/// deliberate claim — shares that same warn-and-acknowledge shape
+/// (<see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>, task 45136b29's R7 ruling, task
+/// 0ac72cb8-h9k), and an acknowledgment this task already carries from an earlier claim on the
+/// same still-open blockers is honored without asking again — the shape <c>h9k task handback
+/// --now</c> produces: a claim once acknowledged, handed back, and picked back up. Draft, a task
 /// already carrying a live claim (interactive, headless, or another deliberate start), and every
-/// terminal state refuse — there is nothing here to start. An already-Blocked task refuses too,
-/// UNLESS every one of its still-open blockers was already warned-and-acknowledged at an earlier
-/// deliberate claim on this same assignment cycle (<see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>,
-/// task 45136b29, idea fcaded0b's R7 ruling) — the shape <c>h9k task handback --now</c> produces:
-/// a claim once acknowledged, handed back, and picked back up. The acknowledgment is never
-/// invented fresh against a task that has simply been sitting Blocked since an ordinary
-/// <c>h9k task assign</c>; only a carried-forward one unlocks this.
+/// terminal state still refuse — there is nothing here to start.
 /// <para>
 /// Ceiling-exempt on #103's own reasoning: the claim carries the sentinel <see cref="Guid.Empty"/>
 /// node id an operator's own interactive claim already uses, so <c>NodeLoad</c>'s ceiling
@@ -234,57 +234,30 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// <summary>
     /// The claim itself, pure enough to test against the failure states without touching the
     /// filesystem: Published loads the dependency snapshot and warns-then-optionally-overrides
-    /// through <see cref="PrepareDeliberateClaimFromPublished"/>; Queued claims directly, exactly
-    /// as <see cref="TaskWorkCommand.ClaimAndCutAsync"/>'s own Queued branch does (dependencies are
-    /// empty by construction on an already-Queued task, so there is nothing to warn about); Blocked
-    /// claims only when every still-open blocker was already acknowledged at an earlier deliberate
-    /// claim on this same assignment cycle (task 45136b29's own carry-forward, below). Everything
-    /// else refuses — there is no re-entry branch here, unlike h9k task work: a deliberate
-    /// kick-off only ever starts a fresh claim.
+    /// through <see cref="PrepareDeliberateClaimFromPublished"/>; Blocked loads the still-open
+    /// blockers and shares that same warn-and-acknowledge shape through
+    /// <see cref="PrepareDeliberateClaimFromBlocked"/> (task 0ac72cb8-h9k); Queued claims directly,
+    /// exactly as <see cref="TaskWorkCommand.ClaimAndCutAsync"/>'s own Queued branch does
+    /// (dependencies are empty by construction on an already-Queued task, so there is nothing to
+    /// warn about). Everything else refuses — there is no re-entry branch here, unlike h9k task
+    /// work: a deliberate kick-off only ever starts a fresh claim, but a fresh claim on an
+    /// already-Blocked task is exactly what Blocked's own branch below is.
     /// </summary>
     internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, AgentModel Model)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, CancellationToken cancellationToken)
     {
         IReadOnlyList<TaskDependency>? dependencies = null;
-        bool claimingAlreadyBlocked = false;
+        IReadOnlyList<TaskDependency>? unmetAtEntry = null;
         if (task.State == TaskState.Published)
         {
             dependencies = await TaskDependencyQuery.LoadAsync(session, task.BlockedBy, cancellationToken);
         }
-        else if (task.State == TaskState.Blocked)
-        {
-            if (task.AssignedOwnerId != context.OwnerId)
-            {
-                throw new DomainConflictException(
-                    $"Task {task.Id} is assigned to {task.AssignedOwnerId} — a deliberate kick-off only starts "
-                    + "your own owner's work.");
-            }
-
-            // The acknowledgment override is only ever decided at the moment of assignment, or
-            // carried forward from an earlier deliberate claim on these exact still-open
-            // blockers (TaskAggregate.AcknowledgedUnmetDependencyIds, task 45136b29's R7 ruling)
-            // — the shape h9k task handback --now produces: a claim once warned-and-acknowledged,
-            // handed back, and picked back up. It is never invented fresh against a task that has
-            // simply been sitting Blocked since an ordinary h9k task assign.
-            if (!task.UnmetDependencies.All(task.AcknowledgedUnmetDependencyIds.Contains))
-            {
-                throw new DomainConflictException(
-                    $"Task {task.Id} is Blocked — h9k task show names the open blocker(s). The acknowledgment "
-                    + "override only applies at the moment of assignment, or carries forward from an earlier "
-                    + "deliberate claim on these exact still-open blockers (what h9k task handback --now "
-                    + "reuses this claim for); it is never granted fresh against a task that has simply been "
-                    + "sitting Blocked since an ordinary h9k task assign.");
-            }
-
-            claimingAlreadyBlocked = true;
-            dependencies = await TaskDependencyQuery.LoadAsync(session, task.UnmetDependencies, cancellationToken);
-        }
-        else if (task.State != TaskState.Queued)
+        else if (task.State != TaskState.Queued && task.State != TaskState.Blocked)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is {task.State.Value} — only a Published or Queued task can be started this "
-                + "way. " + task.State switch
+                $"Task {task.Id} is {task.State.Value} — only a Published, Queued, or Blocked task can be "
+                + "started this way. " + task.State switch
                 {
                     var state when state.IsPreDispatch =>
                         $"Publish it first: h9k task publish {task.Id}.",
@@ -305,6 +278,18 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             throw new DomainConflictException(
                 $"Task {task.Id} is assigned to {task.AssignedOwnerId} — a deliberate kick-off only starts your "
                 + "own owner's work.");
+        }
+        else if (task.State == TaskState.Blocked)
+        {
+            // The acknowledgment override applies at the moment of assignment, not to a task
+            // already sitting Blocked from an ordinary h9k task assign — but that is a statement
+            // about when the human is asked, not about which command can ask (task 0ac72cb8-h9k,
+            // review finding fixing this task's own third acceptance criterion: "a later handback,
+            // retry, or human-initiated dispatch of the same task with the same still-open
+            // blockers does not re-ask"). This mirrors h9k task work's own identical Blocked
+            // branch: the still-open blockers are loaded here so the warn-and-acknowledge path
+            // below can name them.
+            unmetAtEntry = await TaskDependencyQuery.LoadAsync(session, task.UnmetDependencies, cancellationToken);
         }
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(task.Id, cancellationToken)
@@ -360,47 +345,18 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         TaskAssigned? assigned = null;
         TaskClaimed claimed;
-        if (dependencies is not null && !claimingAlreadyBlocked)
+        IReadOnlyList<TaskDependency> unmet = [];
+        bool carriedForward = false;
+        if (dependencies is not null)
         {
-            IReadOnlyList<TaskDependency> unmet;
             (assigned, claimed, unmet) = PrepareDeliberateClaimFromPublished(
                 task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies);
-            if (unmet.Count > 0)
-            {
-                AnsiConsole.MarkupLine(
-                    $"[yellow]Starting task {task.Id} despite {unmet.Count} unmet dependenc"
-                    + (unmet.Count == 1 ? "y" : "ies") + " (--acknowledge-unmet-dependencies):[/]");
-                foreach (TaskDependency dependency in unmet)
-                {
-                    // ExternalText.OneLineMarkup, not MarkupLineInterpolated's own hole-escaping
-                    // alone (adversarial review, cycle 1): a dependency adopted with
-                    // --from-issue carries an objective anyone who can file an issue in that
-                    // repo wrote, and MarkupLineInterpolated only neutralises Spectre's own
-                    // markup syntax — it does nothing to strip a terminal control character or a
-                    // bidirectional override, which is exactly the distinction ExternalText
-                    // exists to draw, on the one screen whose whole purpose is getting the human
-                    // to confirm what they are overriding.
-                    AnsiConsole.MarkupLine($"[yellow]  - {ExternalText.OneLineMarkup(dependency.Describe())}[/]");
-                }
-            }
         }
-        else if (claimingAlreadyBlocked)
+        else if (unmetAtEntry is not null)
         {
-            // Every one of these is already covered by task.AcknowledgedUnmetDependencyIds
-            // (checked above), so this proceeds on the carried-forward acknowledgment without
-            // asking again (idea fcaded0b's R7 ruling: "an acknowledgment already given at claim
-            // time carries forward without re-asking") — named here so the operator still sees
-            // exactly what is being bypassed, even though nothing here is asking permission a
-            // second time.
-            AnsiConsole.MarkupLine(
-                $"[dim]Starting task {task.Id} on {dependencies!.Count} already-acknowledged blocker(s):[/]");
-            foreach (TaskDependency dependency in dependencies)
-            {
-                AnsiConsole.MarkupLine($"[dim]  - {ExternalText.OneLineMarkup(dependency.Describe())}[/]");
-            }
-
-            claimed = TaskDecider.ClaimDeliberately(
-                task, context.OwnerId, runId, claimedAt, dependencyOverrideAcknowledged: true);
+            (claimed, carriedForward) = PrepareDeliberateClaimFromBlocked(
+                task, context.OwnerId, unmetAtEntry, runId, claimedAt, acknowledgeUnmetDependencies);
+            unmet = unmetAtEntry;
         }
         else
         {
@@ -426,6 +382,11 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         {
             throw new DomainConflictException($"Task {task.Id} changed while claiming it — check h9k status and try again.");
         }
+
+        // Printed only once the claim is actually committed: printing it earlier would leave a
+        // lost optimistic-concurrency race (the catch above) showing a warning that implies the
+        // start proceeded despite blockers when nothing was in fact committed (review, PR #192).
+        TaskWorkCommand.PrintUnmetDependencyWarning("Starting", task.Id, unmet, carriedForward);
 
         Worktree worktree;
         bool resumesPreviousWork;
@@ -513,6 +474,47 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         task.Apply(assigned);
         TaskClaimed claimed = TaskDecider.ClaimDeliberately(task, ownerId, runId, now, unmet.Count > 0);
         return (assigned, claimed, unmet);
+    }
+
+    /// <summary>
+    /// The claim behind an already-Blocked entry (task 0ac72cb8-h9k, closing the gap task
+    /// 8a56af78-h9k deliberately left open: "there is no re-entry branch the way h9k task work has
+    /// one" is true about re-entering an already-live claim, which this still never does, but it is
+    /// not a reason to withhold a carried-forward acknowledgment from a fresh claim, which is all a
+    /// Blocked entry here ever is). The task was already assigned — by an ordinary
+    /// <c>h9k task assign</c>, or by an earlier deliberate claim that was handed back or retried —
+    /// so no assignment travels here, unlike <see cref="PrepareDeliberateClaimFromPublished"/>'s
+    /// just-assigned case; only <see cref="TaskDecider.ClaimDeliberately"/> is ever appended.
+    /// Mirrors <see cref="TaskWorkCommand.PrepareInteractiveClaimFromBlocked"/> exactly: refuses,
+    /// naming every open blocker, unless <paramref name="acknowledgeUnmetDependencies"/> is true or
+    /// this task already carries a covering acknowledgment from an earlier claim on these same
+    /// still-open blockers (<see cref="TaskAggregate.UnmetDependenciesAlreadyAcknowledged"/>). The
+    /// returned <c>CarriedForward</c> flag is what the caller uses to record
+    /// <see cref="TaskClaimed.DependencyOverrideCarriedForward"/> and to print an honest message: a
+    /// carried-forward claim did not just ask the human anything.
+    /// </summary>
+    internal static (TaskClaimed Claimed, bool CarriedForward) PrepareDeliberateClaimFromBlocked(
+        TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> unmetDependencies, Guid runId, DateTimeOffset now,
+        bool acknowledgeUnmetDependencies)
+    {
+        bool carriedForward = !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
+        if (!acknowledgeUnmetDependencies && !carriedForward)
+        {
+            throw new DomainBusinessRuleException(
+                $"Task {task.Id} is Blocked: it depends on {unmetDependencies.Count} task(s) that have not "
+                + "closed out: "
+                + string.Join("; ", unmetDependencies.Select(dependency => ExternalText.OneLine(dependency.Describe()))) + ". "
+                + "The platform advises rather than refuses here: "
+                + $"h9k task start {task.Id} --acknowledge-unmet-dependencies to start it anyway, once you have "
+                + $"confirmed that is what you want. "
+                + $"{TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmetDependencies, alreadyAssigned: true)} "
+                + $"h9k task show {task.Id} for the full picture.");
+        }
+
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, ownerId, runId, now, dependencyOverrideAcknowledged: true,
+            dependencyOverrideCarriedForward: carriedForward);
+        return (claimed, carriedForward);
     }
 
     private static async Task FailDeliberateClaimAsync(

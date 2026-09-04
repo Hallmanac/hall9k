@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Spectre.Console;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -18,8 +19,9 @@ namespace Hall9k.Tests.Cli;
 /// database — the concurrency arbitration this composition feeds is pinned separately, against a
 /// real store, in TaskWorkClaimConcurrencyTests. <see cref="TaskWorkCommand.PrepareInteractiveClaimFromBlocked"/>'s
 /// own sibling composition, for the already-Blocked entry (task 0ac72cb8-h9k), is pinned in the
-/// second half of this file — it mirrors TaskStartClaimTests's shape for the identical
-/// warn-then-override behavior, plus the carry-forward case that command does not have.
+/// second half of this file — it mirrors TaskStartClaimTests's identical shape, carry-forward case
+/// included: h9k task start's own Blocked entry gained the identical carry-forward behavior in the
+/// same task, closing the gap task 8a56af78-h9k had originally left open.
 /// </summary>
 // Capture (below) swaps the process-wide AnsiConsole.Console, the same static
 // InstallCommandTests and others in this collection swap; sharing the collection serializes
@@ -214,6 +216,50 @@ public sealed class TaskWorkClaimTests
         carriedForward.Should().BeTrue("this exact blocker was already acknowledged by the earlier claim");
         claimed.DependencyOverrideAcknowledged.Should().BeTrue();
         claimed.DependencyOverrideCarriedForward.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A claim that proceeds — fresh or carried forward — deserves the same honesty the refusal
+    /// path already gives a dead blocker (independent pre-PR review, cycle 1, adversarial lens): a
+    /// carried-forward acknowledgment given against a once-live blocker that has since died would
+    /// otherwise proceed printing only the blocker's bare state, with
+    /// <see cref="TaskDependency.DescribeDeath"/>'s "will never close out on its own" advice never
+    /// shown anywhere.
+    /// </summary>
+    [Fact]
+    public void PrintUnmetDependencyWarning_names_a_dead_blocker_even_when_the_acknowledgment_is_carried_forward()
+    {
+        TaskDependency dead = DeadDependency();
+
+        string output = Capture(() => TaskWorkCommand.PrintUnmetDependencyWarning(
+            "Claiming", DomainId.New(), [dead], carriedForward: true));
+
+        output.Should().Contain(dead.Describe());
+        output.Should().Contain(dead.DescribeDeath());
+    }
+
+    /// <summary>The global console, swapped for a writer and put back — mirrors InstallCommandTests's own capture.</summary>
+    private static string Capture(Action action)
+    {
+        IAnsiConsole original = AnsiConsole.Console;
+        StringWriter writer = new();
+        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Out = new AnsiConsoleOutput(writer),
+        });
+        captured.Profile.Width = 4096;
+        AnsiConsole.Console = captured;
+        try
+        {
+            action();
+            return writer.ToString();
+        }
+        finally
+        {
+            AnsiConsole.Console = original;
+        }
     }
 
     private static TaskAggregate BlockedTask(TaskDependency open)

@@ -15,8 +15,16 @@ namespace Hall9k.Tests.Cli;
 /// <see cref="TaskStartCommand.PrepareDeliberateClaimFromPublished"/> composes
 /// <see cref="TaskDecider.Assign"/> and <see cref="TaskDecider.ClaimDeliberately"/> into one unit,
 /// with no session and no append, so the composition itself is pinned here without a database —
-/// mirrors <c>TaskWorkClaimTests</c>'s own shape exactly, but for the one behavior that differs:
-/// an unmet dependency warns and proceeds on acknowledgment instead of refusing outright.
+/// mirrors <c>TaskWorkClaimTests</c>'s own shape exactly: warning and proceeding on acknowledgment
+/// instead of refusing outright was h9k task start's own behavior first (task 8a56af78-h9k), and
+/// this task (0ac72cb8-h9k) converted h9k task work's identical Published entry to the same shape,
+/// so the two commands now behave identically at this edge rather than one differing from the
+/// other. <see cref="TaskStartCommand.PrepareDeliberateClaimFromBlocked"/>'s own sibling composition, for
+/// the already-Blocked entry (task 0ac72cb8-h9k, closing the gap task 8a56af78-h9k deliberately
+/// left open), is pinned in the second half of this file — it mirrors <c>TaskWorkClaimTests</c>'s
+/// identical Blocked-entry tests, carry-forward case included: that reasoning ("no re-entry branch
+/// the way h9k task work has one") was about re-entering a live claim, which this command still
+/// never does, not about withholding a carried-forward acknowledgment from a fresh one.
 /// </summary>
 public sealed class TaskStartClaimTests
 {
@@ -65,9 +73,11 @@ public sealed class TaskStartClaimTests
     }
 
     /// <summary>
-    /// The behavior that differs from h9k task work's own atomic entry (task 688a1ccf-h9k): an
-    /// open dependency, without the acknowledgment flag, refuses — but names the blockers rather
-    /// than merely a count, and points at the override rather than only at h9k task assign.
+    /// h9k task start's own atomic entry (task 8a56af78-h9k) refuses an open dependency without
+    /// the acknowledgment flag, naming the blockers rather than merely a count, and pointing at the
+    /// override rather than only at h9k task assign — h9k task work's own identical atomic entry
+    /// converted to this same shape only later (task 688a1ccf-h9k), so this is no longer a behavior
+    /// unique to h9k task start, just the one it had first.
     /// </summary>
     [Fact]
     public void A_published_task_with_an_open_dependency_and_no_acknowledgment_is_refused_and_names_the_blocker()
@@ -147,6 +157,77 @@ public sealed class TaskStartClaimTests
                     && !exception.Message.Contains("queues itself the moment"),
                 "a dead blocker's pull request will never merge, so the ordinary queues-itself "
                 + "promise must not be made for it");
+    }
+
+    [Fact]
+    public void A_blocked_task_with_no_acknowledgment_is_refused_and_names_the_blocker()
+    {
+        TaskDependency open = OpenDependency();
+        TaskAggregate task = BlockedTask(open);
+
+        Action act = () => TaskStartCommand.PrepareDeliberateClaimFromBlocked(
+            task, Owner, [open], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .WithMessage("*Blocked*")
+            .Where(exception => exception.Message.Contains(open.Describe())
+                    && exception.Message.Contains("--acknowledge-unmet-dependencies"),
+                "the refusal names the open blocker and the override flag");
+
+        task.State.Should().Be(TaskState.Blocked, "the refusal decides nothing");
+    }
+
+    [Fact]
+    public void A_blocked_task_with_a_fresh_acknowledgment_claims_and_records_it_as_not_carried_forward()
+    {
+        TaskDependency open = OpenDependency();
+        TaskAggregate task = BlockedTask(open);
+        Guid runId = DomainId.New();
+
+        (TaskClaimed claimed, bool carriedForward) = TaskStartCommand.PrepareDeliberateClaimFromBlocked(
+            task, Owner, [open], runId, Now, acknowledgeUnmetDependencies: true);
+
+        carriedForward.Should().BeFalse("the flag was passed fresh this time, not carried from an earlier claim");
+        claimed.NodeId.Should().Be(Guid.Empty);
+        claimed.RunId.Should().Be(runId);
+        claimed.DependencyOverrideAcknowledged.Should().BeTrue();
+        claimed.DependencyOverrideCarriedForward.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The carry-forward this task (0ac72cb8-h9k) adds to h9k task start's own Blocked entry,
+    /// exactly as h9k task work's identical entry already has it (design ruling R7): once an
+    /// earlier deliberate claim on this same task acknowledged this exact blocker (recorded on
+    /// <see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>, which a handback or a retry does
+    /// not clear), a later start of the identical still-open blocker does not need the flag again
+    /// and is recorded as relying on that earlier acknowledgment.
+    /// </summary>
+    [Fact]
+    public void A_blocked_task_already_acknowledged_by_an_earlier_deliberate_claim_does_not_need_the_flag_again()
+    {
+        TaskDependency open = OpenDependency();
+        TaskAggregate task = BlockedTask(open);
+        task.Apply(TaskDecider.ClaimDeliberately(
+            task, Owner, DomainId.New(), Now, dependencyOverrideAcknowledged: true));
+        task.Apply(TaskDecider.HandBack(task, task.CurrentRunId!.Value, "task/x-y", "handing back", Now, Owner));
+        task.State.Should().Be(TaskState.Blocked, "the same still-open blocker is on record unmet");
+        task.UnmetDependenciesAlreadyAcknowledged.Should().BeTrue();
+
+        Guid runId = DomainId.New();
+        (TaskClaimed claimed, bool carriedForward) = TaskStartCommand.PrepareDeliberateClaimFromBlocked(
+            task, Owner, [open], runId, Now, acknowledgeUnmetDependencies: false);
+
+        carriedForward.Should().BeTrue("this exact blocker was already acknowledged by the earlier claim");
+        claimed.DependencyOverrideAcknowledged.Should().BeTrue();
+        claimed.DependencyOverrideCarriedForward.Should().BeTrue();
+    }
+
+    private static TaskAggregate BlockedTask(TaskDependency open)
+    {
+        TaskAggregate task = PublishedTask(open.Id);
+        task.Apply(TaskDecider.Assign(task, Owner, [open], Now, Owner));
+        task.State.Should().Be(TaskState.Blocked);
+        return task;
     }
 
     private static TaskDependency DeadDependency() => new(
