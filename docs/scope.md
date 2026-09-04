@@ -87,7 +87,7 @@ back to the dispatch queue. See [PLAN.md Decisions Log #103, #122, #124, #126, #
 
 ### A deliberate human kick-off
 
-`h9k task start <id>` dispatches a Published or Queued task on the spot, headless, instead of
+`h9k task start <id>` dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of
 waiting on the dispatch queue or working it interactively. It reuses `h9k task work`'s own claim
 shape exactly — the same ceiling-exempt sentinel `NodeId`, so every lever built on it (`deliver`,
 `verify`, `handback`, `release`, the stale-claim nudge, and re-entering with `h9k task work`
@@ -107,7 +107,7 @@ entry is, not a re-entry. Giving the claim back (`handback`, `release`, `retry`,
 reopening it) lands the task on Blocked rather than Queued when the acknowledged dependency is
 still open, since only `h9k task assign` clears that snapshot — and the acknowledgment itself stays
 on record for whichever command reclaims it next. See
-[PLAN.md Decisions Log #125, #127](../PLAN.md).
+[PLAN.md Decisions Log #125, #128](../PLAN.md).
 
 ### The board
 

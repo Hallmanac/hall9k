@@ -678,7 +678,7 @@ public static class CliCommandTree
                 .WithExample("task", "resolve", "28b19893", "--reason", "\"Objective met by hand in the worktree\"", "--pr", "https://github.com/x/y/pull/7");
             task.AddCommand<TaskWorkCommand>("work")
                 .WithDescription(
-                    "Work a Published or Queued task interactively. On a Published task assigned to nobody, "
+                    "Work a Published, Queued, or already-Blocked task interactively. On a Published task assigned to nobody, "
                     + "this assigns it to your own owner and claims it interactively in one atomic event append, "
                     + "the same collapsing h9k task publish --assign already does for publish and assign: the "
                     + "task is never observably Queued in between, so the dispatcher (woken within moments by "
@@ -728,7 +728,7 @@ public static class CliCommandTree
                 .WithExample("task", "register-session", "28b19893");
             task.AddCommand<TaskStartCommand>("start")
                 .WithDescription(
-                    "Dispatch a Published or Queued task on the spot, headless, instead of waiting for the "
+                    "Dispatch a Published, Queued, or already-Blocked task on the spot, headless, instead of waiting for the "
                     + "dispatcher's own ceiling and ordering to reach it (a deliberate human kick-off). On a "
                     + "Published task assigned to nobody, this assigns it to your own owner and claims it in "
                     + "one atomic event append, the same collapsing h9k task work's own Published entry already "

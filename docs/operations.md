@@ -582,12 +582,12 @@ next move on, renders dim as its own level. It is there so you can consciously i
 `h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session |
 verify | deliver | handback | release` (Decisions Log #103, #122, #124, #126, #127)
 
-An operator can work a Published or Queued task in their own terminal instead of dispatching it
+An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
 headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it
 to the operator's own owner and claims it interactively in one atomic event append, so the task is
 never observably Queued for the dispatcher to claim in between. An unmet dependency — whether just
 discovered here on a Published task, or already sitting Blocked from an ordinary `h9k task assign`
-or a claim handed back or retried — warns rather than refuses (Decisions Log #127): the platform
+or a claim handed back or retried — warns rather than refuses (Decisions Log #128): the platform
 names every open blocker, and `--acknowledge-unmet-dependencies` is the human's recorded override
 to claim it anyway. Not needed twice: an acknowledgment this task already carries from an earlier
 claim on the same still-open blockers is honored without asking again, and `h9k task show` names
@@ -624,7 +624,7 @@ reclaim, only a question (Decisions Log #103).
 
 | Command | What it does |
 |---|---|
-| `h9k task work <id>` | Claims a Published or Queued task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and — by default — prints the worktree, the branch, and that prompt to paste into a session started elsewhere; `--direct-launch` opens a regular interactive Claude Code session itself instead, kept for one release. On a task you already hold, re-enters that same worktree and branch — by default with a fresh prompt, or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. |
+| `h9k task work <id>` | Claims a Published, Queued, or already-Blocked task (assigning a Published one to your own owner in the same atomic event append), cuts the same branch and worktree headless dispatch would, assembles the prompt through the same code path (working rules swapped for an attached operator), and — by default — prints the worktree, the branch, and that prompt to paste into a session started elsewhere; `--direct-launch` opens a regular interactive Claude Code session itself instead, kept for one release. On a task you already hold, re-enters that same worktree and branch — by default with a fresh prompt, or, under `--direct-launch`, resuming the most recently recorded session's own conversation, falling back to a fresh session, announced rather than silent, only when the recorded one cannot be resumed. |
 | `h9k task register-session <id>` | The pasted-in session's own first act: records its process identity (from `CLAUDE_PID`) against the claim, the way a direct launch's own launch-time recording always did. Refuses rather than guessing when `CLAUDE_PID` cannot be read. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
 | `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
@@ -650,7 +650,7 @@ anyway.
 
 `h9k task start <id> [--acknowledge-unmet-dependencies]` (Decisions Log #125)
 
-A deliberate human kick-off dispatches a Published or Queued task on the spot, headless, instead
+A deliberate human kick-off dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead
 of dispatching it interactively (`h9k task work`, above) or waiting on the dispatch queue. `start`
 reuses `work`'s own claim shape exactly — the same ceiling-exempt sentinel `NodeId`, so `verify`,
 `deliver`, `handback`, `release`, the stale-claim nudge, and re-entering with `work` itself all
@@ -661,7 +661,7 @@ the agent headless and detached (`claude -p`, Claude Code's own completion mode)
 returns as soon as the process is confirmed alive without waiting for it to finish.
 
 Shares `h9k task work`'s own warn-then-acknowledge shape for an unmet dependency, on a Published
-task and on an already-Blocked one alike (Decisions Log #127): the platform names every open
+task and on an already-Blocked one alike (Decisions Log #128): the platform names every open
 blocker and advises, and `--acknowledge-unmet-dependencies` is the human's recorded override to
 start anyway — recorded on the resulting claim and surfaced on `h9k task show` beside the blockers
 it overrode. Not needed twice: an acknowledgment this task already carries from an earlier claim on
@@ -688,7 +688,7 @@ open blocker: only `h9k task assign` clears that snapshot, and claiming past a b
 blocker actually closes out. Each command's own confirmation says which happened. The
 acknowledgment itself stays on record for whichever command reclaims the task next — `h9k task
 work` or `h9k task start` on the resulting Blocked task both honor it without asking again
-(Decisions Log #127).
+(Decisions Log #128).
 
 ## The recovery levers
 
