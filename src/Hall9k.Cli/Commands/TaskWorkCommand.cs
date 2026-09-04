@@ -728,25 +728,22 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // Resolved once, here, and frozen on RunDispatched for this run's whole lifetime
             // (task: the review pipeline's stage composition becomes configuration recorded per
             // run) — the node level has no live DaemonOptions to read from an interactive claim,
-            // so this reads the platform config file directly, the same file-only source
-            // TaskStatusComposer's own interactive-claim-staleness read already uses, rather than
-            // the Hall9k__ReviewStageComposition environment variable OperatingSettingsResolver
-            // (for h9k config show) and the daemon's own DaemonOptions binding both also honor for
-            // a headless run — an operator running only from an exported environment variable sees
-            // this interactive claim resolve the node level differently from a headless dispatch on
-            // the same machine (independent pre-PR review, cycle 1, conformance lens). The
-            // non-throwing TryReadOperatingSettingsAsync, not the write path's throwing ReadOperatingSettingsAsync
-            // (independent pre-PR review, cycle 1, adversarial lens): this call sits inside the
-            // post-claim block above, whose catch already records the claim Failed on any
-            // exception, and a malformed config file is exactly the case the rest of this
-            // subsystem is built to degrade gracefully on rather than fail a claim over — the same
-            // reason ConfigShowCommand and the daemon's own PlatformConfigFileSource both read
-            // through the non-throwing variant.
-            Hall9k.Domain.Infrastructure.Persistence.OperatingSettings nodeSettings =
-                (await Hall9k.Domain.Infrastructure.Persistence.PlatformConfigFile.TryReadOperatingSettingsAsync(
-                    cancellationToken)).Settings;
+            // so this reads through the same OperatingSettingsResolver.ResolveAsync h9k config show
+            // and TaskStartCommand's own model resolution already use, rather than the platform
+            // config file directly: a file-only read ignores the Hall9k__ReviewStageComposition
+            // environment variable OperatingSettingsResolver ranks above the file, so an operator
+            // running only from an exported environment variable used to see this interactive
+            // claim resolve the node level differently from a headless dispatch on the same
+            // machine (independent pre-PR review, cycle 1, adversarial lens). ResolveAsync degrades
+            // the same way the file-only read did on a malformed config file — a config-file
+            // problem falls back to the built-in default at that level rather than throwing — so
+            // this still sits safely inside the post-claim block above, whose catch already records
+            // the claim Failed on any exception.
+            Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsReport nodeSettings =
+                await Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver.ResolveAsync(cancellationToken);
             ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
-                taskDetails.ReviewStageComposition, project.ReviewStageComposition, nodeSettings.ReviewStageComposition);
+                taskDetails.ReviewStageComposition, project.ReviewStageComposition,
+                nodeSettings.ReviewStageComposition.Value);
 
             // Fable is the human-interactive model tier (AgentModel's own doc comment, Decisions
             // Log #33) — a fixed platform choice for an operator-attended session, not the
