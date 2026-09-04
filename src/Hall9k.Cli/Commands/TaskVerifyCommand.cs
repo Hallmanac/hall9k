@@ -103,6 +103,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         // above unreachable for its own stated purpose).
         (IReadOnlyList<string>? modified, IReadOnlyList<string> untracked) =
             await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
+        IReadOnlyList<string> strandable = [];
         if (untracked.Count > 0)
         {
             // Split the same way VerificationRunner and h9k task deliver do, with the same shared
@@ -111,7 +112,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             // will fail over once this claim is delivered. Saying "not counted against the check"
             // about that path here would make this on-demand rehearsal read green for a tree that
             // is about to fail for real (independent pre-PR review, adversarial finding, cycle 1).
-            (IReadOnlyList<string> strandable, IReadOnlyList<string> byproduct) = WorktreeGitStatus.SplitUntracked(untracked);
+            (strandable, IReadOnlyList<string> byproduct) = WorktreeGitStatus.SplitUntracked(untracked);
 
             if (strandable.Count > 0)
             {
@@ -144,11 +145,14 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         // true only when the tree was confirmed clean at the moment the gates ran. A dirty or
         // unreadable tree ran the gates over HEAD-plus-something-else, so claiming RanFullScope
         // against HeadSha there would be recording an unobserved fact as though it were observed
-        // (AGENTS.md's "never guess at unobserved facts"; adversarial review, cycle 6). Harmless
+        // (AGENTS.md's "never guess at unobserved facts"; adversarial review, cycle 6). A
+        // strandable untracked file (under src/ or tests/) is exactly that same
+        // HEAD-plus-something-else case — dotnet build/test glob it in regardless of git status —
+        // so it must hold the tree unclean too, not just a modified tracked file. Harmless
         // today only because RunSupervisor.ResumePipeline always re-verifies and overwrites
         // LastGate* before any review cycle reads it — the recorded fact should still be honest
         // on its own terms, since h9k task show renders this run's verification history from it.
-        bool treeConfirmedClean = modified is not null && modified.Count == 0;
+        bool treeConfirmedClean = modified is not null && modified.Count == 0 && strandable.Count == 0;
 
         string gatesFingerprint = VerifyCommand.Fingerprint(project.VerifyCommands);
 
