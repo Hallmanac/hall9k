@@ -131,17 +131,32 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         // own window — including during the process-table lookup and file reads below — leaves
         // the stream at a version this fence no longer names, so this append's own
         // expectedVersion fails loudly (EventStreamUnexpectedMaxEventIdException, caught by the
-        // caller) instead of silently succeeding on stale data.
-        StreamState? fence = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
-            ?? throw new DomainConflictException(
-                $"Task {task.Id}'s run {runId} lost its run stream while registering — h9k task show {task.Id} "
-                + "to see where it stands.");
+        // caller) instead of silently succeeding on stale data. Not null-checked here: a stream
+        // that never started at all fails the RunDetails load immediately below with a more
+        // specific, actionable message (RunDetails is an inline projection, so no stream means no
+        // record either), and that check runs first purely because it is more useful to a human —
+        // both read the identical underlying fact.
+        StreamState? fence = await session.Events.FetchStreamStateAsync(runId, cancellationToken);
 
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException(
                 $"Task {task.Id} is claimed interactively but run {runId} has no record — the process likely died "
                 + $"while preparing the worktree. h9k task release {task.Id} to give the claim back to the "
                 + "dispatch queue.");
+
+        // The pathological remainder fence's own nullability leaves open: RunDetails exists (so
+        // the stream had events at the instant that load ran) yet the fence fetched a moment
+        // earlier read no stream at all. Inline projections make this unreachable in practice —
+        // nothing between the fence fetch and the load above can have started the stream, since
+        // starting it is what creates both the stream and this projection's own record in the
+        // same transaction — kept as a named, honest refusal rather than a null-forgiving
+        // operator on the next line's fence.Version (AGENTS.md: never guess at unobserved facts).
+        if (fence is null)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id}'s run {runId} lost its run stream while registering — h9k task show {task.Id} "
+                + "to see where it stands.");
+        }
 
         // Mirrors TaskVerifyCommand's own guard: once h9k task deliver or handback hands the run
         // to the standard pipeline, the task can still read Claimed+interactive for the whole

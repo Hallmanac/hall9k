@@ -220,7 +220,8 @@ public sealed class TaskRegisterSessionCommandIntegrationTests(PostgresFixture p
         {
             seed.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, Guid.Empty, node.OwnerId, 1, DomainId.New(), "/tmp/register-session-worktree",
-                "task/register-session-branch", ExecutorMode.Subscription, Now));
+                "task/register-session-branch", ExecutorMode.Subscription, Now,
+                SessionName: "register-session-" + SessionRoleName.InteractiveClaim));
             seed.Events.Append(runId, new InteractiveSessionStarted(
                 runId, DomainId.New(), startedAt, Environment.ProcessId, Environment.MachineName,
                 "register-session-first"));
