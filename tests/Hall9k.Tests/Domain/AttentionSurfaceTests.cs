@@ -560,6 +560,33 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
+    /// The missing-run sweep's own arm of IsOrphanSweepCandidate (AttentionComposer.cs) admits a
+    /// run that recorded no pull-request number of its own, because CloseoutEngine's missing-run
+    /// sweep watches that shape too — but only until the sweep's own InspectMissingRunAsync finds
+    /// the pull request closed rather than merged and appends PullRequestClosed onto this run's
+    /// own stream (RecordClosedAsync). From that point NeedsMissingRunSweep excludes the row
+    /// permanently, exactly as it already does for the recorded-number case above, so the second
+    /// arm must carry the identical FailureReason exclusion the first arm always has (independent
+    /// pre-PR review, cycle 1, both lenses) — otherwise this row keeps claiming to be watched for
+    /// a merge that will never come.
+    /// </summary>
+    [Fact]
+    public void A_missing_run_records_pull_request_closed_without_merging_is_never_reported_as_still_watched()
+    {
+        Guid runId = DomainId.New();
+        RunDetails closed = StatusFixtures.Run(runId, RunState.Failed, sessionProcessId: null);
+        closed.FailureReason = RunDetails.PullRequestClosedWithoutMerge;
+        closed.PullRequestUrl = "https://github.com/x/y/pull/24";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), closed);
+
+        row.Attention.Cause.Should().Contain("nothing is watching this pull request any more")
+            .And.NotContain("still eligible for closeout's merge observation");
+        row.Attention.Lever.Should().Be(closed.PullRequestUrl);
+    }
+
+    /// <summary>
     /// RunState.Failed is what every run failure records, and only one of the ways to reach it is
     /// a pull request closed without merging. Origin incident (pre-PR review, 2026-08-22): both
     /// the phase and the attention line read that state as a closure, so a task whose gates had

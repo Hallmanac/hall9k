@@ -424,25 +424,33 @@ internal static class AttentionComposer
     /// candidate here even though no sweep on this machine will ever match it, so a multi-node
     /// install can still see this claim outlive the node that would have to act on it.
     /// <para>
-    /// Also mirrors <c>CloseoutEngine.NeedsMissingRunSweep</c>'s other admitted shape and the four
+    /// Also mirrors <c>CloseoutEngine.NeedsMissingRunSweep</c>'s other admitted shape and the five
     /// guards <c>InspectMissingRunAsync</c> revalidates before acting on it (independent pre-PR
     /// review, cycle 1, both lenses): a terminal, not-Completed run carrying no pull-request number
     /// of its own, whose owning task nonetheless recorded one, is not a <c>pr-review</c> task (that
     /// type's own <c>PullRequestUrl</c> names the pull request it reviewed, never one of its own,
-    /// per <c>TaskResolveCommand</c>'s identical guard), and that recorded URL actually parses to a
+    /// per <c>TaskResolveCommand</c>'s identical guard), that recorded URL actually parses to a
     /// pull-request number (<see cref="PullRequestUrls.ParseNumber"/> — the one half of
     /// <c>InspectMissingRunAsync</c>'s own <see cref="PullRequestUrls.IsSafePullRequestUrl"/> check
     /// this composer can apply without a project's repository URL, which it has no way to load; the
-    /// repository-match half stays the sweep's alone to enforce). The missing-run sweep completes
+    /// repository-match half stays the sweep's alone to enforce), and the run's own failure reason
+    /// is not already <see cref="RunDetails.PullRequestClosedWithoutMerge"/> — the same exclusion
+    /// the first arm carries, needed here too because <c>InspectMissingRunAsync</c>'s own
+    /// <c>RecordClosedAsync</c> call can record exactly that reason onto this intact run's stream,
+    /// which permanently excludes it from <c>NeedsMissingRunSweep</c> without ever setting a pull-
+    /// request number (independent pre-PR review, cycle 1, both lenses). The missing-run sweep completes
     /// that shape's closeout directly against the intact record — it is watched, even though
     /// <paramref name="run"/>'s own <c>PullRequestNumber</c> reads null — so without this second arm
     /// this pane told the reader nothing was watching a pull request the daemon was about to close
     /// out on its own within one poll interval. Without the number guard, though, the same arm
-    /// claimed the opposite lie for a <c>--pr</c> URL the sweep will never inspect at all (a foreign
-    /// repository, or a non-pull-request URL such as an issue): <c>TaskResolveCommand</c> records
-    /// such a URL onto the task stream verbatim once no run stream exists to protect
-    /// (<c>RunLauncher.cs</c>'s own doc block), and its own stderr already tells the operator
-    /// closeout will not watch it — this pane must not contradict that in the same breath.
+    /// claimed the opposite lie for a <c>--pr</c> URL that names no pull request at all (a non-
+    /// pull-request URL such as an issue): <c>TaskResolveCommand</c> records such a URL onto the
+    /// task stream verbatim once no run stream exists to protect (<c>RunLauncher.cs</c>'s own doc
+    /// block), and its own stderr already tells the operator closeout will not watch it — this
+    /// pane must not contradict that in the same breath. A foreign-repository <c>--pr</c> URL still
+    /// parses to a real number, so this guard alone does not catch it; the repository-match half
+    /// stays the sweep's alone to enforce, and this pane has no project repository URL to check
+    /// it against.
     /// </para>
     /// </summary>
     internal static bool IsOrphanSweepCandidate(TaskListItem task, RunDetails run) =>
@@ -452,7 +460,8 @@ internal static class AttentionComposer
             && task.PullRequestUrl.IsNotBlank()
             && PullRequestUrls.ParseNumber(task.PullRequestUrl) > 0
             && run.State.IsTerminal
-            && run.State != Domain.Features.Run.RunState.Completed);
+            && run.State != Domain.Features.Run.RunState.Completed
+            && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge);
 
     /// <summary>
     /// What actually moves a Done task whose run ended with no merge observed. <c>h9k pr resolve</c>
