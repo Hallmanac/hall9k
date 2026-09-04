@@ -132,9 +132,11 @@ public sealed class TaskDetails
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
     /// <summary>
     /// Whether the current claim's <see cref="Events.TaskClaimed"/> recorded a human's deliberate
-    /// override of unmet dependency edges (<c>h9k task start --acknowledge-unmet-dependencies</c>,
-    /// task 8a56af78-h9k) — false for every ordinary claim, since only that one entry can ever be
-    /// true. Cleared when the claim is given back to run again (requeue, handback, retry, …), so a
+    /// override of unmet dependency edges — <c>h9k task start --acknowledge-unmet-dependencies</c>
+    /// (task 8a56af78-h9k) or <c>h9k task work</c>'s own equivalent, freshly given or carried
+    /// forward from an earlier claim (design ruling R7, task 0ac72cb8-h9k; see
+    /// <see cref="DependencyOverrideCarriedForward"/>) — false for every ordinary claim that never
+    /// crossed an unmet edge. Cleared when the claim is given back to run again (requeue, handback, retry, …), so a
     /// later, ordinary claim on the same task never inherits an earlier claim's override. Left set
     /// when the claim instead ends the task's story (complete, resolve, fail, abandon), since it
     /// stays a true fact about the run that just ended rather than something a later event
