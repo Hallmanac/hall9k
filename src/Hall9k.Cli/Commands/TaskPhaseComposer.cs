@@ -97,7 +97,20 @@ internal static class TaskPhaseComposer
         // about a claim that is, as far as anyone here can honestly say, still attached
         // (adversarial review, cycle 1). Unobserved falls through to the ordinary Running case
         // below instead, whose SessionGap/LivenessMarkup already say "liveness not observed here."
+        // task.Type != TaskType.PrReview excludes a third Guid.Empty-claimed shape (independent
+        // pre-PR review, cycle 1, both lenses): AutoPrReviewEngine.CreateOneAsync's Now speed
+        // launches a headless pr-review run under this identical sentinel, and its session name
+        // (SessionRoleName.ReviewAdversarial and friends) carries neither the -build nor the
+        // -interactive-claim suffix, so it fell into the else arm below and read as an attended
+        // h9k task work claim nobody can actually re-enter — TaskWorkCommand refuses a pr-review
+        // task outright. TaskWorkCommand and TaskStartCommand both refuse a pr-review task
+        // (Decisions Log #99), so no pr-review task ever carries this sentinel from either of
+        // those two commands — every pr-review task reaching here got here only through this
+        // engine, and excluding the type lets it fall through to the ordinary state-based switch
+        // below, which already reports a genuinely gone process honestly rather than as a normal
+        // wait for a human to hand off.
         if (task.ClaimedByNodeId == Guid.Empty
+            && task.Type != TaskType.PrReview
             && run.State.Value == "Running"
             && session is SessionLiveness.Gone or SessionLiveness.NotApplicable)
         {
@@ -148,7 +161,11 @@ internal static class TaskPhaseComposer
         // survive that by design, but no prompt was ever printed for a human to paste anywhere
         // (adversarial review, cycle 1). SessionRoleName's own role suffix is what tells the two
         // apart here too, exactly as the Running case above already relies on it.
-        if (task.ClaimedByNodeId == Guid.Empty && run.State.Value == "Dispatched")
+        // Excludes task.Type == TaskType.PrReview for the identical reason the Running case above
+        // does: AutoPrReviewEngine's Now-speed headless launch is the third Guid.Empty-claimed
+        // shape, never an attended claim, and falling through to the ordinary "starting up" line
+        // below is honest about it — nothing was printed for a human to paste.
+        if (task.ClaimedByNodeId == Guid.Empty && task.Type != TaskType.PrReview && run.State.Value == "Dispatched")
         {
             return run.SessionName.EndsWith("-" + SessionRoleName.Build, StringComparison.Ordinal)
                 ? new TaskPhase("awaiting launch", SessionLiveness.NotApplicable,
