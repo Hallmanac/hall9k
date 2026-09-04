@@ -360,13 +360,18 @@ public sealed class DispatchEngine(
         // means those were this node's owner's decisions. The ceiling shapes how much of this
         // set is taken, never which end of it (Decisions Log #64).
         //
-        // Oldest assignment first, because assignment is the act that put the task in this
-        // queue: a task drafted in January and assigned this morning is behind one drafted and
-        // assigned last week, which ordering by AddedAt alone would get backwards. AddedAt
-        // still breaks ties, which is what the bulk import of a backlog assigned in one command
-        // looks like. Every row here has an assignedAt — the projection writes one for
-        // pre-lifecycle streams too, and the startup backfill rebuilds any document old enough
-        // to be missing the key before this query runs.
+        // Marker first (task 45136b29, idea fcaded0b's R7 ruling): a task a human recorded as
+        // queue-first (h9k task revise --queue-first, or h9k task handback --first) takes the
+        // next free slot regardless of assignment age, ahead of every unmarked row — the marker
+        // clears the moment this same claim commits (TaskListItem.Apply(TaskClaimed)), so it
+        // never survives past the turn it bought. Everything unmarked falls through to the
+        // ordering that already existed and is unchanged: oldest assignment first, because
+        // assignment is the act that put the task in this queue: a task drafted in January and
+        // assigned this morning is behind one drafted and assigned last week, which ordering by
+        // AddedAt alone would get backwards. AddedAt still breaks ties, which is what the bulk
+        // import of a backlog assigned in one command looks like. Every row here has an
+        // assignedAt — the projection writes one for pre-lifecycle streams too, and the startup
+        // backfill rebuilds any document old enough to be missing the key before this query runs.
         //
         // Ids only, never the documents: nothing below reads a projection field. TryClaimAsync
         // decides from the task's own stream and a deferral is logged by id, so every document
@@ -377,7 +382,8 @@ public sealed class DispatchEngine(
         IReadOnlyList<Guid> queued = await session.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
             .Where(t => t.AssignedOwnerId == ownerId)
-            .OrderBy(t => t.AssignedAt)
+            .OrderByDescending(t => t.QueuePriorityMarked)
+            .ThenBy(t => t.AssignedAt)
             .ThenBy(t => t.AddedAt)
             .Select(t => t.Id)
             .ToListAsync(cancellationToken);

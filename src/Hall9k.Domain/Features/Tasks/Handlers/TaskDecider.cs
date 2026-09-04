@@ -249,6 +249,14 @@ public static class TaskDecider
     /// and revising a claimable task races the dispatcher. The revert ceremony
     /// (unassign -> draft -> revise -> publish -> assign) is deliberate, not accidental friction.
     /// Absent fields are left alone; only what is passed is recorded.
+    /// <para>
+    /// <paramref name="queuePriority"/> is the one exception to the Draft-only gate (task
+    /// 45136b29, idea fcaded0b's R7 ruling): it is a scheduling fact, not part of the readiness
+    /// contract the gate otherwise protects, so a call that touches only this field is let
+    /// through regardless of state — settable on a Queued, Blocked, or even a currently Claimed
+    /// task, for its next turn in the queue. A call that names it alongside anything else still
+    /// needs the full ceremony; nothing here lets a wider revision hitch a ride on the exception.
+    /// </para>
     /// </summary>
     public static TaskRevised Revise(
         TaskAggregate task,
@@ -260,9 +268,14 @@ public static class TaskDecider
         Optional<AgentModel> model,
         DateTimeOffset revisedAt,
         Guid revisedByOwnerId,
-        Optional<Guid?> epicId = default)
+        Optional<Guid?> epicId = default,
+        Optional<bool> queuePriority = default)
     {
-        if (task.State != TaskState.Draft)
+        bool onlyQueuePriorityChanging = queuePriority.HasValue
+            && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
+            && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue;
+
+        if (task.State != TaskState.Draft && !onlyQueuePriorityChanging)
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — only a draft can be revised. " + task.State switch
@@ -271,8 +284,17 @@ public static class TaskDecider
                         $"Return it to Draft first: h9k task draft {task.Id}.",
                     var state when state.IsAssigned =>
                         $"Unassign it, then return it to Draft: h9k task unassign {task.Id} && h9k task draft {task.Id}.",
-                    _ => "A task that has already run gets a new task, not a rewritten contract.",
+                    _ => "A task that has already run gets a new task, not a rewritten contract. "
+                        + "h9k task revise --queue-first is the one exception, and it still needs "
+                        + "something left to queue.",
                 });
+        }
+
+        if (onlyQueuePriorityChanging && task.State.IsTerminal)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — nothing here will ever be queued again, so a "
+                + "priority marker would do nothing.");
         }
 
         if (objective.HasValue && objective.Value.IsBlank())
@@ -326,16 +348,18 @@ public static class TaskDecider
         }
 
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
-            && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue)
+            && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue
+            && !queuePriority.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
-                "--type, --model, --blocked-by, --clear-dependencies, --epic, or --clear-epic.");
+                "--type, --model, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
+                "--queue-first, or --clear-queue-first.");
         }
 
         return new TaskRevised(
             task.Id, objective, criteria, agentContext, dependencies, type, chosenModel,
-            revisedAt, revisedByOwnerId, epicId);
+            revisedAt, revisedByOwnerId, epicId, queuePriority);
     }
 
     /// <summary>
