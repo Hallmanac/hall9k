@@ -22,10 +22,15 @@ namespace Hall9k.Cli.Commands;
 /// </summary>
 internal static class PublishedFacts
 {
+    private const string QueuePriorityFact =
+        "marked queue-first — takes the next free dispatch slot regardless of assignment age";
+
     /// <summary>
     /// What a Published row is actually waiting for, oldest question first: whether a human has
     /// assigned it at all, then what the platform is waiting on. Empty for any row that is not
-    /// Published, which is what keeps the line from appearing where it would say nothing.
+    /// Published, which is what keeps the line from appearing where it would say nothing — except
+    /// for the queue-first marker (task 45136b29), which is stated wherever it is set, Published
+    /// or not, since the decider allows setting it on a currently-Claimed task too.
     /// </summary>
     /// <param name="heldByCeiling">
     /// The measurement that says this row is waiting on a dispatch slot, or null when nothing
@@ -38,7 +43,13 @@ internal static class PublishedFacts
     {
         if (state != LifecycleState.Published)
         {
-            return [];
+            // The marker can be set while the decider allows it — Queued, Blocked, even a
+            // currently-Claimed task, for its next turn in the queue (Decisions Log #127) — and
+            // a currently-Claimed task reads as LifecycleState.Working, not Published. Without
+            // this, a human who marks a running task queue-first sees the marker recorded on the
+            // stream but nowhere on the board until it lands back on Queued or Blocked
+            // (independent pre-PR review, cycle 1, conformance lens).
+            return task.QueuePriorityMarked ? [QueuePriorityFact] : [];
         }
 
         IReadOnlyList<string> facts = task.State.Value switch
@@ -81,9 +92,7 @@ internal static class PublishedFacts
         // it is stated wherever it is set — including Blocked, where it is inert until the
         // blocker clears — so a human never has to guess whether a marker they set survived
         // (task 45136b29, idea fcaded0b's R7 ruling).
-        return task.QueuePriorityMarked
-            ? [.. facts, "marked queue-first — takes the next free dispatch slot regardless of assignment age"]
-            : facts;
+        return task.QueuePriorityMarked ? [.. facts, QueuePriorityFact] : facts;
     }
 
     /// <summary>
