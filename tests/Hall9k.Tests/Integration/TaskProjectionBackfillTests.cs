@@ -4,11 +4,13 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
 using Marten;
@@ -310,6 +312,96 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     }
 
     /// <summary>
+    /// <see cref="TaskListItem.QueuePriorityMarked"/> (task 45136b29) exists only on the list
+    /// item, and a document written before the field landed carries no key at all — the same
+    /// class of defect the markers above cover, but with the worst failure mode of any of them:
+    /// <see cref="Dispatch.DispatchEngine.ClaimEligibleAsync"/>'s <c>OrderByDescending(QueuePriorityMarked)</c>
+    /// sees a missing key as SQL <c>NULL</c>, and PostgreSQL's default <c>DESC</c> ordering sorts
+    /// <c>NULL</c> <em>first</em> — ahead of a genuinely marked row — so a stale unmarked document
+    /// is served before the very task a human just marked queue-first (independent pre-PR review,
+    /// cycle 1, both lenses). The backfill runs at daemon start, before the claim query ever
+    /// executes, which is what the two calls below reproduce against the one queue: the first
+    /// claims with no backfill run first (the defect, against the original stale document — once
+    /// claimed, its own TaskClaimed event rewrites it in full and it stops being stale, which is
+    /// why a second stale document joins the queue afterward to stand in for the daemon's next
+    /// sweep finding one), the second runs the backfill first, as the daemon always does, and
+    /// gets the marker's own promise honoured.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_unmarked_document_no_longer_outranks_a_marked_one_once_the_backfill_runs_first()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+
+        // A ceiling of 1 makes the ordering the only thing deciding which task gets claimed, so
+        // this test needs the node to start with no lease already occupying that one slot — which
+        // NodeBootstrapSeed.NewNodeAsync's own idempotent find-or-create (the same node and owner
+        // every call against this store) would not otherwise guarantee against another test in
+        // this class that claimed something under the same node and never released it.
+        await store.Advanced.ResetAllData(cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        DispatchEngine engine = NewEngine(store, node, maxConcurrentRuns: 1);
+
+        Guid staleUnmarked = await SeedQueuedAsync(store, node, "Queued before the marker existed", cts.Token);
+        Guid genuinelyMarked = await SeedMarkedQueuedAsync(store, node, "Assigned later, marked queue-first", cts.Token);
+        await StripKeyAsync(staleUnmarked, "queuePriorityMarked", ["mt_doc_tasklistitem"], cts.Token);
+
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().ContainSingle()
+            .Which.TaskId.Should().Be(staleUnmarked,
+                "this is the defect: NULL sorts first under DESC, so the stale document is served "
+                + "ahead of the one a human actually marked");
+
+        // The slot the wrong claim just took, freed the way every other test in this file frees
+        // one — and a second stale document, standing in for the next pre-upgrade task the
+        // daemon's startup sweep would find, since the one above stopped being stale the moment
+        // its own TaskClaimed event rewrote it.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Delete<TaskLease>(staleUnmarked);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid anotherStaleUnmarked = await SeedQueuedAsync(store, node, "Also queued before the marker existed", cts.Token);
+        await StripKeyAsync(anotherStaleUnmarked, "queuePriorityMarked", ["mt_doc_tasklistitem"], cts.Token);
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Contain(anotherStaleUnmarked);
+
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().ContainSingle()
+            .Which.TaskId.Should().Be(genuinelyMarked,
+                "the backfill restored the missing key before the claim query ran, so the marker "
+                + "now sorts ahead exactly as intended");
+    }
+
+    /// <summary>One queued task, assigned to the node, never marked.</summary>
+    private static async Task<Guid> SeedQueuedAsync(
+        IDocumentStore store, NodeContext node, string objective, CancellationToken cancellationToken)
+    {
+        Guid id = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(id, TaskSeed.Dispatchable(
+            Add(id, objective), node.OwnerId, Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return id;
+    }
+
+    /// <summary>One queued task, recorded with the queue-first marker set (task 45136b29).</summary>
+    private static async Task<Guid> SeedMarkedQueuedAsync(
+        IDocumentStore store, NodeContext node, string objective, CancellationToken cancellationToken)
+    {
+        Guid id = DomainId.New();
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(Add(id, objective), node.OwnerId, Now);
+        TaskRevised marked = TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None,
+            Now, node.OwnerId, epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true));
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(id, [.. lifecycle, marked]);
+        await session.SaveChangesAsync(cancellationToken);
+        return id;
+    }
+
+    /// <summary>
     /// A task Blocked on two blockers, both recorded dead, written through the same deciders the
     /// resolver uses. The blockers themselves need no streams here: what is under test is the
     /// dependent's document, and the records that hold it live on the dependent's own stream.
@@ -378,8 +470,8 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
         opts.ConfigureHall9k(AutoCreate.All);
     });
 
-    private DispatchEngine NewEngine(DocumentStore store, NodeContext node) =>
+    private DispatchEngine NewEngine(DocumentStore store, NodeContext node, int maxConcurrentRuns = 100) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
-            Options.Create(new DaemonOptions { MaxConcurrentTaskRuns = 100, LeaseTimeout = TimeSpan.FromSeconds(60) }),
+            Options.Create(new DaemonOptions { MaxConcurrentTaskRuns = maxConcurrentRuns, LeaseTimeout = TimeSpan.FromSeconds(60) }),
             NullLogger<DispatchEngine>.Instance);
 }

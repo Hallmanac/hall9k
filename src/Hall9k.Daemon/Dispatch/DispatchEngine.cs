@@ -372,6 +372,10 @@ public sealed class DispatchEngine(
         // import of a backlog assigned in one command looks like. Every row here has an
         // assignedAt — the projection writes one for pre-lifecycle streams too, and the startup
         // backfill rebuilds any document old enough to be missing the key before this query runs.
+        // The same is true of queuePriorityMarked itself: a document old enough to predate the
+        // marker is missing that key too, and OrderByDescending over a missing key sorts it NULL
+        // first under Postgres's default DESC ordering, ahead of a genuinely marked row, so the
+        // same startup backfill rebuilds it before this query runs.
         //
         // Ids only, never the documents: nothing below reads a projection field. TryClaimAsync
         // decides from the task's own stream and a deferral is logged by id, so every document
