@@ -310,9 +310,19 @@ public sealed class ReviewEngine(
                         // build and pass its whole suite.
                         if (!gateAlreadyRanFullOverCurrentHead)
                         {
+                            // Composition skip-final-pass can settle straight out of the
+                            // WaivesFinalFullPassGuarantee branch just below, without ever
+                            // dispatching a FinalFullPass review — so this gate's own recorded scope
+                            // context has to say which of the two is true rather than reusing
+                            // "mandatory final full pass" as a label for a review pass this run's own
+                            // composition may guarantee never happens (the Reverify branch's own
+                            // mirror of this same gate found the identical shape independently:
+                            // independent pre-PR review, cycle 1, adversarial lens).
                             if (!await verification.VerifyAsync(
                                 context.RunId, context.TaskId, scopeSinceSha: null,
-                                "mandatory final full pass: nothing merges on scoped green alone", cancellationToken))
+                                run.ReviewStageComposition.WaivesFinalFullPassGuarantee
+                                    ? "composition skip-final-pass waives the mandatory final full pass: gating at full scope as the run's terminal check"
+                                    : "mandatory final full pass: nothing merges on scoped green alone", cancellationToken))
                             {
                                 return false;
                             }
@@ -523,11 +533,20 @@ public sealed class ReviewEngine(
                     // dispute resume with no review pass yet — gates at full scope instead of
                     // scoped-then-immediately-re-verified-full: nothing merges on scoped green
                     // alone (task: a fix cycle's verification gate).
+                    // A FinalFullPass reverify mode does not always mean a FinalFullPass review
+                    // actually follows: composition skip-final-pass waives it outright in the empty
+                    // terminal case just below (WaivesFinalFullPassGuarantee), so the recorded scope
+                    // context has to say which of the two is true rather than asserting a pass this
+                    // run's own composition guarantees will never dispatch (independent pre-PR
+                    // review, cycle 1, adversarial lens: a skip-final-pass run's stream used to
+                    // record "mandatory final full pass follows" and then settle without one).
                     (string? reverifyScopeSinceSha, string reverifyScopeContext) =
                         reverifyMode == ReviewMode.Verify && run.CycleHeadSha is { } reverifyScopeSha
                             ? (reverifyScopeSha, $"cycle {run.ReviewCycle} fix ({run.CurrentCycleMode.Value})")
                             : (null, reverifyMode == ReviewMode.FinalFullPass
-                                ? "mandatory final full pass follows: nothing merges on scoped green alone"
+                                ? (run.ReviewStageComposition.WaivesFinalFullPassGuarantee
+                                    ? "composition skip-final-pass waives the mandatory final full pass: gating at full scope as the run's terminal check"
+                                    : "mandatory final full pass follows: nothing merges on scoped green alone")
                                 : reverifyMode == ReviewMode.Discovery
                                     ? "no review pass has run on this branch yet"
                                     : "no prior cycle head to scope the fix's commits against");
