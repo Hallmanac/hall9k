@@ -39,6 +39,12 @@ internal static class CrossProcessContainerGate
     public static async Task<IAsyncDisposable> AcquireAsync(
         string gateDirectory, int maxConcurrent, CancellationToken cancellationToken)
     {
+        // Below 1, the slot loop below never runs, so every caller would spin at PollInterval
+        // until its own cancellation fires instead of ever finding out why (independent review,
+        // this cycle) — fail fast here instead, since this is a general-purpose gate helper, not
+        // one hardcoded to PostgresFixture's own fixed 4.
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrent, 1);
+
         Directory.CreateDirectory(gateDirectory);
 
         DateTimeOffset waitStarted = DateTimeOffset.UtcNow;
@@ -85,13 +91,21 @@ internal static class CrossProcessContainerGate
 
     private static FileStream? TryOpen(string permitPath)
     {
+        // Tracked outside the try so every catch below can dispose it: the exclusive lock is
+        // taken the instant the FileStream constructor succeeds, before the mtime-refresh write
+        // below ever runs, so a failure in that write still has a locked stream to release —
+        // otherwise this method would return null or throw while quietly holding a permit open
+        // forever, since Dispose is the only release this gate ever performs (conformance
+        // review, cycle 1: an ENOSPC on the write used to leak exactly this way).
+        FileStream? stream = null;
+
         try
         {
             // Holding the stream open is the entire mechanism: FileShare.None refuses a second
             // concurrent open anywhere on the machine, and Dispose (below) is the only release
             // this gate ever performs on the happy path — process death releases it exactly the
             // same way, through the OS, without this method or anything else here running again.
-            FileStream stream = new(permitPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            stream = new FileStream(permitPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
 
             // The one write this gate ever makes through a held permit — not to record anything
             // (nothing here ever reads it back), but to refresh the file's mtime the instant a
@@ -123,6 +137,7 @@ internal static class CrossProcessContainerGate
             // same exception for the same reason. DirectoryNotFoundException derives from
             // IOException, so this has to be caught ahead of the catch below or it would be
             // swallowed as an ordinary "permit already held" result instead.
+            stream?.Dispose();
             throw;
         }
         catch (UnauthorizedAccessException accessDenied)
@@ -138,6 +153,7 @@ internal static class CrossProcessContainerGate
             // names the fix rather than letting .NET's own unadorned "Access to the path ... is
             // denied" propagate out of all 29 PostgresFixture acquisitions with no hint that a
             // stale, differently-owned gate directory is the cause.
+            stream?.Dispose();
             throw new UnauthorizedAccessException(
                 $"cannot open {permitPath}: it (or the gate directory containing it) is owned by " +
                 "a different user than the one running this process — delete the gate directory " +
@@ -146,6 +162,12 @@ internal static class CrossProcessContainerGate
         }
         catch (IOException)
         {
+            // Either the open itself found the permit already held elsewhere (the ordinary,
+            // expected case — stream is still null here), or the open succeeded but the
+            // mtime-refresh write then failed (ENOSPC on a full /tmp, most plausibly): either way
+            // this permit is not usable, so any stream that was actually opened must be released
+            // before returning null, or the exclusive lock it holds outlives this call forever.
+            stream?.Dispose();
             return null;
         }
     }
