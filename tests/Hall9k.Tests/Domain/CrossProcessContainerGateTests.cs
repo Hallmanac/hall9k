@@ -32,11 +32,15 @@ public sealed class CrossProcessContainerGateTests
         {
             using CancellationTokenSource patient = new(TimeSpan.FromSeconds(30));
 
-            // Deliberately not an `await using` declaration: it is disposed explicitly mid-test
-            // below to free a slot for `third`, and a `using` variable cannot be reassigned to
-            // null afterward to guard against a second, scope-exit disposal (independent review,
+            // An `await using` declaration despite being disposed explicitly mid-test below to
+            // free a slot for `third`: Permit.DisposeAsync only calls FileStream.Dispose(), which
+            // is idempotent, so the scope-exit disposal this declaration adds on top of the
+            // explicit one below is harmless — and it is what keeps a failure of the assertion
+            // between the two (`thirdAttempt` unexpectedly not throwing) from leaking this held
+            // permit into the outer `finally`'s Directory.Delete, the same masking the third
+            // test's own `finally` comment below guards against (conformance/adversarial review,
             // this cycle).
-            IAsyncDisposable? first = await CrossProcessContainerGate.AcquireAsync(
+            await using IAsyncDisposable first = await CrossProcessContainerGate.AcquireAsync(
                 gateDirectory, maxConcurrent: 2, patient.Token);
             await using IAsyncDisposable second = await CrossProcessContainerGate.AcquireAsync(
                 gateDirectory, maxConcurrent: 2, patient.Token);
@@ -51,7 +55,6 @@ public sealed class CrossProcessContainerGateTests
                 "bound be exceeded");
 
             await first.DisposeAsync();
-            first = null;
 
             await using IAsyncDisposable third = await CrossProcessContainerGate.AcquireAsync(
                 gateDirectory, maxConcurrent: 2, patient.Token);

@@ -55,8 +55,19 @@ public sealed class PostgresFixture : IAsyncLifetime
     // firing under two or three and misreports genuine contention as "the gate or the Docker daemon
     // is genuinely stuck". GitWorktreeManager.AcquireCrossProcessLockAsync already settled this for
     // the same shape of wait: "there is no safe value to time this out to". What that wait uses
-    // instead of a deadline — a periodic progress line so a wedged Docker daemon still reads
-    // differently from ordinary queueing — CrossProcessContainerGate.AcquireAsync now does too.
+    // instead of a deadline for a wedged Docker daemon to still read differently from ordinary
+    // queueing — a periodic progress line — is not a tool CrossProcessContainerGate.AcquireAsync
+    // can lean on the same way: that wait runs inside the daemon or CLI process, whose console
+    // really is the operator's own, while this one runs inside a `dotnet test` testhost, whose
+    // Console.Error is buffered internally by vstest.console and relayed only if vstest.console
+    // itself survives long enough to report the testhost's own death — which it does not, under
+    // VerificationRunner's own process.Kill(entireProcessTree: true) (adversarial review, this
+    // cycle: reproduced against this repo's own package versions — the progress line never once
+    // reached anyone, live or after the fact, under a real entireProcessTree kill). What actually
+    // makes a wedged wait discoverable now is the evidence file CrossProcessContainerGate.AcquireAsync
+    // writes directly into GateDirectory itself once a wait genuinely queues — no parent process
+    // has to survive anything for a direct file write to land, so `ls`/`cat` against that fixed,
+    // shared path is the real substitute for a progress line no test host can actually deliver.
     //
     // This budget covers only container startup, once a class already holds its permit, and is
     // sized independently of the (now-unbounded) queue wait above. Testcontainers pulls the image

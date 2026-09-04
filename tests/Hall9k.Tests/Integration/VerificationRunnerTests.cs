@@ -347,9 +347,20 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// <summary>
     /// The gate's own permit wait (CrossProcessContainerGate.AcquireAsync, PLAN.md §16 #131) is
     /// deliberately unbounded, so ordinary cross-process contention under a raised node ceiling or
-    /// a concurrent foreground run can legitimately outlast VerifyGateTimeout. A gate still printing
-    /// that wait line when it is killed must classify as infrastructure and retry rather than being
-    /// blamed on the agent's own work (conformance/adversarial review, cycle 1).
+    /// a concurrent foreground run can legitimately outlast VerifyGateTimeout. A gate still queued
+    /// on it when it is killed must classify as infrastructure and retry rather than being blamed
+    /// on the agent's own work (conformance/adversarial review, cycle 1) — and it has to be told
+    /// apart from an ordinary hang without ever trusting the gate's own captured console output:
+    /// a real dotnet-test-shaped gate's wait line is written from inside its testhost, which
+    /// VerificationRunner's own process.Kill(entireProcessTree: true) tears down together with
+    /// vstest.console before vstest.console ever gets a chance to relay anything it captured, so
+    /// the line never reaches the redirected log (adversarial review, this cycle, reproduced
+    /// against this repo's own package versions). What actually reaches VerificationRunner is the
+    /// wait-evidence file CrossProcessContainerGate.AcquireAsync writes directly to the directory
+    /// named by HALL9K_VERIFY_GATE_WAIT_DIR — a real file write, not anything that depends on a
+    /// parent process surviving long enough to report it — so this fake gate writes there itself
+    /// rather than echoing a marker into its own redirected stdout, the same channel the real
+    /// wait loop actually uses.
     /// </summary>
     [Fact]
     public async Task A_gate_still_queued_on_the_container_gate_when_killed_classifies_and_retries()
@@ -362,7 +373,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 $"if test -f {marker}; then echo ok; exit 0; " +
                 $"else touch {marker}; " +
                 "echo 'Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
-                "(3s elapsed, 4 max concurrent)'; " +
+                "(3s elapsed, 4 max concurrent)' > " +
+                $"\"${GateInfrastructureFailureClassifier.GateWaitEvidenceDirectoryEnvironmentVariable}/waiting.txt\"; " +
                 "sleep 30; fi")],
             cts.Token);
 
