@@ -50,35 +50,40 @@ needs a human reading the Gates column's own raw numbers over time.
 
 ### Interactive claims
 
-`h9k task work <id>` lets an operator work a Published or Queued task themselves instead of
-dispatching it headless. On a Published task assigned to nobody, it assigns the task to the
-operator's own owner and claims it interactively in one atomic event append, so the task is never
-observably Queued in between and the dispatcher can never win the race to it; a Published task
-whose dependencies have not all closed out is refused, naming the open blockers. Either way, it
-claims the task and cuts the same branch and worktree headless dispatch would, then — by default —
-prints the worktree path, the branch, and a starting prompt assembled through the same code path a
-headless spawn's is (its working rules swapped for an attached operator) for the operator to paste
-into a Claude Code session started anywhere. The pasted session self-registers
-(`h9k task register-session`), which is what lets the double-booking and liveness guards below
-recognise it; a session that never registers degrades honestly to the same no-op every guard
-already had for a task nobody ever recorded a session against. `--direct-launch` instead launches
-a plain interactive Claude Code session attached to the operator's own terminal itself, the way
-this command always did (kept for one release; refused on a machine where Claude Code resolves to
-a Windows script shim, since the prompt cannot survive that shim's argv). The claim is held by the
-human rather than a process — no lease, no heartbeat reclaim — so closing the terminal is a normal
-way to leave, and running `h9k task work` again re-enters the same worktree and branch — by
-default with a fresh prompt, or, under `--direct-launch`, resuming the most recently recorded
-session's own conversation, falling back to a fresh session, announced rather than silent, only
-when the recorded one cannot be resumed. It occupies zero concurrency slots (the run's `NodeId` is
-the sentinel `Guid.Empty`, which the node's session-ceiling accounting never counts), so it starts
-even when the daemon's queue is full. `h9k task verify` runs the project's gates on demand against
-the claim's worktree; `h9k task deliver` pushes the branch and hands the run into the standard
-delivery pipeline — from there it is indistinguishable from a headless run; `h9k task handback`
-releases the claim to a headless agent partway through, resuming the same branch (`--first` marks
-it queue-first for the next free dispatch slot, `--now` dispatches it immediately instead,
-ceiling-exempt, through `h9k task start`'s own mechanism — refused together); `h9k task
-release` gives an untouched claim back to the dispatch queue. See
-[PLAN.md Decisions Log #103, #122, #124, #126, #127](../PLAN.md).
+`h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
+Published or Queued task themselves instead of dispatching it headless. On a Published task
+assigned to nobody, it assigns the task to the operator's own owner and claims it interactively in
+one atomic event append, so the task is never observably Queued in between and the dispatcher can
+never win the race to it. An unmet dependency — whether just discovered here on a Published task,
+or already sitting Blocked from an ordinary `h9k task assign` or a handed-back/retried claim —
+warns rather than refuses: the platform names every open blocker, and
+`--acknowledge-unmet-dependencies` is the human's recorded override to claim it anyway. Not needed
+twice: an acknowledgment this task already carries from an earlier claim on the same still-open
+blockers is honored without asking again, and `h9k task show` names whether a claim's own
+acknowledgment was fresh or carried forward. Either way, it claims the task and cuts the same
+branch and worktree headless dispatch would, then — by default — prints the worktree path, the
+branch, and a starting prompt assembled through the same code path a headless spawn's is (its
+working rules swapped for an attached operator) for the operator to paste into a Claude Code
+session started anywhere. The pasted session self-registers (`h9k task register-session`), which is
+what lets the double-booking and liveness guards below recognise it; a session that never registers
+degrades honestly to the same no-op every guard already had for a task nobody ever recorded a
+session against. `--direct-launch` instead launches a plain interactive Claude Code session
+attached to the operator's own terminal itself, the way this command always did (kept for one
+release; refused on a machine where Claude Code resolves to a Windows script shim, since the prompt
+cannot survive that shim's argv). The claim is held by the human rather than a process — no lease,
+no heartbeat reclaim — so closing the terminal is a normal way to leave, and running
+`h9k task work` again re-enters the same worktree and branch — by default with a fresh prompt, or,
+under `--direct-launch`, resuming the most recently recorded session's own conversation, falling
+back to a fresh session, announced rather than silent, only when the recorded one cannot be
+resumed. It occupies zero concurrency slots (the run's `NodeId` is the sentinel `Guid.Empty`, which
+the node's session-ceiling accounting never counts), so it starts even when the daemon's queue is
+full. `h9k task verify` runs the project's gates on demand against the claim's worktree; `h9k task
+deliver` pushes the branch and hands the run into the standard delivery pipeline — from there it is
+indistinguishable from a headless run; `h9k task handback` releases the claim to a headless agent
+partway through, resuming the same branch (`--first` marks it queue-first for the next free
+dispatch slot, `--now` dispatches it immediately instead, ceiling-exempt, through
+`h9k task start`'s own mechanism — refused together); `h9k task release` gives an untouched claim
+back to the dispatch queue. See [PLAN.md Decisions Log #103, #122, #124, #126, #127](../PLAN.md).
 
 ### A deliberate human kick-off
 
@@ -89,8 +94,8 @@ shape exactly — the same ceiling-exempt sentinel `NodeId`, so every lever buil
 itself) accepts a start-it-mine claim on the identical terms an interactive one already gets — but
 launches the agent headless and detached (`claude -p`) under the
 `<task-shortid>-build` name rather than attached to the caller's terminal, and returns as soon as
-the process is confirmed alive. Unlike `h9k task work`, an unmet dependency on a Published task
-does not refuse outright: the platform names every open blocker, and
+the process is confirmed alive. Shares `h9k task work`'s own warn-then-acknowledge shape for an
+unmet dependency on a Published task: the platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. That
 override only applies at the moment of assignment — a task already sitting Blocked from an
 ordinary `h9k task assign` still refuses, UNLESS every one of its still-open blockers was already
@@ -99,10 +104,12 @@ warned-and-acknowledged at an earlier deliberate claim on this same assignment c
 the acknowledgment carries forward rather than needing to be given again. Refused otherwise on
 Draft, a pr-review task, a reopened
 task's follow-up branch, and any task that already has a live claim; there is no re-entry path the
-way `h9k task work` has one. Giving the claim back (`handback`, `release`, `retry`, or `pr resolve`
+way `h9k task work` has one — a fresh claim on an already-Blocked task is exactly what that
+carry-forward branch is. Giving the claim back (`handback`, `release`, `retry`, or `pr resolve`
 reopening it) lands the task on Blocked rather than Queued when the acknowledged dependency is
-still open, since only `h9k task assign` clears that snapshot. See
-[PLAN.md Decisions Log #125](../PLAN.md).
+still open, since only `h9k task assign` clears that snapshot — and the acknowledgment itself
+stays on record for whichever command reclaims it next. See
+[PLAN.md Decisions Log #125, #127](../PLAN.md).
 
 ### The board
 

@@ -143,6 +143,23 @@ public sealed class TaskDetails
     /// a reliable signal of whether a claim is live (`TaskState.Claimed` already answers that).
     /// </summary>
     public bool DependencyOverrideAcknowledged { get; set; }
+    /// <summary>
+    /// Whether the current claim's acknowledgment above was carried forward from an earlier claim
+    /// on this same task (design ruling R7) rather than freshly given right now — the stream's own
+    /// answer to "which acknowledgment did this claim rely on": false means this claim's own
+    /// <c>TaskClaimed</c> is the acknowledgment; true means an earlier one, still on the stream,
+    /// covered these same still-open blockers already. Reset alongside
+    /// <see cref="DependencyOverrideAcknowledged"/> whenever the claim is given back.
+    /// </summary>
+    public bool DependencyOverrideCarriedForward { get; set; }
+    /// <summary>
+    /// Blocker ids acknowledged by any claim since the most recent assignment — mirrors
+    /// <see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>, durable across a requeue,
+    /// handback, or retry (unlike <see cref="DependencyOverrideAcknowledged"/> above, which is
+    /// about only the current claim) so a later reclaim can tell whether its still-open blockers
+    /// are already covered.
+    /// </summary>
+    public List<Guid> AcknowledgedUnmetDependencyIds { get; set; } = [];
     public Guid? CurrentRunId { get; set; }
     public List<Guid> RunIds { get; set; } = [];
     public List<TaskQuestion> Conversation { get; set; } = [];
@@ -328,6 +345,9 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
+        // Mirrors TaskAggregate.Apply(TaskAssigned): a fresh assignment recomputes the blocker
+        // set, so an acknowledgment recorded against the previous set no longer means anything.
+        view.AcknowledgedUnmetDependencyIds = [];
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
@@ -339,6 +359,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
+        view.AcknowledgedUnmetDependencyIds = [];
         view.State = TaskState.Published;
     }
 
@@ -422,7 +443,22 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.CurrentRunId = @event.Data.RunId;
         view.RunIds.Add(@event.Data.RunId);
         view.DependencyOverrideAcknowledged = @event.Data.DependencyOverrideAcknowledged;
+        view.DependencyOverrideCarriedForward = @event.Data.DependencyOverrideCarriedForward;
         view.State = TaskState.Claimed;
+
+        // Mirrors TaskAggregate.Apply(TaskClaimed): whichever still-open blockers this claim
+        // covered, freshly acknowledged or carried forward, are now on record acknowledged for
+        // whatever reclaims this task next.
+        if (@event.Data.DependencyOverrideAcknowledged)
+        {
+            foreach (Guid dependencyId in view.UnmetDependencies)
+            {
+                if (!view.AcknowledgedUnmetDependencyIds.Contains(dependencyId))
+                {
+                    view.AcknowledgedUnmetDependencyIds.Add(dependencyId);
+                }
+            }
+        }
     }
 
     // ResumesFromHandback survives a requeue's own state reset by default, but WorkPromptBuilder
@@ -443,6 +479,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.CurrentRunId = null;
         view.ResumesFromHandback = false;
         view.DependencyOverrideAcknowledged = false;
+        view.DependencyOverrideCarriedForward = false;
         // A deliberate start-it-mine claim (h9k task start --acknowledge-unmet-dependencies) can
         // give the claim back while UnmetDependencies still names an open blocker — Claim never
         // clears it, only Assign does — and Queued is only ever reachable with every dependency
@@ -503,6 +540,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.DependencyOverrideAcknowledged = false;
+        view.DependencyOverrideCarriedForward = false;
         // Same invariant the TaskRequeued handler above restores: a deliberately-claimed Blocked
         // task can reach Done/Reopened while still carrying an unmet dependency, since Claim never
         // clears UnmetDependencies — only Assign does.
@@ -532,6 +570,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.DependencyOverrideAcknowledged = false;
+        view.DependencyOverrideCarriedForward = false;
         // Same invariant the TaskRequeued handler above restores: Retry runs from Failed, and a
         // deliberately-claimed Blocked task whose worktree cut failed can still carry an unmet
         // dependency here.
@@ -550,6 +589,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.DependencyOverrideAcknowledged = false;
+        view.DependencyOverrideCarriedForward = false;
         // Same invariant the TaskRequeued handler above restores: a handback out of a
         // deliberately-claimed Blocked task must not resurface as Queued while a dependency is
         // still on record unmet.

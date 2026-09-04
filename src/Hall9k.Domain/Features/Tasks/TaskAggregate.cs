@@ -239,18 +239,27 @@ public sealed class TaskAggregate
     public bool QueuePriorityMarked { get; private set; }
 
     /// <summary>
-    /// The still-open blockers a human explicitly warned-and-acknowledged at the most recent
-    /// deliberate claim (<see cref="Handlers.TaskDecider.ClaimDeliberately"/>'s own Blocked-entry
-    /// branch) — what lets a later deliberate claim on the SAME still-open blockers proceed
-    /// without asking again (idea fcaded0b's R7 ruling: "an acknowledgment already given at
-    /// claim time carries forward without re-asking"; <c>h9k task handback --now</c> is the
-    /// mechanic's own consumer, since a claim it hands back always carries exactly the blockers
-    /// it was already warned about). Reset by a fresh assignment (<see cref="Apply(TaskAssigned)"/>,
-    /// <see cref="Apply(TaskUnassigned)"/>): a new assignment cycle's blockers are a new set of
-    /// facts to warn about, even when some ids happen to repeat.
+    /// Blocker ids a human has already acknowledged as open and chosen to claim across anyway
+    /// (<see cref="Handlers.TaskDecider.ClaimDeliberately"/>'s or
+    /// <see cref="Handlers.TaskDecider.ClaimInteractively"/>'s own Blocked-entry branch,
+    /// <c>h9k task start</c>/<c>h9k task work --acknowledge-unmet-dependencies</c>) — what lets a
+    /// later deliberate claim on the SAME still-open blockers proceed without asking again (idea
+    /// fcaded0b's R7 ruling: "an acknowledgment already given at claim time carries forward
+    /// without re-asking"; <c>h9k task handback --now</c> is one consumer, a reclaim through
+    /// <c>h9k task work</c> is another). Reset by a fresh assignment
+    /// (<see cref="Apply(TaskAssigned)"/>, <see cref="Apply(TaskUnassigned)"/>): a new assignment
+    /// cycle's blockers are a new set of facts to warn about, even when some ids happen to repeat.
     /// </summary>
     private readonly List<Guid> _acknowledgedUnmetDependencyIds = [];
     public IReadOnlyList<Guid> AcknowledgedUnmetDependencyIds => _acknowledgedUnmetDependencyIds;
+
+    /// <summary>
+    /// Whether every dependency still blocking this task was already acknowledged by an earlier
+    /// claim — what a later claim attempt (a reclaim of a Blocked task after a handback or a
+    /// retry) checks before asking a human to pass <c>--acknowledge-unmet-dependencies</c> again.
+    /// </summary>
+    public bool UnmetDependenciesAlreadyAcknowledged =>
+        _unmetDependencies.Count > 0 && _unmetDependencies.All(_acknowledgedUnmetDependencyIds.Contains);
 
     public void Apply(TaskAdded @event)
     {
@@ -371,9 +380,10 @@ public sealed class TaskAggregate
         _deadDependencies.Clear();
         _deadDependencyReasons.Clear();
         DependencyFailureReason = null;
-        // A fresh assignment cycle's blockers are a new set of facts to warn about, even when
-        // some ids happen to repeat — an acknowledgment from a prior cycle must not silently
-        // carry into this one (task 45136b29, R7).
+        // A fresh assignment recomputes the blocker set from scratch, so any acknowledgment
+        // recorded against the previous set no longer means anything — carrying it forward here
+        // would let a stale acknowledgment silently cover a blocker nobody actually warned about
+        // (task 45136b29, R7).
         _acknowledgedUnmetDependencyIds.Clear();
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
@@ -479,6 +489,11 @@ public sealed class TaskAggregate
         // operator's ClaimInteractively, or a deliberate ClaimDeliberately), so it never
         // outlives the dispatch it bought (task 45136b29, R7).
         QueuePriorityMarked = false;
+
+        // Whether this claim's own acknowledgment was freshly given or carried forward from an
+        // earlier one, the still-open blockers it covered are now on record acknowledged, so a
+        // later reclaim of the same still-open set (after a handback or a retry) does not ask
+        // again (design ruling R7).
         if (@event.DependencyOverrideAcknowledged)
         {
             _acknowledgedUnmetDependencyIds.Clear();

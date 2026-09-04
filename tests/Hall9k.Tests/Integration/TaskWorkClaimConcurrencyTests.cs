@@ -56,10 +56,10 @@ public sealed class TaskWorkClaimConcurrencyTests(PostgresFixture postgres) : IC
 
         Guid runId1 = DomainId.New();
         Guid runId2 = DomainId.New();
-        (TaskAssigned assigned1, TaskClaimed claimed1) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
-            view1, ownerId, [], runId1, Now);
-        (TaskAssigned assigned2, TaskClaimed claimed2) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
-            view2, ownerId, [], runId2, Now);
+        (TaskAssigned assigned1, TaskClaimed claimed1, _) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+            view1, ownerId, [], runId1, Now, acknowledgeUnmetDependencies: false);
+        (TaskAssigned assigned2, TaskClaimed claimed2, _) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+            view2, ownerId, [], runId2, Now, acknowledgeUnmetDependencies: false);
 
         long expectedVersion = fence.Version + 2;
         first.Events.Append(taskId, expectedVersion: expectedVersion, assigned1, claimed1);
@@ -112,8 +112,8 @@ public sealed class TaskWorkClaimConcurrencyTests(PostgresFixture postgres) : IC
         TaskAggregate assignView = (await assigning.Events.AggregateStreamAsync<TaskAggregate>(
             taskId, version: fence.Version, token: cts.Token))!;
 
-        (TaskAssigned assigned, TaskClaimed claimed) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
-            claimView, ownerId, [], DomainId.New(), Now);
+        (TaskAssigned assigned, TaskClaimed claimed, _) = TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+            claimView, ownerId, [], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
 
         // The plain h9k task assign path: TaskDecider.Assign alone, no claim.
         TaskAssigned plainAssign = TaskDecider.Assign(assignView, ownerId, [], Now, ownerId);
