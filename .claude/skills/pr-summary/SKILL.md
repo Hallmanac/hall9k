@@ -9,8 +9,20 @@ Write the title and description the way a colleague who respects the reviewer's 
 language, oriented up front, organized around what a reviewer needs to think about rather than the
 order the commits happened to land in. The output is the deliverable: **never run `gh pr create`
 or `gh pr edit`, and never open a PR** — the Hall9k daemon opens PRs (`PullRequestOpener`); agents
-are forbidden from doing so. When a body needs replacing on an already-open PR, hand the drafted
-text back for a human to apply.
+are forbidden from doing so.
+
+**Use this skill to produce a full pull-request body, never as a build session's own closing
+summary.** When the daemon opens a fresh PR it composes the body itself — the work-item mention,
+the acceptance criteria, and the run/token footer are all written automatically, with whatever the
+session's own final message said folded in underneath, unchanged, as `## Agent summary`. Invoking
+this skill for that final message nests a second work-item line and a second, necessarily invented
+footer inside the daemon's real ones; that is not what this skill is for. Its two legitimate uses
+are a description for a PR opened outside Hall9k's own dispatch entirely, and replacing the body on
+an already-open PR — read the current body first (`gh pr view <number> --json body -q .body`),
+because it carries the real footer and, whenever the review loop left something behind, a
+`**Left unfixed:**` or `Review ride-alongs:` paragraph (Decisions Log #87) that has to survive
+into the replacement's `## For the reviewer` section rather than being silently dropped. Hand the
+drafted text back for a human to apply either way.
 
 ## Process
 
@@ -24,11 +36,17 @@ text back for a human to apply.
      list didn't already.
 
 2. **Find the linked work item, if any.** Check `task.md`'s `external-reference:` frontmatter line
-   when this branch was cut for a Hall9k task (its worktree carries one); otherwise check whatever
-   the caller already knows about a linked card or issue. Prefer a Jira card when the project binds
-   Jira (`external-reference: jira:<KEY>`); otherwise a GitHub issue if one is linked
-   (`external-reference: github:<owner>/<repo>#<number>`); otherwise there is no work-item line at
-   all — never invent one, and never fall back to a bare issue number with no source for it.
+   when this branch was cut for a Hall9k task — but not in the worktree itself: a task's worktree
+   never contains `task.md`, which lives at `<project home>/tasks/<shortid>-<slug>/task.md`, a
+   sibling of `repo/`. A dispatched session's own prompt names the project home under "Where this
+   project lives"; read `task.md` from there. Otherwise check whatever the caller already knows
+   about a linked card or issue. The `external-reference:` value already names which kind it is:
+   `jira:<KEY>` is a Jira card, `github:<owner>/<repo>#<number>` is a GitHub issue. Use whichever
+   one is present; when neither is, there is no work-item line at all — never invent one, and
+   never fall back to a bare issue number with no source for it. A
+   Jira key is not itself a URL: resolve it as `<site>/browse/<KEY>`, with `<site>` read from
+   `h9k connection list`'s Site column — never guess the host. A GitHub reference maps directly:
+   `github:<owner>/<repo>#<number>` is `https://github.com/<owner>/<repo>/issues/<number>`.
 
 3. **Work out what a reviewer actually needs**, same two questions in this order:
    - What does this change, described so someone who hasn't read the diff understands its shape?
@@ -85,22 +103,25 @@ most valuable part of the description:
 Leave the section out entirely when none of the three apply; an empty or padded heading isn't
 worth the reviewer's scroll.
 
-**A short provenance note plus the run/token footer, together, at the very end.** When this
-description is being generated for a Hall9k-dispatched run, close with one horizontal rule and two
-lines beneath it:
-- A provenance note, not a transcript: "Composed by an agent session from Hall9k task `<id>`." is
-  enough — it says the work was agent-assisted and points at where to find the full record
-  (`h9k task show <id>` / `h9k logs <id>`), and stops there. It never narrates what the session did
-  step by step, and never reproduces the session's own build or test output.
-- The same footer line the platform's own PR-open formatter writes: ``Hall9k run `<run-id>` ·
-  <tokens> tokens``, with the token count digit-grouped using underscore separators (`18_401_309`,
-  not `18401309` or `18,401,309`) — the same grouping the platform's shared token formatter uses
-  everywhere else it renders a count, so a reviewer sees one consistent number shape regardless of
-  which surface they're reading it from. Don't reimplement that formatter here; just match its
-  output shape when composing the line by hand.
+**A short provenance note plus the run/token footer, together, at the very end — carried forward,
+never invented.** This pair only ever applies when you are replacing an already-open PR's body
+(see above): a fresh PR's footer is written by the daemon itself, computed from the run's own
+accounting after the run ends, which is not a number a still-running session can know. The
+already-open PR already carries the real pair; read it back rather than composing new ones:
+- The provenance note verbatim: "Composed by an agent session from Hall9k task `<id>`." — it says
+  the work was agent-assisted and points at where to find the full record (`h9k task show <id>` /
+  `h9k logs <id>`), and stops there. It never narrates what the session did step by step, and never
+  reproduces build or test output.
+- The footer line — ``Hall9k run `<run-id>` · <tokens> tokens`` — with its token count reformatted
+  using underscore separators (`18_401_309` rather than the daemon's own ungrouped `18401309`).
+  This is this skill's own convention, not yet the platform's: the daemon's PR-open formatter and
+  `h9k status`'s own spend-pressure line render token counts differently from each other today
+  (ungrouped and comma-grouped, respectively), and unifying them is draft task `9f6284bc` —
+  underscore-grouping here is a deliberate deviation from both until that lands, not a claim that
+  either already matches it.
 
-Omit both when this description isn't being generated for a Hall9k run at all — there's no run to
-attribute it to.
+Omit both when this description isn't replacing a Hall9k-opened pull request at all — there's no
+run and no existing footer to carry forward.
 
 ## Keep out
 
@@ -123,14 +144,17 @@ attribute it to.
 
 ## Example
 
-The shape end to end — work-item line, orientation, grouped bullets with inline whys, a reviewer
-section, provenance, and the footer:
+The shape end to end — title, work-item line, orientation, grouped bullets with inline whys, a
+reviewer section, and, as when replacing an already-open PR's body, the provenance note and footer
+carried forward from the PR being replaced:
 
 ```
+Title: Compose PR bodies a colleague would write, not a run transcript
+
 Work item: https://github.com/Hallmanac/hall9k/issues/184
 
-PR #1990's daemon-composed body read as an agent transcript — title restated, the
-acceptance-criteria checklist, a run narration, then build/test output. This is the fix: the
+The pull request (PR) that opened for #1990 read as an agent transcript — title restated, the
+acceptance-criteria checklist, a run narration, then build/test output. This PR is the fix: the
 canonical pr-summary skill now composes a body a colleague would write instead.
 
 Most of the change is to the skill's own instructions:
@@ -139,7 +163,7 @@ Most of the change is to the skill's own instructions:
   instead of burying it in a footer.
 - The "How it should read" section replaces the generic Summary/Why/Key Changes scaffolding with
   orientation-first prose grouped by reviewer concern, matching the house style in
-  `pr-description.md`.
+  `~/.claude/commands/git/pr-description.md`.
 - A new `For the reviewer` section carries the things worth flagging by name, rather than leaving
   them implicit in the diff.
 
@@ -150,7 +174,7 @@ already holds the full one.
 
 This only changes the skill's own text; nothing in `PullRequestBody.cs` (the daemon's automatic
 PR-open formatter) changed, so the two can drift out of visual sync until that formatter also
-underscore-groups its token counts — tracked separately.
+underscore-groups its token counts, which draft task `9f6284bc` owns.
 
 ---
 Composed by an agent session from Hall9k task `f99153c9`.
