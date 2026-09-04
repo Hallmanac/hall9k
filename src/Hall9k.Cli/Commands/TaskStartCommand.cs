@@ -416,9 +416,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // the model, through the same OperatingSettingsResolver that honors the
             // Hall9k__ReviewStageComposition environment variable ahead of the platform config
             // file, so this reads the node level identically to a headless dispatch on this
-            // machine — unlike TaskWorkCommand's own interactive claim, which reads the config
-            // file directly and can disagree with it (independent pre-PR review, cycle 1,
-            // adversarial lens, on that command).
+            // machine and to TaskWorkCommand's own interactive claim, which resolves the node
+            // level through the same resolver (PLAN.md #129).
             ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
                 taskDetails.ReviewStageComposition, project.ReviewStageComposition,
                 operatingSettings.ReviewStageComposition.Value);
