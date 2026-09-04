@@ -574,7 +574,14 @@ public sealed class AutoPrReviewEngine(
         }
 
         await using IDocumentSession session = store.LightweightSession();
-        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(watchedTask.Id, token: cancellationToken);
+        StreamState? fence = await session.Events.FetchStreamStateAsync(watchedTask.Id, cancellationToken);
+        if (fence is null)
+        {
+            return false;
+        }
+
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+            watchedTask.Id, version: fence.Version, token: cancellationToken);
         if (task is null || task.AutoPrReviewAssigneeLogin is null)
         {
             // Already handled by an earlier tick, or the stream moved since this sweep's own
@@ -641,8 +648,26 @@ public sealed class AutoPrReviewEngine(
               + "(PLAN.md §16 decision #34's amendment).";
         TaskAbandoned abandoned = TaskDecider.Abandon(task, reason, now, node.OwnerId);
 
-        session.Events.Append(task.Id, recalled, abandoned);
-        await session.SaveChangesAsync(cancellationToken);
+        // Fenced (independent pre-PR review, cycle 1, both lenses): concludesBeforeDispatch was
+        // decided from the aggregate read above, and a claim can commit between that read and
+        // this append the same way GenerationFence.LoadFencedAsync's own doc comment warns about
+        // — the ordinary claim sweep dispatches independently of this one. An unfenced append
+        // would land TaskAbandoned on top of a TaskClaimed it never accounted for, stranding a
+        // live agent's worktree and lease under a task that now reads Abandoned. Mirrors
+        // FailDeliberateLaunchAsync's identical fenced-compensation shape for the same hazard.
+        try
+        {
+            session.Events.Append(task.Id, expectedVersion: fence.Version + 2, recalled, abandoned);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId} was claimed between this sweep's read and its recall — not concluding it; "
+                + "the work continues and the next poll's own fresh read decides instead", task.Id);
+            return false;
+        }
+
         logger.LogInformation(
             "Task {TaskId} concluded: its GitHub reviewer assignment was recalled before the run dispatched",
             task.Id);
