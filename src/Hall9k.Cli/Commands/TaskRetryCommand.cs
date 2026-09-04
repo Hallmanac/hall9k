@@ -73,8 +73,15 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         // CompleteRunAsync append its TokensRecorded from this exact stream.jsonl line when it
         // completed, so re-appending here for that run double-books its spend under today's date
         // and can hold the node's spend budget closed on tokens it never actually burned this
-        // period (conformance and adversarial review, cycle 3).
-        if (previousRun is not null && previousRun.NodeId == Guid.Empty)
+        // period (conformance and adversarial review, cycle 3). A pr-review task's own
+        // Claimed+sentinel state is never this start-it-mine shape — TaskWorkCommand and
+        // TaskStartCommand both refuse to create one — it is auto-pr-review's now-speed deliberate
+        // claim (AutoPrReviewEngine.CreateOneAsync), launched through RunLauncher and monitored by
+        // RunSupervisor exactly like an ordinary headless dispatch, so CompleteRunAsync already
+        // appended its TokensRecorded from this same stream.jsonl when the run failed; recovering
+        // it again here is the identical double-booking this whole guard exists to prevent
+        // (independent pre-PR review, cycle 1, adversarial lens).
+        if (previousRun is not null && previousRun.NodeId == Guid.Empty && task.Type != TaskType.PrReview)
         {
             HeadlessTokenRecovery.AppendIfRecorded(session, previousRun, DateTimeOffset.UtcNow);
         }

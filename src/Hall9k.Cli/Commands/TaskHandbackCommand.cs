@@ -93,6 +93,21 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
                 $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim hands back this way.");
         }
 
+        // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
+        // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
+        // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), which reads identically
+        // to one on IsInteractiveClaim's own Guid.Empty discriminator. That run is already being
+        // driven by this daemon's own RunSupervisor, exactly like an ordinary headless dispatch —
+        // superseding it here would requeue the task while the live run keeps going, dispatching a
+        // second run alongside it (independent pre-PR review, cycle 1, adversarial lens).
+        if (task.Type == TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is a pr-review task dispatched by auto-pr-review's now speed — it is "
+                + "already running headlessly under the daemon's own supervision, not an interactive "
+                + $"claim to hand back. h9k task show {taskId} to see where it stands.");
+        }
+
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException(
                 $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
