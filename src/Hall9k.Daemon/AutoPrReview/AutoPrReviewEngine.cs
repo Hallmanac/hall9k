@@ -248,8 +248,15 @@ public sealed class AutoPrReviewEngine(
         // re-mints it — h9k task abandon cannot decline an auto-created review at all while the
         // request stands otherwise. IsGenuineReRequestAsync below still lets a real re-request
         // through either way; only the same-standing-request case is what this guards.
+        // AutoPrReviewAssigneeLogin non-null (the same provenance tell the recall sweep keys off
+        // of) so this only ever finds a task auto-pr-review itself minted — never a task a human
+        // created by hand with h9k task add --from-pr, whose own abandonment or closeout says
+        // nothing about whether this feature already covered any request at all (independent
+        // pre-PR review, cycle 1, adversarial lens: the note below states "auto-created" and this
+        // query is what has to make that true rather than assumed).
         TaskListItem? previousReview = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
+            .Where(task => task.AutoPrReviewAssigneeLogin != null)
             .Where(task => task.MatchesSql(
                 "d.data ->> 'type' = ? AND d.data ->> 'state' IN (?, ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value, TaskState.Abandoned.Value))
@@ -291,12 +298,16 @@ public sealed class AutoPrReviewEngine(
         // never-guess-at-unobserved-facts rule forbids. TaskListItem carries no close/abandon
         // timestamp to report instead, so the honest fix is to say what is actually observed —
         // the task id and its outcome — and leave the date out rather than mislabel one.
+        // "an earlier request", never "this same standing request" (independent pre-PR review,
+        // cycle 1, adversarial lens): control only reaches here when IsGenuineReRequestAsync
+        // already found this request postdates the one previousReview was minted from, so by
+        // construction it is a different request, not the one already covered.
         string? reReviewNote = previousReview is not null
             ? previousReview.State == TaskState.Abandoned
                 ? $"This is a re-review: an earlier auto-created task ({DomainId.Short(previousReview.Id)}) "
-                  + "covered this same standing request and was abandoned."
-                : $"This is a re-review: task {DomainId.Short(previousReview.Id)} already reviewed this pull "
-                  + "request and closed Done."
+                  + "reviewed an earlier request for this pull request and was abandoned."
+                : $"This is a re-review: task {DomainId.Short(previousReview.Id)} already reviewed an earlier "
+                  + "request for this pull request and closed Done."
             : null;
         string additionalContext = reReviewNote is null ? provenance : $"{provenance}\n{reReviewNote}";
         // Exactly as h9k task add --from-pr does (independent pre-PR review, cycle 1, conformance
