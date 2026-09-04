@@ -54,7 +54,7 @@ public sealed class OperatingSettingsRenderingTests
         OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.ReviewFinalFullPass), null);
 
         (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
-            .Single(r => r.Label == "model (review-final-full-pass)");
+            .Single(r => r.Label == "model (review-finalpass)");
 
         row.Value.Should().Be("not set — falls through to whatever --model-review itself resolves to");
     }

@@ -59,7 +59,7 @@ public static class OperatingSettingsRendering
         ];
 
         rows.AddRange(report.ModelByRole.Select(role => (
-            $"model ({KebabCase(role.Role)})",
+            $"model ({RoleLabel(role.Role)})",
             (role.Model.Value, role.Model.Origin) switch
             {
                 ({ Length: > 0 } value, _) => $"{value} ({role.Model.DescribeOrigin()})",
@@ -188,9 +188,23 @@ public static class OperatingSettingsRendering
             : "the project or platform default";
 
     /// <summary>
+    /// The row label for a role model column: ordinarily <see cref="KebabCase"/> of the C#
+    /// property name, matching the CLI flag it is set through — except
+    /// <see cref="RoleModelSettings.ReviewFinalFullPass"/>, whose flag is
+    /// <c>--model-review-finalpass</c> (no hyphen between "final" and "pass"), so a literal
+    /// kebab-case split would print "review-final-full-pass" and break that same mapping
+    /// (independent pre-PR review, cycle 1, both lenses) — the same carve-out
+    /// <see cref="FallthroughDescription"/> already keys off this property name for.
+    /// </summary>
+    private static string RoleLabel(string pascalCase) =>
+        pascalCase == nameof(RoleModelSettings.ReviewFinalFullPass) ? "review-finalpass" : KebabCase(pascalCase);
+
+    /// <summary>
     /// <c>role.Role</c> is a C# property name (<c>ReviewVerify</c>), matching the
     /// <c>--model-review-verify</c>-shaped CLI flag it is set through only once split at each
-    /// internal capital, so the row label reads "review-verify" rather than "reviewverify".
+    /// internal capital, so the row label reads "review-verify" rather than "reviewverify" — true
+    /// for every role except <see cref="RoleModelSettings.ReviewFinalFullPass"/>, which
+    /// <see cref="RoleLabel"/> routes around this method entirely rather than through it.
     /// </summary>
     private static string KebabCase(string pascalCase) =>
         string.Concat(pascalCase.Select((character, index) =>

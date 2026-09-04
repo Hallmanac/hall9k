@@ -375,9 +375,10 @@ public sealed class DaemonOptions
     /// full role chain — a knob deliberately independent of <see cref="AgentRole"/>, because
     /// Verify is still Review-role work (Decisions Log #33's session shape is unchanged), just a
     /// different pass shape with its own mechanical, confirm-the-fix-and-check-blast-radius
-    /// profile. Left unset, this falls through to exactly what a Discovery or FinalFullPass pass
-    /// on the same task/project would resolve to, so the knob is opt-in and changes nothing until
-    /// an install sets it.
+    /// profile. Left unset, this falls through to exactly what a Discovery pass on the same
+    /// task/project would resolve to, so the knob is opt-in and changes nothing until an install
+    /// sets it — independent of <see cref="ResolveFinalFullPassReviewModel"/>'s own knob, which
+    /// resolves separately and never changes what this one resolves to (Decisions Log #130).
     /// </summary>
     public AgentModel ResolveVerifyReviewModel(AgentModel? taskModel, AgentModel? projectModel)
     {
