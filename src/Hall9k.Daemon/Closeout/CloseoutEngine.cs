@@ -293,6 +293,7 @@ public sealed class CloseoutEngine(
         HashSet<Guid> needsSweep = [.. await query.Query<RunDetails>()
             .Where(r => runIds.Contains(r.Id))
             .Where(r => r.PullRequestNumber == null)
+            .Where(r => r.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
             .Where(r => r.MatchesSql(
                 "d.data ->> 'state' in (?, ?, ?)",
                 RunState.Failed.Value, RunState.Killed.Value, RunState.Superseded.Value))
@@ -315,19 +316,32 @@ public sealed class CloseoutEngine(
     /// (<c>state in (Failed, Killed)</c> AND <c>PullRequestNumber != null</c>) ever reads this
     /// run again — an intact, terminal record that is nonetheless invisible to both. Completed
     /// is excluded deliberately: that state means a closeout already ran to completion, so
-    /// there is nothing left here to finish.
+    /// there is nothing left here to finish. <c>PullRequestClosedWithoutMerge</c> is excluded
+    /// too, the same way the orphaned query above already excludes it: without this,
+    /// <see cref="InspectMissingRunAsync"/> recording that fact on an intact run's own stream
+    /// (below) would never actually stop this row from matching here, since a closed-without-
+    /// merge run's own <c>PullRequestNumber</c> stays null forever — costing a full aggregate
+    /// replay and a live pull-request read on every sweep for a fact that will never change
+    /// again (independent pre-PR review, cycle 1, adversarial).
     /// </summary>
     private static bool NeedsMissingRunSweep(RunDetails run) =>
-        run.State.IsTerminal && run.State != RunState.Completed && run.PullRequestNumber is null;
+        run.State.IsTerminal && run.State != RunState.Completed && run.PullRequestNumber is null
+        && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge;
 
     /// <summary>
     /// One read of a Done task's pull request when its own recorded run is invisible to both
     /// RunDetails-driven queries above — the companion to <see cref="InspectOrphanAsync"/> for a
     /// run that either never started at all, or started, went terminal, and never recorded its
-    /// own pull-request number (<see cref="NeedsMissingRunSweep"/>). Merge-only, like the orphan
-    /// path: nothing here dispatches a follow-up or invents a close-without-merge record onto a
-    /// run stream that does not exist yet, so an open or closed-without-merge pull request is a
-    /// true no-op and stays needs-you until a human or a future sweep observes a merge.
+    /// own pull-request number (<see cref="NeedsMissingRunSweep"/>). Merge-only for a wholly
+    /// missing run: nothing here dispatches a follow-up or invents a close-without-merge record
+    /// onto a run stream that does not exist yet, so an open or closed-without-merge pull request
+    /// on that shape is a true no-op and stays needs-you until a human or a future sweep observes
+    /// a merge. An intact-but-terminal run (<see cref="NeedsMissingRunSweep"/>'s other admitted
+    /// shape) already has a stream to record a close onto, though, so a closed-without-merge
+    /// pull request there is recorded the same way <see cref="InspectOrphanAsync"/>'s own
+    /// <c>RecordClosedAsync</c> call records it — otherwise this row would cost a full task-stream
+    /// replay and a live pull-request read on every sweep forever, for a fact that will never
+    /// change again (independent pre-PR review, cycle 1, adversarial).
     /// <para>
     /// Applies the same two guards <c>TaskResolveCommand</c> already enforces on the run-stream
     /// path before a URL ever reaches this candidate set — a pr-review task's <c>PullRequestUrl</c>
@@ -408,9 +422,19 @@ public sealed class CloseoutEngine(
 
         if (!snapshot.IsMerged)
         {
-            // Still open, or closed without merge: neither is this sweep's to act on — there is
-            // no run stream yet to record a close against, and the row's Delivered rendering
-            // already says the honest thing (no run record is watching it).
+            // An intact-but-terminal run has its own stream to record a close onto — do it the
+            // same way InspectOrphanAsync's own RecordClosedAsync call does, so
+            // NeedsMissingRunSweep's own exclusion (above) actually stops this row from matching
+            // here again. A wholly missing run (existingRun is null) has no stream yet to record
+            // onto and stays the documented no-op: still open, or closed without merge, is not
+            // this sweep's to act on either way, and the row's Delivered rendering already says
+            // the honest thing (no run record is watching it).
+            if (existingRun is not null && snapshot.IsClosed)
+            {
+                await RecordClosedAsync(
+                    session, existingRun, project, snapshot.ClosedAt, DateTimeOffset.UtcNow, cancellationToken);
+            }
+
             return InspectionOutcome.Inspected;
         }
 
