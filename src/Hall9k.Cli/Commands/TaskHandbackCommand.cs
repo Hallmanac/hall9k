@@ -4,9 +4,11 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -23,6 +25,18 @@ namespace Hall9k.Cli.Commands;
 /// (RunLauncher.CheckoutFreshOrRetryAsync reads the branch this records exactly as a
 /// human-requested retry's surviving branch, Decisions Log #25), so the next headless run
 /// continues from the branch state rather than starting clean.
+/// <para>
+/// Pickup speed is a three-way choice (task 45136b29, idea fcaded0b's R7 ruling). No flag: the
+/// normal rotation, byte-for-byte today's behavior — the task falls where its assignment age
+/// puts it. <c>--first</c>: records the queue-first marker (the same task-level fact
+/// <c>h9k task revise --queue-first</c> sets directly), so the next free slot takes this task
+/// regardless of age. <c>--now</c>: dispatches it immediately, ceiling-exempt, by reusing
+/// <see cref="TaskStartCommand.RunDeliberateStartAsync"/> — the identical mechanism
+/// <c>h9k task start</c> runs, not a second implementation of it — against the task this
+/// handback just landed Queued or Blocked. The two are refused together: one hands the next
+/// free slot to this task, the other skips waiting for one, and nothing about the wording of
+/// either survives being asked for both at once.
+/// </para>
 /// </summary>
 public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand.Settings>
 {
@@ -39,10 +53,30 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         [CommandOption("--force")]
         [Description("Hand back even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
         public bool Force { get; init; }
+
+        [CommandOption("--first")]
+        [Description(
+            "Record the queue-first marker (task 45136b29): the next free dispatch slot takes this task "
+            + "regardless of assignment age, instead of falling where its age puts it. Refused together with "
+            + "--now — pass one")]
+        public bool First { get; init; }
+
+        [CommandOption("--now")]
+        [Description(
+            "Dispatch this task immediately after handing it back, ceiling-exempt, through the same mechanism "
+            + "h9k task start uses. Refused together with --first — pass one")]
+        public bool Now { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        if (settings.First && settings.Now)
+        {
+            throw new DomainValidationException(
+                "--first and --now say different things about how this hands back: --first waits for the next "
+                + "free slot but takes it regardless of age, --now skips waiting for one entirely. Pass one.");
+        }
+
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
@@ -114,8 +148,35 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.HandBack(
-            task, runId, run.Branch, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId));
+
+        TaskHandedBack handedBack = TaskDecider.HandBack(
+            task, runId, run.Branch, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId);
+        task.Apply(handedBack);
+
+        // --first records the same task-level fact h9k task revise --queue-first sets directly
+        // (task 45136b29, idea fcaded0b's R7 ruling) — appended alongside the handback itself,
+        // in the same atomic commit, rather than as a second round trip.
+        TaskRevised? markedFirst = null;
+        if (settings.First)
+        {
+            markedFirst = TaskDecider.Revise(
+                task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+                Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None,
+                DateTimeOffset.UtcNow, context.OwnerId, epicId: Optional<Guid?>.None,
+                queuePriority: Optional<bool>.Of(true));
+            task.Apply(markedFirst);
+        }
+
+        long taskVersionAfterHandback = fence.Version + (markedFirst is null ? 1 : 2);
+        if (markedFirst is null)
+        {
+            session.Events.Append(taskId, expectedVersion: taskVersionAfterHandback, handedBack);
+        }
+        else
+        {
+            session.Events.Append(taskId, expectedVersion: taskVersionAfterHandback, handedBack, markedFirst);
+        }
+
         // The next headless claim resumes the branch under a fresh run id (RunLauncher mints
         // one per launch); this run otherwise reads Running forever — it holds no TaskLease
         // and its NodeId is the Guid.Empty sentinel, so neither AdoptOrphansAsync's NodeId
@@ -139,6 +200,30 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         }
 
         await Doorbell.RingAsync($"task-handed-back:{taskId}", cancellationToken);
+
+        // --now dispatches the handed-back task immediately, ceiling-exempt, reusing exactly the
+        // mechanism h9k task start runs — not a second implementation of it (task 45136b29, R7):
+        // the aggregate is re-read fresh off the stream this handback just committed, landed
+        // Queued (the ordinary case) or Blocked (only when every still-open blocker was already
+        // acknowledged at the claim this handback is releasing — TaskStartCommand.ClaimAndCutAsync's
+        // own carried-forward branch, which is always true here since a claim's unmet-dependency
+        // set never changes between being acknowledged and being handed back).
+        if (settings.Now)
+        {
+            StreamState? nowFence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+                ?? throw new DomainConflictException(
+                    $"Task {taskId} changed while handing it back — check h9k status and try again.");
+            TaskAggregate nowTask = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                    taskId, version: nowFence.Version, token: cancellationToken)
+                ?? throw new DomainConflictException(
+                    $"Task {taskId} changed while handing it back — check h9k status and try again.");
+
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} handed back — dispatching immediately (--now).[/]");
+            return await TaskStartCommand.RunDeliberateStartAsync(
+                store, session, nowTask, nowFence, context, acknowledgeUnmetDependencies: true, cancellationToken);
+        }
+
         // TaskAggregate.Apply(TaskHandedBack) clears the claim but never touches
         // _unmetDependencies, only Assign does — so a handback out of a deliberate
         // start-it-mine override (h9k task start --acknowledge-unmet-dependencies) still naming
@@ -155,6 +240,12 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
             string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Task {taskId} handed back, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — no headless run resumes branch {run.Branch} until those close out.[/]");
+        }
+
+        if (settings.First)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[blue]Task {taskId} marked queue-first[/] — it takes the next free dispatch slot regardless of assignment age.");
         }
 
         return ExitCodes.Ok;
