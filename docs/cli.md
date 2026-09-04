@@ -105,6 +105,12 @@ act on. Nothing is ever posted to the pull request without an explicit human go:
 owner's own login. The task completes without any merge ever being observed — there is no pull
 request of this task's own to merge.
 
+A project can opt in to starting that same task automatically instead of waiting on `--from-pr`:
+`h9k project set <name> --auto-pr-review off|normal|first|now` (default `off`) has the daemon poll
+GitHub for open pull requests in that project's repo requesting this install's own login, and
+mint, publish, and start a `pr-review` task at the chosen speed the moment GitHub reports the
+assignment.
+
 ### Epics: naming a family of tasks
 
 `h9k epic add | list | show | link-jira | close`
@@ -234,7 +240,8 @@ context links, skip-permissions, the Jira board binding, the backlog policy (`--
 none|github-issues|jira`) and its routing guidance, the review re-request policy, the
 project-level review-cycle-cap overrides, the review stage composition (`--review-stage-composition`,
 below), the branch-name template (`--branch-template`,
-[below](#branch-naming)), and the home's location live.
+[below](#branch-naming)), the auto-pr-review speed (`--auto-pr-review
+off|normal|first|now`, [below](#pull-request-review)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
