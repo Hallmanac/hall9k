@@ -781,11 +781,14 @@ public static class CliCommandTree
                     "Give an interactive claim back to the dispatch queue, exactly as any other queued task — "
                     + "the daemon claims it as capacity allows. Refused on a task a node holds (that is running "
                     + "headless work; let it finish, or h9k task abandon it) and on a claim that is not untouched: "
-                    + "modified-but-uncommitted files, naming them, or commits beyond the base branch (h9k task "
-                    + "handback or h9k task deliver instead). The worktree and branch are left on disk untouched; "
-                    + "nothing resumes them automatically (h9k task handback is the lever for that). Refused when "
-                    + "the claim's session was recorded on another machine this one cannot check — --force "
-                    + "attests you confirmed by hand that it has exited.")
+                    + "modified-but-uncommitted files, an untracked file under src/ or tests/ that is not a known "
+                    + "build/test byproduct, naming them either way, or commits beyond the base branch (h9k task "
+                    + "handback or h9k task deliver instead). An untracked file outside src/ or tests/, or a known "
+                    + "build/test byproduct inside them (bin/, obj/, TestResults/), only warns by name instead. "
+                    + "The worktree and branch are left on disk untouched; nothing resumes them automatically "
+                    + "(h9k task handback is the lever for that). Refused when the claim's session was recorded on "
+                    + "another machine this one cannot check — --force attests you confirmed by hand that it has "
+                    + "exited.")
                 .WithExample("task", "release", "28b19893");
             task.AddCommand<TaskHandbackCommand>("handback")
                 .WithDescription(

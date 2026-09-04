@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -214,16 +215,33 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             }
 
             // Untracked files (new, never git add-ed) pass the modified-files check above but are
-            // still real work the operator did: a blanket refusal would be wrong (a gate
-            // byproduct under an un-gitignored path would make the claim permanently
-            // unreleasable), but silently dropping the list is the one option that loses it — the
-            // operator is warned by name instead, the same way h9k task deliver and h9k task
-            // verify already report untracked files, rather than requeuing in silence (adversarial
+            // still real work the operator did. A path under src/ or tests/ is strandable exactly
+            // the way a committed change is (WorktreeGitStatus.SplitUntracked, shared with h9k
+            // task deliver's own refusal and VerificationRunner's pre-gate check): release records
+            // no RetryBranch, so a headless reclaim just cuts a second, run-suffixed worktree off
+            // the base branch (this command's own doc comment above), orphaning that file in a
+            // directory nothing points at — exactly the reason release refuses a modified file
+            // above, and a warning here used to let it through anyway (out-of-scope conformance
+            // finding on task a94dcd35, routed here). A path outside src/ or tests/ (a gate
+            // byproduct under an un-gitignored path, say) stays advisory — refusing on every
+            // untracked path would make the claim permanently unreleasable over its own build
+            // output — so only that half is still warned by name, the same way h9k task deliver
+            // and h9k task verify already report it, rather than requeuing in silence (adversarial
             // review, cycle 4).
-            if (untracked.Count > 0)
+            (IReadOnlyList<string> strandable, IReadOnlyList<string> byproduct) = WorktreeGitStatus.SplitUntracked(untracked);
+            if (strandable.Count > 0)
+            {
+                throw new DomainConflictException(
+                    $"Task {taskId}'s worktree has untracked file(s) under src/ or tests/: {string.Join(", ", strandable)} — "
+                    + "release is only for a claim nothing has been done in yet, and h9k task deliver refuses the same "
+                    + "files for the same reason. Commit or discard them first, then release, handback, or deliver as "
+                    + "the work warrants.");
+            }
+
+            if (byproduct.Count > 0)
             {
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[yellow]Task {taskId}'s worktree has untracked file(s) that will be left behind: {string.Join(", ", untracked)} — release is only for a claim nothing has been done in yet; commit or discard them first if they matter.[/]");
+                    $"[yellow]Task {taskId}'s worktree has untracked file(s) that will be left behind: {string.Join(", ", byproduct)} — release is only for a claim nothing has been done in yet; commit or discard them first if they matter.[/]");
             }
         }
 
