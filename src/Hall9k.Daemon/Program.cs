@@ -1,6 +1,7 @@
 using Hall9k.Daemon;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
@@ -156,6 +157,7 @@ builder.Services.AddSingleton<ProcessRunner>(_ => ExternalProcess.Runner);
 // Jira writes are testable against a fake HTTP response instead of a real tenant.
 builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
 builder.Services.AddSingleton<CloseoutEngine>();
+builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
 builder.Services.AddSingleton<JiraWriteRetryEngine>();
 builder.Services.AddSingleton<ProjectHomeRenderEngine>();
@@ -173,6 +175,7 @@ builder.UseWolverine(opts =>
 builder.Services.AddHostedService<DispatchLoop>();
 builder.Services.AddHostedService<LeaseHeartbeatService>();
 builder.Services.AddHostedService<PullRequestMonitor>();
+builder.Services.AddHostedService<AutoPrReviewMonitor>();
 builder.Services.AddHostedService<TokenBudgetRetryMonitor>();
 builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<JiraWriteRetryLoop>();

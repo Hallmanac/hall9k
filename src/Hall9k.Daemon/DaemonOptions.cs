@@ -115,6 +115,20 @@ public sealed class DaemonOptions
     public TimeSpan PullRequestPollBackoffMaxInterval { get; set; } = TimeSpan.FromMinutes(30);
 
     /// <summary>
+    /// Auto-pr-review poll cadence (idea e5e98a33): how often this node asks gh which open pull
+    /// requests, in an opted-in project's repo (<c>h9k project set --auto-pr-review</c>), request
+    /// this install's own login as a reviewer. The same interval-with-backoff shape as
+    /// <see cref="PullRequestPollInterval"/>, on its own timer: a reviewer assignment is a
+    /// human-timescale event exactly like a review or CI result, so the identical cadence answers
+    /// it, and a separate timer means a burst of trouble on one poll's own gh calls never widens
+    /// the other's.
+    /// </summary>
+    public TimeSpan AutoPrReviewPollInterval { get; set; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>The auto-pr-review poll's own backoff ceiling — same reasoning as <see cref="PullRequestPollBackoffMaxInterval"/>, on its own timer.</summary>
+    public TimeSpan AutoPrReviewPollBackoffMaxInterval { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
     /// errored-review re-requests) one task's pull request may spend, whatever obstruction
     /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate
