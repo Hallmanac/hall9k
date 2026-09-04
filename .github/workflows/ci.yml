@@ -17,6 +17,19 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      # Every machine that runs h9kd already has a git identity configured: NodeBootstrap
+      # itself reads git config user.name/user.email as the node's own operator identity, and
+      # every agent-driven commit throughout the platform already depends on it being set. A
+      # bare CI runner is the one environment that doesn't have one, and the mechanical-rebase
+      # integration test is the one path that actually replays commits (a real divergent
+      # history, not a faked conflict read), so it is the one path that notices: git refuses to
+      # create the replayed commits without an identity, which ubuntu-latest's hostname-based
+      # auto-detection can't supply. Configuring one here matches what every real machine
+      # already has, rather than teaching the mechanical-rebase code to invent its own.
+      - name: Configure git identity for integration tests
+        run: |
+          git config --global user.name "Hall9k CI"
+          git config --global user.email "ci@hall9k.invalid"
       - name: Build
         run: dotnet build --configuration Release
       - name: Test
