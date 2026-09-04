@@ -25,6 +25,8 @@ using Marten;
 using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
+using OperatingSettingsReport = Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsReport;
+using OperatingSettingsResolver = Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver;
 
 namespace Hall9k.Cli.Commands;
 
@@ -739,8 +741,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // problem falls back to the built-in default at that level rather than throwing — so
             // this still sits safely inside the post-claim block above, whose catch already records
             // the claim Failed on any exception.
-            Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsReport nodeSettings =
-                await Hall9k.Domain.Infrastructure.Persistence.OperatingSettingsResolver.ResolveAsync(cancellationToken);
+            OperatingSettingsReport nodeSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
             ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
                 taskDetails.ReviewStageComposition, project.ReviewStageComposition,
                 nodeSettings.ReviewStageComposition.Value);

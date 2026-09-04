@@ -75,7 +75,7 @@ settable at any time, even while the task's run is live, so it doubles as the ta
 for a grinding run. `add`/`revise --review-stage-composition <VALUE|default>` sets the task-level
 override of which pre-PR review stages a run gets — unlike the review caps above, Draft-only, so
 a live task's next run is the earliest a change reaches it — and `--accept-reduced-review`
-acknowledges a value that removes a load-bearing guarantee (Decisions Log #127, see
+acknowledges a value that removes a load-bearing guarantee (Decisions Log #129, see
 [project set](#projects-owners-connections) below). See
 [operations.md](operations.md#daemon-operating-settings).
 
@@ -240,7 +240,7 @@ Settings resolve most-specific-wins, and the exact chain differs per setting;
 
 Which pre-PR review stages a run gets is itself a project-, task-, and node-level setting
 (`--review-stage-composition <full-pipeline|adversarial-only|conformance-only|skip-final-pass|none>`
-at `h9k config set`, `h9k project set`, and `h9k task add`/`revise`, Decisions Log #127): the full
+at `h9k config set`, `h9k project set`, and `h9k task add`/`revise`, Decisions Log #129): the full
 pipeline (default, both lenses every cycle plus the mandatory final full pass), one lens only,
 the mandatory final full pass skipped, or no pre-PR review at all. Resolved once, at each run's
 own dispatch, task > project > node > compiled default, and frozen for that run's whole lifetime —
@@ -424,7 +424,7 @@ staleness threshold, the node-level review-cycle caps (compliance, adversarial, 
 and the task-lifetime budget — each overridable per project, and per task too via
 `h9k task set-review-caps`), the review stage composition (`--review-stage-composition
 <VALUE>`, [above](#tasks-development-and-dispatch); the node level has no clearing word and needs
-`--accept-reduced-review` for a value that removes a load-bearing guarantee, Decisions Log #127),
+`--accept-reduced-review` for a value that removes a load-bearing guarantee, Decisions Log #129),
 and a periodic token-spend budget (`--spend-budget <tokens|none>`
 paired with `--spend-period <day|week>`, backlog: spend-governor step three, Decisions Log #120) —
 once the current period's recorded spend reaches the budget, the dispatcher declines to claim

@@ -496,7 +496,7 @@ is the guided path, not the only one. A running daemon binds configuration once,
 change — from either path — takes effect on the next `h9k daemon stop` / `h9k daemon start`, the
 same as changing an environment variable would.
 
-The review stage composition (Decisions Log #127) — which pre-PR review stages a run gets:
+The review stage composition (Decisions Log #129) — which pre-PR review stages a run gets:
 `full-pipeline` (default, both lenses every cycle plus the mandatory final full pass),
 `adversarial-only`, `conformance-only`, `skip-final-pass`, or `none` — resolves the same
 `task > project > node > compiled default` order as the review-cycle caps, but is resolved once,
