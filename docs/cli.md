@@ -232,8 +232,8 @@ recipe for a project that has none yet, and the repair path for one that is inco
 `project set` is where the verification gates, the agent model, parallelism, commit style,
 context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog
 none|github-issues|jira`) and its routing guidance, the review re-request policy, the
-project-level review-cycle-cap overrides, the review stage composition (`--review-stage-
-composition`, below), the branch-name template (`--branch-template`,
+project-level review-cycle-cap overrides, the review stage composition (`--review-stage-composition`,
+below), the branch-name template (`--branch-template`,
 [below](#branch-naming)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
