@@ -197,6 +197,7 @@ public sealed class RunCloseoutProjectionTests
         RunListItem view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
             id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
             "/tmp/wt", "task/abc", ExecutorMode.Subscription, Now)));
+        view.IsReconstructed.Should().BeFalse("a genuinely dispatched run wrote its own transcript");
         projection.Apply(new FakeEvent<PullRequestOpened>(new PullRequestOpened(id, PullRequestUrl, 7, Now)), view);
 
         projection.Apply(new FakeEvent<PullRequestChecksFailed>(new PullRequestChecksFailed(id, ["build"], Now)), view);
@@ -216,11 +217,13 @@ public sealed class RunCloseoutProjectionTests
 
     /// <summary>
     /// A run reconstructed by CloseoutEngine's missing-run sweep (a Done task naming a run that
-    /// never actually dispatched) still needs a resolvable RunDirectory: LogsCommand and
-    /// TaskShowCommand order a task's runs by DispatchedAt and pick the newest one, and a blank
-    /// directory resolves to a bare relative path nothing on disk answers to (independent pre-PR
-    /// review, cycle 1). RunDetailsProjection's own creator for the same event already carries
-    /// this fallback; this locks the sibling view to the same fact.
+    /// never actually dispatched) still needs a resolvable RunDirectory: LogsCommand orders a
+    /// task's runs by DispatchedAt and picks the newest one, and a blank directory resolves to a
+    /// bare relative path nothing on disk answers to (independent pre-PR review, cycle 1).
+    /// RunDetailsProjection's own creator for the same event already carries this fallback; this
+    /// locks the sibling view to the same fact. IsReconstructed is what then lets LogsCommand's own
+    /// pick skip this stub in favor of a run that actually wrote a transcript (independent pre-PR
+    /// review, cycle 1, conformance; see LogsCommandRunSelectionTests).
     /// </summary>
     [Fact]
     public void Run_list_item_reconstructed_from_a_missing_run_record_still_has_a_resolvable_directory()
@@ -234,6 +237,8 @@ public sealed class RunCloseoutProjectionTests
         view.PullRequestUrl.Should().Be(PullRequestUrl);
         view.RunDirectory.Should().Be(RunPaths.GlobalDirectory(id),
             "a blank directory resolves to a bare relative path, sending h9k logs looking on this machine for a file that was never here");
+        view.IsReconstructed.Should().BeTrue(
+            "LogsCommand's own pick needs to tell this stub apart from a run that actually dispatched");
     }
 
     [Fact]
