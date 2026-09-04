@@ -23,6 +23,10 @@ public sealed class LogsCommandRunSelectionTests
         DispatchedAt = dispatchedAt,
         State = RunState.Dispatched,
         IsReconstructed = isReconstructed,
+        // A real RunDispatched's own LeaseGeneration is never 0 (TaskAggregate.LeaseGeneration
+        // starts at 0 and every claim records +1) — only a reconstruction ever leaves it at the
+        // int default, so a dispatched test row must carry a real one to behave like production.
+        LeaseGeneration = isReconstructed ? 0 : 1,
     };
 
     [Fact]
@@ -47,6 +51,29 @@ public sealed class LogsCommandRunSelectionTests
 
         selected.Should().BeSameAs(stub,
             "a stub-only task still needs a run handed back, so the caller can give its usual honest 404");
+    }
+
+    [Fact]
+    public void With_no_run_option_a_stub_written_before_IsReconstructed_shipped_is_still_skipped()
+    {
+        // A reconstruction committed before this field existed carries IsReconstructed = false
+        // forever (this projection is Inline with no backfill) but never carries a real
+        // LeaseGeneration either, so LooksReconstructed still catches it (independent pre-PR
+        // review, cycle 1, both lenses).
+        RunListItem dispatched = Run(Now.AddHours(-1));
+        RunListItem preExistingStub = new()
+        {
+            Id = DomainId.New(),
+            DispatchedAt = Now,
+            State = RunState.Dispatched,
+            IsReconstructed = false,
+            LeaseGeneration = 0,
+        };
+
+        RunListItem? selected = LogsCommand.SelectRun([preExistingStub, dispatched], runOption: null);
+
+        selected.Should().BeSameAs(dispatched,
+            "a document written before IsReconstructed existed still never carries a real LeaseGeneration");
     }
 
     [Fact]

@@ -98,18 +98,21 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
     /// Picks which of a task's runs this command actually reads. <paramref name="runOption"/> is
     /// an explicit ask, matched by its id's trailing fragment. With no explicit ask, the newest run
     /// is not automatically right: CloseoutEngine's missing-run sweep can reconstruct a stub run
-    /// (<see cref="RunListItem.IsReconstructed"/>) that never actually dispatched and so never
+    /// (<see cref="RunListItem.LooksReconstructed"/>) that never actually dispatched and so never
     /// wrote a transcript, and a reconstruction always sorts newest by construction — it exists
     /// because an earlier, transcript-bearing run already dispatched and finished. Skipping a
     /// reconstructed run in favor of the newest one that is not is what makes this command resolve
     /// to the run that actually produced a transcript instead of an honest 404 on the stub
     /// (independent pre-PR review, cycle 1, conformance) — falling back to the stub itself only
     /// when every run on the task is one, so a stub-only task still gets the same honest "no
-    /// stream file" answer it always has.
+    /// stream file" answer it always has. Reads <c>LooksReconstructed</c> rather than the raw
+    /// <c>IsReconstructed</c> flag so a reconstruction already written before that flag shipped is
+    /// still skipped, not just one reconstructed from here on (independent pre-PR review, cycle 1,
+    /// both lenses).
     /// </summary>
     internal static RunListItem? SelectRun(IReadOnlyList<RunListItem> runsNewestFirst, string? runOption) =>
         runOption.IsBlank()
-            ? runsNewestFirst.FirstOrDefault(r => !r.IsReconstructed) ?? runsNewestFirst[0]
+            ? runsNewestFirst.FirstOrDefault(r => !r.LooksReconstructed) ?? runsNewestFirst[0]
             : runsNewestFirst.FirstOrDefault(r => r.Id.ToString("N")
                 .EndsWith(runOption.Replace("-", ""), StringComparison.OrdinalIgnoreCase));
 }
