@@ -49,42 +49,92 @@ public sealed class GateInfrastructureFailureClassifierTests
         GateInfrastructureFailureClassifier.MatchingExcerpt("Xunit.Sdk.EqualException: expected true, was false")
             .Should().BeNull();
 
+    // A directory rather than a captured-output string, deliberately: the gate's own console
+    // output cannot be relied on here (see IsUnresolvedGateWaitTimeout's own doc comment) —
+    // CrossProcessContainerGate.AcquireAsync instead writes a durable file directly into a
+    // directory VerificationRunner names via GateWaitEvidenceDirectoryEnvironmentVariable, and
+    // that file's presence at kill time, not any text scan, is what these two methods check.
     [Fact]
-    public void An_unresolved_gate_wait_at_the_very_end_of_the_output_classifies_as_a_timeout_infrastructure_failure() =>
-        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(
-                "some earlier test output\n" +
+    public void A_leftover_wait_evidence_file_classifies_as_a_timeout_infrastructure_failure()
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(directory, "waiting-123-abc.txt"),
                 "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
                 "(842s elapsed, 4 max concurrent) — every permit is currently held " +
-                "(by this process's own other classes, or by another process on this machine)")
-            .Should().BeTrue();
+                "(by this process's own other classes, or by another process on this machine)");
+
+            GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(directory).Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
 
     [Fact]
-    public void A_gate_wait_line_from_early_in_a_long_run_does_not_classify_a_later_unrelated_timeout() =>
-        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(
-                "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
-                "(3s elapsed, 4 max concurrent) — every permit is currently held " +
-                "(by this process's own other classes, or by another process on this machine)"
-                + new string('x', 5_000) +
-                "Assert.Equal() Failure\nExpected: 3\nActual:   4")
-            .Should().BeFalse("the run got well past the wait and hung or failed for an unrelated reason");
+    public void An_evidence_directory_cleared_by_a_successful_acquire_does_not_classify_a_later_unrelated_timeout()
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
+        try
+        {
+            // Empty: CrossProcessContainerGate.AcquireAsync deletes its own evidence file the
+            // moment it acquires a permit, exactly as it would here once the wait resolved —
+            // an ordinary hang or a real test failure after that point must not be misread as
+            // still-queued-on-the-gate just because the directory once held evidence.
+            GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(directory)
+                .Should().BeFalse("the wait already resolved; nothing is queued on the gate anymore");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("Assert.Equal() Failure\nExpected: 3\nActual:   4")]
-    public void An_absent_or_ordinary_timeout_output_is_never_guessed_as_an_unresolved_gate_wait(string? timeoutOutput) =>
-        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(timeoutOutput).Should().BeFalse();
+    public void An_absent_or_nonexistent_evidence_directory_is_never_guessed_as_an_unresolved_gate_wait(string? gateWaitEvidenceDirectory) =>
+        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(gateWaitEvidenceDirectory).Should().BeFalse();
 
     [Fact]
-    public void UnresolvedGateWaitExcerpt_carries_the_marker() =>
-        GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(
+    public void UnresolvedGateWaitExcerpt_carries_the_evidence_file_content()
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(directory, "waiting-123-abc.txt"),
                 "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
                 "(842s elapsed, 4 max concurrent) — every permit is currently held " +
-                "(by this process's own other classes, or by another process on this machine)")
-            .Should().Contain("Waiting on cross-process container gate");
+                "(by this process's own other classes, or by another process on this machine)");
+
+            GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(directory)
+                .Should().Contain("Waiting on cross-process container gate");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
 
     [Fact]
-    public void UnresolvedGateWaitExcerpt_is_null_when_the_marker_never_appears() =>
-        GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt("Assert.Equal() Failure")
-            .Should().BeNull();
+    public void UnresolvedGateWaitExcerpt_is_null_when_no_evidence_file_exists()
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
+        try
+        {
+            GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(directory).Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void UnresolvedGateWaitExcerpt_is_null_for_a_nonexistent_directory() =>
+        GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(null).Should().BeNull();
 }

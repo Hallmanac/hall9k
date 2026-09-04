@@ -399,6 +399,26 @@ public sealed partial class VerificationRunner(
         string logFile = Path.Combine(runDirectory, $"verify-{Sanitize(gate.Name)}.log");
         Directory.CreateDirectory(runDirectory);
 
+        // Where CrossProcessContainerGate.AcquireAsync leaves durable evidence that a
+        // dotnet-test-shaped gate was still queued on the machine-wide container gate at the
+        // moment it was killed (PLAN.md §16 #131). Never the gate's own captured console output:
+        // vstest.console buffers a testhost's Console.Error internally and only relays it if
+        // vstest.console itself survives long enough to report the crash, which
+        // process.Kill(entireProcessTree: true) below does not allow — root, dotnet test,
+        // vstest.console and testhost are all killed together, so vstest.console never gets the
+        // chance to notice testhost died and print anything (adversarial review, this cycle,
+        // reproduced against this repo's own package versions: the marker never once reached the
+        // redirected log under a real entireProcessTree kill). A file written directly by the
+        // waiting process, independent of any parent surviving to relay it, has no such gap.
+        // Reset per gate run so a directory left behind by an earlier attempt at this same gate
+        // can never be mistaken for evidence of the current one.
+        string gateWaitDirectory = Path.Combine(runDirectory, $"gate-wait-{Sanitize(gate.Name)}");
+        if (Directory.Exists(gateWaitDirectory))
+        {
+            Directory.Delete(gateWaitDirectory, recursive: true);
+        }
+        Directory.CreateDirectory(gateWaitDirectory);
+
         // Scoping only ever touches a `dotnet test`-shaped gate's own command — a build gate, a
         // lint gate, anything else configured runs exactly as the project wrote it, scope or not.
         string command = gate.Command;
@@ -430,6 +450,11 @@ public sealed partial class VerificationRunner(
             WorkingDirectory = worktreePath,
             UseShellExecute = false,
         };
+        // Harmless for a gate that never touches CrossProcessContainerGate: nothing reads this
+        // variable unless a dotnet-test-shaped gate's own PostgresFixture instances call
+        // CrossProcessContainerGate.AcquireAsync, so it costs nothing to set it unconditionally
+        // rather than special-casing IsDotnetTestGate here too.
+        process.StartInfo.Environment[GateInfrastructureFailureClassifier.GateWaitEvidenceDirectoryEnvironmentVariable] = gateWaitDirectory;
         if (OperatingSystem.IsWindows())
         {
             // The raw Arguments string, never ArgumentList (see WindowsCommandLine): a
@@ -484,16 +509,14 @@ public sealed partial class VerificationRunner(
             // it never even reached the agent's own tests, and VerifyGateTimeout's 15-minute
             // budget — sized for one process's own tier duration — can legitimately be
             // outlasted by ordinary cross-process contention under a raised node ceiling or a
-            // concurrent foreground run. Checked only here, never folded into the marker scan
-            // above, because that scan also covers a gate that exited on its own, where this same
-            // line's presence is stale history from earlier contention rather than the reason the
-            // gate failed (see GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout's
-            // own comment).
+            // concurrent foreground run. Read from gateWaitDirectory, never the gate's own
+            // captured console output (see GateInfrastructureFailureClassifier.
+            // IsUnresolvedGateWaitTimeout's own comment for why that can never be relied on here).
             if (!timeoutIsInfrastructureFailure &&
-                GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(timeoutOutput))
+                GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(gateWaitDirectory))
             {
                 timeoutIsInfrastructureFailure = true;
-                timeoutExcerpt = GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(timeoutOutput);
+                timeoutExcerpt = GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(gateWaitDirectory);
             }
 
             return (false, timeoutFailure, timeoutIsInfrastructureFailure, timeoutExcerpt, false);

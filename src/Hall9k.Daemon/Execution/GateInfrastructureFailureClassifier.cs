@@ -40,73 +40,57 @@ public static class GateInfrastructureFailureClassifier
         gateOutput is not null
         && ConnectionFailureMarkers.Any(marker => gateOutput.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
-    // The cross-process container gate's own wait line (CrossProcessContainerGate.AcquireAsync,
-    // PLAN.md §16 #131) repeats every five seconds for as long as a class is genuinely queued on
-    // it, and ordinary same-process contention prints it on nearly every run regardless of
-    // outcome (independent pre-PR review, cycle 1) — so unlike the markers above, its presence
-    // anywhere in a long-running gate's output says nothing about why the run eventually died.
-    // Deliberately not folded into ConnectionFailureMarkers/IsInfrastructureFailure for that
-    // reason: that scan also classifies an ordinary non-zero exit (a real test failure), and a
-    // gate that already finished has necessarily gotten past the wait, so the line's presence
-    // there is stale history from earlier contention, never the cause of the failure — treating
-    // it as a marker there would misclassify most genuine test failures the moment any class in
-    // the run ever queued on the gate at all. This is checked, and only checked, on
-    // VerificationRunner's own timeout path: there, and only there, "the gate's own wait line is
-    // the last thing this process said before being killed" is the literal, recognizable shape
-    // that means the timeout landed on ordinary cross-process contention, not on the agent's own
-    // work (adversarial review, cycle 1).
-    private const string GateWaitMarker = "Waiting on cross-process container gate";
-
-    // Wide enough to comfortably hold the wait line itself (well under 200 characters) plus any
-    // interleaved output from other classes still running in parallel at the moment of the kill,
-    // narrow enough that a wait line from minutes earlier, long superseded by real progress,
-    // cannot still be sitting in the window.
-    private const int GateWaitTailWindowSize = 2_000;
+    /// <summary>
+    /// The environment variable name a dotnet-test-shaped gate's own process tree carries the
+    /// cross-process container gate's wait-evidence directory under (PLAN.md §16 #131). Defined
+    /// here rather than in the test project's own <c>CrossProcessContainerGate.AcquireAsync</c>
+    /// (in <c>Hall9k.Tests</c>) because this classifier is the reader and the constant belongs
+    /// beside the code that interprets it; <c>Hall9k.Tests</c> already references
+    /// <c>Hall9k.Daemon</c> (the reverse direction is what AGENTS.md's reference graph forbids),
+    /// so the writer reads this same constant rather than duplicating its literal value.
+    /// </summary>
+    public const string GateWaitEvidenceDirectoryEnvironmentVariable = "HALL9K_VERIFY_GATE_WAIT_DIR";
 
     /// <summary>
-    /// True when a timed-out gate's own trailing output still shows it queued on
-    /// <see cref="Hall9k.Tests.Integration.CrossProcessContainerGate"/> — i.e. the timeout landed
-    /// while a class was genuinely waiting for a permit, not stuck for some other reason. Callers
-    /// check this only alongside <see cref="IsInfrastructureFailure"/> on the timeout path, never
-    /// on a gate that exited on its own (see <see cref="GateWaitMarker"/>'s own comment for why).
+    /// True when the directory named by <see cref="GateWaitEvidenceDirectoryEnvironmentVariable"/>
+    /// still holds a file at the moment a gate was killed — i.e. a class was genuinely queued on
+    /// the cross-process container gate (PLAN.md §16 #131) when the timeout landed, not stuck for
+    /// some other reason. The gate's own captured console output cannot answer this question: a
+    /// wait line written from inside a dotnet-test-shaped gate's testhost is buffered by
+    /// vstest.console and only ever relayed if vstest.console itself survives long enough to
+    /// report the testhost's death, which <c>VerificationRunner</c>'s own
+    /// <c>process.Kill(entireProcessTree: true)</c> does not allow (adversarial review, this
+    /// cycle: reproduced against this repo's own package versions — the marker line never once
+    /// reached the redirected log under a real entireProcessTree kill, only under a kill that left
+    /// vstest.console alive a moment longer than its own testhost, which this platform's kill
+    /// never does). A file written directly by the waiting process — created the moment
+    /// contention is genuinely observed, deleted the moment a permit is acquired — carries no
+    /// such gap: its mere presence after the kill needs no tail window or marker text, because
+    /// nothing but an unresolved wait ever leaves one behind.
     /// </summary>
-    public static bool IsUnresolvedGateWaitTimeout(string? timeoutOutput)
-    {
-        if (string.IsNullOrEmpty(timeoutOutput))
-        {
-            return false;
-        }
-
-        string tail = timeoutOutput.Length <= GateWaitTailWindowSize
-            ? timeoutOutput
-            : timeoutOutput[^GateWaitTailWindowSize..];
-
-        return tail.Contains(GateWaitMarker, StringComparison.Ordinal);
-    }
+    public static bool IsUnresolvedGateWaitTimeout(string? gateWaitEvidenceDirectory) =>
+        !string.IsNullOrEmpty(gateWaitEvidenceDirectory)
+        && Directory.Exists(gateWaitEvidenceDirectory)
+        && Directory.EnumerateFiles(gateWaitEvidenceDirectory).Any();
 
     /// <summary>
-    /// The bounded excerpt to record alongside a true <see cref="IsUnresolvedGateWaitTimeout"/>
-    /// result, the same reasoning as <see cref="MatchingExcerpt"/>: the caller records this next
-    /// to the retry it explains, so the durable retry event says what triggered it rather than
-    /// just that something did. Anchored to the last occurrence of the marker, since that is the
-    /// one <see cref="IsUnresolvedGateWaitTimeout"/> itself found in the trailing window.
+    /// The excerpt to record alongside a true <see cref="IsUnresolvedGateWaitTimeout"/> result,
+    /// the same reasoning as <see cref="MatchingExcerpt"/>: the caller records this next to the
+    /// retry it explains, so the durable retry event says what triggered it rather than just that
+    /// something did. Reads whichever evidence file is first in enumeration order — under a
+    /// single dotnet-test-shaped gate's own process tree there is ordinarily just the one class
+    /// still genuinely contended at the moment of the kill, and any second one says the same
+    /// thing about the same gate.
     /// </summary>
-    public static string? UnresolvedGateWaitExcerpt(string? timeoutOutput)
+    public static string? UnresolvedGateWaitExcerpt(string? gateWaitEvidenceDirectory)
     {
-        if (timeoutOutput is null)
+        if (string.IsNullOrEmpty(gateWaitEvidenceDirectory) || !Directory.Exists(gateWaitEvidenceDirectory))
         {
             return null;
         }
 
-        int index = timeoutOutput.LastIndexOf(GateWaitMarker, StringComparison.Ordinal);
-        if (index < 0)
-        {
-            return null;
-        }
-
-        int start = Math.Max(0, index - 50);
-        int end = Math.Min(timeoutOutput.Length, index + GateWaitMarker.Length + 250);
-        return timeoutOutput[start..end].Trim();
+        string? evidenceFile = Directory.EnumerateFiles(gateWaitEvidenceDirectory).FirstOrDefault();
+        return evidenceFile is null ? null : File.ReadAllText(evidenceFile).Trim();
     }
 
     /// <summary>
