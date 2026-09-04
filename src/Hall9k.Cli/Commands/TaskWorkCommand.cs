@@ -576,17 +576,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         {
             dependencies = await TaskDependencyQuery.LoadAsync(session, task.BlockedBy, cancellationToken);
         }
-        else if (task.State == TaskState.Blocked)
-        {
-            if (task.AssignedOwnerId != context.OwnerId)
-            {
-                throw new DomainConflictException(
-                    $"Task {task.Id} is assigned to {task.AssignedOwnerId} — an operator claims only their own owner's work.");
-            }
-
-            unmetAtEntry = await TaskDependencyQuery.LoadAsync(session, task.UnmetDependencies, cancellationToken);
-        }
-        else if (task.State != TaskState.Queued)
+        else if (task.State != TaskState.Queued && task.State != TaskState.Blocked)
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — only a Published, Queued, or Blocked task (or one you "
@@ -603,6 +593,10 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is assigned to {task.AssignedOwnerId} — an operator claims only their own owner's work.");
+        }
+        else if (task.State == TaskState.Blocked)
+        {
+            unmetAtEntry = await TaskDependencyQuery.LoadAsync(session, task.UnmetDependencies, cancellationToken);
         }
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(task.Id, cancellationToken)
