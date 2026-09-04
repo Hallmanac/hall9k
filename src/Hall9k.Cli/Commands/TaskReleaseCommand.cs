@@ -52,6 +52,21 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 taskId, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
+        // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
+        // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), already running headlessly
+        // under this daemon's own RunSupervisor exactly like an ordinary dispatch. Superseding it
+        // here would requeue the task while the live run keeps going, dispatching a second run
+        // alongside it — the exact harm h9k task handback's identical guard (TaskHandbackCommand.cs)
+        // exists to prevent (independent pre-PR review, cycle 4, both lenses).
+        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && task.Type == TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is a pr-review task dispatched by auto-pr-review's now speed — it is "
+                + "already running headlessly under the daemon's own supervision, not an interactive "
+                + $"claim to release. h9k task show {taskId} to see where it stands.");
+        }
+
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver (or handback)
         // hands the run to the standard pipeline, the task can still read Claimed+interactive
         // for the whole review loop, so the decider's own state check alone would let this
