@@ -52,21 +52,6 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 taskId, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
-        // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
-        // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
-        // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), already running headlessly
-        // under this daemon's own RunSupervisor exactly like an ordinary dispatch. Superseding it
-        // here would requeue the task while the live run keeps going, dispatching a second run
-        // alongside it — the exact harm h9k task handback's identical guard (TaskHandbackCommand.cs)
-        // exists to prevent (independent pre-PR review, cycle 4, both lenses).
-        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && task.Type == TaskType.PrReview)
-        {
-            throw new DomainConflictException(
-                $"Task {taskId} is a pr-review task dispatched by auto-pr-review's now speed — it is "
-                + "already running headlessly under the daemon's own supervision, not an interactive "
-                + $"claim to release. h9k task show {taskId} to see where it stands.");
-        }
-
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver (or handback)
         // hands the run to the standard pipeline, the task can still read Claimed+interactive
         // for the whole review loop, so the decider's own state check alone would let this
@@ -97,6 +82,27 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 // give back (adversarial review, cycle 1).
                 AnsiConsole.MarkupLineInterpolated(
                     $"[yellow]Task {taskId}'s run {currentRunId} has no record — its interactive claim never finished setting up (the process likely died while preparing the worktree). Releasing the claim; a partially-cut worktree or branch may be left on disk under this task's id and is safe to remove by hand.[/]");
+            }
+            else if (task.Type == TaskType.PrReview && (run.State == RunState.Dispatched || run.State == RunState.Running))
+            {
+                // A pr-review task's own Claimed+sentinel state is never a human's own interactive
+                // claim (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is
+                // auto-pr-review's Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync).
+                // Gated on the run record actually existing and still being live, not on task state
+                // alone: the branch above already recovers the one case where CreateOneAsync's own
+                // launch died before RunDispatched ever committed, and refusing that case here too
+                // would strand it with no non-terminal way out except h9k task abandon (independent
+                // pre-PR review, cycle 6, adversarial lens). A live run, by contrast, is already
+                // running headlessly under this daemon's own RunSupervisor exactly like an ordinary
+                // dispatch — superseding it here would requeue the task while the live run keeps
+                // going, dispatching a second run alongside it, the exact harm h9k task handback's
+                // identical guard (TaskHandbackCommand.cs) exists to prevent (independent pre-PR
+                // review, cycle 4, both lenses).
+                throw new DomainConflictException(
+                    $"Task {taskId} is a pr-review task dispatched by auto-pr-review's now speed — it is "
+                    + "already running headlessly under the daemon's own supervision, not an interactive "
+                    + $"claim to release. Let the run finish, or h9k task abandon {taskId} — "
+                    + $"h9k task show {taskId} to see where it stands.");
             }
             else
             {

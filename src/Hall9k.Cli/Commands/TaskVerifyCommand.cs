@@ -58,6 +58,22 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim verifies this way.");
         }
 
+        // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
+        // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
+        // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), already running headlessly
+        // under this daemon's own RunSupervisor. Running the project's build/test gates here would
+        // execute the untrusted pull-request-head worktree's own code under the operator's account —
+        // exactly the boundary RunLauncher's UntrustedWorkingDirectory flag and ClaudeExecutor's own
+        // settings/hooks/MCP stripping exist to hold (independent pre-PR review, cycle 6, conformance
+        // lens). Mirrors TaskHandbackCommand's and TaskReleaseCommand's identical guard.
+        if (task.Type == TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is a pr-review task dispatched by auto-pr-review's now speed — it is "
+                + "already running headlessly under the daemon's own supervision, not an interactive "
+                + $"claim to verify. h9k task show {taskId} to see where it stands.");
+        }
+
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException(
                 $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "

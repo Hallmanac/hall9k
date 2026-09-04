@@ -310,13 +310,21 @@ public sealed class AutoPrReviewEngine(
         // PullRequestReviewAssignmentObserved.RequestedAt and there was nothing to compare
         // against at all (the method's own documented conservative fallback) — a case this note
         // cannot tell apart from the first without re-reading the stream itself, so it states
-        // only what is true either way: that the earlier task already reviewed this pull
-        // request, not that the request it reviewed was necessarily a distinct, earlier one.
+        // only what is true either way: that an earlier auto-created task existed for this pull
+        // request, not that the request it existed for was necessarily a distinct, earlier one.
+        // Never "already reviewed this pull request" either (independent pre-PR review, cycle 6,
+        // adversarial lens): the most common way an auto-created task reaches Abandoned is
+        // ConcludeOneAsync's own pre-dispatch recall, where the task never ran and reviewed
+        // nothing, and a Done task can equally be one h9k task resolve closed on a human's
+        // attestation with no findings report ever produced. TaskListItem carries no field that
+        // says whether a review actually happened, only that the task existed and how it ended —
+        // stating "reviewed" would be the same plausible-but-unobserved fill-in the AddedAt
+        // comment above already refuses to make.
         string? reReviewNote = previousReview is not null
             ? previousReview.State == TaskState.Abandoned
                 ? $"This is a re-review: an earlier auto-created task ({DomainId.Short(previousReview.Id)}) "
-                  + "already reviewed this pull request and was abandoned."
-                : $"This is a re-review: task {DomainId.Short(previousReview.Id)} already reviewed this "
+                  + "existed for this pull request and was abandoned."
+                : $"This is a re-review: task {DomainId.Short(previousReview.Id)} existed for this "
                   + "pull request and closed Done."
             : null;
         string additionalContext = reReviewNote is null ? provenance : $"{provenance}\n{reReviewNote}";
