@@ -891,7 +891,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                   + "the last one's pull request merges), or";
         }
 
-        string deathAdvice = string.Join(" ", dead.Select(dependency => dependency.DescribeDeath() + "."));
+        // ExternalText.OneLine, same reasoning as the refusal message's own Describe() calls
+        // above (independent pre-PR review, cycle 1, adversarial lens): DescribeDeath() embeds
+        // the same untrusted Objective verbatim, and this text reaches the terminal raw too.
+        string deathAdvice = string.Join(
+            " ", dead.Select(dependency => ExternalText.OneLine(dependency.DescribeDeath()) + "."));
         if (dead.Count == unmet.Count)
         {
             return deathAdvice;
