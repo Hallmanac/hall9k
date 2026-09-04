@@ -43,9 +43,31 @@ public sealed class RunListItem
     /// that actually dispatched — it never ran a build session, so it never wrote a transcript
     /// (independent pre-PR review, cycle 1, conformance: <c>h9k logs</c>'s own newest-run pick must
     /// skip a run this flag marks in favor of one that actually produced a transcript, rather than
-    /// resolving a directory nothing was ever written to).
+    /// resolving a directory nothing was ever written to). This projection is Inline with no
+    /// backfill, so a run reconstructed before this field shipped keeps this flag reading false
+    /// forever: <see cref="RunRecordReconstructed"/>'s own creation commits every event that
+    /// stream will ever receive (<c>PullRequestMerged</c>/<c>RunHandoffRecorded</c>/
+    /// <c>RunCompleted</c>, same commit), so nothing ever rewrites the document to pick the new key
+    /// up (independent pre-PR review, cycle 1, both lenses). <see cref="LooksReconstructed"/> is
+    /// the read-site fallback that catches those already-written stubs too.
     /// </summary>
     public bool IsReconstructed { get; set; }
+
+    /// <summary>
+    /// What <c>h9k logs</c> actually keys its stub-skip on, rather than <see cref="IsReconstructed"/>
+    /// alone: that flag is permanently absent on every reconstruction already written before it
+    /// shipped (this field's own doc above), so a document-shape fallback is needed with no
+    /// migration to carry it. <see cref="LeaseGeneration"/> serves: <see cref="RunRecordReconstructed"/>
+    /// deliberately records nothing a real dispatch would have observed (that event's own doc),
+    /// so it is never set and reads the type default, 0, while a real dispatch's own
+    /// <c>RunDispatched.LeaseGeneration</c> is always <c>TaskClaimed</c>'s lease generation — never
+    /// less than 1, since a task's own <c>LeaseGeneration</c> starts at 0 and every claim records
+    /// <c>+ 1</c> (<c>TaskDecider</c>) — and that field has been a required, non-nullable
+    /// <c>RunDispatched</c> parameter since the event's own creation, so no legacy dispatched
+    /// stream can read 0 either. A reconstructed run is therefore <c>LeaseGeneration == 0</c> on
+    /// every document old or new, flag or no flag.
+    /// </summary>
+    public bool LooksReconstructed => IsReconstructed || LeaseGeneration == 0;
 }
 
 public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, Guid>
