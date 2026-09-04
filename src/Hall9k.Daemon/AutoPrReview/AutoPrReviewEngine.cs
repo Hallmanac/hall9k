@@ -248,15 +248,20 @@ public sealed class AutoPrReviewEngine(
         // re-mints it — h9k task abandon cannot decline an auto-created review at all while the
         // request stands otherwise. IsGenuineReRequestAsync below still lets a real re-request
         // through either way; only the same-standing-request case is what this guards.
-        // AutoPrReviewAssigneeLogin non-null (the same provenance tell the recall sweep keys off
-        // of) so this only ever finds a task auto-pr-review itself minted — never a task a human
-        // created by hand with h9k task add --from-pr, whose own abandonment or closeout says
-        // nothing about whether this feature already covered any request at all (independent
+        // WasAutoPrReviewCreated, not AutoPrReviewAssigneeLogin (independent pre-PR review, cycle
+        // 2, adversarial lens): that field is transient and goes null on any recall, even a
+        // "work continues" one recorded while this same task's run kept going to Done — reusing
+        // it here would silently drop the re-review note for a task recalled mid-run once a real
+        // re-request later arrives, because by then AutoPrReviewAssigneeLogin already reads null
+        // for reasons unrelated to provenance. WasAutoPrReviewCreated is set once and never
+        // cleared, so this only ever finds a task auto-pr-review itself minted — never a task a
+        // human created by hand with h9k task add --from-pr, whose own abandonment or closeout
+        // says nothing about whether this feature already covered any request at all (independent
         // pre-PR review, cycle 1, adversarial lens: the note below states "auto-created" and this
         // query is what has to make that true rather than assumed).
         TaskListItem? previousReview = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
-            .Where(task => task.AutoPrReviewAssigneeLogin != null)
+            .Where(task => task.WasAutoPrReviewCreated)
             .Where(task => task.MatchesSql(
                 "d.data ->> 'type' = ? AND d.data ->> 'state' IN (?, ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value, TaskState.Abandoned.Value))

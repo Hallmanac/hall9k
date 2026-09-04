@@ -799,4 +799,147 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
         }
     }
+
+    /// <summary>
+    /// The defect independent pre-PR review cycle 2's adversarial lens found: a task recalled
+    /// mid-run with "the work continues" (<c>Concluded</c> false — the run was already Claimed)
+    /// has its <see cref="TaskListItem.AutoPrReviewAssigneeLogin"/> nulled by that same recall,
+    /// even though the task later finishes normally to Done. Reusing that transient field as
+    /// <c>CreateOneAsync</c>'s own previousReview provenance check would make a later genuine
+    /// re-request mint a fresh task with no re-review note and no reference back to this one,
+    /// exactly as though auto-pr-review had never touched this pull request before —
+    /// <see cref="TaskListItem.WasAutoPrReviewCreated"/> is the permanent field that must survive
+    /// the recall instead.
+    /// </summary>
+    [Fact]
+    public async Task A_genuine_re_request_after_a_mid_run_recall_still_carries_a_re_review_note()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        Guid firstReviewTaskId = DomainId.New();
+        const string repository = "acme/mint-rereview-test";
+        DateTimeOffset firstRequestedAt = Now.AddDays(-2);
+        DateTimeOffset secondRequestedAt = Now;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), "auto-pr-review-rereview", "/tmp/auto-pr-review-rereview-repo",
+                new Uri($"https://github.com/{repository}"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
+                autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Normal));
+            session.Events.Append(projectId, optedIn);
+
+            // T1: auto-created, dispatched (Claimed), then its GitHub reviewer assignment is
+            // recalled while the run is already in flight — Concluded: false, "the work
+            // continues" — and the run finishes normally to Done regardless.
+            TaskAdded added = TaskDecider.Add(
+                firstReviewTaskId, projectId, $"Review pull request {repository}#9301", ["every finding is directed"],
+                TaskType.PrReview, null, null, new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#9301"),
+                Now.AddDays(-2), node.OwnerId);
+            TaskAggregate task = new();
+            task.Apply(added);
+            PullRequestReviewAssignmentObserved observed = new(
+                firstReviewTaskId, $"https://github.com/{repository}/pull/9301", "brian", "alice", Now.AddDays(-2), firstRequestedAt);
+            task.Apply(observed);
+            TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now.AddDays(-2), node.OwnerId, BacklogPolicy.None);
+            task.Apply(published);
+            TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, [], Now.AddDays(-2), node.OwnerId);
+            task.Apply(assigned);
+            TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now.AddDays(-2));
+            task.Apply(claimed);
+            PullRequestReviewAssignmentRecalled recalled = new(
+                firstReviewTaskId, $"https://github.com/{repository}/pull/9301", "alice", Now.AddDays(-1), Concluded: false);
+            task.Apply(recalled);
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, null, Now.AddHours(-23));
+            task.Apply(completed);
+
+            session.Events.StartStream<TaskAggregate>(
+                firstReviewTaskId, [added, observed, published, assigned, claimed, recalled, completed]);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession verifySeed = store.QuerySession())
+        {
+            TaskListItem seeded = (await verifySeed.LoadAsync<TaskListItem>(firstReviewTaskId, cts.Token))!;
+            seeded.AutoPrReviewAssigneeLogin.Should().BeNull(
+                "the mid-run recall nulls the transient field even though the task went on to finish normally");
+            seeded.WasAutoPrReviewCreated.Should().BeTrue(
+                "the permanent provenance field must survive the recall — this is exactly the task under test");
+        }
+
+        const string listJson = """
+            [{"number":9301,"url":"https://github.com/acme/mint-rereview-test/pull/9301","title":"Add rate limiting","body":"no links here"}]
+            """;
+        string timelineJson =
+            "{\"data\":{\"repository\":{\"pullRequest\":{\"timelineItems\":{\"nodes\":["
+            + "{\"__typename\":\"ReviewRequestedEvent\",\"createdAt\":\"" + secondRequestedAt.ToString("yyyy-MM-ddTHH:mm:ssZ") + "\","
+            + "\"actor\":{\"login\":\"alice\"},\"requestedReviewer\":{\"__typename\":\"User\",\"login\":\"brian\"}}"
+            + "]}}}}}";
+
+        ProcessRunner gh = (fileName, arguments, _, _) =>
+        {
+            if (arguments.Contains("user"))
+            {
+                return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
+            }
+
+            if (arguments.Contains("list"))
+            {
+                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+            }
+
+            if (arguments.Contains("view"))
+            {
+                int repoIndex = arguments.ToList().IndexOf("--repo");
+                string requestRepository = repoIndex >= 0 && repoIndex + 1 < arguments.Count
+                    ? arguments[repoIndex + 1]
+                    : repository;
+                string json = $$"""
+                    {"number":9301,"title":"Add rate limiting","body":"no links here","state":"OPEN",
+                     "url":"https://github.com/{{requestRepository}}/pull/9301","baseRefName":"main"}
+                    """;
+                return Task.FromResult(new ProcessResult(0, json, string.Empty));
+            }
+
+            // graphql — the actor-provenance timeline read, a genuinely fresh request postdating
+            // the one T1 was minted from.
+            return Task.FromResult(new ProcessResult(0, timelineJson, string.Empty));
+        };
+
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            IReadOnlyList<TaskListItem> matching = await query.Query<TaskListItem>()
+                .Where(task => task.ProjectId == projectId)
+                .ToListAsync(cts.Token);
+            TaskListItem secondReview = matching.Single(task => task.Id != firstReviewTaskId);
+
+            IReadOnlyList<JasperFx.Events.IEvent> stream = await query.Events.FetchStreamAsync(secondReview.Id, token: cts.Token);
+            TaskAdded secondAdded = stream.Select(recorded => recorded.Data).OfType<TaskAdded>().Single();
+
+            secondAdded.AgentContext.Should().NotBeNull().And.Contain(
+                "This is a re-review",
+                "a genuine re-request must still be recognized as one even though the earlier task's "
+                + "AutoPrReviewAssigneeLogin was already nulled by its own mid-run recall");
+            secondAdded.AgentContext.Should().Contain(
+                DomainId.Short(firstReviewTaskId),
+                "the re-review note must reference the earlier task by id");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
 }
