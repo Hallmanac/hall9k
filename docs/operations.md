@@ -660,15 +660,16 @@ the agent headless and detached (`claude -p`, Claude Code's own completion mode)
 `SendMessage`) the moment it starts, rather than attached to the caller's own terminal, and
 returns as soon as the process is confirmed alive without waiting for it to finish.
 
-Shares `h9k task work`'s own warn-then-acknowledge shape for an unmet dependency: the platform
-names every open blocker and advises, and `--acknowledge-unmet-dependencies` is the human's
-recorded override to start anyway — recorded on the resulting claim and surfaced on `h9k task
-show` beside the blockers it overrode. The override applies only at the moment of assignment: a
-task already sitting Blocked from an ordinary `h9k task assign` still refuses `start`, flag or not
-— `h9k task work` claims a Blocked task instead, honoring an acknowledgment `start` already gave
-it if one is on record (Decisions Log #126). `start` refuses Draft (publish it first), a pr-review
-task, a reopened task's follow-up branch, and any task that already carries a live claim — there is
-no re-entry path the way `h9k task work` has one; a fresh claim is all `start` ever makes.
+Shares `h9k task work`'s own warn-then-acknowledge shape for an unmet dependency, on a Published
+task and on an already-Blocked one alike (Decisions Log #127): the platform names every open
+blocker and advises, and `--acknowledge-unmet-dependencies` is the human's recorded override to
+start anyway — recorded on the resulting claim and surfaced on `h9k task show` beside the blockers
+it overrode. Not needed twice: an acknowledgment this task already carries from an earlier claim on
+the same still-open blockers is honored without asking again, whichever of `start` or
+`h9k task work` gave it. `start` refuses Draft (publish it first), a pr-review task, a reopened
+task's follow-up branch, and any task that already carries a live claim — there is no re-entry path
+the way `h9k task work` has one; a fresh claim is all `start` ever makes, and a fresh claim on an
+already-Blocked task is exactly what its own Blocked entry is, not a re-entry.
 
 Because nothing on this node is watching a start-it-mine run the way the daemon watches its own
 dispatched runs, the row it leaves behind reads the same as an interactive claim's: an untouched
@@ -686,7 +687,8 @@ open blocker: only `h9k task assign` clears that snapshot, and claiming past a b
 (`--acknowledge-unmet-dependencies`) never does, so the task lands Blocked instead until the
 blocker actually closes out. Each command's own confirmation says which happened. The
 acknowledgment itself stays on record for whichever command reclaims the task next — `h9k task
-work` on the resulting Blocked task honors it without asking again (Decisions Log #126).
+work` or `h9k task start` on the resulting Blocked task both honor it without asking again
+(Decisions Log #127).
 
 ## The recovery levers
 

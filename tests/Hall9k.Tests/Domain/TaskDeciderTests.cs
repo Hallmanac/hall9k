@@ -553,10 +553,10 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
-    /// The one behavior <see cref="TaskDecider.ClaimInteractively"/> does not have: a Blocked
-    /// task claims here too, but only with the acknowledgment — the defensive floor beneath
-    /// h9k task start's own warn-then-ask flow, which is what actually decides whether to pass
-    /// true (task 8a56af78-h9k).
+    /// <see cref="TaskDecider.ClaimInteractively"/> shares this same Blocked-entry shape (task
+    /// 0ac72cb8-h9k): a Blocked task claims here too, but only with the acknowledgment — the
+    /// defensive floor beneath h9k task start's own warn-then-ask flow, which is what actually
+    /// decides whether to pass true (task 8a56af78-h9k).
     /// </summary>
     [Fact]
     public void ClaimDeliberately_of_a_blocked_task_without_acknowledgment_conflicts()
@@ -582,9 +582,48 @@ public sealed class TaskDeciderTests
 
         claimed.NodeId.Should().Be(Guid.Empty);
         claimed.DependencyOverrideAcknowledged.Should().BeTrue();
+        claimed.DependencyOverrideCarriedForward.Should().BeFalse("a fresh acknowledgment was given, not carried forward from an earlier claim");
 
         task.Apply(claimed);
         task.State.Should().Be(TaskState.Claimed);
+    }
+
+    /// <summary>
+    /// h9k task start shares h9k task work's own carry-forward shape (task 0ac72cb8-h9k): closing
+    /// the gap task 8a56af78-h9k deliberately left open by naming, in the caller's own advice,
+    /// h9k task work as the lever that carries an acknowledgment forward — that reasoning was about
+    /// re-entering a live claim, which this decider still never does, not about a fresh claim on an
+    /// already-Blocked task honoring a recorded acknowledgment.
+    /// </summary>
+    [Fact]
+    public void ClaimDeliberately_of_a_blocked_task_records_a_carried_forward_acknowledgment()
+    {
+        TaskAggregate task = BlockedTask();
+        Guid runId = DomainId.New();
+
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, Owner, runId, Now, dependencyOverrideAcknowledged: true, dependencyOverrideCarriedForward: true);
+
+        claimed.DependencyOverrideAcknowledged.Should().BeTrue();
+        claimed.DependencyOverrideCarriedForward.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// DependencyOverrideCarriedForward is never true without DependencyOverrideAcknowledged also
+    /// being true (TaskClaimed's own doc comment) — CarriedForward ⇒ Acknowledged is an invariant
+    /// this decider enforces, not a promise left to the caller.
+    /// </summary>
+    [Fact]
+    public void ClaimDeliberately_never_records_carried_forward_without_acknowledgment()
+    {
+        TaskAggregate task = QueuedTask();
+        Guid runId = DomainId.New();
+
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, Owner, runId, Now, dependencyOverrideAcknowledged: false, dependencyOverrideCarriedForward: true);
+
+        claimed.DependencyOverrideAcknowledged.Should().BeFalse();
+        claimed.DependencyOverrideCarriedForward.Should().BeFalse();
     }
 
     /// <summary>

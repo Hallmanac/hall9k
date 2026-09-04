@@ -736,19 +736,21 @@ public static class TaskDecider
     /// Shares <see cref="ClaimInteractively"/>'s own Blocked-entry shape: a Blocked task claims
     /// here too, but only when <paramref name="dependencyOverrideAcknowledged"/> is true — the
     /// human was warned about the open dependency edges (by the caller, which has the full
-    /// <see cref="TaskDependency"/> descriptions this decider never sees) and chose to start anyway
-    /// (the idea's own ruling: "the platform advises rather than refuses... name the tasks meant to
-    /// land first, ask if sure, and let it be the human's call"). A Blocked task with no
-    /// acknowledgment still refuses — this is the defensive floor beneath the caller's own warn-and-
-    /// ask flow, not a substitute for it, since this decider has no dependency descriptions to warn
-    /// with itself. Unlike <see cref="ClaimInteractively"/>, this method never carries an
-    /// acknowledgment forward from an earlier claim (task 8a56af78-h9k: "there is no re-entry
-    /// branch the way h9k task work has one; a fresh claim is all this command ever makes"), so
-    /// there is nothing here for a caller to carry forward from.
+    /// <see cref="TaskDependency"/> descriptions this decider never sees) and either confirmed it
+    /// themselves this time or the task already carries a covering acknowledgment from an earlier
+    /// claim (<paramref name="dependencyOverrideCarriedForward"/>;
+    /// <see cref="TaskAggregate.UnmetDependenciesAlreadyAcknowledged"/>) — task 0ac72cb8-h9k closed
+    /// the gap task 8a56af78-h9k deliberately left open ("there is no re-entry branch the way
+    /// h9k task work has one"): that reasoning is about re-entering an already-live claim, which
+    /// this method still never does, not about honoring a recorded acknowledgment on a fresh claim,
+    /// which is all a Blocked entry here ever is. A Blocked task with no acknowledgment still
+    /// refuses — this is the defensive floor beneath the caller's own warn-and-ask flow, not a
+    /// substitute for it, since this decider has no dependency descriptions to warn with itself.
     /// </para>
     /// </summary>
     public static TaskClaimed ClaimDeliberately(
-        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool dependencyOverrideAcknowledged)
+        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool dependencyOverrideAcknowledged,
+        bool dependencyOverrideCarriedForward = false)
     {
         if (task.State == TaskState.Blocked)
         {
@@ -773,7 +775,8 @@ public static class TaskDecider
         }
 
         return new TaskClaimed(
-            task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt, dependencyOverrideAcknowledged);
+            task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt, dependencyOverrideAcknowledged,
+            dependencyOverrideAcknowledged && dependencyOverrideCarriedForward);
     }
 
     /// <summary>

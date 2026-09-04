@@ -51,12 +51,12 @@ needs a human reading the Gates column's own raw numbers over time.
 ### Interactive claims
 
 `h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
-Published or Queued task themselves instead of dispatching it headless. On a Published task
-assigned to nobody, it assigns the task to the operator's own owner and claims it interactively in
-one atomic event append, so the task is never observably Queued in between and the dispatcher can
-never win the race to it. An unmet dependency — whether just discovered here on a Published task,
-or already sitting Blocked from an ordinary `h9k task assign` or a handed-back/retried claim —
-warns rather than refuses: the platform names every open blocker, and
+Published, Queued, or Blocked task themselves instead of dispatching it headless. On a Published
+task assigned to nobody, it assigns the task to the operator's own owner and claims it
+interactively in one atomic event append, so the task is never observably Queued in between and the
+dispatcher can never win the race to it. An unmet dependency — whether just discovered here on a
+Published task, or already sitting Blocked from an ordinary `h9k task assign` or a
+handed-back/retried claim — warns rather than refuses: the platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to claim it anyway. Not needed
 twice: an acknowledgment this task already carries from an earlier claim on the same still-open
 blockers is honored without asking again, and `h9k task show` names whether a claim's own
@@ -95,20 +95,18 @@ itself) accepts a start-it-mine claim on the identical terms an interactive one 
 launches the agent headless and detached (`claude -p`) under the
 `<task-shortid>-build` name rather than attached to the caller's terminal, and returns as soon as
 the process is confirmed alive. Shares `h9k task work`'s own warn-then-acknowledge shape for an
-unmet dependency on a Published task: the platform names every open blocker, and
-`--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. That
-override only applies at the moment of assignment — a task already sitting Blocked from an
-ordinary `h9k task assign` still refuses, UNLESS every one of its still-open blockers was already
-warned-and-acknowledged at an earlier deliberate claim on this same assignment cycle (the shape
-`h9k task handback --now` produces: a claim once acknowledged, handed back, and picked back up) —
-the acknowledgment carries forward rather than needing to be given again. Refused otherwise on
-Draft, a pr-review task, a reopened
-task's follow-up branch, and any task that already has a live claim; there is no re-entry path the
-way `h9k task work` has one — a fresh claim on an already-Blocked task is exactly what that
-carry-forward branch is. Giving the claim back (`handback`, `release`, `retry`, or `pr resolve`
+unmet dependency, on a Published task and on an already-Blocked one alike (a task already sitting
+Blocked from an ordinary `h9k task assign`, or from a handed-back/retried deliberate claim): the
+platform names every open blocker, and `--acknowledge-unmet-dependencies` is the human's recorded
+override to start it anyway. Not needed twice: an acknowledgment this task already carries from an
+earlier claim on the same still-open blockers is honored without asking again, whichever of
+`start` or `work` gave it. Refused otherwise on Draft, a pr-review task, a reopened task's
+follow-up branch, and any task that already has a live claim; there is no re-entry path the way
+`h9k task work` has one — a fresh claim on an already-Blocked task is exactly what the Blocked
+entry is, not a re-entry. Giving the claim back (`handback`, `release`, `retry`, or `pr resolve`
 reopening it) lands the task on Blocked rather than Queued when the acknowledged dependency is
-still open, since only `h9k task assign` clears that snapshot — and the acknowledgment itself
-stays on record for whichever command reclaims it next. See
+still open, since only `h9k task assign` clears that snapshot — and the acknowledgment itself stays
+on record for whichever command reclaims it next. See
 [PLAN.md Decisions Log #125, #127](../PLAN.md).
 
 ### The board

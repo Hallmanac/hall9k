@@ -76,35 +76,44 @@ public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClas
         Func<Task> act = () => StartAsync(store, taskId, ownerId, acknowledgeUnmetDependencies: false, cts.Token);
 
         await act.Should().ThrowAsync<DomainConflictException>()
-            .WithMessage("*is Draft*Published or Queued*")
+            .WithMessage("*is Draft*Published, Queued, or Blocked*")
             .Where(exception => exception.Message.Contains("Publish it first"));
     }
 
     /// <summary>
-    /// Unlike h9k task work, a persisted-Blocked task is still refused — the acknowledgment
-    /// override only applies at the moment of assignment (the Published entry), not to a task
-    /// that already sits Blocked from an earlier plain <c>h9k task assign</c>.
+    /// The conversion this task (0ac72cb8-h9k) makes to an already-Blocked entry: no longer a
+    /// hard refusal on Blocked alone — a <see cref="DomainBusinessRuleException"/> that names the
+    /// open blocker and points at <c>--acknowledge-unmet-dependencies</c>, the same shape the
+    /// atomic Published entry's own refusal already had, and the same conversion h9k task work
+    /// made for its own identical Blocked entry.
     /// </summary>
     [Fact]
-    public async Task A_blocked_task_is_refused_even_with_acknowledgment()
+    public async Task A_blocked_task_is_refused_and_named_the_open_dependency()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         Guid taskId = DomainId.New();
         Guid blockerId = DomainId.New();
         Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
 
         await using (IDocumentSession seed = store.LightweightSession())
         {
+            seed.Store(new ProjectDetails { Id = projectId, RepositoryPath = "/dev/null", BaseBranch = "main" });
+
+            seed.Events.StartStream<TaskAggregate>(blockerId, TaskDecider.Add(
+                blockerId, DomainId.New(), "The blocker, still open", ["it is done"], TaskType.Chore,
+                null, null, null, Now, ownerId));
+
             TaskAdded added = TaskDecider.Add(
-                taskId, DomainId.New(), "Waits on another task", ["it is done"], TaskType.Chore,
+                taskId, projectId, "Waits on another task", ["it is done"], TaskType.Chore,
                 null, null, null, Now, ownerId, blockedBy: [blockerId]);
             TaskAggregate task = new();
             task.Apply(added);
 
             TaskDependency[] blockers =
             [
-                new(blockerId, "The blocker", TaskState.Queued, IsClosedOut: false, CurrentRunState: null,
+                new(blockerId, "The blocker, still open", TaskState.Queued, IsClosedOut: false, CurrentRunState: null,
                     PullRequestUrl: null, TaskType.Chore, []),
             ];
             TaskPublished published = TaskDecider.Publish(task, new TaskDependencyGraph(blockers), Now, ownerId);
@@ -115,11 +124,144 @@ public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClas
             await seed.SaveChangesAsync(cts.Token);
         }
 
-        Func<Task> act = () => StartAsync(store, taskId, ownerId, acknowledgeUnmetDependencies: true, cts.Token);
+        Func<Task> act = () => StartAsync(store, taskId, ownerId, acknowledgeUnmetDependencies: false, cts.Token);
 
-        await act.Should().ThrowAsync<DomainConflictException>()
+        await act.Should().ThrowAsync<DomainBusinessRuleException>()
             .WithMessage("*is Blocked*")
-            .Where(exception => exception.Message.Contains("acknowledgment override only applies at the moment of assignment"));
+            .Where(exception => exception.Message.Contains("The blocker, still open")
+                && exception.Message.Contains("--acknowledge-unmet-dependencies"));
+    }
+
+    /// <summary>
+    /// The platform advises rather than refuses (the idea's own ruling, fcaded0b): with the
+    /// acknowledgment, the identical Blocked task above claims instead, the override recorded
+    /// fresh (not carried forward — there is nothing to carry from yet).
+    /// </summary>
+    [Fact]
+    public async Task A_blocked_task_with_acknowledgment_is_started_anyway()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid blockerId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+
+            seed.Events.StartStream<TaskAggregate>(blockerId, TaskDecider.Add(
+                blockerId, DomainId.New(), "The blocker, still open", ["it is done"], TaskType.Chore,
+                null, null, null, Now, ownerId));
+
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Waits on another task", ["it is done"], TaskType.Chore,
+                null, null, null, Now, ownerId, blockedBy: [blockerId]);
+            TaskAggregate task = new();
+            task.Apply(added);
+
+            TaskDependency[] blockers =
+            [
+                new(blockerId, "The blocker, still open", TaskState.Queued, IsClosedOut: false, CurrentRunState: null,
+                    PullRequestUrl: null, TaskType.Chore, []),
+            ];
+            TaskPublished published = TaskDecider.Publish(task, new TaskDependencyGraph(blockers), Now, ownerId);
+            task.Apply(published);
+            TaskAssigned assigned = TaskDecider.Assign(task, ownerId, blockers, Now, ownerId);
+
+            seed.Events.StartStream<TaskAggregate>(taskId, added, published, assigned);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StartAsync(store, taskId, ownerId, acknowledgeUnmetDependencies: true, cts.Token);
+
+        await using IQuerySession verify = store.QuerySession();
+        TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        final.State.Should().Be(TaskState.Claimed);
+        final.IsInteractiveClaim.Should().BeTrue();
+
+        IReadOnlyList<IEvent> stream = await verify.Events.FetchStreamAsync(taskId, token: cts.Token);
+        TaskClaimed claimed = Assert.IsType<TaskClaimed>(stream[^1].Data);
+        claimed.DependencyOverrideAcknowledged.Should().BeTrue();
+        claimed.DependencyOverrideCarriedForward.Should().BeFalse("this is the first acknowledgment, not a carried-forward one");
+    }
+
+    /// <summary>
+    /// The carry-forward this task adds (design ruling R7), on h9k task start's own Blocked entry
+    /// exactly as h9k task work's identical entry already gets it: once an earlier deliberate claim
+    /// already acknowledged this exact blocker and gave the claim back (h9k task handback, landing
+    /// Blocked again since the blocker is still on record unmet), a later start of the same
+    /// still-open blocker needs no flag and is recorded as relying on the earlier acknowledgment.
+    /// </summary>
+    [Fact]
+    public async Task A_blocked_task_already_acknowledged_by_a_handed_back_deliberate_claim_does_not_need_the_flag_again()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid blockerId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+
+            seed.Events.StartStream<TaskAggregate>(blockerId, TaskDecider.Add(
+                blockerId, DomainId.New(), "The blocker, still open", ["it is done"], TaskType.Chore,
+                null, null, null, Now, ownerId));
+
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Waits on another task", ["it is done"], TaskType.Chore,
+                null, null, null, Now, ownerId, blockedBy: [blockerId]);
+            TaskAggregate task = new();
+            task.Apply(added);
+
+            TaskDependency[] blockers =
+            [
+                new(blockerId, "The blocker, still open", TaskState.Queued, IsClosedOut: false, CurrentRunState: null,
+                    PullRequestUrl: null, TaskType.Chore, []),
+            ];
+            TaskPublished published = TaskDecider.Publish(task, new TaskDependencyGraph(blockers), Now, ownerId);
+            task.Apply(published);
+            TaskAssigned assigned = TaskDecider.Assign(task, ownerId, blockers, Now, ownerId);
+            task.Apply(assigned);
+            Guid firstRunId = DomainId.New();
+            TaskClaimed firstClaim = TaskDecider.ClaimDeliberately(
+                task, ownerId, firstRunId, Now, dependencyOverrideAcknowledged: true);
+            task.Apply(firstClaim);
+            TaskHandedBack handedBack = TaskDecider.HandBack(
+                task, firstRunId, "task/earlier-branch", "handing off", Now, ownerId);
+
+            seed.Events.StartStream<TaskAggregate>(taskId, added, published, assigned, firstClaim, handedBack);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        // No acknowledgeUnmetDependencies flag this time — the earlier claim's own acknowledgment
+        // is what covers the identical still-open blocker.
+        await StartAsync(store, taskId, ownerId, acknowledgeUnmetDependencies: false, cts.Token);
+
+        await using IQuerySession verify = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await verify.Events.FetchStreamAsync(taskId, token: cts.Token);
+        TaskClaimed secondClaim = Assert.IsType<TaskClaimed>(stream[^1].Data);
+        secondClaim.DependencyOverrideAcknowledged.Should().BeTrue();
+        secondClaim.DependencyOverrideCarriedForward.Should().BeTrue(
+            "this claim relied on the earlier claim's own acknowledgment rather than asking again");
     }
 
     /// <summary>
