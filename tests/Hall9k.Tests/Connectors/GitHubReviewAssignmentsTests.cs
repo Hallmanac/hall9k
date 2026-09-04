@@ -79,16 +79,19 @@ public sealed class GitHubReviewAssignmentsTests
                 "timelineItems": {
                   "nodes": [
                     {
+                      "__typename": "ReviewRequestedEvent",
                       "createdAt": "2026-09-01T10:00:00Z",
                       "actor": { "login": "ryan" },
                       "requestedReviewer": { "__typename": "User", "login": "brian" }
                     },
                     {
+                      "__typename": "ReviewRequestedEvent",
                       "createdAt": "2026-09-02T14:30:00Z",
                       "actor": { "login": "someone-else" },
                       "requestedReviewer": { "__typename": "User", "login": "not-brian" }
                     },
                     {
+                      "__typename": "ReviewRequestedEvent",
                       "createdAt": "2026-09-03T09:15:00Z",
                       "actor": { "login": "ryan" },
                       "requestedReviewer": { "__typename": "User", "login": "brian" }
@@ -108,7 +111,8 @@ public sealed class GitHubReviewAssignmentsTests
         // sits closer to some naive midpoint — only the login this call actually asked about
         // ever counts, and among those the most recent (last, since timelineItems' own `last:`
         // ordering is oldest-first) is the one returned.
-        ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(TimelineJson, "brian");
+        ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
+            TimelineJson, "brian", ReviewTimelineEventKind.Requested);
 
         actor.Login.Should().Be("ryan");
         actor.RequestedAt.Should().Be(new DateTimeOffset(2026, 9, 3, 9, 15, 0, TimeSpan.Zero));
@@ -117,7 +121,102 @@ public sealed class GitHubReviewAssignmentsTests
     [Fact]
     public void ParseMostRecentRequestActor_is_honestly_null_when_the_login_never_appears()
     {
-        ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(TimelineJson, "nobody-ever-requested");
+        ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
+            TimelineJson, "nobody-ever-requested", ReviewTimelineEventKind.Requested);
+
+        actor.Login.Should().BeNull();
+        actor.RequestedAt.Should().BeNull();
+    }
+
+    private const string RequestWithNoRemovalJson = """
+        {
+          "data": {
+            "repository": {
+              "pullRequest": {
+                "timelineItems": {
+                  "nodes": [
+                    {
+                      "__typename": "ReviewRequestedEvent",
+                      "createdAt": "2026-09-01T10:00:00Z",
+                      "actor": { "login": "alice" },
+                      "requestedReviewer": { "__typename": "User", "login": "brian" }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+        """;
+
+    /// <summary>
+    /// The misattribution the independent pre-PR review found (adversarial lens, cycle 1): asking
+    /// for the most recent event of either kind used to hand the requester's own name back as the
+    /// "recaller" whenever a pull request carried no removal event at all. Restricting the walk to
+    /// <see cref="ReviewTimelineEventKind.Removed"/> must come back honestly empty instead.
+    /// </summary>
+    [Fact]
+    public void ParseMostRecentRequestActor_never_attributes_a_request_as_its_own_recall()
+    {
+        ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
+            RequestWithNoRemovalJson, "brian", ReviewTimelineEventKind.Removed);
+
+        actor.Login.Should().BeNull("alice requested; nobody has recalled anything");
+        actor.RequestedAt.Should().BeNull();
+    }
+
+    private const string RequestThenRemovalJson = """
+        {
+          "data": {
+            "repository": {
+              "pullRequest": {
+                "timelineItems": {
+                  "nodes": [
+                    {
+                      "__typename": "ReviewRequestedEvent",
+                      "createdAt": "2026-09-01T10:00:00Z",
+                      "actor": { "login": "alice" },
+                      "requestedReviewer": { "__typename": "User", "login": "brian" }
+                    },
+                    {
+                      "__typename": "ReviewRequestRemovedEvent",
+                      "createdAt": "2026-09-02T11:00:00Z",
+                      "actor": { "login": "carol" },
+                      "requestedReviewer": { "__typename": "User", "login": "brian" }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+        """;
+
+    [Fact]
+    public void ParseMostRecentRequestActor_finds_the_removal_when_one_exists()
+    {
+        ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
+            RequestThenRemovalJson, "brian", ReviewTimelineEventKind.Removed);
+
+        actor.Login.Should().Be("carol");
+    }
+
+    [Fact]
+    public void ParseMostRecentRequestActor_asked_for_the_request_ignores_a_later_removal()
+    {
+        ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
+            RequestThenRemovalJson, "brian", ReviewTimelineEventKind.Requested);
+
+        actor.Login.Should().Be("alice");
+    }
+
+    [Fact]
+    public void ParseMostRecentRequestActor_reads_a_pull_request_GraphQL_cannot_resolve_as_unattributed()
+    {
+        const string nullPullRequestJson = """{"data":{"repository":{"pullRequest":null}}}""";
+
+        ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
+            nullPullRequestJson, "brian", ReviewTimelineEventKind.Requested);
 
         actor.Login.Should().BeNull();
         actor.RequestedAt.Should().BeNull();
