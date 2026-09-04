@@ -223,18 +223,24 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     + $"({TaskStatusComposer.State(dependency).Markup})");
             }
 
-            // Recorded on the current claim's own TaskClaimed (task 8a56af78-h9k): a human
-            // warned about the still-open blocker(s) above chose to start this task anyway with
-            // h9k task start --acknowledge-unmet-dependencies. Cleared only when the claim is
-            // given back to run again (requeue, handback, retry, …) — left set when the claim
-            // instead ends the task's story (complete, resolve, fail, abandon), so this can still
-            // read true on a Done, Failed, or Abandoned task (TaskDetails.DependencyOverrideAcknowledged's
-            // own doc comment).
+            // Recorded on the current claim's own TaskClaimed (task 8a56af78-h9k, extended by
+            // task 0ac72cb8-h9k to h9k task work's own claim too): a human warned about the
+            // still-open blocker(s) above chose to claim this task anyway, either with
+            // --acknowledge-unmet-dependencies or, per design ruling R7, relying on an
+            // acknowledgment an earlier claim on this task already recorded (DependencyOverrideCarriedForward)
+            // — the stream's own answer to "which acknowledgment did this claim rely on". Cleared
+            // only when the claim is given back to run again (requeue, handback, retry, …) — left
+            // set when the claim instead ends the task's story (complete, resolve, fail, abandon),
+            // so this can still read true on a Done, Failed, or Abandoned task
+            // (TaskDetails.DependencyOverrideAcknowledged's own doc comment).
             if (details.DependencyOverrideAcknowledged)
             {
-                AnsiConsole.MarkupLine(
-                    "  [yellow]Started deliberately despite the open blocker(s) above (h9k task start "
-                    + "--acknowledge-unmet-dependencies)[/]");
+                AnsiConsole.MarkupLine(details.DependencyOverrideCarriedForward
+                    ? "  [yellow]Claimed deliberately despite the open blocker(s) above, relying on an "
+                      + "acknowledgment an earlier claim on this task already recorded — nothing was asked "
+                      + "again[/]"
+                    : "  [yellow]Claimed deliberately despite the open blocker(s) above (h9k task work or "
+                      + "h9k task start --acknowledge-unmet-dependencies)[/]");
             }
         }
 

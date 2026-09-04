@@ -579,17 +579,23 @@ next move on, renders dim as its own level. It is there so you can consciously i
 
 ## Working a task interactively
 
-`h9k task work | register-session | verify | deliver | handback | release` (Decisions Log #103,
-#122, #124, #126)
+`h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session |
+verify | deliver | handback | release` (Decisions Log #103, #122, #124, #126, #127)
 
 An operator can work a Published or Queued task in their own terminal instead of dispatching it
 headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it
 to the operator's own owner and claims it interactively in one atomic event append, so the task is
-never observably Queued for the dispatcher to claim in between; a Published task whose dependencies
-have not all closed out is refused, naming the open blockers, the same bar dispatch itself holds an
-assignment to. `h9k task assign` and `h9k task publish --assign` are unchanged and remain the
-headless dispatch triggers. Whichever state it entered from, the claim itself is held by the human,
-not a process: there is no lease and no heartbeat reclaim, so
+never observably Queued for the dispatcher to claim in between. An unmet dependency — whether just
+discovered here on a Published task, or already sitting Blocked from an ordinary `h9k task assign`
+or a claim handed back or retried — warns rather than refuses (Decisions Log #127): the platform
+names every open blocker, and `--acknowledge-unmet-dependencies` is the human's recorded override
+to claim it anyway. Not needed twice: an acknowledgment this task already carries from an earlier
+claim on the same still-open blockers is honored without asking again, and `h9k task show` names
+whether a claim's own acknowledgment was given fresh or carried forward from an earlier one.
+`h9k task assign` and `h9k task publish --assign` are unchanged and remain the headless dispatch
+triggers — edges still gate automatic dispatch exactly as before; only this deliberate human claim
+gets the warn-and-proceed path. Whichever state it entered from, the claim itself is held by the
+human, not a process: there is no lease and no heartbeat reclaim, so
 closing the terminal is a normal way to leave, and re-running `h9k task work <id>` re-enters the
 same worktree and branch with a fresh prompt.
 
@@ -654,14 +660,15 @@ the agent headless and detached (`claude -p`, Claude Code's own completion mode)
 `SendMessage`) the moment it starts, rather than attached to the caller's own terminal, and
 returns as soon as the process is confirmed alive without waiting for it to finish.
 
-Unlike `h9k task work`, an unmet dependency does not refuse `start` outright: the platform names
-every open blocker and advises, and `--acknowledge-unmet-dependencies` is the human's recorded
-override to start anyway — recorded on the resulting claim and surfaced on `h9k task show` beside
-the blockers it overrode. The override applies only at the moment of assignment: a task already
-sitting Blocked from an ordinary `h9k task assign` still refuses `start`, flag or not. `start`
-refuses Draft (publish it first), a pr-review task, a reopened task's follow-up branch, and any
-task that already carries a live claim — there is no re-entry path the way `h9k task work` has one;
-a fresh claim is all `start` ever makes.
+Shares `h9k task work`'s own warn-then-acknowledge shape for an unmet dependency: the platform
+names every open blocker and advises, and `--acknowledge-unmet-dependencies` is the human's
+recorded override to start anyway — recorded on the resulting claim and surfaced on `h9k task
+show` beside the blockers it overrode. The override applies only at the moment of assignment: a
+task already sitting Blocked from an ordinary `h9k task assign` still refuses `start`, flag or not
+— `h9k task work` claims a Blocked task instead, honoring an acknowledgment `start` already gave
+it if one is on record (Decisions Log #126). `start` refuses Draft (publish it first), a pr-review
+task, a reopened task's follow-up branch, and any task that already carries a live claim — there is
+no re-entry path the way `h9k task work` has one; a fresh claim is all `start` ever makes.
 
 Because nothing on this node is watching a start-it-mine run the way the daemon watches its own
 dispatched runs, the row it leaves behind reads the same as an interactive claim's: an untouched
@@ -677,7 +684,9 @@ Giving the claim back — `handback`, `release`, `retry`, or `pr resolve` reopen
 land the task on Queued when the dependency snapshot the override acknowledged still names an
 open blocker: only `h9k task assign` clears that snapshot, and claiming past a blocker
 (`--acknowledge-unmet-dependencies`) never does, so the task lands Blocked instead until the
-blocker actually closes out. Each command's own confirmation says which happened.
+blocker actually closes out. Each command's own confirmation says which happened. The
+acknowledgment itself stays on record for whichever command reclaims the task next — `h9k task
+work` on the resulting Blocked task honors it without asking again (Decisions Log #126).
 
 ## The recovery levers
 

@@ -682,9 +682,13 @@ public static class CliCommandTree
                     + "this assigns it to your own owner and claims it interactively in one atomic event append, "
                     + "the same collapsing h9k task publish --assign already does for publish and assign: the "
                     + "task is never observably Queued in between, so the dispatcher (woken within moments by "
-                    + "the doorbell a plain h9k task assign would send) can never win the race to it. Refused, "
-                    + "naming the open blockers, when the task's dependencies have not all closed out — the "
-                    + "same bar dispatch itself holds an assignment to. On an already-Queued task assigned to "
+                    + "the doorbell a plain h9k task assign would send) can never win the race to it. An unmet "
+                    + "dependency — whether just discovered here or already sitting Blocked from an earlier "
+                    + "h9k task assign or a handed-back/retried claim — warns rather than refuses: the platform "
+                    + "names every open blocker, and --acknowledge-unmet-dependencies is your recorded override "
+                    + "to claim it anyway. Not needed twice: an acknowledgment this task already carries from an "
+                    + "earlier claim on the same still-open blockers is honored without asking again. On an "
+                    + "already-Queued task assigned to "
                     + "you, this claims it exactly as before: cuts the same branch and worktree headless "
                     + "dispatch would, assembles the prompt through the identical code path (its working rules "
                     + "swapped for an attached operator). By default it then prints the worktree path, the "
@@ -706,7 +710,8 @@ public static class CliCommandTree
                     + "Re-entry is refused when the claim's session was recorded on another machine this one "
                     + "cannot check — --force attests you confirmed by hand that it has exited.")
                 .WithExample("task", "work", "28b19893")
-                .WithExample("task", "work", "28b19893", "--direct-launch");
+                .WithExample("task", "work", "28b19893", "--direct-launch")
+                .WithExample("task", "work", "28b19893", "--acknowledge-unmet-dependencies");
             task.AddCommand<TaskRegisterSessionCommand>("register-session")
                 .WithDescription(
                     "The self-registration observation gate a starting prompt (h9k task work's default, "
@@ -727,11 +732,13 @@ public static class CliCommandTree
                     + "dispatcher's own ceiling and ordering to reach it (a deliberate human kick-off). On a "
                     + "Published task assigned to nobody, this assigns it to your own owner and claims it in "
                     + "one atomic event append, the same collapsing h9k task work's own Published entry already "
-                    + "uses. Unlike h9k task work, an unmet dependency does not refuse outright: the platform "
-                    + "names every open blocker and advises, and --acknowledge-unmet-dependencies is your "
-                    + "recorded override to start it anyway. Refused on Draft (publish it first), an "
-                    + "already-Blocked task, a task that already has a live claim, and every terminal state — "
-                    + "there is nothing there to start. Ceiling-exempt on the same reasoning h9k task work's own "
+                    + "uses, including h9k task work's own warn-then-acknowledge shape for an unmet dependency: "
+                    + "the platform names every open blocker and advises, and --acknowledge-unmet-dependencies is "
+                    + "your recorded override to start it anyway. Refused on Draft (publish it first), an "
+                    + "already-Blocked task (h9k task work claims one of those instead — this command only ever "
+                    + "makes a fresh claim, with no re-entry branch), a task that already has a live claim, and "
+                    + "every terminal state — there is nothing there to start. Ceiling-exempt on the same "
+                    + "reasoning h9k task work's own "
                     + "claim already is (Decisions Log #103): a deliberate human act is outside the automation's "
                     + "budget. The session launches headless and detached under the <task-shortid>-build name — "
                     + "reachable on the session mesh (claude agents --json, ListAgents/SendMessage) — and this "

@@ -134,32 +134,35 @@ guard working as intended, not a bug to route around. On a project tracked under
 
 ### Working a task interactively
 
-`h9k task work | register-session | verify | deliver | handback | release`
+`h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver | handback | release`
 
-An operator can work a Published or Queued task in their own terminal instead of dispatching it
-headless. On a Published task assigned to nobody, `work` assigns it to the operator's own owner
-and claims it interactively in one atomic event append: the task is never observably Queued in
-between, so the dispatcher can never win the race to it; a Published task whose dependencies have
-not all closed out is refused, naming the open blockers. `h9k task assign` and
-`h9k task publish --assign` are unchanged and remain the headless dispatch triggers. Either way,
-`work` cuts the same branch and worktree headless dispatch would, assembles the prompt
-through the same code path (its working rules swapped for an attached operator) — and by default
-prints the worktree, the branch, and that prompt for the operator to paste into a Claude Code
-session started anywhere, rather than launching one itself. The pasted session's first act is
-`register-session`, which records its own process identity (from `CLAUDE_PID`) against the claim;
-`--direct-launch` keeps the old behavior (a regular interactive Claude Code session `work` launches
-and waits on itself) for one release, and re-running `work` under it resumes the most recently
-recorded session's own conversation (falling back to a fresh session, announced, only when the
-recorded one cannot be resumed). The claim is held by the human, not a process either way, so
-closing the terminal is a normal way to leave and re-running `work` re-enters the same worktree —
-by default with a fresh prompt. From there, `verify` runs the project's gates on demand, `deliver`
-pushes the branch and hands the claim into the standard delivery pipeline, `handback` releases the
-claim to a headless agent partway through (resuming the branch), and `release` gives an untouched
-claim back to the queue. `handback`'s pickup speed is a three-way choice (Decisions Log #127): no
-flag is the normal rotation, unchanged; `--first` records the queue-first marker so the next free
-dispatch slot takes the task regardless of assignment age; `--now` dispatches it immediately
-instead, ceiling-exempt, through the same mechanism `h9k task start` uses — refused together with
-`--first`.
+between, so the dispatcher can never win the race to it. An unmet dependency — whether just
+discovered here or already sitting Blocked from an ordinary `h9k task assign` or a handed-back or
+retried claim — warns rather than refuses outright: the platform names every open blocker, and
+`--acknowledge-unmet-dependencies` is the human's recorded override to claim it anyway. Not needed
+twice: an acknowledgment this task already carries from an earlier claim on the same still-open
+blockers is honored without asking again, and `h9k task show` names whether a claim's own
+acknowledgment was given fresh or carried forward from an earlier one (design ruling R7). `h9k task
+assign` and `h9k task publish --assign` are unchanged and remain the headless dispatch triggers —
+edges still gate automatic dispatch exactly as before; only this deliberate human claim gets the
+warn-and-proceed path. Either way, `work` cuts the same branch and worktree headless dispatch
+would, assembles the prompt through the same code path (its working rules swapped for an attached
+operator) — and by default prints the worktree, the branch, and that prompt for the operator to
+paste into a Claude Code session started anywhere, rather than launching one itself. The pasted
+session's first act is `register-session`, which records its own process identity (from
+`CLAUDE_PID`) against the claim; `--direct-launch` keeps the old behavior (a regular interactive
+Claude Code session `work` launches and waits on itself) for one release, and re-running `work`
+under it resumes the most recently recorded session's own conversation (falling back to a fresh
+session, announced, only when the recorded one cannot be resumed). The claim is held by the human,
+not a process either way, so closing the terminal is a normal way to leave and re-running `work`
+re-enters the same worktree — by default with a fresh prompt. From there, `verify` runs the
+project's gates on demand, `deliver` pushes the branch and hands the claim into the standard
+delivery pipeline, `handback` releases the claim to a headless agent partway through (resuming the
+branch), and `release` gives an untouched claim back to the queue. `handback`'s pickup speed is a
+three-way choice (Decisions Log #127): no flag is the normal rotation, unchanged; `--first` records
+the queue-first marker so the next free dispatch slot takes the task regardless of assignment age;
+`--now` dispatches it immediately instead, ceiling-exempt, through the same mechanism
+`h9k task start` uses — refused together with `--first`.
 
 ### A deliberate human kick-off
 
@@ -172,8 +175,8 @@ the stale-claim nudge, and re-entering with `work` itself) accepts a start-it-mi
 identical terms an interactive one already gets — but launches the
 agent headless and detached (`claude -p`) under the `<task-shortid>-build` name, addressable on the
 session mesh, rather than attached to the caller's terminal, and returns as soon as the process is
-confirmed alive rather than waiting for it to finish. Unlike `work`, an unmet dependency on a
-Published task does not refuse outright: the platform names every open blocker, and
+confirmed alive rather than waiting for it to finish. Shares `work`'s own warn-then-acknowledge
+shape for an unmet dependency on a Published task: the platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to start it anyway. That
 override applies only at the moment of assignment — a task already sitting Blocked from an
 ordinary `h9k task assign` still refuses `start`, UNLESS every one of its still-open blockers was
@@ -183,10 +186,12 @@ back up) — the acknowledgment carries forward rather than needing to be given 
 invented fresh against a task that has simply been sitting Blocked since an ordinary
 `h9k task assign`. Refused otherwise on Draft, a pr-review task, a
 reopened task's follow-up branch, and any task that already carries a live claim; there is no
-re-entry path the way `work` has one — a fresh claim is all `start` ever makes. Giving the claim
+re-entry path the way `work` has one — a fresh claim on an already-Blocked task is exactly what
+that carry-forward branch is. Giving the claim
 back (`handback`, `release`, `retry`, or `pr resolve` reopening it) lands the task on Blocked
 rather than Queued when the acknowledged dependency is still open, since only `h9k task assign`
-clears that snapshot. See [PLAN.md Decisions Log #125](../PLAN.md).
+clears that snapshot — and the acknowledgment itself stays on record for whichever command
+reclaims it next. See [PLAN.md Decisions Log #125](../PLAN.md).
 
 ### Logging an outside interaction
 

@@ -672,17 +672,40 @@ public static class TaskDecider
     }
 
     /// <summary>
-    /// h9k task work's claim: the operator's mirror of <see cref="Claim"/>, same guard (Queued,
-    /// and this owner's own work), same <see cref="TaskClaimed"/> event and lease-generation
-    /// fencing — but NodeId is the sentinel <see cref="Guid.Empty"/> rather than a real node's
-    /// id, which is what <see cref="TaskAggregate.IsInteractiveClaim"/> reads back. No
-    /// <c>TaskLease</c> document is written for this claim (the CLI caller's job, not this
-    /// decider's): an interactive claim is held by the human, not a process, so there is
-    /// nothing here for a heartbeat to renew or an expiry sweep to reclaim.
+    /// h9k task work's claim: the operator's mirror of <see cref="Claim"/>, same
+    /// <see cref="TaskClaimed"/> event and lease-generation fencing — but NodeId is the sentinel
+    /// <see cref="Guid.Empty"/> rather than a real node's id, which is what
+    /// <see cref="TaskAggregate.IsInteractiveClaim"/> reads back. No <c>TaskLease</c> document is
+    /// written for this claim (the CLI caller's job, not this decider's): an interactive claim is
+    /// held by the human, not a process, so there is nothing here for a heartbeat to renew or an
+    /// expiry sweep to reclaim.
+    /// <para>
+    /// A Blocked task claims here too (task 0ac72cb8-h9k, "claiming or starting a task
+    /// interactively across dependency edges warns and asks instead of refuses"), the same
+    /// warn-then-override shape <see cref="ClaimDeliberately"/> already has, and only when
+    /// <paramref name="dependencyOverrideAcknowledged"/> is true — the human was warned about the
+    /// open dependency edges (by the caller, which has the full <see cref="TaskDependency"/>
+    /// descriptions this decider never sees) and either confirmed it themselves this time or the
+    /// task already carries a covering acknowledgment from an earlier claim
+    /// (<paramref name="dependencyOverrideCarriedForward"/>; <see cref="TaskAggregate.UnmetDependenciesAlreadyAcknowledged"/>).
+    /// A Blocked task with no acknowledgment still refuses — this is the defensive floor beneath
+    /// the caller's own warn-and-ask flow, not a substitute for it.
+    /// </para>
     /// </summary>
-    public static TaskClaimed ClaimInteractively(TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt)
+    public static TaskClaimed ClaimInteractively(
+        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt,
+        bool dependencyOverrideAcknowledged = false, bool dependencyOverrideCarriedForward = false)
     {
-        if (task.State != TaskState.Queued)
+        if (task.State == TaskState.Blocked)
+        {
+            if (!dependencyOverrideAcknowledged)
+            {
+                throw new DomainConflictException(
+                    $"Task {task.Id} is Blocked on unmet dependencies — h9k task work {task.Id} " +
+                    "--acknowledge-unmet-dependencies to claim it anyway, once you have confirmed that is what you want.");
+            }
+        }
+        else if (task.State != TaskState.Queued)
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value}, not Queued — it cannot be claimed.");
@@ -695,7 +718,9 @@ public static class TaskDecider
                 $"not to this owner ({ownerId}) — an operator claims only their own owner's work.");
         }
 
-        return new TaskClaimed(task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt);
+        return new TaskClaimed(
+            task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
+            dependencyOverrideAcknowledged, dependencyOverrideAcknowledged && dependencyOverrideCarriedForward);
     }
 
     /// <summary>
@@ -708,15 +733,18 @@ public static class TaskDecider
     /// <see cref="ClaimInteractively"/>'s name, which specifically means "the operator's own
     /// attached session."
     /// <para>
-    /// The one behavior <see cref="ClaimInteractively"/> does not have: a Blocked task claims here
-    /// too, but only when <paramref name="dependencyOverrideAcknowledged"/> is true — the human was
-    /// warned about the open dependency edges (by the caller, which has the full
+    /// Shares <see cref="ClaimInteractively"/>'s own Blocked-entry shape: a Blocked task claims
+    /// here too, but only when <paramref name="dependencyOverrideAcknowledged"/> is true — the
+    /// human was warned about the open dependency edges (by the caller, which has the full
     /// <see cref="TaskDependency"/> descriptions this decider never sees) and chose to start anyway
     /// (the idea's own ruling: "the platform advises rather than refuses... name the tasks meant to
     /// land first, ask if sure, and let it be the human's call"). A Blocked task with no
     /// acknowledgment still refuses — this is the defensive floor beneath the caller's own warn-and-
     /// ask flow, not a substitute for it, since this decider has no dependency descriptions to warn
-    /// with itself.
+    /// with itself. Unlike <see cref="ClaimInteractively"/>, this method never carries an
+    /// acknowledgment forward from an earlier claim (task 8a56af78-h9k: "there is no re-entry
+    /// branch the way h9k task work has one; a fresh claim is all this command ever makes"), so
+    /// there is nothing here for a caller to carry forward from.
     /// </para>
     /// </summary>
     public static TaskClaimed ClaimDeliberately(
