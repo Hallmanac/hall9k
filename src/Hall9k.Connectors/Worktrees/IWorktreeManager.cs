@@ -124,4 +124,14 @@ public interface IWorktreeManager
     /// </summary>
     Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
         string checkoutPath, string branch, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The same in-process-and-cross-process repository lock every method above already takes
+    /// before touching a repository (Decisions Log #4, adversarial review cycle 4), exposed for a
+    /// caller that runs git directly against the repository rather than through one of the
+    /// operations above — closeout's mechanical rebase fast path, which fetches and rebases in a
+    /// retained worktree with no worktree add/remove of its own to route through them. Dispose the
+    /// result to release it.
+    /// </summary>
+    Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken);
 }

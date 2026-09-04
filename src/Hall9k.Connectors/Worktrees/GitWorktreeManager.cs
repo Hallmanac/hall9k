@@ -19,7 +19,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     public async Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken)
     {
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
-        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
@@ -68,7 +68,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     public async Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken)
     {
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
-        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
@@ -137,7 +137,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         PrReviewWorktreeRequest request, CancellationToken cancellationToken)
     {
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
-        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             // A plain `git fetch origin <refspec>` on the command line replaces the
             // configured `+refs/heads/*:refs/remotes/origin/*` for that invocation, so the
@@ -165,7 +165,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     public async Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             await RunGitAsync(repositoryPath, $"worktree remove --force \"{worktreePath}\"", cancellationToken);
             logger.LogInformation("Worktree {Path} removed", worktreePath);
@@ -176,7 +176,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             // update-ref -d, not fetch --prune: nothing on origin ever named this ref (it
             // was fetched from refs/pull/<n>/head, a synthetic ref GitHub serves, into a
@@ -194,7 +194,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     public async Task PruneAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             await RunGitAsync(repositoryPath, "worktree prune", cancellationToken);
         }
@@ -217,7 +217,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 "is not a git checkout this node can read, so whether it holds current code is unobserved");
         }
 
-        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
@@ -255,7 +255,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     public async Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
-        await using RepositoryLock repositoryLock = await AcquireRepositoryLockAsync(repositoryPath, cancellationToken);
+        await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
             // -D, not -d: PRs land via rebase merge, so the branch tip is never an ancestor
             // of the base branch. The caller's merged-PR observation is the justification.
@@ -461,7 +461,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// repository the daemon's own DI singleton touches, so the in-process semaphore alone no
     /// longer covers every writer (adversarial review, cycle 4).
     /// </summary>
-    private async Task<RepositoryLock> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken)
+    private async Task<RepositoryLock> AcquireRepositoryLockCoreAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         SemaphoreSlim mutex = LockFor(repositoryPath);
         await mutex.WaitAsync(cancellationToken);
@@ -476,6 +476,15 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             throw;
         }
     }
+
+    /// <inheritdoc/>
+    public async Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+        // Normalized exactly like every method above, so a caller's relative or differently
+        // formatted path still keys the same in-process semaphore (_repositoryLocks) as the
+        // fully-qualified path CreateAsync/CheckoutExistingAsync/etc. already normalize to —
+        // otherwise two equivalent paths would take two different in-process locks and this
+        // method would fail to serialize against them at all.
+        await AcquireRepositoryLockCoreAsync(Path.GetFullPath(repositoryPath), cancellationToken);
 
     /// <summary>
     /// FileShare.None maps to an exclusive advisory lock on Unix (the same mechanism

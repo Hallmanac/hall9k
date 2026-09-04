@@ -72,6 +72,16 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
         public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
             string checkoutPath, string branch, CancellationToken cancellationToken) =>
             Task.FromResult(new CheckoutRefresh(UpToDate: true, "not a real repository"));
+
+        public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+    }
+
+    private sealed class NoOpLock : IAsyncDisposable
+    {
+        public static readonly NoOpLock Instance = new();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class RefusingExecutor : IExecutor
