@@ -398,7 +398,13 @@ typing the command. The three non-off speeds are the general dispatch levers, no
 code: `normal` joins the ordinary queue, `first` also sets the queue-first marker (#127), and `now`
 claims it immediately, ceiling-exempt, through the same sentinel-node-id mechanism `h9k task start`
 uses (#103, #125) — so a human re-speeds any auto-created task afterward with the identical general
-levers. One live task per pull request, the same one-item-one-live-task rule adoption already
+levers. `now` is capped at one immediate, ceiling-exempt launch per sweep across every opted-in
+project: the consent a human gives at `--auto-pr-review now` promises one extra concurrent agent
+session, not an unbounded burst of them if several pull requests are newly assigned in the same
+poll interval, so a candidate beyond that one launch is not dropped — it is minted, published and
+assigned exactly as a `first`-speed task is, so it still takes the next free ordinary dispatch slot
+rather than waiting a full poll interval for nothing to happen. One live task per pull request, the
+same one-item-one-live-task rule adoption already
 enforces (PLAN.md §3.1a): a re-request after an earlier auto-created review closed Done mints a
 fresh task, noted as a re-review. An assignment withdrawn before the run dispatches concludes the
 task honestly (abandoned, the go signal recalled by the same authority that gave it); withdrawn
