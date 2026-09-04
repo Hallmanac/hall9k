@@ -319,7 +319,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             WriteUnfixedFindings(newestRun);
             WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
-            WriteMechanicalRebaseOutcome(newestRun);
+
+            // Not necessarily newestRun: a fallback supersedes the run it recorded the outcome
+            // on within the same sweep that dispatches the follow-up, so the newest run by
+            // dispatch order is routinely a different one that never carries this field at all
+            // (independent pre-PR review, cycle 1, adversarial lens).
+            RunDetails? mechanicalRebaseRun = runDetailsById.Values
+                .Where(r => r.LastMechanicalRebaseAt is not null)
+                .OrderByDescending(r => r.LastMechanicalRebaseAt)
+                .FirstOrDefault();
+            WriteMechanicalRebaseOutcome(mechanicalRebaseRun);
             await WriteSessionsAsync(session, runs, runDetailsById, cancellationToken);
             await WriteGateDurationAnomaliesAsync(session, details.ProjectId, runs[^1], cancellationToken);
         }
@@ -479,9 +488,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return;
         }
 
+        string detail = ExternalText.OneLineMarkup(run.LastMechanicalRebaseDetail ?? string.Empty);
         string outcome = run.LastMechanicalRebaseSucceeded == true
-            ? $"[green]clean-pushed[/] [dim]— {run.LastMechanicalRebaseDetail?.EscapeMarkup()}[/]"
-            : $"[yellow]fell back to the full review lap[/] [dim]— {run.LastMechanicalRebaseDetail?.EscapeMarkup()}[/]";
+            ? $"[green]clean-pushed[/] [dim]— {detail}[/]"
+            : $"[yellow]fell back to the full review lap[/] [dim]— {detail}[/]";
 
         AnsiConsole.MarkupLine(
             $"\n[bold]Mechanical rebase[/]  {outcome} "
