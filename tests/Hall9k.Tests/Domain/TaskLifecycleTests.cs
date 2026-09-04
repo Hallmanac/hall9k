@@ -447,6 +447,80 @@ public sealed class TaskLifecycleTests
             .WithMessage("*always a pr-review task*", "the task still carries the foreign pull request's reference");
     }
 
+    /// <summary>
+    /// A pr-review task's own pipeline is architecturally fixed — its primary session already is
+    /// the adversarial lens, and PrReviewEngine dispatches the conformance lens second,
+    /// unconditionally — so there is no point left where a review-stage-composition override could
+    /// actually take effect. Recording one anyway used to let h9k task show's Stages column state a
+    /// pipeline shape the run never honored (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void Add_refuses_a_review_stage_composition_override_on_a_pr_review_task()
+    {
+        Action act = () => TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Review the widgets PR", acceptanceCriteria: [], TaskType.PrReview,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/widgets#7"),
+            addedAt: Now, addedByOwnerId: Owner,
+            reviewStageComposition: "none", reviewStageCompositionAcknowledged: true);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*pr-review task*")
+            .WithMessage("*pipeline is fixed*");
+    }
+
+    [Fact]
+    public void Revising_a_pr_review_tasks_review_stage_composition_is_refused()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Review the widgets PR", acceptanceCriteria: [], TaskType.PrReview,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/widgets#7"),
+            addedAt: Now, addedByOwnerId: Owner));
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None,
+            Now, Owner, reviewStageComposition: Optional<string?>.Of("adversarial-only"),
+            reviewStageCompositionAcknowledged: true);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*pr-review task*")
+            .WithMessage("*pipeline is fixed*");
+    }
+
+    /// <summary>
+    /// The same refusal on the other door onto a task's type: revising an ordinary task to
+    /// pr-review and setting a composition override in the same call must be caught too, not only
+    /// a task that was already pr-review before the revise.
+    /// </summary>
+    [Fact]
+    public void Revising_a_task_to_pr_review_while_also_setting_a_composition_is_refused()
+    {
+        // Added directly through the decider with a mismatched type/reference (the CLI's own
+        // --from-pr guard would refuse this combination at creation) to reach the one precondition
+        // Revise's own pr-review guard needs — a pull-request ExternalReference already on the
+        // task — while still starting from an ordinary type, so this exercises the branch where
+        // the effective type only becomes PrReview because of this very revise call.
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Review the widgets PR", acceptanceCriteria: [], TaskType.Feature,
+            agentContext: null, constraints: null,
+            externalReference: new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/widgets#7"),
+            addedAt: Now, addedByOwnerId: Owner));
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.Of(TaskType.PrReview), Optional<AgentModel>.None,
+            Now, Owner, reviewStageComposition: Optional<string?>.Of("none"),
+            reviewStageCompositionAcknowledged: true);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*pr-review task*")
+            .WithMessage("*pipeline is fixed*");
+    }
+
     [Fact]
     public void The_edit_after_the_fact_path_is_unassign_then_draft_then_revise_then_publish_then_assign()
     {
