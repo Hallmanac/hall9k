@@ -80,6 +80,18 @@ public sealed class RunAggregate
     /// </summary>
     public bool ExternalReviewChecksPending { get; private set; }
 
+    /// <summary>Whether closeout's mechanical rebase-before-reopen fast path last applied cleanly and pushed; null until one is attempted.</summary>
+    public bool? LastMechanicalRebaseSucceeded { get; private set; }
+
+    /// <summary>What the last mechanical rebase attempt actually did or why it fell back — see <see cref="Events.PullRequestMechanicalRebaseAttempted"/>.</summary>
+    public string? LastMechanicalRebaseDetail { get; private set; }
+
+    /// <summary>The branch's new head after the last mechanical rebase's clean push; null on a fallback.</summary>
+    public string? LastMechanicalRebasePushedCommit { get; private set; }
+
+    /// <summary>When the last mechanical rebase attempt was made; null until one is.</summary>
+    public DateTimeOffset? LastMechanicalRebaseAt { get; private set; }
+
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; private set; }
 
@@ -1201,6 +1213,18 @@ public sealed class RunAggregate
     public void Apply(PullRequestConflictObserved @event)
     {
         State = RunState.Conflicting;
+    }
+
+    // Informational only, exactly like Apply(ExternalReviewObserved) above: a clean success
+    // leaves State untouched (still AwaitingReview) so the very next sweep re-inspects the pushed
+    // head, and a fallback is followed in the same transaction by PullRequestConflictObserved,
+    // which is what actually moves State to Conflicting.
+    public void Apply(PullRequestMechanicalRebaseAttempted @event)
+    {
+        LastMechanicalRebaseSucceeded = @event.Succeeded;
+        LastMechanicalRebaseDetail = @event.Detail;
+        LastMechanicalRebasePushedCommit = @event.PushedCommit;
+        LastMechanicalRebaseAt = @event.AttemptedAt;
     }
 
     public void Apply(ReviewRerequested @event)

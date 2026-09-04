@@ -106,6 +106,14 @@ public sealed class RunDetails
     /// records this and returns before ever reaching those reads.
     /// </summary>
     public bool ExternalReviewChecksPending { get; set; }
+    /// <summary>Whether closeout's mechanical rebase-before-reopen fast path last applied cleanly and pushed; null until one is attempted.</summary>
+    public bool? LastMechanicalRebaseSucceeded { get; set; }
+    /// <summary>What the last mechanical rebase attempt actually did or why it fell back — see <see cref="Events.PullRequestMechanicalRebaseAttempted"/>.</summary>
+    public string? LastMechanicalRebaseDetail { get; set; }
+    /// <summary>The branch's new head after the last mechanical rebase's clean push; null on a fallback.</summary>
+    public string? LastMechanicalRebasePushedCommit { get; set; }
+    /// <summary>When the last mechanical rebase attempt was made; null until one is.</summary>
+    public DateTimeOffset? LastMechanicalRebaseAt { get; set; }
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; set; }
     /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
@@ -633,6 +641,15 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<PullRequestConflictObserved> @event, RunDetails view)
     {
         view.State = RunState.Conflicting;
+    }
+
+    // Informational only — see RunAggregate.Apply(PullRequestMechanicalRebaseAttempted).
+    public void Apply(IEvent<PullRequestMechanicalRebaseAttempted> @event, RunDetails view)
+    {
+        view.LastMechanicalRebaseSucceeded = @event.Data.Succeeded;
+        view.LastMechanicalRebaseDetail = @event.Data.Detail;
+        view.LastMechanicalRebasePushedCommit = @event.Data.PushedCommit;
+        view.LastMechanicalRebaseAt = @event.Data.AttemptedAt;
     }
 
     public void Apply(IEvent<ReviewRerequested> @event, RunDetails view)
