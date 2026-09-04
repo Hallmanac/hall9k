@@ -51,7 +51,13 @@ internal sealed record TaskStatusRow(
     /// queues on (Decisions Log #64), carried here so a pane listing a deferred queue can list
     /// it in the order it will actually be served.
     /// </summary>
-    DateTimeOffset? AssignedAt = null)
+    DateTimeOffset? AssignedAt = null,
+    /// <summary>
+    /// Whether a human marked this task to take the next free dispatch slot regardless of
+    /// assignment age (task 45136b29, idea fcaded0b's R7 ruling) — what the queued section
+    /// orders on ahead of <see cref="AssignedAt"/>, mirroring the dispatcher's own claim query.
+    /// </summary>
+    bool QueuePriorityMarked = false)
 {
     /// <summary>
     /// A truncated objective still has to say something; below this the column is noise. A

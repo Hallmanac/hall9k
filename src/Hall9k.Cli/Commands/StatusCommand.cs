@@ -175,9 +175,10 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// dispatcher will actually serve them in.
     /// </summary>
     /// <param name="inServiceOrder">
-    /// Oldest assignment first, ties broken by when the task was added, which is exactly the
-    /// claim query's ordering (Decisions Log #64). The queue section tells a human that each of
-    /// its rows starts as a run finishes, so its top row has to be the one that starts next;
+    /// Marker first, then oldest assignment, ties broken by when the task was added — exactly
+    /// the claim query's own ordering (Decisions Log #64, and the queue-first marker, task
+    /// 45136b29, idea fcaded0b's R7 ruling). The queue section tells a human that each of its
+    /// rows starts as a run finishes, so its top row has to be the one that starts next;
     /// listed newest-first, the pane's default everywhere else, it showed the eight tasks that
     /// run last and collapsed the imminent ones into "… and N more" (pre-PR review, 2026-08-22).
     /// A row with nothing assigned cannot be in that section — the dispatcher cannot see an
@@ -189,7 +190,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         IEnumerable<TaskStatusRow> inGroup = rows.Where(row => row.Group == bucket);
         return [.. inServiceOrder
             ? inGroup
-                .OrderBy(row => row.AssignedAt ?? DateTimeOffset.MaxValue)
+                .OrderByDescending(row => row.QueuePriorityMarked)
+                .ThenBy(row => row.AssignedAt ?? DateTimeOffset.MaxValue)
                 .ThenBy(row => row.AddedAt)
             : inGroup
                 .OrderBy(row => row.Priority)

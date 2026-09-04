@@ -228,7 +228,8 @@ internal static class TaskStatusComposer
             task.UnmetDependencies,
             task.DependencyFailureReason,
             heldByCeiling is not null,
-            task.AssignedAt);
+            task.AssignedAt,
+            task.QueuePriorityMarked);
     }
 
     /// <summary>
