@@ -175,8 +175,22 @@ public sealed class RunLauncher(
             // cycle, a composition change is structural (which tracks exist, whether the
             // mandatory final pass runs) and must not reshape a run already in flight; see
             // ReviewStageComposition's own doc for why.
-            ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
-                task.ReviewStageComposition, project.ReviewStageComposition, options.Value.ReviewStageComposition);
+            //
+            // A pr-review task never reads this chain (class sweep on independent pre-PR review,
+            // cycle 1, adversarial lens's PrReviewEngine finding): TaskDecider.Add/Revise already
+            // refuse a task-level override for this type, but a project- or node-level one is not
+            // task-type-aware and would otherwise still flow through here and land on
+            // RunDispatched — the same misrepresentation the refusal exists to prevent, just
+            // reached through a level that refusal cannot reach. PrReviewEngine's own primary
+            // session is always the adversarial lens and its DispatchConformanceAsync always
+            // dispatches the conformance lens second, unconditionally, so FullPipeline (both
+            // lenses) is the only value that is ever actually true of a pr-review run — recording
+            // anything else would repeat the exact "h9k task show states a pipeline shape the run
+            // never honors" defect for a project- or node-wide override instead of a task one.
+            ReviewStageComposition reviewStageComposition = isPrReview
+                ? ReviewStageComposition.FullPipeline
+                : ReviewStageCompositionResolver.Resolve(
+                    task.ReviewStageComposition, project.ReviewStageComposition, options.Value.ReviewStageComposition);
 
             // Resolved once, here, exactly like the worktree above: this run's directory is
             // under the task's own directory when the project has a home (backlog 49), and

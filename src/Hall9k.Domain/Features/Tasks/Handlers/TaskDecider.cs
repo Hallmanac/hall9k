@@ -53,6 +53,7 @@ public static class TaskDecider
         Guid[] dependencies = Dependencies(id, blockedBy);
         string? normalizedComposition = VetReviewStageComposition(
             reviewStageComposition, reviewStageCompositionAcknowledged, "--review-stage-composition");
+        RefuseCompositionOnPrReview(id, type, normalizedComposition);
 
         return new TaskAdded(
             id, projectId, objective, criteria, type, agentContext, constraints,
@@ -74,6 +75,34 @@ public static class TaskDecider
     /// </summary>
     public static string? VetReviewStageComposition(string? input, bool acknowledged, string optionName) =>
         ReviewStageCompositionValidation.VetInput(input, acknowledged, optionName);
+
+    /// <summary>
+    /// A pr-review task's own pipeline is architecturally fixed, not merely defaulted
+    /// (<c>Hall9k.Daemon.Review.PrReviewEngine</c>'s own class doc): its primary session already IS
+    /// the adversarial lens, dispatched unconditionally by <c>RunLauncher</c> before
+    /// <c>PrReviewEngine.ReviewAsync</c> is ever entered, and that engine's own
+    /// <c>DispatchConformanceAsync</c> dispatches the conformance lens second, also
+    /// unconditionally. There is no point left in that pipeline where an
+    /// <see cref="Run.ReviewStageComposition.OpeningLenses"/>-driven choice could actually take
+    /// effect — recording one anyway would let <c>h9k task show</c>'s Stages column state a
+    /// pipeline shape the run never honors (independent pre-PR review, cycle 1, adversarial lens:
+    /// <c>none --accept-reduced-review</c> recorded and attested on a pr-review task while both
+    /// lenses still dispatched). Refused here, in the one decider both <see cref="Add"/> and
+    /// <see cref="Revise"/> reach, rather than threading composition awareness into
+    /// <c>PrReviewEngine</c> itself.
+    /// </summary>
+    private static void RefuseCompositionOnPrReview(Guid taskId, TaskType type, string? normalizedComposition)
+    {
+        if (normalizedComposition is null || type != TaskType.PrReview)
+        {
+            return;
+        }
+
+        throw new DomainValidationException(
+            $"Task {taskId} is a pr-review task — its pipeline is fixed (the primary session already is the "
+            + "adversarial lens, and the conformance lens always dispatches after it), so "
+            + "--review-stage-composition has no pipeline shape left here to change. Leave it unset.");
+    }
 
     /// <summary>
     /// The override reaches the executor's shell command line, so it is vetted here rather
@@ -381,6 +410,14 @@ public static class TaskDecider
             ? Optional<string?>.Of(ReviewStageCompositionValidation.VetInput(
                 reviewStageComposition.Value, reviewStageCompositionAcknowledged, "--review-stage-composition"))
             : Optional<string?>.None;
+        // The effective type after this revision, not task.Type alone: a task revised to
+        // pr-review and given a composition override in the same call must be refused too, not
+        // only one already pr-review before the revise (RefuseCompositionOnPrReview's own doc).
+        // type.Value ?? task.Type, not a HasValue ternary: Optional<TaskType>.None leaves its
+        // backing field at TaskType's own default (null, a reference type), so the two read
+        // identically and this avoids a nullable-to-non-nullable assignment warning.
+        TaskType effectiveType = type.Value ?? task.Type;
+        RefuseCompositionOnPrReview(task.Id, effectiveType, normalizedComposition.Value);
 
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue

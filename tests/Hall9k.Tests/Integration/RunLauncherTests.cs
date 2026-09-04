@@ -593,6 +593,92 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// TaskDecider.Add/Revise refuse a task-level review-stage-composition override on a pr-review
+    /// task, but that refusal cannot reach a project- or node-level one — neither is task-type-aware
+    /// — so without this, a project set to a reduced composition would still resolve one onto a
+    /// pr-review task's own RunDispatched (class sweep, independent pre-PR review, cycle 1,
+    /// adversarial lens's PrReviewEngine finding: the same "h9k task show states a pipeline shape
+    /// the run never honors" defect, reached through the project level instead of the task level).
+    /// PrReviewEngine's primary session is always the adversarial lens and its
+    /// DispatchConformanceAsync always dispatches the conformance lens second, unconditionally, so
+    /// FullPipeline is the only value ever actually true here regardless of what the project set.
+    /// </summary>
+    [Fact]
+    public async Task A_pr_review_task_always_records_full_pipeline_regardless_of_the_projects_own_reduced_composition()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"pr-review-composition-{taskId:N}",
+                "/tmp/pr-review-composition-repo", new Uri("https://github.com/acme/web"), "main", Now);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+
+            // The project drops both lenses entirely — a setting no task-level refusal on this
+            // pr-review task can see or override.
+            ProjectSettingsChanged reduced = ProjectDecider.ChangeSettings(
+                project,
+                Optional<IReadOnlyList<VerifyCommand>>.None,
+                Optional<bool>.None,
+                Optional<int>.None,
+                Optional<IReadOnlyList<ContextLink>>.None,
+                Now, node.OwnerId,
+                reviewStageComposition: Optional<string?>.Of("none"), reviewStageCompositionAcknowledged: true);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered, reduced);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#43", ["every finding names a file and line"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#43"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string pullRequestJson = """
+            {
+              "number": 43,
+              "title": "Add rate limiting to auth endpoints",
+              "body": "Fixes an incident.",
+              "state": "OPEN",
+              "url": "https://github.com/acme/web/pull/43",
+              "baseRefName": "release/2.0"
+            }
+            """;
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(pullRequestJson);
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), gh.Runner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunListItem run = (await query.LoadAsync<RunListItem>(runId, cts.Token))!;
+        run.ReviewStageComposition.Should().Be(ReviewStageComposition.FullPipeline,
+            "both lenses always dispatch on a pr-review run, so this is the only value that is ever "
+            + "actually true here — never the project's own None");
+    }
+
+    /// <summary>
     /// The doorbell-woken render sweep, not dispatch, owns renaming a task's on-disk directory
     /// when a revision changes its slug — and it runs on its own schedule, never synchronously
     /// with an assign (adversarial review, backlog 49 cycle 1). A run dispatched between a
