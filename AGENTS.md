@@ -776,8 +776,11 @@ to key on, so folding this into the automated review loop waits on stacked-PR sl
   versions there, never in a csproj.
 
 **Tests**
-- One project, two tiers: unit (DB-free — aggregates via `Apply`, projections via a
-  `FakeEvent<T>` stub) and integration (Testcontainers Postgres).
+- Two tiers in the main project (`tests/Hall9k.Tests`): unit (DB-free — aggregates via `Apply`,
+  projections via a `FakeEvent<T>` stub) and integration (Testcontainers Postgres). A second,
+  minimal project, `Hall9k.Tests.LockHolder`, exists solely as a standalone executable
+  `CrossProcessContainerGateTests` can launch and kill to prove permit reclaim against a real
+  process death (Decisions Log #131) — it carries no tests of its own and is not a third tier.
 - xUnit + FluentAssertions.
 
 ## CLI command standards
