@@ -815,7 +815,7 @@ public sealed class CloseoutEngine(
                         + $"branch {project.BaseBranch} — a mechanical rebase onto {project.BaseBranch} would not "
                         + "address what GitHub reads as conflicting",
                         null)
-                    : await TryMechanicalRebaseAsync(project, run, cancellationToken);
+                    : await TryMechanicalRebaseAsync(session, fence.Version, project, run, cancellationToken);
             session.Events.Append(run.Id, new PullRequestMechanicalRebaseAttempted(
                 run.Id, mechanical.Succeeded, mechanical.Detail, mechanical.PushedCommit, now));
 
@@ -2052,6 +2052,16 @@ public sealed class CloseoutEngine(
     /// cycle 1, both lenses).
     /// </para>
     /// <para>
+    /// That lock's own wait is unbounded by design, so the fence captured before this method was
+    /// called can go stale while this attempt merely waits its turn — a human's <c>h9k pr resolve</c>
+    /// racing the same task's own reopen, landing and dispatching a follow-up agent into this exact
+    /// worktree before the lock is ever granted here. <paramref name="fenceVersion"/> is
+    /// re-validated immediately after the lock is acquired and before anything in the worktree is
+    /// touched; a stale fence bails out as a fallback with no git call made at all, rather than
+    /// risking a rebase and force-push out from under a follow-up session that may already be
+    /// live in this worktree (independent pre-PR review, cycle 1, adversarial lens).
+    /// </para>
+    /// <para>
     /// A rebase that lands exactly where it started (HEAD unchanged) made no progress against
     /// whatever GitHub actually thinks conflicts — the pull request's base was retargeted away
     /// from <paramref name="project"/>'s own base branch being the recurring case — so it is
@@ -2087,9 +2097,10 @@ public sealed class CloseoutEngine(
     /// </para>
     /// </summary>
     private async Task<MechanicalRebaseOutcome> TryMechanicalRebaseAsync(
-        ProjectDetails project, RunDetails run, CancellationToken cancellationToken)
+        IDocumentSession session, long fenceVersion, ProjectDetails project, RunDetails run,
+        CancellationToken cancellationToken)
     {
-        ProcessRunner git = Hall9k.Connectors.Processes.ExternalProcess.RunnerWithDeadline(GitDeadline);
+        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string worktreePath = run.WorktreePath;
 
         if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
@@ -2115,8 +2126,25 @@ public sealed class CloseoutEngine(
         await using IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(project.RepositoryPath, cancellationToken);
 
+        // The lock wait above is unbounded, so re-check the fence this attempt was handed before
+        // touching the worktree at all: a reopen that landed while this attempt waited may already
+        // have a follow-up agent working here (this method's own doc comment; independent pre-PR
+        // review, cycle 1, adversarial lens). Bailing out here makes no git call and leaves the
+        // worktree exactly as found, so the caller's own fallback append (whose expectedVersion is
+        // fenced identically) is the one place this race is actually resolved.
+        StreamState? fenceAfterLock = await session.Events.FetchStreamStateAsync(run.TaskId, cancellationToken);
+        if (fenceAfterLock is null || fenceAfterLock.Version != fenceVersion)
+        {
+            return new MechanicalRebaseOutcome(
+                false,
+                "the task advanced while this attempt waited for the repository lock — a concurrent "
+                + "reopen may already have a follow-up agent working in this worktree, so nothing here touched it",
+                null);
+        }
+
         ProcessResult preRebaseHeadResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
         string? preRebaseHead = preRebaseHeadResult.ExitCode == 0 ? preRebaseHeadResult.StandardOutput.Trim() : null;
+        bool rebaseApplied = false;
 
         try
         {
@@ -2131,12 +2159,20 @@ public sealed class CloseoutEngine(
                 "git", ["rebase", $"origin/{project.BaseBranch}"], worktreePath, cancellationToken);
             if (rebase.ExitCode != 0)
             {
-                await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+                // No hard reset here: git rebase --abort already restores the worktree fully when
+                // a rebase actually started, and when it didn't (rebase refused to start against a
+                // dirty tree it did not create — see RestoreWorktreeBestEffortAsync's own doc
+                // comment) a hard reset would discard whatever the working tree already held
+                // instead of anything this attempt made (independent pre-PR review, cycle 1,
+                // adversarial lens).
+                await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, rebaseApplied: false, cancellationToken);
                 return new MechanicalRebaseOutcome(
                     false,
                     $"git rebase onto origin/{project.BaseBranch} did not apply cleanly: {FirstLine(rebase.StandardError)}",
                     null);
             }
+
+            rebaseApplied = true;
 
             ProcessResult headCommit = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
             string pushedCommit = headCommit.ExitCode == 0 ? headCommit.StandardOutput.Trim() : "unknown";
@@ -2154,6 +2190,34 @@ public sealed class CloseoutEngine(
             {
                 await ForceWithLeasePusher.PushAsync(git, worktreePath, run.Branch, cancellationToken);
             }
+            catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
+            {
+                // git itself exited 0 — the read or the push it was running genuinely completed —
+                // but a spawned credential helper held the output pipe open past
+                // ExternalProcess.DrainGrace (ProcessOutputStuckException's own doc comment: exit
+                // code 0 here can tell a genuine success from a genuine failure). Exit 0 alone does
+                // not say *which* of ForceWithLeasePusher's own git calls (the read-only
+                // ls-remote/merge-base/reflog, or the push itself) is the one that got stuck, so
+                // origin's actual tip for the branch is read back rather than assumed — never guess
+                // at unobserved facts — before deciding whether to roll back a rebase that may
+                // already be live on origin (independent pre-PR review, cycle 1, both lenses).
+                if (await OriginHeadMatchesAsync(git, worktreePath, run.Branch, pushedCommit, cancellationToken))
+                {
+                    return new MechanicalRebaseOutcome(
+                        true,
+                        $"Rebased onto origin/{project.BaseBranch} and force-pushed (new head {pushedCommit}) — "
+                        + $"the push itself exited 0 before a credential helper's stuck output pipe timed the "
+                        + "call out.",
+                        pushedCommit);
+                }
+
+                await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, rebaseApplied, cancellationToken);
+                return new MechanicalRebaseOutcome(
+                    false,
+                    $"the force-push after the mechanical rebase timed out ({exception.Message}) and origin "
+                    + "does not yet hold the rebased tip",
+                    null);
+            }
             catch (InvalidOperationException exception)
             {
                 // Restores the worktree to the tip it held before this attempt's rebase, rather than
@@ -2162,7 +2226,7 @@ public sealed class CloseoutEngine(
                 // reopen-and-review lap this fallback triggers hands the follow-up agent a prompt
                 // telling it the branch "now conflicts with main" and to rebase it — true only if
                 // this rebase is undone first (independent pre-PR review, cycle 1, adversarial lens).
-                await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+                await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, rebaseApplied, cancellationToken);
                 return new MechanicalRebaseOutcome(
                     false, $"the force-push after the mechanical rebase was refused: {exception.Message}", null);
             }
@@ -2177,11 +2241,29 @@ public sealed class CloseoutEngine(
             // A git call exceeded GitDeadline, or a credential helper wedged the output pipe past
             // the drain grace (ProcessOutputStuckException, also a TimeoutException) — see this
             // method's own doc comment for why this must not be left to escape uncaught the way it
-            // did before (independent pre-PR review, cycle 1, both lenses).
-            await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+            // did before (independent pre-PR review, cycle 1, both lenses). The push's own exit-0
+            // stuck-output case is handled above, before it ever reaches here.
+            await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, rebaseApplied, cancellationToken);
             return new MechanicalRebaseOutcome(
                 false, $"a git call exceeded its deadline during the mechanical rebase: {exception.Message}", null);
         }
+    }
+
+    /// <summary>
+    /// Reads origin's actual current tip for <paramref name="branch"/> and compares it against
+    /// <paramref name="expectedCommit"/>, rather than trusting a git call's own exit code for
+    /// whether a push actually landed — the one fact this class's mechanical-rebase fast path
+    /// cannot afford to guess at when a push call's own answer was lost to a stuck output pipe.
+    /// </summary>
+    private static async Task<bool> OriginHeadMatchesAsync(
+        ProcessRunner git, string worktreePath, string branch, string expectedCommit, CancellationToken cancellationToken)
+    {
+        ProcessResult originTip = await git(
+            "git", ["ls-remote", "--exit-code", "origin", $"refs/heads/{branch}"], worktreePath, cancellationToken);
+        string? originHead = originTip.ExitCode == 0
+            ? originTip.StandardOutput.Split('\t', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim()
+            : null;
+        return originHead is not null && originHead == expectedCommit;
     }
 
     /// <summary>
@@ -2190,18 +2272,28 @@ public sealed class CloseoutEngine(
     /// rewritten onto the new base with nothing pushed. <c>git rebase --abort</c> covers a rebase
     /// interrupted mid-apply — a killed process leaves a detached HEAD and rebase-merge state, and
     /// <c>--abort</c> restores the original branch and tip — and fails harmlessly when no rebase is
-    /// in progress; the hard reset covers a rebase that had already completed cleanly by the time a
-    /// later call (the push) failed instead. Recovery failures are logged, never thrown: a failed
-    /// recovery must not mask the original failure the caller is already reporting.
+    /// in progress.
+    /// <para>
+    /// The hard reset runs only when <paramref name="rebaseApplied"/> says the rebase itself had
+    /// already completed cleanly by the time a later call (the push) failed instead — the one case
+    /// <c>git rebase --abort</c> does not already cover. When the rebase never got that far (it
+    /// refused to start, or failed mid-apply and <c>--abort</c> above already restored it), a hard
+    /// reset would not be undoing anything this attempt did: it would instead discard whatever the
+    /// working tree already held before this sweep ever touched it, including uncommitted changes
+    /// an operator made in this same worktree while this attempt sat on the repository lock's own
+    /// unbounded wait (independent pre-PR review, cycle 1, adversarial lens).
+    /// </para>
+    /// Recovery failures are logged, never thrown: a failed recovery must not mask the original
+    /// failure the caller is already reporting.
     /// </summary>
     private async Task RestoreWorktreeBestEffortAsync(
-        ProcessRunner git, string worktreePath, string? preRebaseHead, CancellationToken cancellationToken)
+        ProcessRunner git, string worktreePath, string? preRebaseHead, bool rebaseApplied, CancellationToken cancellationToken)
     {
         try
         {
             await git("git", ["rebase", "--abort"], worktreePath, cancellationToken);
 
-            if (preRebaseHead is not null)
+            if (rebaseApplied && preRebaseHead is not null)
             {
                 await git("git", ["reset", "--hard", preRebaseHead], worktreePath, cancellationToken);
             }
