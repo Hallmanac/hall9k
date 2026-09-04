@@ -37,7 +37,9 @@ public sealed class PullRequestMonitor(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         RefuseUnreadableReviewRerequestDefault();
-        TimeSpan baseInterval = ClampPollInterval(options.Value.PullRequestPollInterval, logger);
+        TimeSpan baseInterval = ClampPollInterval(
+            options.Value.PullRequestPollInterval, nameof(DaemonOptions.PullRequestPollInterval),
+            new DaemonOptions().PullRequestPollInterval, logger);
         TimeSpan currentInterval = baseInterval;
         using PeriodicTimer timer = new(currentInterval);
         while (await NextTickAsync(timer, stoppingToken))
@@ -193,24 +195,33 @@ public sealed class PullRequestMonitor(
     /// days once bound) would otherwise reach the constructor unclamped, since this method
     /// previously guarded only the lower half of the range the constructor accepts.
     /// </summary>
-    internal static TimeSpan ClampPollInterval(TimeSpan configured, ILogger logger)
+    /// <summary>
+    /// <paramref name="settingName"/> and <paramref name="fallback"/> are the caller's own —
+    /// never a name or a default hardcoded here — so a monitor other than closeout's own can
+    /// reuse this pure clamp without misnaming the setting it is actually guarding
+    /// (<see cref="Hall9k.Daemon.AutoPrReview.AutoPrReviewMonitor"/>'s own
+    /// <c>AutoPrReviewPollInterval</c>, independent pre-PR review cycle 1, both lenses: a
+    /// misconfigured <c>AutoPrReviewPollInterval</c> used to log against
+    /// <c>PullRequestPollInterval</c> and silently fall back to that setting's own default
+    /// instead of its own).
+    /// </summary>
+    internal static TimeSpan ClampPollInterval(TimeSpan configured, string settingName, TimeSpan fallback, ILogger logger)
     {
         if (configured < TimeSpan.FromMilliseconds(1))
         {
-            TimeSpan fallback = new DaemonOptions().PullRequestPollInterval;
             logger.LogWarning(
-                "PullRequestPollInterval is {Configured}, which is not a positive interval; falling "
-                + "back to {Fallback} so the closeout monitor can still start.",
-                configured, fallback);
+                "{SettingName} is {Configured}, which is not a positive interval; falling "
+                + "back to {Fallback} so the monitor can still start.",
+                settingName, configured, fallback);
             return fallback;
         }
 
         if (configured > MaxSupportedInterval)
         {
             logger.LogWarning(
-                "PullRequestPollInterval is {Configured}, which is above what PeriodicTimer accepts; "
-                + "clamping to {Clamped} so the closeout monitor can still start.",
-                configured, MaxSupportedInterval);
+                "{SettingName} is {Configured}, which is above what PeriodicTimer accepts; "
+                + "clamping to {Clamped} so the monitor can still start.",
+                settingName, configured, MaxSupportedInterval);
             return MaxSupportedInterval;
         }
 

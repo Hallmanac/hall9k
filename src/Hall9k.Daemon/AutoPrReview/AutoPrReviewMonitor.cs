@@ -20,7 +20,9 @@ public sealed class AutoPrReviewMonitor(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        TimeSpan baseInterval = PullRequestMonitor.ClampPollInterval(options.Value.AutoPrReviewPollInterval, logger);
+        TimeSpan baseInterval = PullRequestMonitor.ClampPollInterval(
+            options.Value.AutoPrReviewPollInterval, nameof(DaemonOptions.AutoPrReviewPollInterval),
+            new DaemonOptions().AutoPrReviewPollInterval, logger);
         TimeSpan currentInterval = baseInterval;
         using PeriodicTimer timer = new(currentInterval);
         while (await NextTickAsync(timer, stoppingToken))
