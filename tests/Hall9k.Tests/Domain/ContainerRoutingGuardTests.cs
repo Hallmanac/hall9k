@@ -7,7 +7,7 @@ namespace Hall9k.Tests.Domain;
 /// <see cref="Hall9k.Tests.Integration.PostgresFixture"/> is the only place in the test tree
 /// allowed to construct a Testcontainers Postgres instance, because it is the only place that
 /// gates container lifetime through <see cref="Hall9k.Tests.Integration.CrossProcessContainerGate"/>
-/// (Decisions Log #131, following up #108). A test class that instead builds a
+/// (Decisions Log #132, following up #108). A test class that instead builds a
 /// <c>PostgreSqlBuilder</c>/<c>PostgreSqlContainer</c> of its own — directly, or through any
 /// helper other than <see cref="Hall9k.Tests.Integration.PostgresFixture"/> — starts a container
 /// the bound never sees, silently reopening the unbounded-concurrency problem the gate

@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Domain;
 /// walks both <c>src/</c> and the whole <c>tests/</c> directory (decision #110 widened its scan
 /// to close a gap the narrower scan left open); <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>
 /// and <see cref="Hall9k.Tests.Domain.NodeBootstrapConventionGuardTests"/> each walk the whole
-/// <c>tests/</c> directory for the same reason (decision #131 widened
+/// <c>tests/</c> directory for the same reason (decision #132 widened
 /// <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>'s own scan the identical way).
 /// Each needs to tell a real source file from build output, and each strips comments and string
 /// literals before matching so quoted prose cannot be mistaken for real code.
@@ -87,7 +87,7 @@ internal static class TestSourceTree
     /// </summary>
     /// <param name="rootDirectory">The tree being scanned — this test project for
     /// <see cref="HomeEnvironmentIsolationTests"/> alone, the whole <c>tests/</c> directory for
-    /// <see cref="ContainerRoutingGuardTests"/> (since decision #131) and
+    /// <see cref="ContainerRoutingGuardTests"/> (since decision #132) and
     /// <see cref="NodeBootstrapConventionGuardTests"/>, or <c>src/</c> and (separately)
     /// <c>tests/</c> for <see cref="ProcessTerminationGuardTests"/>, which since decision #110
     /// scans both, one call each.</param>
