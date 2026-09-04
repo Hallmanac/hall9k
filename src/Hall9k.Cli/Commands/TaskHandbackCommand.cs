@@ -199,7 +199,16 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
                 $"Task {taskId} changed while handing it back — check h9k status and try again.");
         }
 
-        await Doorbell.RingAsync($"task-handed-back:{taskId}", cancellationToken);
+        // --now claims the task itself in a moment, through the same mechanism h9k task start
+        // uses (below) — ringing this doorbell first would wake the dispatcher into a race for
+        // the exact task this command is about to claim, and the dispatcher winning that race
+        // would land the run on an ordinary node claim instead of the promised ceiling-exempt
+        // one, with this command's own claim then refused as a conflict it did not cause
+        // (independent pre-PR review, cycle 1, both lenses).
+        if (!settings.Now)
+        {
+            await Doorbell.RingAsync($"task-handed-back:{taskId}", cancellationToken);
+        }
 
         // --now dispatches the handed-back task immediately, ceiling-exempt, reusing exactly the
         // mechanism h9k task start runs — not a second implementation of it (task 45136b29, R7):
