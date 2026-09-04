@@ -1067,6 +1067,47 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The closed-without-merge twin of the test above (independent pre-PR review, cycle 1,
+    /// adversarial): an intact-but-terminal run's own pull request is closed rather than merged.
+    /// Unlike the wholly-missing-run shape below, this run's own stream already exists, so the
+    /// close is recorded onto it — the same way <c>InspectOrphanAsync</c>'s own
+    /// <c>RecordClosedAsync</c> call records an orphan's close — rather than leaving this row a
+    /// candidate that pays a full task-stream replay and a live pull-request read every sweep
+    /// forever.
+    /// </summary>
+    [Fact]
+    public async Task A_tasks_intact_but_terminal_runs_pull_request_closed_without_merge_is_recorded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (_, Guid runId, _) = await SeedResolvedFailedRunWithPullRequestAsync(
+            store, node, worktrees, repoPath, cts.Token, recordOnRun: false);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsClosed = true, ClosedAt = Now } };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 0),
+            "a close is recorded onto the run's own stream, but it is not a merge");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed);
+        run.FailureReason.Should().Be(RunDetails.PullRequestClosedWithoutMerge,
+            "the close overwrites the run's original failure reason with the fact that now decides its remedy");
+        run.PullRequestMergedAt.Should().BeNull();
+
+        CloseoutSweepResult secondSweep = await engine.PollOnceAsync(cts.Token);
+        secondSweep.Should().Be(new CloseoutSweepResult(RunsInspected: 0, MergesObserved: 0),
+            "a run recorded closed without merge leaves the missing-run candidate query on its own");
+        inspector.StateInspections.Should().Be(1,
+            "the second sweep never re-reads a pull request whose fate is already recorded");
+    }
+
+    /// <summary>
     /// Mirrors what <c>h9k task resolve --pr</c> itself appends (TaskFailed then TaskResolved on
     /// the task stream, RunFailed then, when a pull request was named, PullRequestRecordedOnFailedRun
     /// on the run stream) — the run never passes through PullRequestOpened at all, the same shape
