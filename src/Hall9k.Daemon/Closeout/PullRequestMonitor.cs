@@ -194,8 +194,7 @@ public sealed class PullRequestMonitor(
     /// its own ceiling against (<c>PullRequestPollInterval=60</c> meaning minutes, landing as 60
     /// days once bound) would otherwise reach the constructor unclamped, since this method
     /// previously guarded only the lower half of the range the constructor accepts.
-    /// </summary>
-    /// <summary>
+    /// <para>
     /// <paramref name="settingName"/> and <paramref name="fallback"/> are the caller's own —
     /// never a name or a default hardcoded here — so a monitor other than closeout's own can
     /// reuse this pure clamp without misnaming the setting it is actually guarding
@@ -204,6 +203,7 @@ public sealed class PullRequestMonitor(
     /// misconfigured <c>AutoPrReviewPollInterval</c> used to log against
     /// <c>PullRequestPollInterval</c> and silently fall back to that setting's own default
     /// instead of its own).
+    /// </para>
     /// </summary>
     internal static TimeSpan ClampPollInterval(TimeSpan configured, string settingName, TimeSpan fallback, ILogger logger)
     {
