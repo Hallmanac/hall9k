@@ -584,7 +584,10 @@ public sealed class RunLauncher(
     /// does not parse as a github.com owner/repo means nothing to compare against, not a reason
     /// to fail the launch over a check that is a courtesy rather than a hard requirement.
     /// </summary>
-    private static string? OwnerRepoFrom(Uri? repositoryUrl) =>
+    // Internal rather than private: AutoPrReviewEngine needs the identical owner/repo parse to
+    // resolve which repository gh's own review-requested search runs against, and two copies of
+    // this rule are two rules that drift.
+    internal static string? OwnerRepoFrom(Uri? repositoryUrl) =>
         repositoryUrl is not null
         && repositoryUrl.AbsolutePath.Trim('/').Split('/') is [{ Length: > 0 } owner, { Length: > 0 } repository, ..]
             ? $"{owner}/{TrimGitSuffix(repository)}"
