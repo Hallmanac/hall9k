@@ -122,6 +122,76 @@ public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClas
             .Where(exception => exception.Message.Contains("acknowledgment override only applies at the moment of assignment"));
     }
 
+    /// <summary>
+    /// The one way ClaimDeliberately's Blocked-accepting branch is reachable outside the atomic
+    /// Published entry (task 45136b29, idea fcaded0b's R7 ruling): a claim once
+    /// warned-and-acknowledged, handed back, and picked back up — the exact shape
+    /// h9k task handback --now produces. The still-open blocker's acknowledgment carries forward
+    /// (<see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>) without the flag, unlike the
+    /// sibling test above where nothing was ever acknowledged.
+    /// </summary>
+    [Fact]
+    public async Task A_blocked_task_with_a_carried_forward_acknowledgment_claims_without_the_flag()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid blockerId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
+        Guid firstRunId = DomainId.New();
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Waits on another task, acknowledged once already",
+                ["it is done"], TaskType.Chore, null, null, null, Now, ownerId, blockedBy: [blockerId]);
+            TaskAggregate task = new();
+            task.Apply(added);
+
+            TaskDependency[] blockers =
+            [
+                new(blockerId, "The blocker", TaskState.Queued, IsClosedOut: false, CurrentRunState: null,
+                    PullRequestUrl: null, TaskType.Chore, []),
+            ];
+            TaskPublished published = TaskDecider.Publish(task, new TaskDependencyGraph(blockers), Now, ownerId);
+            task.Apply(published);
+            TaskAssigned assigned = TaskDecider.Assign(task, ownerId, blockers, Now, ownerId);
+            task.Apply(assigned);
+            TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+                task, ownerId, firstRunId, Now, dependencyOverrideAcknowledged: true);
+            task.Apply(claimed);
+            TaskHandedBack handedBack = TaskDecider.HandBack(
+                task, firstRunId, "task/x", "Stepping away", Now, ownerId);
+
+            seed.Events.StartStream<TaskAggregate>(taskId, added, published, assigned, claimed, handedBack);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        Guid runId = await StartAsync(store, taskId, ownerId, acknowledgeUnmetDependencies: false, cts.Token);
+
+        await using IQuerySession verify = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await verify.Events.FetchStreamAsync(taskId, token: cts.Token);
+        stream[^1].Data.Should().BeOfType<TaskClaimed>()
+            .Which.DependencyOverrideAcknowledged.Should().BeTrue(
+                "the carried-forward acknowledgment from the earlier deliberate claim, never re-asked");
+
+        TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        final.State.Should().Be(TaskState.Claimed);
+
+        RunDetails run = (await verify.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.NodeId.Should().Be(Guid.Empty, "the same ceiling-exempt sentinel every deliberate claim carries");
+    }
+
     [Fact]
     public async Task A_task_with_a_live_claim_is_refused()
     {
