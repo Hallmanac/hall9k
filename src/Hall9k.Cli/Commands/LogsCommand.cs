@@ -42,10 +42,8 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
             throw new DomainNotFoundException($"Task {taskId} has no runs yet.");
         }
 
-        RunListItem run = settings.Run.IsBlank()
-            ? runs[0]
-            : runs.FirstOrDefault(r => r.Id.ToString("N").EndsWith(settings.Run.Replace("-", ""), StringComparison.OrdinalIgnoreCase))
-                ?? throw new DomainNotFoundException($"No run matching '{settings.Run}' on task {taskId}.");
+        RunListItem run = SelectRun(runs, settings.Run)
+            ?? throw new DomainNotFoundException($"No run matching '{settings.Run}' on task {taskId}.");
 
         // run.RunDirectory is recorded once, at dispatch, and never updated (RunDispatched doc
         // comment); a task that has since reached true closeout or been abandoned has had its
@@ -95,4 +93,23 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// Picks which of a task's runs this command actually reads. <paramref name="runOption"/> is
+    /// an explicit ask, matched by its id's trailing fragment. With no explicit ask, the newest run
+    /// is not automatically right: CloseoutEngine's missing-run sweep can reconstruct a stub run
+    /// (<see cref="RunListItem.IsReconstructed"/>) that never actually dispatched and so never
+    /// wrote a transcript, and a reconstruction always sorts newest by construction — it exists
+    /// because an earlier, transcript-bearing run already dispatched and finished. Skipping a
+    /// reconstructed run in favor of the newest one that is not is what makes this command resolve
+    /// to the run that actually produced a transcript instead of an honest 404 on the stub
+    /// (independent pre-PR review, cycle 1, conformance) — falling back to the stub itself only
+    /// when every run on the task is one, so a stub-only task still gets the same honest "no
+    /// stream file" answer it always has.
+    /// </summary>
+    internal static RunListItem? SelectRun(IReadOnlyList<RunListItem> runsNewestFirst, string? runOption) =>
+        runOption.IsBlank()
+            ? runsNewestFirst.FirstOrDefault(r => !r.IsReconstructed) ?? runsNewestFirst[0]
+            : runsNewestFirst.FirstOrDefault(r => r.Id.ToString("N")
+                .EndsWith(runOption.Replace("-", ""), StringComparison.OrdinalIgnoreCase));
 }

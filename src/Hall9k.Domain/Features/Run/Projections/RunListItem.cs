@@ -38,6 +38,14 @@ public sealed class RunListItem
     /// an unobserved duration, never a claimed zero.
     /// </summary>
     public List<GateDuration>? GateDurations { get; set; }
+    /// <summary>
+    /// True only for a run that CloseoutEngine's missing-run sweep reconstructed rather than one
+    /// that actually dispatched — it never ran a build session, so it never wrote a transcript
+    /// (independent pre-PR review, cycle 1, conformance: <c>h9k logs</c>'s own newest-run pick must
+    /// skip a run this flag marks in favor of one that actually produced a transcript, rather than
+    /// resolving a directory nothing was ever written to).
+    /// </summary>
+    public bool IsReconstructed { get; set; }
 }
 
 public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, Guid>
@@ -66,6 +74,7 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         DispatchedAt = @event.Data.ReconstructedAt,
         PullRequestUrl = @event.Data.PullRequestUrl,
         RunDirectory = RunPaths.GlobalDirectory(@event.Data.Id),
+        IsReconstructed = true,
     };
 
     public void Apply(IEvent<RunProcessStarted> @event, RunListItem view) => view.State = RunState.Running;
