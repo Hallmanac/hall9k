@@ -999,8 +999,16 @@ public sealed class RunAggregate
     /// stream. Only ever applies to a FixedUnreviewed residual: a Routed or RoutingFailed one
     /// describes a defect this pull request exported rather than fixed, and a RideAlong one a
     /// defect the fix deliberately left behind, so a clean re-read confirms neither away.
+    /// <para>
+    /// Public so <c>ReviewEngine.SettleAsync</c>'s own cross-cycle already-on-stream matches can
+    /// exclude a superseded residual before treating it as proof a place is already accounted
+    /// for (independent pre-PR review, cycle 5, both lenses' high finding): a residual this
+    /// method excludes contributes nothing to <see cref="PerDefect"/>'s own count, so a raw,
+    /// unfiltered match against the stream could let it silently suppress a still-active track's
+    /// genuinely outstanding finding at the same place while the tally never counted it at all.
+    /// </para>
     /// </summary>
-    private bool IsSupersededByCleanReread(ReviewResidual residual) =>
+    public bool IsSupersededByCleanReread(ReviewResidual residual) =>
         residual.Disposition == ReviewResidualDisposition.FixedUnreviewed
         && _concludedReviewTracks.Any(track =>
             track.Lens == residual.Lens && track.Settlement == ReviewSettlement.Clean && track.Cycle > residual.Cycle);

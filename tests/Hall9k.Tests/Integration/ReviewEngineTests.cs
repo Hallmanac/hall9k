@@ -3117,6 +3117,84 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 5, both lenses' high finding: the cross-cycle
+    /// already-on-stream match above (widened in the prior fix to catch a sibling track's own
+    /// EARLIER-cycle conclusion) reads <c>run.ReviewResiduals</c> raw, but the tally it is meant
+    /// to anticipate (<c>RunAggregate.DeriveResidualTally</c> → <c>PerDefect</c>) excludes any
+    /// FixedUnreviewed residual a later clean re-read on its own lens has since superseded
+    /// (<c>RunAggregate.IsSupersededByCleanReread</c>). Adversarial concludes at cycle 1 with a
+    /// gated Medium at A.cs:10, recording <c>FixedUnreviewed</c>; conformance keeps its own
+    /// separate issue going and concludes clean at cycle 2, so both tracks are dormant. The
+    /// mandatory <see cref="ReviewMode.FinalFullPass"/> at cycle 3 reads adversarial clean —
+    /// superseding its cycle-1 residual — while conformance reports a fresh in-scope High at the
+    /// IDENTICAL A.cs:10, reactivating it. The fix session that cycle disputes, so the run parks
+    /// and settles at cycle 3 with a fix session having run THIS cycle, forcing
+    /// <c>FixedUnreviewed</c>. Before this fix, the stale — now superseded — cycle-1 residual
+    /// still matched on disposition alone and silently swallowed conformance's genuinely new
+    /// High, dropping it from the settle entirely instead of forcing its own residual.
+    /// </summary>
+    [Fact]
+    public async Task A_reactivated_tracks_new_finding_is_not_swallowed_by_a_sibling_s_superseded_residual()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: conformance's own separate issue keeps it going; adversarial's medium
+            // concludes the track right here (the gate is active from cycle 1), recording
+            // FixedUnreviewed at A.cs:10.
+            "FINDING: severity=medium; scope=in-scope; at=Conform.cs:5\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "FINDING: severity=medium; scope=in-scope; at=A.cs:10\nDefect: the criterion is not met.\n\n"
+            + "VERDICT: needs-fixes",
+            "Fixed.\n\nRESOLUTION: fixed",
+            // Cycle 2: only conformance is still active — one Verify pass, and it concludes clean.
+            // Both tracks are now dormant, so the very next cycle is the mandatory final pass.
+            "Clean now.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh. Conformance — dormant
+            // since cycle 2 — reports a genuinely new High at the SAME location adversarial's own
+            // cycle-1 conclusion already recorded FixedUnreviewed, reawakening it. Adversarial
+            // reads clean this time, superseding its own cycle-1 residual.
+            "FINDING: severity=high; scope=in-scope; at=A.cs:10\n"
+            + "Defect: the final pass found a real regression at the exact spot adversarial fixed a cycle ago.\n\n"
+            + "VERDICT: needs-fixes",
+            "Still clean.\n\nVERDICT: merge-ready",
+            // Cycle 3's fix session dispatches over conformance's reactivated High and disputes
+            // it, so the run parks with the dispatch cycle equal to the settle cycle — forcing
+            // FixedUnreviewed on whatever the settle sweep still owes conformance.
+            "That is the intended behavior per spec.\n\nRESOLUTION: disputed");
+        bool mergeReady = await NewEngine(
+            store, executor,
+            new DaemonOptions { AdversarialSeverityGateFromCycle = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the fix session disputed conformance's reactivated finding");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new();
+        mergeReady = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        resumeExecutor.Spawns.Should().BeEmpty("no further session second-guesses the human");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewResidualsFixed.Should().Be(
+            1, "A.cs:10 is one still-outstanding defect — adversarial's own cycle-1 residual there " +
+                "is superseded by its clean cycle-3 re-read, so conformance's genuinely new High must " +
+                "be the one and only fixed-unreviewed residual recorded for it, not zero and not two");
+        run.ReviewResidualsRideAlong.Should().Be(0, "nothing here ever fell below the fix bar");
+        run.ReviewResidualsUnfixed.Should().Be(0, "a fix session did run this cycle, so this is FixedUnreviewed, not Unfixed");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1, both lenses' finding #1: the sibling-suppression dedup
     /// above matched a Fix-shaped residual at the same place from ANY cycle, not just this one, so
     /// a track the mandatory <see cref="ReviewMode.FinalFullPass"/> reawakens with a genuinely

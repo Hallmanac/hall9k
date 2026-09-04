@@ -2065,15 +2065,20 @@ public sealed class ReviewEngine(
         // SAME disposition are one defect, whatever cycle either one landed on —
         // DeriveResidualTally's own PerDefect already collapses them that way on rehydration — so
         // this cycle's own inline count has to anticipate that collapse rather than force a second
-        // one in. This can never resurrect the reactivated-track drop a same-cycle-only scope once
-        // existed to close (class sweep, independent pre-PR review, cycle 1, both lenses' finding
-        // #1): that drop was a stale FixedUnreviewed record silently absorbing a genuinely NEW
-        // finding under a DIFFERENT disposition, and matching here is scoped to the SAME
-        // disposition only — cross-disposition confusion is a fact this filter's own outer
-        // `residual.Disposition == forcedRideAlongDisposition` check already rules out regardless
-        // of cycle.
+        // one in. That is exactly the shape of the drop the same-cycle-only scope once existed to
+        // close (class sweep, independent pre-PR review, cycle 1, both lenses' finding #1): a
+        // stale FixedUnreviewed record silently absorbed a genuinely NEW finding under the SAME
+        // disposition — not a different one, as an earlier version of this comment claimed
+        // (independent pre-PR review, cycle 5, conformance finding #2) — because a reactivated
+        // track's earlier conclusion had never gotten the clean re-read that would retire it.
+        // Matching across every cycle is safe from resurrecting that drop only because the
+        // IsSupersededByCleanReread exclusion below excludes precisely that unretired record from
+        // this match: a residual PerDefect has stopped counting must not count here either, or a
+        // still-active track's genuinely outstanding finding at the same place is silently dropped
+        // from both places at once (independent pre-PR review, cycle 5, both lenses' high finding).
         IReadOnlyList<ReviewResidual> alreadyOnStreamRideAlong =
-            [.. run.ReviewResiduals.Where(residual => residual.Disposition == forcedRideAlongDisposition)];
+            [.. run.ReviewResiduals.Where(residual =>
+                residual.Disposition == forcedRideAlongDisposition && !run.IsSupersededByCleanReread(residual))];
         // Matched against BOTH Fix-shaped dispositions when scoped to this cycle (independent
         // pre-PR review, cycle 1, both lenses): a track that concludes normally this same cycle
         // always records its own Fix findings as FixedUnreviewed, whether or not a fix session
@@ -2098,16 +2103,25 @@ public sealed class ReviewEngine(
         // regardless of cycle — so this cycle's own inline count has to anticipate that collapse
         // rather than add a second one for the same place (RunAggregate.PerDefect's own doc: "the
         // tracks conclude separately, so both lenses can end on the same defect … this count
-        // collapses per place as well"). This can never resurrect the reactivated-track case just
-        // above: a stale residual's disposition there is FixedUnreviewed while the reawakened
-        // track's forced disposition is Unfixed (or the reverse), so the two never match on this
-        // clause.
+        // collapses per place as well"). This CAN match the reactivated-track case just above — a
+        // reawakened track's own stale FixedUnreviewed record matches a same-cycle
+        // forcedFixDisposition of FixedUnreviewed too, contrary to what an earlier version of this
+        // comment claimed (independent pre-PR review, cycle 5, conformance finding #2) — and that
+        // is correct rather than a resurrection of the drop the cycle scoping above closes: as
+        // long as the stale record has not itself been superseded, PerDefect still counts it, so
+        // matching it here is exactly the collapse this paragraph exists to anticipate. The
+        // IsSupersededByCleanReread exclusion below is what keeps the two cases apart: a stale
+        // record a later clean re-read HAS superseded is excluded from this match the same way it
+        // is excluded from PerDefect's own count, so it can no longer stand in for a still-active
+        // track's genuinely outstanding finding at the same place (independent pre-PR review,
+        // cycle 5, both lenses' high finding).
         IReadOnlyList<ReviewResidual> alreadyOnStreamFix =
             [.. run.ReviewResiduals.Where(residual =>
-                (residual.Cycle == run.ReviewCycle
-                    && (residual.Disposition == ReviewResidualDisposition.FixedUnreviewed
-                        || residual.Disposition == ReviewResidualDisposition.Unfixed))
-                || residual.Disposition == forcedFixDisposition)];
+                !run.IsSupersededByCleanReread(residual)
+                && ((residual.Cycle == run.ReviewCycle
+                        && (residual.Disposition == ReviewResidualDisposition.FixedUnreviewed
+                            || residual.Disposition == ReviewResidualDisposition.Unfixed))
+                    || residual.Disposition == forcedFixDisposition))];
 
         List<(ReviewLens Lens, ReviewResidual Residual)> forced = [];
         // Reference identity, not SamePlace: a Verify pass's own Findings list is the same
