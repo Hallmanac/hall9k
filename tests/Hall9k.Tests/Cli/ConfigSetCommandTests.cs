@@ -195,6 +195,33 @@ public sealed class ConfigSetCommandTests
     }
 
     [Fact]
+    public void Applying_the_review_finalpass_model_sets_only_that_knob_and_leaves_review_alone()
+    {
+        ConfigSetCommand.Settings settings = new() { ModelReviewFinalPass = "sonnet" };
+        OperatingSettings operating = new() { ModelByRole = new RoleModelSettings { Review = "opus" } };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.ModelByRole.ReviewFinalFullPass.Should().Be("sonnet");
+        operating.ModelByRole.Review.Should().Be(
+            "opus", "the FinalFullPass knob is narrower than Review, not a replacement for it");
+    }
+
+    [Fact]
+    public void The_word_default_clears_an_existing_review_finalpass_override()
+    {
+        ConfigSetCommand.Settings settings = new() { ModelReviewFinalPass = "default" };
+        OperatingSettings operating = new() { ModelByRole = new RoleModelSettings { ReviewFinalFullPass = "sonnet" } };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.ModelByRole.ReviewFinalFullPass.Should().BeNull();
+        changed.Should().ContainSingle().Which.Should().Contain("cleared");
+    }
+
+    [Fact]
     public void An_alias_is_canonicalized_the_same_way_every_other_model_option_does()
     {
         ConfigSetCommand.Settings settings = new() { ModelFix = "HAIKU" };

@@ -668,7 +668,7 @@ The checkpoints, in the order the window sees them:
    blast radius rather than rediscover the diff — its rounds count against the same per-track caps
    a full cycle's would, and a dispute or cap-out parks exactly as before. A Verify pass resolves
    its own model, `--model-review-verify` (Decisions Log #105), separately from the plain Review
-   model Discovery and FinalFullPass keep resolving — the knob defaults to whatever Review itself
+   model Discovery keeps resolving — the knob defaults to whatever Review itself
    resolves to (no behavior change until set), and the standard install points it at the fix
    model, since Verify's confirm-the-fix-and-check-blast-radius job is the most mechanical review
    shape in the loop. Fix-round escalation (#90) still compares the plain Review and Fix models
@@ -677,7 +677,13 @@ The checkpoints, in the order the window sees them:
    run may settle, one mandatory **FinalFullPass** runs both lenses fresh, whether or not a track
    had already gone dormant, so nothing reaches the remote on delta-green alone; a track it
    reawakens with a real finding is recorded reactivated rather than left stuck at an old
-   conclusion, and a run that converges clean at cycle 1 pays no extra pass at all. "Fresh" is
+   conclusion, and a run that converges clean at cycle 1 pays no extra pass at all. That mandatory
+   pass resolves its own model too, `--model-review-finalpass` (Decisions Log #130, completing the
+   per-stage model set #105 started for Verify) — the expensive read at 43 percent of all review
+   input tokens per the 2026-09-01 architecture review's own measurement — defaulting to whatever
+   Review itself resolves to exactly like Verify's own knob, and independent of it: setting one
+   never touches the other. Fix-round escalation (#90) carries the identical carve-out here too,
+   never this knob either. "Fresh" is
    about context, not diff range: a FinalFullPass whose run already paid for an earlier full-scope
    read (this run's own opening Discovery, or an earlier FinalFullPass) reads only the commits
    since that read's own head, not the whole branch again (Decisions Log #115) — falling back to

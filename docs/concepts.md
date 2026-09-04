@@ -264,11 +264,13 @@ falling back to the whole branch when no such boundary is on record or it no lon
 against HEAD — every full-scope read still starts where the previous one left off, so no commit
 ever reaches the remote unread at full scope by a fresh context, only reread by fewer of them.
 Which shape a cycle ran under — Discovery, Verify, or FinalFullPass — is a deterministic engine
-decision recorded on the run stream, and a Verify pass resolves its own configurable model
-(`--model-review-verify`, defaulting to whatever the plain Review model resolves to), separately
-from the Review model Discovery and FinalFullPass keep using — Verify's
-confirm-the-fix-and-check-blast-radius job is deliberately the cheapest to run at a lighter model,
-while the mandatory FinalFullPass still runs on the strongest model immediately before delivery.
+decision recorded on the run stream, and both Verify and the mandatory FinalFullPass resolve their
+own configurable model (`--model-review-verify` and `--model-review-finalpass`, each independently
+defaulting to whatever the plain Review model resolves to), separately from the Review model
+Discovery keeps using and from each other — Verify's confirm-the-fix-and-check-blast-radius job is
+deliberately the cheapest to run at a lighter model, while the mandatory FinalFullPass is the
+expensive full-branch read (43 percent of all review input tokens per the 2026-09-01 architecture
+review's own measurement) that a different install might point at a different model to measure.
 
 Reawakening a track deliberately gives it a fresh per-track cycle budget, measured from the cycle
 it was reawakened at rather than the run's absolute cycle count, so it gets a genuine chance to fix

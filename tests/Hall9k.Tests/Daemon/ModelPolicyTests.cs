@@ -126,6 +126,64 @@ public sealed class ModelPolicyTests
             .Should().Be(AgentModel.Fable, "a task-level override is the most specific level for every pass, Verify included");
     }
 
+    /// <summary>
+    /// The mandatory FinalFullPass's model is a narrower knob under Review, not a seventh role
+    /// (task: completing the per-stage model set #105 started for Verify): left unset, it must fall
+    /// through to exactly what Review itself resolves to on the same task/project, including when
+    /// Review carries its own configured override — the acceptance bar for "an install that never
+    /// sets it dispatches byte-for-byte as today".
+    /// </summary>
+    [Fact]
+    public void Unset_review_finalpass_falls_through_to_whatever_review_itself_resolves_to()
+    {
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet" },
+        };
+
+        options.ResolveFinalFullPassReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Sonnet);
+        options.ResolveFinalFullPassReviewModel(taskModel: null, projectModel: AgentModel.Haiku).Should().Be(
+            AgentModel.Sonnet, "Review's own configured override still outranks the project default underneath it");
+    }
+
+    [Fact]
+    public void A_configured_review_finalpass_model_outranks_the_plain_review_chain()
+    {
+        DaemonOptions options = new()
+        {
+            DefaultModel = "claude-opus-5",
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", ReviewFinalFullPass = "haiku" },
+        };
+
+        options.ResolveFinalFullPassReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Haiku);
+    }
+
+    [Fact]
+    public void A_task_override_still_wins_over_the_review_finalpass_knob()
+    {
+        DaemonOptions options = new()
+        {
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", ReviewFinalFullPass = "haiku" },
+        };
+
+        options.ResolveFinalFullPassReviewModel(taskModel: AgentModel.Fable, projectModel: null)
+            .Should().Be(
+                AgentModel.Fable, "a task-level override is the most specific level for every pass, FinalFullPass included");
+    }
+
+    [Fact]
+    public void The_review_verify_and_review_finalpass_knobs_are_independent_of_each_other()
+    {
+        DaemonOptions options = new()
+        {
+            ModelByRole = new RoleModelDefaults { Review = "sonnet", ReviewVerify = "haiku", ReviewFinalFullPass = "fable" },
+        };
+
+        options.ResolveVerifyReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Haiku);
+        options.ResolveFinalFullPassReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Fable);
+    }
+
     [Fact]
     public void A_fresh_spawn_always_states_its_model()
     {

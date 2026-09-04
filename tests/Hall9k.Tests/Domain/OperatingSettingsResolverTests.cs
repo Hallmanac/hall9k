@@ -26,6 +26,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         "Hall9k__ModelByRole__Build",
         "Hall9k__ModelByRole__Review",
         "Hall9k__ModelByRole__ReviewVerify",
+        "Hall9k__ModelByRole__ReviewFinalFullPass",
         "Hall9k__ModelByRole__Fix",
         "Hall9k__ModelByRole__Synthesis",
         "Hall9k__ModelByRole__Refinement",
@@ -160,6 +161,24 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
 
         report.ModelByRole.Single(role => role.Role == nameof(RoleModelSettings.ReviewVerify)).Model.Value.Should().Be("sonnet");
+    }
+
+    /// <summary>
+    /// <c>ReviewFinalFullPass</c> rides the same generic <c>AsPairs()</c>/resolver machinery every
+    /// other role does, so <c>h9k config show</c>/<c>h9k daemon status</c> report it exactly like
+    /// any other role's knob — only <c>DaemonOptions.ResolveFinalFullPassReviewModel</c> gives its
+    /// blank value a different meaning (fall through to Review, not the platform default).
+    /// </summary>
+    [Fact]
+    public async Task A_configured_review_finalpass_model_reports_alongside_the_other_roles()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            s => s.ModelByRole.ReviewFinalFullPass = "sonnet", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.ModelByRole.Single(role => role.Role == nameof(RoleModelSettings.ReviewFinalFullPass))
+            .Model.Value.Should().Be("sonnet");
     }
 
     [Fact]

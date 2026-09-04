@@ -174,15 +174,16 @@ public static class OperatingSettingsRendering
 
     /// <summary>
     /// Every ordinary role falls through to the project or platform default, but
-    /// <c>ReviewVerify</c> sits underneath the plain Review chain rather than beside it
-    /// (<c>DaemonOptions.ResolveVerifyReviewModel</c>) — an unset knob resolves to whatever
+    /// <c>ReviewVerify</c> and <c>ReviewFinalFullPass</c> each sit underneath the plain Review
+    /// chain rather than beside it (<c>DaemonOptions.ResolveVerifyReviewModel</c> /
+    /// <c>ResolveFinalFullPassReviewModel</c>) — an unset knob resolves to whatever
     /// <c>--model-review</c> itself resolves to, which can outrank the project or platform
-    /// default. Stating the generic fallthrough for this one role would tell an operator running
-    /// on a configured <c>--model-review</c> that Verify passes run on the project or platform
-    /// default when they in fact run on that configured review model.
+    /// default. Stating the generic fallthrough for either role would tell an operator running on
+    /// a configured <c>--model-review</c> that those passes run on the project or platform default
+    /// when they in fact run on that configured review model.
     /// </summary>
     private static string FallthroughDescription(string role) =>
-        role == nameof(RoleModelSettings.ReviewVerify)
+        role is nameof(RoleModelSettings.ReviewVerify) or nameof(RoleModelSettings.ReviewFinalFullPass)
             ? "whatever --model-review itself resolves to"
             : "the project or platform default";
 

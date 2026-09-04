@@ -49,6 +49,17 @@ public sealed class OperatingSettingsRenderingTests
     }
 
     [Fact]
+    public void An_unset_review_finalpass_role_falls_through_to_review_rather_than_the_generic_default()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.ReviewFinalFullPass), null);
+
+        (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
+            .Single(r => r.Label == "model (review-final-full-pass)");
+
+        row.Value.Should().Be("not set — falls through to whatever --model-review itself resolves to");
+    }
+
+    [Fact]
     public void An_unset_ordinary_role_falls_through_to_the_generic_project_or_platform_default()
     {
         OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.Build), null);

@@ -392,6 +392,33 @@ public sealed class DaemonOptions
             ? verifyDefault
             : ResolveModel(AgentRole.Review, taskModel, projectModel);
     }
+
+    /// <summary>
+    /// The effective model for the mandatory <see
+    /// cref="Hall9k.Domain.Features.Run.ReviewMode.FinalFullPass"/> immediately before a run may
+    /// settle (task: completing the per-stage model set #105 started for Verify) — the expensive
+    /// full-branch read at 43 percent of all review input tokens per the 2026-09-01 architecture
+    /// review's measurement. A task override still wins, same as any other pass; underneath it sits
+    /// <see cref="RoleModelDefaults.ReviewFinalFullPass"/> rather than the full role chain — a knob
+    /// deliberately independent of <see cref="AgentRole"/>, because a FinalFullPass is still
+    /// Review-role work (Decisions Log #33's session shape is unchanged), just a different pass
+    /// shape. Left unset, this falls through to exactly what a Discovery pass on the same
+    /// task/project would resolve to, so the knob is opt-in and changes nothing until an install
+    /// sets it.
+    /// </summary>
+    public AgentModel ResolveFinalFullPassReviewModel(AgentModel? taskModel, AgentModel? projectModel)
+    {
+        AgentModel taskOverride = AgentModel.FromInput(taskModel);
+        if (taskOverride != AgentModel.Unknown)
+        {
+            return taskOverride;
+        }
+
+        AgentModel finalPassDefault = AgentModel.FromInput(ModelByRole.ReviewFinalFullPass);
+        return finalPassDefault != AgentModel.Unknown
+            ? finalPassDefault
+            : ResolveModel(AgentRole.Review, taskModel, projectModel);
+    }
 }
 
 /// <summary>
@@ -429,6 +456,17 @@ public sealed class RoleModelDefaults
     /// <see cref="DaemonOptions.ResolveVerifyReviewModel"/> rather than <see cref="For"/>.
     /// </summary>
     public string ReviewVerify { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The Review role's model for the mandatory <see
+    /// cref="Hall9k.Domain.Features.Run.ReviewMode.FinalFullPass"/> specifically, underneath a
+    /// task override but above <see cref="Review"/>'s own chain (task: completing the per-stage
+    /// model set #105 started for Verify): blank falls through to whatever <see cref="Review"/>
+    /// itself resolves to, so this is not a seventh <see cref="AgentRole"/> — a FinalFullPass is
+    /// still Review-role work — it is a narrower override for one pass shape, read by
+    /// <see cref="DaemonOptions.ResolveFinalFullPassReviewModel"/> rather than <see cref="For"/>.
+    /// </summary>
+    public string ReviewFinalFullPass { get; set; } = string.Empty;
 
     public AgentModel For(AgentRole role) => role switch
     {
