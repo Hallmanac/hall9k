@@ -128,6 +128,7 @@ h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
 h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
+h9k task revise <id> --queue-first                # the one revision Draft-only doesn't gate: marks the task-level queue-first fact (Decisions Log #127), settable in any live state; --clear-queue-first removes it
 h9k task set-review-caps <id> --max-compliance-review-cycles <N>   # a task-level review-cycle-cap override, settable at any time — even while the run is live (Decisions Log #112)
 h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
@@ -225,6 +226,8 @@ h9k task register-session <id>       # the pasted session's own first act: regis
 h9k task verify <id>                 # run the project's gates on demand against the claim's worktree
 h9k task deliver <id>                # push and hand the claim into the standard delivery pipeline
 h9k task handback <id>               # release the claim to a headless agent partway through, resuming the branch
+h9k task handback <id> --first   # same release, plus the queue-first marker: the next free slot takes it regardless of age (Decisions Log #127)
+h9k task handback <id> --now     # same release, dispatched immediately, ceiling-exempt, through h9k task start's own mechanism — refused together with --first
 h9k task release <id>                # give an untouched claim back to the dispatch queue
 ```
 
