@@ -191,14 +191,14 @@ one branch named for the owning task's card and seven named `no-key-<slug>`, dis
 slug and by `ResolveBranchNameAsync`'s own collision retry when two slugs coincide. Nothing about
 that is broken, but it is worth knowing before dispatch rather than discovering it there.
 
-An operator can work a Published or Queued task interactively instead of dispatching it headless
+An operator can work a Published, Queued, or already-Blocked task interactively instead of dispatching it headless
 (Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it to the
 operator's own owner and claims it interactively in one atomic event append: the task is never
 observably Queued in between, so the dispatcher, woken within moments by the doorbell notification
 a plain `h9k task assign` would have sent, can never win the race to it. An unmet dependency —
 whether just discovered here on a Published task, or already sitting Blocked from an ordinary
 `h9k task assign` or a claim handed back or retried — warns rather than refuses outright (Decisions
-Log #127): the platform names every open blocker, and `--acknowledge-unmet-dependencies` is the
+Log #128): the platform names every open blocker, and `--acknowledge-unmet-dependencies` is the
 human's recorded override to claim it anyway, the same bar `h9k task assign` itself holds an
 assignment to. Not needed twice: an acknowledgment this task already carries from an earlier claim
 on the same still-open blockers is honored without asking again, and `h9k task show` names whether
@@ -226,7 +226,7 @@ when the recorded one cannot be resumed — Decisions Log #124) — and is the o
 script-shim refusal still gates, since a pasted prompt travels through no argv:
 
 ```bash
-h9k task work <id>                   # claim a Published or Queued task, cut the same branch/worktree headless dispatch would, print the worktree/branch/starting prompt
+h9k task work <id>                   # claim a Published, Queued, or already-Blocked task, cut the same branch/worktree headless dispatch would, print the worktree/branch/starting prompt
 h9k task work <id> --direct-launch   # the prior behavior for one release: launch and wait on the session here instead of printing a prompt
 h9k task work <id> --acknowledge-unmet-dependencies   # claim a task anyway, despite named open blockers
 h9k task register-session <id>       # the pasted session's own first act: register its process identity against the claim
@@ -238,7 +238,7 @@ h9k task handback <id> --now     # same release, dispatched immediately, ceiling
 h9k task release <id>                # give an untouched claim back to the dispatch queue
 ```
 
-A deliberate human kick-off dispatches a Published or Queued task on the spot, headless, instead
+A deliberate human kick-off dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead
 of dispatching it interactively or waiting on the queue (Decisions Log #125, "Take the Wheel"
 epic 9272e514's start-it-mine mode): `h9k task start <id>` reuses `h9k task work`'s own claim
 shape exactly (the same ceiling-exempt sentinel, so every existing lever above — deliver, verify,
@@ -248,7 +248,7 @@ Published entry, but launches the
 agent headless (`claude -p`, Claude Code's own completion mode) and detached rather than attached
 to this terminal, under the slice-1 `<task-shortid>-build` name, addressable on the session mesh
 the moment it starts. Shares `h9k task work`'s own warn-then-acknowledge shape for an unmet
-dependency, on a Published task and on an already-Blocked one alike (Decisions Log #127, closing
+dependency, on a Published task and on an already-Blocked one alike (Decisions Log #128, closing
 the gap #125 deliberately left open — that gap was about re-entering a live claim, which
 `h9k task start` still never does, not about withholding a carried-forward acknowledgment from a
 fresh claim on a Blocked task): the platform names every open blocker and advises, and
@@ -272,7 +272,7 @@ file back, since a run dispatched under the sentinel node id above is never adop
 other way.
 
 ```bash
-h9k task start <id>                              # dispatch a Published or Queued task headless, on the spot, ceiling-exempt
+h9k task start <id>                              # dispatch a Published, Queued, or already-Blocked task headless, on the spot, ceiling-exempt
 h9k task start <id> --acknowledge-unmet-dependencies   # start a task anyway, despite named open blockers
 ```
 

@@ -28,7 +28,7 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// A deliberate human kick-off (task 8a56af78-h9k, "Take the Wheel" epic 9272e514, start-it-mine
-/// mode): dispatches a Published or Queued task on the spot, headless, instead of waiting for the
+/// mode): dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of waiting for the
 /// dispatcher's own ceiling and ordering to reach it. On a Published task assigned to nobody, this
 /// assigns it to the operator's own owner and claims it in the same atomic event append
 /// <c>h9k task work</c>'s own Published entry already uses (task 688a1ccf-h9k) — the task is never

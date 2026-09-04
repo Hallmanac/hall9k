@@ -136,9 +136,13 @@ guard working as intended, not a bug to route around. On a project tracked under
 
 `h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver | handback | release`
 
-between, so the dispatcher can never win the race to it. An unmet dependency — whether just
-discovered here or already sitting Blocked from an ordinary `h9k task assign` or a handed-back or
-retried claim — warns rather than refuses outright: the platform names every open blocker, and
+An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
+headless (Decisions Log #122). On a Published task assigned to nobody, `work` assigns it to the
+operator's own owner and claims it interactively in one atomic event append: the task is never
+observably Queued in between, so the dispatcher can never win the race to it. An unmet
+dependency — whether just discovered here or already sitting Blocked from an ordinary
+`h9k task assign` or a handed-back or retried claim — warns rather than refuses outright: the
+platform names every open blocker, and
 `--acknowledge-unmet-dependencies` is the human's recorded override to claim it anyway. Not needed
 twice: an acknowledgment this task already carries from an earlier claim on the same still-open
 blockers is honored without asking again, and `h9k task show` names whether a claim's own
@@ -168,7 +172,7 @@ the queue-first marker so the next free dispatch slot takes the task regardless 
 
 `h9k task start <id> [--acknowledge-unmet-dependencies]`
 
-`start` dispatches a Published or Queued task on the spot, headless, instead of waiting on the
+`start` dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of waiting on the
 dispatch queue or working it interactively. It reuses `work`'s own claim shape exactly — the same
 ceiling-exempt sentinel `NodeId`, so every lever above (`verify`, `deliver`, `handback`, `release`,
 the stale-claim nudge, and re-entering with `work` itself) accepts a start-it-mine claim on the
@@ -188,7 +192,7 @@ task is exactly what its Blocked entry is, not a re-entry. Giving the claim back
 `release`, `retry`, or `pr resolve` reopening it) lands the task on Blocked rather than Queued when
 the acknowledged dependency is still open, since only `h9k task assign` clears that snapshot — and
 the acknowledgment itself stays on record for whichever command reclaims it next. See
-[PLAN.md Decisions Log #125, #127](../PLAN.md).
+[PLAN.md Decisions Log #125, #128](../PLAN.md).
 
 ### Logging an outside interaction
 
