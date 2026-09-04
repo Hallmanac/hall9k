@@ -278,7 +278,7 @@ internal static class TaskPhaseComposer
             // "watching" default, contradicting the richer attention line directly under it).
             "Failed" or "Killed" => new TaskPhase($"{pullRequest}: the run ended without a merge",
                 SessionLiveness.NotApplicable,
-                AttentionComposer.IsOrphanSweepCandidate(run)
+                AttentionComposer.IsOrphanSweepCandidate(task, run)
                     ? "still eligible for closeout's merge observation"
                     : "nothing is watching it any more"),
             "ReviewParked" => new TaskPhase($"{pullRequest} open — review parked",

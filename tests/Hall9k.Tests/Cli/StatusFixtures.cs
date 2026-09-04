@@ -47,12 +47,13 @@ internal static class StatusFixtures
         Guid? projectId = null,
         DateTimeOffset? addedAt = null,
         DateTimeOffset? assignedAt = null,
-        Guid? claimedByNodeId = null) => new()
+        Guid? claimedByNodeId = null,
+        TaskType? type = null) => new()
         {
             Id = DomainId.New(),
             ProjectId = projectId ?? DomainId.New(),
             Objective = objective,
-            Type = TaskType.Chore,
+            Type = type ?? TaskType.Chore,
             State = state,
             CurrentRunId = runId,
             PullRequestUrl = pullRequest,
