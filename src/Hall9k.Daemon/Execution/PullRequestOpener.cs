@@ -1,5 +1,6 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -271,6 +272,17 @@ public sealed class PullRequestOpener(
     }
 
     /// <summary>
+    /// How long a branch push gets before Hall9k stops waiting for it. Deliberately longer than
+    /// <see cref="ExternalProcess.Deadline"/> (120 seconds, sized for "the short metadata read" —
+    /// its own doc comment), the same way <c>UpdateCommand</c>'s release-archive download uses
+    /// <see cref="ExternalProcess.RunnerWithDeadline"/> rather than the plain runner: a branch
+    /// push transfers real data, so a first push carrying large blobs over a slow uplink is not
+    /// the call that default was sized for (independent pre-PR review, cycle 1, adversarial lens
+    /// — the prior, unrouted push helper this replaced had no timeout at all).
+    /// </summary>
+    private static readonly TimeSpan PushDeadline = TimeSpan.FromMinutes(10);
+
+    /// <summary>
     /// Pushes the branch with the lease pinned to a value this node knows is safe to overwrite,
     /// rather than trusting the bare <c>--force-with-lease</c> flag against whatever this node's
     /// remote-tracking ref currently reads (see the caller's comment for why that ref alone is
@@ -283,13 +295,16 @@ public sealed class PullRequestOpener(
         try
         {
             await ForceWithLeasePusher.PushAsync(
-                Hall9k.Connectors.Processes.ExternalProcess.Runner, worktreePath, branch, cancellationToken);
+                ExternalProcess.RunnerWithDeadline(PushDeadline), worktreePath, branch, cancellationToken);
         }
-        catch (InvalidOperationException exception)
+        catch (Exception exception) when (exception is InvalidOperationException or TimeoutException)
         {
             // ForceWithLeasePusher's own message is shared with the closeout engine's mechanical
             // rebase path and says nothing about which lever recovers a failed push — this run's
-            // own recovery lever, named here rather than there.
+            // own recovery lever, named here rather than there. TimeoutException is caught
+            // alongside the refusal, not just the refusal: PushDeadline above still expires, and
+            // without this the timeout escaped straight to the outer catch with no lever named
+            // (independent pre-PR review, cycle 1, adversarial lens).
             throw new InvalidOperationException(
                 $"{exception.Message} This fails the run, so h9k task retry is the way to requeue "
                 + "once the branch or the remote are sorted out.");
