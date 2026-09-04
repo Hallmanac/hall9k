@@ -649,7 +649,7 @@ public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClas
 
     /// <summary>
     /// h9k task start is a third run-dispatch site alongside RunLauncher and TaskWorkCommand
-    /// (PLAN.md #127), and used to be the one that never resolved the setting at all — a run it
+    /// (PLAN.md #129), and used to be the one that never resolved the setting at all — a run it
     /// dispatched always recorded FullPipeline regardless of what the project or node set
     /// (independent pre-PR review, cycle 1, conformance lens). Pinning the project-level override
     /// reaching RunListItem.ReviewStageComposition (the field h9k task show's Stages column reads)

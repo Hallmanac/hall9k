@@ -411,7 +411,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // Resolved once, here, and frozen on RunDispatched for this run's whole lifetime
             // (task: the review pipeline's stage composition becomes configuration recorded per
             // run), exactly as RunLauncher and TaskWorkCommand's own dispatch sites already do —
-            // this third dispatch site was the one PLAN.md #127 overlooked (independent pre-PR
+            // this third dispatch site was the one PLAN.md #129 overlooked (independent pre-PR
             // review, cycle 1, conformance lens). operatingSettings was already resolved above for
             // the model, through the same OperatingSettingsResolver that honors the
             // Hall9k__ReviewStageComposition environment variable ahead of the platform config
