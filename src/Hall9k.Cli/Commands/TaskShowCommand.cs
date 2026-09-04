@@ -477,9 +477,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
     /// <summary>
     /// Closeout's mechanical rebase-before-reopen fast path (recommendation 3, idea fc85f609): the
-    /// newest run's most recent attempt, if any — a clean apply pushed with no reopen, or a
-    /// fallback and why, immediately followed (still in the same sweep) by the ordinary
-    /// reopen-and-review lap the fallback reads as ongoing.
+    /// most recent attempt across every one of the task's runs, if any — a clean apply pushed with
+    /// no reopen, or a fallback and why, immediately followed (still in the same sweep) by the
+    /// ordinary reopen-and-review lap the fallback reads as ongoing. Not necessarily the newest run
+    /// by dispatch order: a fallback supersedes the run it recorded the outcome on within the same
+    /// sweep that dispatches the follow-up, so the caller selects by <c>LastMechanicalRebaseAt</c>
+    /// across every run rather than passing the newest one (independent pre-PR review, cycle 1,
+    /// adversarial lens).
     /// </summary>
     private static void WriteMechanicalRebaseOutcome(RunDetails? run)
     {
