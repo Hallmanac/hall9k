@@ -41,7 +41,7 @@ internal static class PublishedFacts
             return [];
         }
 
-        return task.State.Value switch
+        IReadOnlyList<string> facts = task.State.Value switch
         {
             "Published" => ["not assigned — nothing will claim it until you assign it"],
             // Ready is all this row can honestly claim on its own: it is assigned, its
@@ -76,6 +76,14 @@ internal static class PublishedFacts
             // being described as one of the states it might be.
             _ => [$"published; the recorded state ({task.State.Value}) is not one this build knows"],
         };
+
+        // The marker matters most on a Queued row (it is what the claim query orders on), but
+        // it is stated wherever it is set — including Blocked, where it is inert until the
+        // blocker clears — so a human never has to guess whether a marker they set survived
+        // (task 45136b29, idea fcaded0b's R7 ruling).
+        return task.QueuePriorityMarked
+            ? [.. facts, "marked queue-first — takes the next free dispatch slot regardless of assignment age"]
+            : facts;
     }
 
     /// <summary>
