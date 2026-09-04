@@ -12,6 +12,8 @@ public sealed class RunDetails
     public Guid Id { get; set; }
     public Guid TaskId { get; set; }
     public Guid NodeId { get; set; }
+    /// <summary>The physical daemon that actually dispatched this run. See <see cref="RunDispatched.DispatchingNodeId"/>'s own doc for why this can differ from <see cref="NodeId"/>.</summary>
+    public Guid DispatchingNodeId { get; set; }
     public Guid OwnerId { get; set; }
     public int LeaseGeneration { get; set; }
     public Guid SessionId { get; set; }
@@ -311,6 +313,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         Id = @event.Data.Id,
         TaskId = @event.Data.TaskId,
         NodeId = @event.Data.NodeId,
+        DispatchingNodeId = @event.Data.DispatchingNodeId,
         OwnerId = @event.Data.OwnerId,
         LeaseGeneration = @event.Data.LeaseGeneration,
         SessionId = @event.Data.SessionId,
