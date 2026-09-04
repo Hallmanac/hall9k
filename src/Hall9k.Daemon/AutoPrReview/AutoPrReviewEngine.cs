@@ -449,8 +449,12 @@ public sealed class AutoPrReviewEngine(
     /// baseline recorded on the previous task (a stream predating <see cref="PullRequestReviewAssignmentObserved.RequestedAt"/>)
     /// means there is nothing to compare against, so any currently-observed timestamp counts as
     /// fresher rather than permanently blocking re-review on tasks this field predates.
+    /// <para>
+    /// Internal (rather than private) so the dedup-timestamp comparison is directly testable
+    /// (test: AutoPrReviewEngine dedup coverage) without also depending on
+    /// <c>WorkItemConnections.ImporterAsync</c>'s un-injectable real-<c>gh</c> construction.
+    /// </para>
     /// </summary>
-    /// <summary>Internal (rather than private) so the dedup-timestamp comparison is directly testable (test: AutoPrReviewEngine dedup coverage) without also depending on <c>WorkItemConnections.ImporterAsync</c>'s un-injectable real-<c>gh</c> construction.</summary>
     internal static async Task<bool> IsGenuineReRequestAsync(
         IDocumentSession session, TaskListItem previousReview, DateTimeOffset? currentRequestedAt,
         CancellationToken cancellationToken)
@@ -460,14 +464,26 @@ public sealed class AutoPrReviewEngine(
             return false;
         }
 
-        IReadOnlyList<IEvent> stream = await session.Events.FetchStreamAsync(previousReview.Id, token: cancellationToken);
-        DateTimeOffset? previousRequestedAt = stream
+        PullRequestReviewAssignmentObserved? previousObserved = await MostRecentObservedAsync(
+            session, previousReview.Id, cancellationToken);
+
+        return previousObserved?.RequestedAt is not { } previous || current > previous;
+    }
+
+    /// <summary>
+    /// The most recent <see cref="PullRequestReviewAssignmentObserved"/> this task's own stream
+    /// carries — the request (URL and timestamp both) the task was actually minted from, read
+    /// fresh from the stream rather than cached on the projection, the same source
+    /// <see cref="IsGenuineReRequestAsync"/> already reads on the mint side.
+    /// </summary>
+    private static async Task<PullRequestReviewAssignmentObserved?> MostRecentObservedAsync(
+        IDocumentSession session, Guid taskId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<IEvent> stream = await session.Events.FetchStreamAsync(taskId, token: cancellationToken);
+        return stream
             .Select(recorded => recorded.Data)
             .OfType<PullRequestReviewAssignmentObserved>()
-            .Select(observed => observed.RequestedAt)
             .LastOrDefault();
-
-        return previousRequestedAt is not { } previous || current > previous;
     }
 
     /// <summary>
@@ -559,13 +575,44 @@ public sealed class AutoPrReviewEngine(
             return false;
         }
 
+        // Positive evidence that this removal is the one that actually recalled the request this
+        // task was minted from — not just any removal sitting somewhere in the last 20 timeline
+        // events, which can be a leftover from an earlier request/re-request cycle whose own
+        // removal predates the request that later minted this task (independent pre-PR review,
+        // cycle 1, both lenses). Conservative in the same shape IsGenuineReRequestAsync already
+        // applies on the mint side: no baseline recorded on this task (a stream predating
+        // PullRequestReviewAssignmentObserved.RequestedAt) means there is nothing to compare
+        // against, so any removal found counts; a baseline exists but the removal itself carries
+        // no timestamp (GitHub's createdAt failed to parse) means there is nothing to prove this
+        // evidence is fresh, so it does not conclude a recall. ">=", not ">": GitHub's own
+        // createdAt timestamps are second-resolution, and a removal genuinely paired with this
+        // task's own minting request can legitimately read identically to it once truncated —
+        // a stale removal from a genuinely earlier cycle is strictly, meaningfully earlier than
+        // the request that later minted this task, never merely tied with it.
+        PullRequestReviewAssignmentObserved? mintObserved = await MostRecentObservedAsync(
+            session, watchedTask.Id, cancellationToken);
+        bool removalPostdatesMint = mintObserved?.RequestedAt is not { } mintedAt
+            || (actor.RequestedAt is { } removedAt && removedAt >= mintedAt);
+        if (!removalPostdatesMint)
+        {
+            logger.LogDebug(
+                "Auto-pr-review saw a removal event for {Repository}#{Number} on task {TaskId}, but it "
+                + "predates the request the task was minted from — not concluding a recall this sweep",
+                repository, number, watchedTask.Id);
+            return false;
+        }
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
         bool concludesBeforeDispatch = task.State == TaskState.Published || task.State == TaskState.Queued;
 
-        // A real URL, matching the sibling Observed event's own field — never the bare
-        // "owner/repo#42" canonical reference, which is a different shape for a different reader.
+        // The real observed URL from this task's own minting event, matching the sibling Observed
+        // event's own field — never a hardcoded github.com URL, which resolves to the wrong
+        // repository (or nothing) on a GitHub Enterprise host (independent pre-PR review, cycle 1,
+        // adversarial lens), and never the bare "owner/repo#42" canonical reference either, which
+        // is a different shape for a different reader.
+        string pullRequestUrl = mintObserved?.PullRequestUrl ?? $"https://github.com/{repository}/pull/{number}";
         PullRequestReviewAssignmentRecalled recalled = new(
-            task.Id, $"https://github.com/{repository}/pull/{number}", actor.Login, now, concludesBeforeDispatch);
+            task.Id, pullRequestUrl, actor.Login, now, concludesBeforeDispatch);
 
         if (!concludesBeforeDispatch)
         {
