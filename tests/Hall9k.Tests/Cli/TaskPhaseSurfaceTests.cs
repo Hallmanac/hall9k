@@ -541,6 +541,83 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     /// <summary>
+    /// AutoPrReviewEngine's Now speed (independent pre-PR review, cycle 1, both lenses) launches a
+    /// headless pr-review run under the identical Guid.Empty sentinel an attended h9k task work
+    /// claim uses, but its session name (SessionRoleName.ReviewAdversarial) carries neither the
+    /// -build nor the -interactive-claim suffix the phase's own discrimination used to rely on, so
+    /// it used to fall into the "closing the terminal is normal" branch built for an attended
+    /// claim — a branch TaskWorkCommand refuses outright for a pr-review task, so nobody could
+    /// ever act on the lever it printed. Excluding the type lets it fall through to the ordinary
+    /// state-based phase instead, which reports a genuinely gone headless process honestly.
+    /// </summary>
+    [Fact]
+    public void A_gone_auto_pr_review_headless_session_is_not_misread_as_an_attended_claim()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Running);
+        run.SessionName = "abcd1234-review-adversarial-1";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty, type: TaskType.PrReview),
+            run,
+            liveness: SessionLiveness.Gone);
+
+        row.Phase.Text.Should().Be("building");
+        row.Phase.Liveness.Should().Be(SessionLiveness.Gone);
+        row.Phase.Markup.Should().Contain("recorded process is gone");
+        row.Phase.Markup.Should().NotContain("h9k task work re-enters this claim");
+        row.Stalled.Should().BeTrue("a headless run's own dead process is a genuine failure, unlike an interactive claim's expected-gone one");
+        row.Attention.Lever.Should().NotContain("h9k task work");
+    }
+
+    /// <summary>
+    /// The identical exclusion for the Dispatched leg (independent pre-PR review, cycle 1, both
+    /// lenses): nothing was ever printed for a human to paste for a headless pr-review launch, so
+    /// the "awaiting a pasted session" wording built for an attended claim must not describe it.
+    /// </summary>
+    [Fact]
+    public void An_auto_pr_review_headless_claim_stuck_at_dispatched_is_not_misread_as_awaiting_a_pasted_session()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Dispatched, sessionProcessId: null);
+        run.SessionName = "abcd1234-review-adversarial-1";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty, type: TaskType.PrReview), run);
+
+        row.Phase.Text.Should().Be("starting up");
+        row.Phase.Markup.Should().NotContain("h9k task work");
+    }
+
+    /// <summary>
+    /// The mirror of <see cref="An_interactive_claim_unobserved_with_a_blank_machine_name_still_nudges"/>:
+    /// the identical shape (Unobserved, a positive InteractiveSessionCount) fires that nudge for a
+    /// real h9k task work claim, but a pr-review task can never carry one — TaskWorkCommand and
+    /// TaskStartCommand both refuse a pr-review task outright, so every Guid.Empty-claimed
+    /// pr-review task reached this state only through AutoPrReviewEngine's Now speed. Nudging
+    /// toward h9k task work here would advise a lever the platform refuses — the exact rule this
+    /// arm's own comment states.
+    /// </summary>
+    [Fact]
+    public void An_auto_pr_review_headless_claim_never_gets_the_interactive_claim_nudge()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(
+            runId, RunState.Running, sessionProcessId: 4711, dispatchedAt: StatusFixtures.Now.AddDays(-4));
+        run.SessionName = "abcd1234-review-adversarial-1";
+        run.InteractiveSessionCount = 1;
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty, type: TaskType.PrReview),
+            run,
+            liveness: SessionLiveness.Unobserved,
+            interactiveClaimStaleAfterDays: 3);
+
+        row.Attention.NeedsYou.Should().BeFalse();
+        row.Attention.Lever.Should().NotContain("h9k task work");
+    }
+
+    /// <summary>
     /// <c>LastInteractiveActivityAt</c> null does not by itself mean never touched: a document
     /// written before the field existed reads that way forever, until its claim's next attach or
     /// detach rewrites it for real (<c>RunDetails.cs</c>'s own doc comment). A positive

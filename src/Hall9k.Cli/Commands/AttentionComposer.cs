@@ -179,7 +179,15 @@ internal static class AttentionComposer
         bool reachedViaKnownGoneOrEnded = phase.Liveness is SessionLiveness.Gone or SessionLiveness.NotApplicable;
         bool reachedViaLegacyBlankMachineName = run is not null
             && phase.Liveness == SessionLiveness.Unobserved && !IsInteractiveSessionRecordedElsewhere(run, machineName);
-        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && run is not null
+        // task.Type != TaskType.PrReview excludes the same third Guid.Empty-claimed shape
+        // TaskPhaseComposer's own Working() now excludes (independent pre-PR review, cycle 1,
+        // both lenses): AutoPrReviewEngine's Now speed launches a headless pr-review run under
+        // this identical sentinel, which is never an attended h9k task work claim, so nudging
+        // toward h9k task work here — a command TaskWorkCommand refuses outright for a pr-review
+        // task — would advise a lever the platform will refuse, the exact rule this arm's own
+        // comment above states.
+        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && task.Type != TaskType.PrReview
+            && run is not null
             && (run.State == Domain.Features.Run.RunState.Dispatched
                 || run.State == Domain.Features.Run.RunState.Running)
             && (reachedViaKnownGoneOrEnded || reachedViaLegacyBlankMachineName)
