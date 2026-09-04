@@ -12,8 +12,15 @@ public sealed record ReviewRequestedPullRequest(int Number, string Url, string T
 /// honestly null in either field when the timeline read could not attribute it (AGENTS.md, never
 /// guess at unobserved facts). <see cref="RequestedAt"/> is GitHub's own event timestamp, not
 /// this install's poll time — the caller decides which one to record as the observation moment.
+/// <see cref="Found"/> is the fact <see cref="Login"/>/<see cref="RequestedAt"/> alone cannot
+/// carry (independent pre-PR review, cycle 1, adversarial lens): whether a matching timeline
+/// event of the requested <see cref="ReviewTimelineEventKind"/> was actually observed at all,
+/// decoupled from whether its actor or timestamp could also be read. A caller deciding whether a
+/// withdrawal genuinely happened needs this, not the attribution — a removal event with no
+/// readable actor is still a removal, and a gh failure or a genuinely absent event must never be
+/// read as one.
 /// </summary>
-public sealed record ReviewRequestActor(string? Login, DateTimeOffset? RequestedAt);
+public sealed record ReviewRequestActor(bool Found, string? Login, DateTimeOffset? RequestedAt);
 
 /// <summary>
 /// Which half of a login's reviewer-request history <see cref="GitHubReviewAssignments.FindMostRecentRequestActorAsync"/>
@@ -105,6 +112,16 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
     /// every call, never diffed against a prior snapshot here. Throws on a <c>gh</c> failure
     /// rather than returning an empty list, so a project this cannot reach counts as a failed
     /// inspection for the poll's own backoff rather than reading as "nothing is assigned here."
+    /// <para>
+    /// <c>--limit</c> is explicit rather than left at gh's own default of 30 (independent pre-PR
+    /// review, cycle 1, conformance lens): a repository with more standing requests than the
+    /// default page silently truncates both this read and <c>ConcludeWithdrawnAsync</c>'s own
+    /// comparison against it, which reads a truncated candidate as recalled and abandons a task
+    /// nobody withdrew. 500 is far beyond any reviewer queue a real install carries — a login
+    /// with that many simultaneous requests has a different problem than this poll can solve —
+    /// so a real truncation should never happen in practice; it is chosen explicitly rather than
+    /// left to gh's own default precisely so it never becomes an invisible one again.
+    /// </para>
     /// </summary>
     public async Task<IReadOnlyList<ReviewRequestedPullRequest>> ListReviewRequestedAsync(
         string repository, string login, string workingDirectory, CancellationToken cancellationToken)
@@ -112,7 +129,7 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         ProcessResult result = await runner(
             "gh",
             [
-                "pr", "list", "--repo", repository, "--state", "open",
+                "pr", "list", "--repo", repository, "--state", "open", "--limit", "500",
                 "--search", $"review-requested:{login}", "--json", "number,url,title,body",
             ],
             workingDirectory, cancellationToken);
@@ -188,12 +205,12 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return new ReviewRequestActor(null, null);
+            return new ReviewRequestActor(Found: false, null, null);
         }
 
         if (result.ExitCode != 0)
         {
-            return new ReviewRequestActor(null, null);
+            return new ReviewRequestActor(Found: false, null, null);
         }
 
         try
@@ -203,7 +220,7 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         catch (Exception exception) when (
             exception is JsonException or KeyNotFoundException or InvalidOperationException)
         {
-            return new ReviewRequestActor(null, null);
+            return new ReviewRequestActor(Found: false, null, null);
         }
     }
 
@@ -223,7 +240,7 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
             // A pull request GraphQL cannot resolve (a stale number in a repository that has
             // moved or renamed) returns "pullRequest": null rather than an error, with no
             // "timelineItems" to walk — honestly unattributed rather than a guess.
-            return new ReviewRequestActor(null, null);
+            return new ReviewRequestActor(Found: false, null, null);
         }
 
         string expectedTypeName = kind == ReviewTimelineEventKind.Requested
@@ -253,10 +270,10 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
                     stamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset parsed)
                     ? parsed
                     : null;
-            return new ReviewRequestActor(actorLogin, requestedAt);
+            return new ReviewRequestActor(Found: true, actorLogin, requestedAt);
         }
 
-        return new ReviewRequestActor(null, null);
+        return new ReviewRequestActor(Found: false, null, null);
     }
 
     private static string? ReadString(JsonElement element, string property) =>

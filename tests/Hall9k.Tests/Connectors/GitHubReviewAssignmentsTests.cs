@@ -71,6 +71,23 @@ public sealed class GitHubReviewAssignmentsTests
         GitHubReviewAssignments.ParseReviewRequested("[]").Should().BeEmpty();
     }
 
+    /// <summary>
+    /// gh's own default page is 30 (independent pre-PR review, cycle 1, conformance lens): a
+    /// repository with more standing requests than that would silently truncate both this read
+    /// and the withdrawal sweep's own comparison against it, reading a truncated candidate as
+    /// recalled. An explicit --limit closes that off.
+    /// </summary>
+    [Fact]
+    public async Task ListReviewRequestedAsync_asks_gh_for_more_than_its_own_default_page()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("[]");
+
+        await new GitHubReviewAssignments(gh.Runner).ListReviewRequestedAsync(
+            "acme/widgets", "brian", "/repos/acme-widgets", CancellationToken.None);
+
+        gh.Calls.Single().Arguments.Should().Contain("--limit");
+    }
+
     private const string TimelineJson = """
         {
           "data": {
@@ -114,6 +131,7 @@ public sealed class GitHubReviewAssignmentsTests
         ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
             TimelineJson, "brian", ReviewTimelineEventKind.Requested);
 
+        actor.Found.Should().BeTrue();
         actor.Login.Should().Be("ryan");
         actor.RequestedAt.Should().Be(new DateTimeOffset(2026, 9, 3, 9, 15, 0, TimeSpan.Zero));
     }
@@ -124,6 +142,7 @@ public sealed class GitHubReviewAssignmentsTests
         ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
             TimelineJson, "nobody-ever-requested", ReviewTimelineEventKind.Requested);
 
+        actor.Found.Should().BeFalse("no matching event exists to have found");
         actor.Login.Should().BeNull();
         actor.RequestedAt.Should().BeNull();
     }
@@ -161,6 +180,7 @@ public sealed class GitHubReviewAssignmentsTests
         ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
             RequestWithNoRemovalJson, "brian", ReviewTimelineEventKind.Removed);
 
+        actor.Found.Should().BeFalse("no removal event exists on this timeline at all");
         actor.Login.Should().BeNull("alice requested; nobody has recalled anything");
         actor.RequestedAt.Should().BeNull();
     }
@@ -198,6 +218,7 @@ public sealed class GitHubReviewAssignmentsTests
         ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
             RequestThenRemovalJson, "brian", ReviewTimelineEventKind.Removed);
 
+        actor.Found.Should().BeTrue();
         actor.Login.Should().Be("carol");
     }
 
@@ -207,6 +228,7 @@ public sealed class GitHubReviewAssignmentsTests
         ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
             RequestThenRemovalJson, "brian", ReviewTimelineEventKind.Requested);
 
+        actor.Found.Should().BeTrue();
         actor.Login.Should().Be("alice");
     }
 
@@ -218,6 +240,7 @@ public sealed class GitHubReviewAssignmentsTests
         ReviewRequestActor actor = GitHubReviewAssignments.ParseMostRecentRequestActor(
             nullPullRequestJson, "brian", ReviewTimelineEventKind.Requested);
 
+        actor.Found.Should().BeFalse("gh could not even resolve the pull request");
         actor.Login.Should().BeNull();
         actor.RequestedAt.Should().BeNull();
     }
