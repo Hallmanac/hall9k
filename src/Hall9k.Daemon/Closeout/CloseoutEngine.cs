@@ -789,13 +789,38 @@ public sealed class CloseoutEngine(
         // mergeable read, never inferred from how long the branch has sat open.
         if (snapshot.IsConflicting)
         {
+            // Recommendation 3 (idea fc85f609, amended by Brian 2026-09-04): a mechanical
+            // fetch+rebase+push, no model session and no local gates, is tried first — GitHub's
+            // own CI on the push is the authoritative gate here, so a local build/test run would
+            // only duplicate it. A clean apply is never reopened for; anything else (a real
+            // conflict, a missing or unusable worktree, a refused push) falls back byte-for-byte
+            // to the reopen-and-review lap below, unchanged.
+            MechanicalRebaseOutcome mechanical = await TryMechanicalRebaseAsync(project, run, cancellationToken);
+            session.Events.Append(run.Id, new PullRequestMechanicalRebaseAttempted(
+                run.Id, mechanical.Succeeded, mechanical.Detail, mechanical.PushedCommit, now));
+
+            if (mechanical.Succeeded)
+            {
+                // The run stays exactly where it was (AwaitingReview): the very next sweep
+                // re-inspects the newly pushed head and naturally observes whatever GitHub's CI
+                // reports for it — all green needs nothing further here, a failing check reopens
+                // through the ordinary failing-checks obstruction below, unchanged.
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Task {TaskId}: pull request {Url} rebased mechanically onto its base and force-pushed "
+                    + "cleanly — no reopen, watching for GitHub's own check result",
+                    task.Id, task.PullRequestUrl);
+                return InspectionOutcome.Inspected;
+            }
+
             session.Events.Append(run.Id, new PullRequestConflictObserved(run.Id, now));
             await DispatchFollowUpOrParkAsync(
                 session, task, run, fence.Version,
                 FollowUpKind.Rebase,
                 [snapshot.HeadCommit ?? "unknown-head"],
                 snapshot,
-                "The pull request's branch conflicts with its base branch.",
+                $"The pull request's branch conflicts with its base branch. The mechanical rebase "
+                + $"fell back to a full review lap: {mechanical.Detail}",
                 now, cancellationToken);
             return InspectionOutcome.Inspected;
         }
@@ -1971,6 +1996,100 @@ public sealed class CloseoutEngine(
             task.Id, kind.Value, automaticActionsSpent + 1, _options.MaxAutomaticCloseoutRuns,
             lapsIfDispatched, _options.MaxCloseoutLapsPerObstruction, humanGranted ? " human-granted" : "", reason);
     }
+
+    /// <summary>What the mechanical rebase attempt actually did, for the caller to record and act on.</summary>
+    private readonly record struct MechanicalRebaseOutcome(bool Succeeded, string Detail, string? PushedCommit);
+
+    /// <summary>
+    /// Recommendation 3 (idea fc85f609, amended by Brian 2026-09-04): before the pull request is
+    /// reopened for a full agent review lap, try the mechanical fix first — <c>git fetch</c> then
+    /// <c>git rebase</c> onto <c>origin/&lt;base&gt;</c> in the run's own retained worktree, no
+    /// model session and no local build/test gates. GitHub's own CI on the push is the
+    /// authoritative gate at the merge bar (Brian's ruling), so a local gate here would only
+    /// duplicate it; validation is left entirely to the push that follows a clean apply.
+    /// <para>
+    /// Real git, never the injected <see cref="ProcessRunner"/> this class otherwise uses for
+    /// <c>gh</c>/Jira: that seam exists to be faked in tests, and GitWorktreeManager's and
+    /// PullRequestOpener's own git calls are never faked either — this mechanical path follows
+    /// the identical convention so a genuinely conflicting (or genuinely clean) git history is
+    /// what decides the outcome.
+    /// </para>
+    /// <para>
+    /// Every fallback is a plain, checkable reason and touches nothing beyond the worktree's own
+    /// git state: a missing retained worktree, one not checked out on the run's own branch, one
+    /// with uncommitted changes, a fetch failure, a rebase that did not apply cleanly (aborted
+    /// before returning, leaving the worktree exactly as it was), or a push the ancestor-or-reflog
+    /// guard refused. Whichever it is, the ordinary reopen-and-review lap picks the branch back up
+    /// exactly as it always has — nothing here changes what that path does when it runs.
+    /// </para>
+    /// </summary>
+    private static async Task<MechanicalRebaseOutcome> TryMechanicalRebaseAsync(
+        ProjectDetails project, RunDetails run, CancellationToken cancellationToken)
+    {
+        ProcessRunner git = Hall9k.Connectors.Processes.ExternalProcess.Runner;
+        string worktreePath = run.WorktreePath;
+
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            return new MechanicalRebaseOutcome(false, "the run's retained worktree is missing", null);
+        }
+
+        ProcessResult branchCheck = await git(
+            "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
+        if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != run.Branch)
+        {
+            return new MechanicalRebaseOutcome(
+                false, "the retained worktree is not usable — it is not checked out on the run's own branch", null);
+        }
+
+        ProcessResult statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
+        if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
+        {
+            return new MechanicalRebaseOutcome(
+                false, "the retained worktree is not usable — it has uncommitted changes", null);
+        }
+
+        ProcessResult fetch = await git("git", ["fetch", "origin", project.BaseBranch], worktreePath, cancellationToken);
+        if (fetch.ExitCode != 0)
+        {
+            return new MechanicalRebaseOutcome(
+                false, $"git fetch origin {project.BaseBranch} failed: {FirstLine(fetch.StandardError)}", null);
+        }
+
+        ProcessResult rebase = await git(
+            "git", ["rebase", $"origin/{project.BaseBranch}"], worktreePath, cancellationToken);
+        if (rebase.ExitCode != 0)
+        {
+            await git("git", ["rebase", "--abort"], worktreePath, cancellationToken);
+            return new MechanicalRebaseOutcome(
+                false,
+                $"git rebase onto origin/{project.BaseBranch} did not apply cleanly: {FirstLine(rebase.StandardError)}",
+                null);
+        }
+
+        ProcessResult headCommit = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+        string pushedCommit = headCommit.ExitCode == 0 ? headCommit.StandardOutput.Trim() : "unknown";
+
+        try
+        {
+            await ForceWithLeasePusher.PushAsync(git, worktreePath, run.Branch, cancellationToken);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return new MechanicalRebaseOutcome(
+                false, $"the force-push after the mechanical rebase was refused: {exception.Message}", null);
+        }
+
+        return new MechanicalRebaseOutcome(
+            true,
+            $"Rebased onto origin/{project.BaseBranch} and force-pushed cleanly (new head {pushedCommit}).",
+            pushedCommit);
+    }
+
+    private static string FirstLine(string text) =>
+        text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) is [string first, ..]
+            ? first
+            : text.Trim();
 
     /// <summary>Appends CloseoutParked and logs it — shared by both DispatchFollowUpOrParkAsync park branches.</summary>
     private async Task ParkAsync(
