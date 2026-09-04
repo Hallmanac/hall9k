@@ -118,6 +118,25 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
                 + "(h9k task work) registers a session against it.");
         }
 
+        // Fetched here, before the RunDetails load the double-booking check below reads, and
+        // reused unmodified at the append's own expectedVersion rather than refetched right
+        // before it (independent pre-PR review, adversarial lens, cycle 1): fetching it late,
+        // immediately before the append, only fences the append against a version this same
+        // refetch has already moved past — two concurrent registrations racing the same empty
+        // ActiveSessions both read RunDetails before either commits, both pass the check below,
+        // and a late fence-fetch on each would each independently pick up whatever the current
+        // version happens to be right before its own append and succeed anyway, one silently
+        // overwriting the other's ActiveSessions entry, exactly what this fence exists to
+        // prevent. Fetched early instead, a competing append landing anywhere in this method's
+        // own window — including during the process-table lookup and file reads below — leaves
+        // the stream at a version this fence no longer names, so this append's own
+        // expectedVersion fails loudly (EventStreamUnexpectedMaxEventIdException, caught by the
+        // caller) instead of silently succeeding on stale data.
+        StreamState? fence = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
+            ?? throw new DomainConflictException(
+                $"Task {task.Id}'s run {runId} lost its run stream while registering — h9k task show {task.Id} "
+                + "to see where it stands.");
+
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException(
                 $"Task {task.Id} is claimed interactively but run {runId} has no record — the process likely died "
@@ -163,18 +182,13 @@ public sealed class TaskRegisterSessionCommand : Hall9kAsyncCommand<TaskRegister
         // this exact field (independent pre-PR review, conformance lens, cycle 1).
         string sessionName = ReadClaudeSessionName(processId) ?? string.Empty;
 
-        // Fenced immediately before the append, not left as a bare check-then-act: without this,
-        // the prompt pasted into two sessions at once both pass the double-booking check above
-        // (both read ActiveSessions still empty or still theirs) and both append unconditionally,
-        // and RunDetailsProjection.StartSession's single-slot ActiveSessions record silently lets
-        // the second append overwrite the first session's liveness record — exactly the collision
-        // the check above exists to prevent, just narrowed rather than closed (independent pre-PR
-        // review, adversarial lens, cycle 1). The sibling commands on this same claim
-        // (TaskHandbackCommand, TaskReleaseCommand) already fence their own append the same way.
-        StreamState? fence = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
-            ?? throw new DomainConflictException(
-                $"Task {task.Id}'s run {runId} lost its run stream while registering — h9k task show {task.Id} "
-                + "to see where it stands.");
+        // The fence fetched above, before the RunDetails load and the double-booking check both
+        // read: not left as a bare check-then-act, and not refetched here either — see that
+        // fetch's own comment for why refetching immediately before the append would only fence
+        // it against a version this same refetch has already moved past. The sibling commands on
+        // this same claim (TaskHandbackCommand, TaskReleaseCommand) fence their own append the
+        // same way, immediately before it, because neither reads a stale projection the way the
+        // double-booking check above does first.
         session.Events.Append(runId, expectedVersion: fence.Version + 1, new InteractiveSessionStarted(
             runId, claudeSessionId, startedAt, processId, Environment.MachineName, sessionName));
         return (runId, processId);

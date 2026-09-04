@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project;
@@ -167,7 +168,7 @@ public static class WorkPromptBuilder
             {
                 AppendSelfRegistrationRule(prompt, task.Id);
                 AppendFindLiveAgentsRule(prompt, task.Id);
-                AppendPlatformSettingsReminderRule(prompt);
+                AppendPlatformSettingsReminderRule(prompt, project);
             }
         }
         else if (isDeliberateHeadlessStart)
@@ -732,7 +733,7 @@ public static class WorkPromptBuilder
     /// opens (this project cannot reference the CLI, so it is named rather than linked): this very
     /// session, not only the operator, may run <c>h9k task deliver</c>, <c>h9k task handback</c>, or
     /// <c>h9k task release</c> against its own claim without the double-booking guard refusing it as
-    /// "still attached elsewhere" (Decisions Log #125 — "the prompt-handoff model's whole point is a
+    /// "still attached elsewhere" (Decisions Log #126 — "the prompt-handoff model's whole point is a
     /// session that keeps running past the build and delivers itself on the operator's own go").
     /// Two things follow from that which the guard itself cannot enforce, so the prompt states them
     /// instead (independent pre-PR review, cycle 1, both lenses).
@@ -753,9 +754,11 @@ public static class WorkPromptBuilder
     /// </summary>
     public static void AppendSelfDeliveryRule(StringBuilder prompt)
     {
-        prompt.AppendLine("- **You may deliver, hand back, or release this claim yourself**, from your own Bash");
-        prompt.AppendLine("  tool — `h9k task deliver`, `h9k task handback`, and `h9k task release` all recognise");
-        prompt.AppendLine("  this very session as the claim's own, rather than refusing it as still attached");
+        prompt.AppendLine("- **You may deliver, hand back, or release this claim yourself, but only once the");
+        prompt.AppendLine("  operator has told you to** — delivery is still the operator's explicit act, never");
+        prompt.AppendLine("  your own unprompted call. When they do, run it from your own Bash tool:");
+        prompt.AppendLine("  `h9k task deliver`, `h9k task handback`, and `h9k task release` all recognise this");
+        prompt.AppendLine("  very session as the claim's own, rather than refusing it as still attached");
         prompt.AppendLine("  elsewhere. Two things come with that. Pass `--handoff \"<text>\"` explicitly on");
         prompt.AppendLine("  `h9k task deliver` — this session runs non-interactively from your own Bash tool,");
         prompt.AppendLine("  so the operator-facing handoff prompt can never reach you, and omitting the flag");
@@ -823,16 +826,26 @@ public static class WorkPromptBuilder
     /// it — the printed handoff still names the flag, and a session that does carry it is simply
     /// told nothing new here.
     /// </summary>
-    public static void AppendPlatformSettingsReminderRule(StringBuilder prompt)
+    public static void AppendPlatformSettingsReminderRule(StringBuilder prompt, ProjectDetails project)
     {
         prompt.AppendLine("- **Two platform rules apply here whether or not you were launched with the");
         prompt.AppendLine("  recommended `--settings` file.** Never add a `Co-Authored-By` trailer to any");
         prompt.AppendLine("  commit — a hard rule for agents (AGENTS.md \"Git rules\"). And size any slow Bash");
-        prompt.AppendLine("  tool command's timeout for this platform's own gates rather than trusting the");
-        prompt.AppendLine("  default: this project's own `dotnet test` gate can run 8 minutes or more, well");
-        prompt.AppendLine("  past Claude Code's stock 2-minute Bash timeout, so pass an explicit, generous");
-        prompt.AppendLine("  `timeout` on build/test commands rather than letting the default kill one");
-        prompt.AppendLine("  mid-run.");
+        prompt.AppendLine("  tool command's timeout for this project's own gates rather than trusting the");
+        if (project.VerifyCommands.Count == 0)
+        {
+            prompt.AppendLine("  default: this project configures no verification gates, but any other slow");
+            prompt.AppendLine("  command still deserves an explicit, generous `timeout` rather than trusting");
+            prompt.AppendLine("  Claude Code's stock 2-minute Bash default.");
+        }
+        else
+        {
+            prompt.AppendLine("  default: this project's own gates — " + string.Join(", ",
+                project.VerifyCommands.Select(gate => $"`{gate.Command}`")) + " — can run well past");
+            prompt.AppendLine("  Claude Code's stock 2-minute Bash timeout, so pass an explicit, generous");
+            prompt.AppendLine("  `timeout` on build/test commands rather than letting the default kill one");
+            prompt.AppendLine("  mid-run.");
+        }
     }
 
     /// <summary>

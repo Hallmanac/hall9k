@@ -78,6 +78,7 @@ public sealed class InteractiveSessionLivenessTests
         RunDetails run = new()
         {
             Id = DomainId.New(),
+            SessionName = "abcd1234-" + SessionRoleName.InteractiveClaim,
             ActiveSessions = [new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, pid, startedAt)],
         };
 
@@ -87,6 +88,36 @@ public sealed class InteractiveSessionLivenessTests
 
         InteractiveSessionLiveness.IsSelfInvocation(run).Should().BeTrue(
             "this is the exact live process, at its exact recorded start time, that the run's own ActiveSessions entry names");
+    }
+
+    /// <summary>
+    /// h9k task start records InteractiveSessionStarted under the identical AgentRole.Interactive
+    /// a prompt-handoff or direct-launch claim does (TaskStartCommand mirrors that append
+    /// exactly), so a bare role-plus-pid match cannot tell a deliberate headless claim apart from
+    /// an attended one. Its own prompt never received AppendSelfDeliveryRule and states deliver
+    /// and verify refuse unconditionally from inside it, so letting CLAUDE_PID recognise this
+    /// session as its own would deliver mid-work with no handoff and no stop-editing rule ever
+    /// stated to it (adversarial review, cycle 1).
+    /// </summary>
+    [Fact]
+    public void Does_not_recognise_a_deliberate_headless_start_claim_even_when_CLAUDE_PID_matches()
+    {
+        using Process current = Process.GetCurrentProcess();
+        int pid = current.Id;
+        DateTimeOffset startedAt = InteractiveSessionLiveness.ReadStartedAt(current);
+        RunDetails run = new()
+        {
+            Id = DomainId.New(),
+            SessionName = "abcd1234-" + SessionRoleName.Build,
+            ActiveSessions = [new ActiveSession(AgentRole.Interactive, ReviewLens.Unknown, pid, startedAt)],
+        };
+
+        using EnvironmentVariableScope scope = EnvironmentVariableScope.Set(
+            (InteractiveSessionLiveness.InteractiveRunEnvironmentVariable, null),
+            (InteractiveSessionLiveness.ClaudeCodePidEnvironmentVariable, pid.ToString()));
+
+        InteractiveSessionLiveness.IsSelfInvocation(run).Should().BeFalse(
+            "a start-it-mine claim's own session never received the self-delivery rule, so it must still be refused as attached, not exempted");
     }
 
     [Fact]

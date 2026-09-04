@@ -201,6 +201,22 @@ internal static class InteractiveSessionLiveness
             return false;
         }
 
+        // A deliberate h9k task start claim records its InteractiveSessionStarted under the
+        // identical AgentRole.Interactive this check already filtered on above (TaskStartCommand
+        // mirrors h9k task work's own append exactly), so a bare role-plus-pid match alone cannot
+        // tell the two apart. Its session answers to the SessionRoleName.Build suffix, never
+        // SessionRoleName.InteractiveClaim (TaskPhaseComposer already keys the identical
+        // distinction off this same field) — excluding it here matters because that session's own
+        // prompt (isDeliberateHeadlessStart) never received AppendSelfDeliveryRule and states
+        // deliver/verify refuse unconditionally from inside it, so letting CLAUDE_PID wave a
+        // start-it-mine session's own unattended deliver past the guard would deliver mid-work,
+        // with a blank handoff and no stop-editing rule ever stated to it (adversarial review,
+        // cycle 1).
+        if (!run.SessionName.EndsWith("-" + SessionRoleName.InteractiveClaim, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         string? claudePid = Environment.GetEnvironmentVariable(ClaudeCodePidEnvironmentVariable);
         return claudePid.IsNotBlank() && int.TryParse(claudePid, out int pid) && pid == interactive.ProcessId
             && IsAlive(pid, startedAt);
