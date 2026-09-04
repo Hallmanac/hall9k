@@ -100,6 +100,31 @@ public sealed class RunCloseoutProjectionTests
         view.State.Should().Be(RunState.AwaitingReview);
     }
 
+    /// <summary>
+    /// Closeout's mechanical rebase fast path (recommendation 3, idea fc85f609): a clean apply
+    /// records the four fields on the read model, informational only exactly like the sibling
+    /// PullRequestConflictObserved handler two lines above it in RunDetails.cs — that one is what
+    /// actually moves State to Conflicting, and only on a fallback, never on a clean apply.
+    /// </summary>
+    [Fact]
+    public void A_mechanical_rebase_attempt_records_the_outcome_without_moving_the_run()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = AwaitingReviewRun(projection, id);
+
+        projection.Apply(new FakeEvent<PullRequestMechanicalRebaseAttempted>(new PullRequestMechanicalRebaseAttempted(
+            id, Succeeded: true, "Rebased onto origin/main and force-pushed cleanly (new head abc123).",
+            PushedCommit: "abc123", Now)), view);
+
+        view.State.Should().Be(RunState.AwaitingReview, "a clean mechanical rebase is never reopened for");
+        view.LastMechanicalRebaseSucceeded.Should().BeTrue();
+        view.LastMechanicalRebaseDetail.Should().Be(
+            "Rebased onto origin/main and force-pushed cleanly (new head abc123).");
+        view.LastMechanicalRebasePushedCommit.Should().Be("abc123");
+        view.LastMechanicalRebaseAt.Should().Be(Now);
+    }
+
     [Fact]
     public void Run_details_parks_with_the_reason_when_the_automatic_budget_is_spent()
     {

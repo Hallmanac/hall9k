@@ -1476,4 +1476,38 @@ public sealed class RunAggregateTests
         act.Should().NotThrow();
         run.State.Should().Be(RunState.Dispatched, "logging an interaction never advances the run's own state");
     }
+
+    /// <summary>
+    /// Closeout's mechanical rebase fast path (recommendation 3, idea fc85f609): a clean apply
+    /// records the four fields and leaves State untouched (still AwaitingReview) so the very next
+    /// sweep re-inspects the pushed head — the sibling PullRequestConflictObserved handler two
+    /// lines above this one in RunAggregate.cs is the one that actually moves State to Conflicting,
+    /// and only on a fallback.
+    /// </summary>
+    [Fact]
+    public void Mechanical_rebase_attempted_records_the_outcome_without_moving_state()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, ProcessId: 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new PullRequestOpened(id, "https://github.com/x/y/pull/7", 7, Now));
+        run.State.Should().Be(RunState.AwaitingReview);
+
+        run.Apply(new PullRequestMechanicalRebaseAttempted(
+            id, Succeeded: true, "Rebased onto origin/main and force-pushed cleanly (new head abc123).",
+            PushedCommit: "abc123", Now));
+
+        run.State.Should().Be(RunState.AwaitingReview, "a clean mechanical rebase is never reopened for");
+        run.LastMechanicalRebaseSucceeded.Should().BeTrue();
+        run.LastMechanicalRebaseDetail.Should().Be(
+            "Rebased onto origin/main and force-pushed cleanly (new head abc123).");
+        run.LastMechanicalRebasePushedCommit.Should().Be("abc123");
+        run.LastMechanicalRebaseAt.Should().Be(Now);
+    }
 }
