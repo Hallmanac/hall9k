@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using JasperFx.Events;
 using Marten;
 using Marten.Linq.MatchesSql;
 
@@ -54,13 +55,33 @@ public sealed class AutoPrReviewEngine(
     ProcessRunner processRunner,
     ILogger<AutoPrReviewEngine> logger)
 {
-    private static readonly string[] LiveNonTerminalStates =
+    private static readonly string[] TerminalStates =
         [TaskState.Done.Value, TaskState.Abandoned.Value];
+
+    /// <summary>
+    /// At most one ceiling-exempt launch per sweep (Decisions Log #64's own origin OOM,
+    /// independent pre-PR review cycle 1, conformance and adversarial lenses both): the consent
+    /// text a human agrees to at <c>h9k project set --auto-pr-review now</c>
+    /// (<c>ProjectSetCommand.AutoPrReviewConsequence</c>) promises "an extra concurrent agent
+    /// session", singular, and a single sweep iterating every currently-requested pull request
+    /// across every opted-in project with no cap at all could otherwise start as many ceiling-exempt
+    /// sessions as there are open requests in one tick. A candidate beyond the cap is not dropped —
+    /// it is minted, published and assigned exactly as a <c>First</c>-speed task is, so it still
+    /// takes the next free ordinary dispatch slot rather than waiting a full poll interval for
+    /// nothing to happen.
+    /// </summary>
+    private const int MaxImmediateLaunchesPerSweep = 1;
 
     private readonly GitHubReviewAssignments reviewAssignments = new(processRunner);
 
+    private int _immediateLaunchesThisSweep;
+
     public async Task<AutoPrReviewSweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
+        // Sequential ticks only (AutoPrReviewMonitor awaits one PollOnceAsync before starting the
+        // next), so a plain field is safe here without any locking.
+        _immediateLaunchesThisSweep = 0;
+
         IReadOnlyList<ProjectDetails> optedIn;
         await using (IQuerySession query = store.QuerySession())
         {
@@ -201,7 +222,22 @@ public sealed class AutoPrReviewEngine(
             .FirstOrDefaultAsync(cancellationToken);
 
         ReviewRequestActor actor = await reviewAssignments.FindMostRecentRequestActorAsync(
-            OwnerFrom(repository), NameFrom(repository), candidate.Number, login, project.RepositoryPath, cancellationToken);
+            OwnerFrom(repository), NameFrom(repository), candidate.Number, login,
+            ReviewTimelineEventKind.Requested, project.RepositoryPath, cancellationToken);
+
+        if (previousReview is not null
+            && !await IsGenuineReRequestAsync(session, previousReview, actor.RequestedAt, cancellationToken))
+        {
+            // Still the same standing request an earlier auto-created review already covered —
+            // not a re-review, just a reviewer request GitHub never cleared (walk-pr-review-findings
+            // can end with nothing posted, or review resolve can close the task without a GitHub
+            // review ever being submitted). Minting again here on every later sweep is the
+            // infinite re-mint loop both review lenses found (independent pre-PR review, cycle 1).
+            logger.LogDebug(
+                "Auto-pr-review skipped {Repository}#{Number}: task {TaskId} already reviewed this same "
+                + "standing request", repository, candidate.Number, DomainId.Short(previousReview.Id));
+            return 0;
+        }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         string objective = RelayedText.WithoutClosingKeywords(RelayedText.OneLine(imported.Title)).Trim() is { Length: > 0 } seed
@@ -231,7 +267,7 @@ public sealed class AutoPrReviewEngine(
             imported.Reference, now, node.OwnerId, model: null, blockedBy: null, sourceIdeaId: null, epicId: null);
 
         PullRequestReviewAssignmentObserved observed = new(
-            taskId, imported.Url?.ToString() ?? candidate.Url, login, actor.Login, now);
+            taskId, imported.Url?.ToString() ?? candidate.Url, login, actor.Login, now, actor.RequestedAt);
 
         TaskAggregate task = new();
         task.Apply(added);
@@ -248,10 +284,24 @@ public sealed class AutoPrReviewEngine(
         task.Apply(assigned);
         events.Add(assigned);
 
+        // A Now-speed candidate beyond this sweep's own immediate-launch cap is not silently
+        // downgraded: it still takes the queue-first marker First speed uses, so it takes the
+        // next free ordinary dispatch slot rather than sitting until the next poll interval.
+        bool launchImmediately = project.AutoPrReview == AutoPrReviewSpeed.Now
+            && ++_immediateLaunchesThisSweep <= MaxImmediateLaunchesPerSweep;
+
         Guid? deliberateRunId = null;
         int? deliberateLeaseGeneration = null;
-        if (project.AutoPrReview == AutoPrReviewSpeed.First)
+        if (project.AutoPrReview == AutoPrReviewSpeed.First
+            || (project.AutoPrReview == AutoPrReviewSpeed.Now && !launchImmediately))
         {
+            if (project.AutoPrReview == AutoPrReviewSpeed.Now)
+            {
+                logger.LogInformation(
+                    "Auto-pr-review deferred {Repository}#{Number} to the ordinary queue-first slot — "
+                    + "this sweep already used its one immediate ceiling-exempt launch", repository, candidate.Number);
+            }
+
             TaskRevised revised = TaskDecider.Revise(
                 task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
                 Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None,
@@ -259,7 +309,7 @@ public sealed class AutoPrReviewEngine(
             task.Apply(revised);
             events.Add(revised);
         }
-        else if (project.AutoPrReview == AutoPrReviewSpeed.Now)
+        else if (launchImmediately)
         {
             deliberateRunId = DomainId.New();
             TaskClaimed claimed = TaskDecider.ClaimDeliberately(
@@ -290,6 +340,39 @@ public sealed class AutoPrReviewEngine(
     }
 
     /// <summary>
+    /// Whether <paramref name="currentRequestedAt"/> — the currently-requested candidate's own
+    /// most recent <c>ReviewRequestedEvent</c> timestamp — postdates the request
+    /// <paramref name="previousReview"/> was minted from, the one fact that tells a genuine
+    /// re-request (Alice requests again after every finding was directed) apart from the same
+    /// standing request GitHub never cleared (independent pre-PR review, cycle 1, both lenses).
+    /// Conservative wherever the evidence is missing: no currently-observed timestamp at all
+    /// means there is nothing to prove this is a fresh request, so it is treated as the same
+    /// standing one rather than risk the infinite re-mint loop this check exists to close; no
+    /// baseline recorded on the previous task (a stream predating <see cref="PullRequestReviewAssignmentObserved.RequestedAt"/>)
+    /// means there is nothing to compare against, so any currently-observed timestamp counts as
+    /// fresher rather than permanently blocking re-review on tasks this field predates.
+    /// </summary>
+    /// <summary>Internal (rather than private) so the dedup-timestamp comparison is directly testable (test: AutoPrReviewEngine dedup coverage) without also depending on <c>WorkItemConnections.ImporterAsync</c>'s un-injectable real-<c>gh</c> construction.</summary>
+    internal static async Task<bool> IsGenuineReRequestAsync(
+        IDocumentSession session, TaskListItem previousReview, DateTimeOffset? currentRequestedAt,
+        CancellationToken cancellationToken)
+    {
+        if (currentRequestedAt is not { } current)
+        {
+            return false;
+        }
+
+        IReadOnlyList<IEvent> stream = await session.Events.FetchStreamAsync(previousReview.Id, token: cancellationToken);
+        DateTimeOffset? previousRequestedAt = stream
+            .Select(recorded => recorded.Data)
+            .OfType<PullRequestReviewAssignmentObserved>()
+            .Select(observed => observed.RequestedAt)
+            .LastOrDefault();
+
+        return previousRequestedAt is not { } previous || current > previous;
+    }
+
+    /// <summary>
     /// Every non-terminal task this feature previously auto-created whose pull request no longer
     /// review-requests this login, per the current sweep's own read — the comparison point is
     /// <see cref="TaskListItem.AutoPrReviewAssigneeLogin"/> itself (set only by this feature), so a
@@ -307,7 +390,7 @@ public sealed class AutoPrReviewEngine(
             .Where(task => task.ProjectId == project.Id)
             .Where(task => task.AutoPrReviewAssigneeLogin != null)
             .Where(task => task.MatchesSql("d.data ->> 'type' = ?", TaskType.PrReview.Value))
-            .Where(task => task.MatchesSql("d.data ->> 'state' NOT IN (?, ?)", LiveNonTerminalStates[0], LiveNonTerminalStates[1]))
+            .Where(task => task.MatchesSql("d.data ->> 'state' NOT IN (?, ?)", TerminalStates[0], TerminalStates[1]))
             .ToListAsync(cancellationToken);
 
         int recalled = 0;
@@ -348,7 +431,8 @@ public sealed class AutoPrReviewEngine(
         int number, string login, CancellationToken cancellationToken)
     {
         ReviewRequestActor actor = await reviewAssignments.FindMostRecentRequestActorAsync(
-            OwnerFrom(repository), NameFrom(repository), number, login, project.RepositoryPath, cancellationToken);
+            OwnerFrom(repository), NameFrom(repository), number, login,
+            ReviewTimelineEventKind.Removed, project.RepositoryPath, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(watchedTask.Id, token: cancellationToken);

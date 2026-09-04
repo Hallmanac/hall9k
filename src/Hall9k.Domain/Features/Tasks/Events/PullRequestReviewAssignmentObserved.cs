@@ -11,10 +11,16 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// assignment timestamp, which the read this feature uses does not reliably carry.
 /// <see cref="AssignedByLogin"/> is honestly null when the read could not attribute the request
 /// to a specific actor (AGENTS.md, never guess at unobserved facts).
+/// <see cref="RequestedAt"/> is GitHub's own event timestamp for the request itself (never this
+/// install's poll time, which <see cref="ObservedAt"/> already carries) — the one fact that lets
+/// a later sweep tell a genuine re-request apart from the same standing request GitHub never
+/// cleared (<c>AutoPrReviewEngine.CreateOneAsync</c>'s own dedup check). Null on a stream written
+/// before this field existed, or whenever the timeline read could not attribute a timestamp.
 /// </summary>
 public sealed record PullRequestReviewAssignmentObserved(
     Guid Id,
     string PullRequestUrl,
     string AssigneeLogin,
     string? AssignedByLogin,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    DateTimeOffset? RequestedAt = null);
