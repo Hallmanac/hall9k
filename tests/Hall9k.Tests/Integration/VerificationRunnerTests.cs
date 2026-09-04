@@ -344,6 +344,43 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         events.Select(e => e.Data).OfType<RunFailed>().Should().BeEmpty("a passing retry never fails the run");
     }
 
+    /// <summary>
+    /// The gate's own permit wait (CrossProcessContainerGate.AcquireAsync, PLAN.md §16 #131) is
+    /// deliberately unbounded, so ordinary cross-process contention under a raised node ceiling or
+    /// a concurrent foreground run can legitimately outlast VerifyGateTimeout. A gate still printing
+    /// that wait line when it is killed must classify as infrastructure and retry rather than being
+    /// blamed on the agent's own work (conformance/adversarial review, cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task A_gate_still_queued_on_the_container_gate_when_killed_classifies_and_retries()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string marker = Path.Combine(_worktree, "retry-marker");
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("flaky",
+                $"if test -f {marker}; then echo ok; exit 0; " +
+                $"else touch {marker}; " +
+                "echo 'Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
+                "(3s elapsed, 4 max concurrent)'; " +
+                "sleep 30; fi")],
+            cts.Token);
+
+        VerificationRunner runner = new(
+            store,
+            Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(1) }),
+            NullLogger<VerificationRunner>.Instance);
+
+        bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeTrue("the second attempt exits clean once the queue wait is behind it");
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        GateRetried retried = events.Select(e => e.Data).OfType<GateRetried>().Single();
+        retried.Cause.Should().Contain("timeout");
+        events.Select(e => e.Data).OfType<RunFailed>().Should().BeEmpty("a passing retry never fails the run");
+    }
+
     [Fact]
     public async Task Zero_commits_on_the_branch_fails_fast_before_any_gate_runs()
     {

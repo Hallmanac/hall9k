@@ -476,8 +476,27 @@ public sealed partial class VerificationRunner(
             // unclassifiable and blamed on the agent's work (adversarial review, cycle 2).
             string timeoutOutput = ReadFullOutput(logFile);
             bool timeoutIsInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutOutput);
-            return (false, timeoutFailure, timeoutIsInfrastructureFailure,
-                GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput), false);
+            string? timeoutExcerpt = GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput);
+
+            // A gate whose own permit wait is still unresolved at the moment of the kill is a
+            // second, distinct shape of infrastructure timeout: the process never got past
+            // CrossProcessContainerGate.AcquireAsync's own unbounded wait (PLAN.md §16 #131), so
+            // it never even reached the agent's own tests, and VerifyGateTimeout's 15-minute
+            // budget — sized for one process's own tier duration — can legitimately be
+            // outlasted by ordinary cross-process contention under a raised node ceiling or a
+            // concurrent foreground run. Checked only here, never folded into the marker scan
+            // above, because that scan also covers a gate that exited on its own, where this same
+            // line's presence is stale history from earlier contention rather than the reason the
+            // gate failed (see GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout's
+            // own comment).
+            if (!timeoutIsInfrastructureFailure &&
+                GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(timeoutOutput))
+            {
+                timeoutIsInfrastructureFailure = true;
+                timeoutExcerpt = GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(timeoutOutput);
+            }
+
+            return (false, timeoutFailure, timeoutIsInfrastructureFailure, timeoutExcerpt, false);
         }
 
         if (process.ExitCode == 0)
