@@ -9,5 +9,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Hall9k.Tests/Hall9k.Tests.csproj" />
+    <Project Path="tests/Hall9k.Tests.LockHolder/Hall9k.Tests.LockHolder.csproj" />
   </Folder>
 </Solution>

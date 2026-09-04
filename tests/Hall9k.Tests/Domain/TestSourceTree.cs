@@ -7,11 +7,15 @@ namespace Hall9k.Tests.Domain;
 /// <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>,
 /// <see cref="Hall9k.Tests.Domain.ProcessTerminationGuardTests"/> and
 /// <see cref="Hall9k.Tests.Domain.NodeBootstrapConventionGuardTests"/> — each walks a whole tree
-/// from its own file's location: the first two this test project, the third both <c>src/</c> and
-/// the whole <c>tests/</c> directory (decision #110 widened its scan to close a gap the narrower
-/// scan left open), the fourth <c>tests/</c> for the same reason. Each needs to tell a real
-/// source file from build output, and each strips comments and string literals before matching so
-/// quoted prose cannot be mistaken for real code.
+/// from its own file's location: <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>
+/// alone still walks this test project only; <see cref="Hall9k.Tests.Domain.ProcessTerminationGuardTests"/>
+/// walks both <c>src/</c> and the whole <c>tests/</c> directory (decision #110 widened its scan
+/// to close a gap the narrower scan left open); <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>
+/// and <see cref="Hall9k.Tests.Domain.NodeBootstrapConventionGuardTests"/> each walk the whole
+/// <c>tests/</c> directory for the same reason (decision #130 widened
+/// <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>'s own scan the identical way).
+/// Each needs to tell a real source file from build output, and each strips comments and string
+/// literals before matching so quoted prose cannot be mistaken for real code.
 /// <para>
 /// <see cref="Hall9k.Tests.Domain.DecisionsLogNumberingGuardTests"/> is a fifth consumer, and
 /// keeps this list from being "every tree-walking guard" alone: it uses <see cref="SourceDirectory"/>
@@ -82,10 +86,11 @@ internal static class TestSourceTree
     /// file and hit counts depend on which configurations happen to be built locally.
     /// </summary>
     /// <param name="rootDirectory">The tree being scanned — this test project for
-    /// <see cref="ContainerRoutingGuardTests"/> and <see cref="HomeEnvironmentIsolationTests"/>,
-    /// the whole <c>tests/</c> directory for <see cref="NodeBootstrapConventionGuardTests"/>, or
-    /// <c>src/</c> and (separately) <c>tests/</c> for <see cref="ProcessTerminationGuardTests"/>,
-    /// which since decision #110 scans both, one call each.</param>
+    /// <see cref="HomeEnvironmentIsolationTests"/> alone, the whole <c>tests/</c> directory for
+    /// <see cref="ContainerRoutingGuardTests"/> (since decision #130) and
+    /// <see cref="NodeBootstrapConventionGuardTests"/>, or <c>src/</c> and (separately)
+    /// <c>tests/</c> for <see cref="ProcessTerminationGuardTests"/>, which since decision #110
+    /// scans both, one call each.</param>
     /// <param name="file">A file found under <paramref name="rootDirectory"/>.</param>
     public static bool IsBuildOutput(string rootDirectory, string file)
     {
