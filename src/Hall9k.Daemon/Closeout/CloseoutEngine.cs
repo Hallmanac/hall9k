@@ -2001,6 +2001,15 @@ public sealed class CloseoutEngine(
     private readonly record struct MechanicalRebaseOutcome(bool Succeeded, string Detail, string? PushedCommit);
 
     /// <summary>
+    /// The same reasoning as <c>PullRequestOpener.PushDeadline</c>: <see cref="ExternalProcess.Deadline"/>
+    /// (120 seconds) is sized for a short metadata read, not a fetch or a push that transfers real
+    /// data, and this path's own fetch/rebase/push runs the identical risk on a large repository or
+    /// a slow uplink that the plain runner would kill mid-transfer (independent pre-PR review,
+    /// cycle 1, adversarial lens — sibling site swept from the PullRequestOpener.cs:285 finding).
+    /// </summary>
+    private static readonly TimeSpan GitDeadline = TimeSpan.FromMinutes(10);
+
+    /// <summary>
     /// Recommendation 3 (idea fc85f609, amended by Brian 2026-09-04): before the pull request is
     /// reopened for a full agent review lap, try the mechanical fix first — <c>git fetch</c> then
     /// <c>git rebase</c> onto <c>origin/&lt;base&gt;</c> in the run's own retained worktree, no
@@ -2041,15 +2050,6 @@ public sealed class CloseoutEngine(
     /// changes what that path does when it runs.
     /// </para>
     /// </summary>
-    /// <summary>
-    /// The same reasoning as <c>PullRequestOpener.PushDeadline</c>: <see cref="ExternalProcess.Deadline"/>
-    /// (120 seconds) is sized for a short metadata read, not a fetch or a push that transfers real
-    /// data, and this path's own fetch/rebase/push runs the identical risk on a large repository or
-    /// a slow uplink that the plain runner would kill mid-transfer (independent pre-PR review,
-    /// cycle 1, adversarial lens — sibling site swept from the PullRequestOpener.cs:285 finding).
-    /// </summary>
-    private static readonly TimeSpan GitDeadline = TimeSpan.FromMinutes(10);
-
     private async Task<MechanicalRebaseOutcome> TryMechanicalRebaseAsync(
         ProjectDetails project, RunDetails run, CancellationToken cancellationToken)
     {
