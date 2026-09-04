@@ -74,7 +74,7 @@ public sealed class TaskPhaseSurfaceTests
 
     /// <summary>
     /// An interactive claim's own Dispatched window is no longer necessarily brief (Decisions Log
-    /// #125): by default h9k task work returns as soon as it prints the prompt, before anyone has
+    /// #126): by default h9k task work returns as soon as it prints the prompt, before anyone has
     /// pasted it anywhere, so a claim can sit Dispatched — with no session ever having registered —
     /// for as long as the operator takes to get to it. The generic "worktree and prompt being
     /// prepared" wording above describes a headless run's own brief pre-launch window, not this
@@ -91,6 +91,29 @@ public sealed class TaskPhaseSurfaceTests
 
         row.Phase.Text.Should().Be("awaiting a pasted session");
         row.Phase.Detail.Should().Contain("self-registers");
+        row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
+    }
+
+    /// <summary>
+    /// A deliberate h9k task start claim carries the identical Guid.Empty sentinel and can sit
+    /// Dispatched indefinitely too, when its own HeadlessLaunch.SpawnDetached throws before
+    /// InteractiveSessionStarted ever lands (claude missing from PATH, a stale
+    /// HALL9K_CLAUDE_PATH) — but no prompt was ever printed for anyone to paste anywhere, so it
+    /// must not share the prompt-handoff claim's own wording (adversarial review, cycle 1).
+    /// </summary>
+    [Fact]
+    public void A_start_it_mine_claim_stuck_at_dispatched_never_claims_a_prompt_was_printed()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Dispatched, sessionProcessId: null);
+        run.SessionName = "abcd1234-build";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty), run);
+
+        row.Phase.Text.Should().Be("awaiting launch");
+        row.Phase.Detail.Should().NotContain("self-registers", "no prompt was ever printed for h9k task start");
+        row.Phase.Detail.Should().Contain("h9k task work");
         row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
     }
 

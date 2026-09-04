@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -160,7 +159,7 @@ internal static class HeadlessLaunch
             try
             {
                 using Process claude = Process.GetProcessById(processId);
-                return (processId, ReadStartedAt(claude));
+                return (processId, InteractiveSessionLiveness.ReadStartedAt(claude));
             }
             catch (ArgumentException)
             {
@@ -220,7 +219,7 @@ internal static class HeadlessLaunch
         using IDisposable handleGuard = WindowsStandardHandleInheritance.SuppressForChildProcesses();
         using Process process = Process.Start(shell)
             ?? throw new InvalidOperationException("Failed to start the detach wrapper (cmd.exe).");
-        DateTimeOffset startedAt = ReadStartedAt(process);
+        DateTimeOffset startedAt = InteractiveSessionLiveness.ReadStartedAt(process);
 
         // Mirrors the Unix path's own settle window exactly: a failure inside cmd.exe's /c
         // parse (claude missing, or the worktree gone) exits near-instantly, so a brief pause
@@ -255,22 +254,4 @@ internal static class HeadlessLaunch
         }
     }
 
-    /// <summary>
-    /// Mirrors <c>ProcessManagerBase.ReadStartedAt</c> exactly — not referenced, because the CLI
-    /// cannot reference the daemon project. <see cref="DateTimeOffset.MinValue"/> rather than a
-    /// plausible-looking guess when the process's own start time cannot be read (AGENTS.md: never
-    /// guess at unobserved facts) — the same sentinel <c>TaskWorkCommand.ReadStartedAt</c> already
-    /// uses for the identical reason.
-    /// </summary>
-    private static DateTimeOffset ReadStartedAt(Process process)
-    {
-        try
-        {
-            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
-        {
-            return DateTimeOffset.MinValue;
-        }
-    }
 }

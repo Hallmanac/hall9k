@@ -126,7 +126,7 @@ internal static class TaskPhaseComposer
         }
 
         // An interactive claim's own Dispatched window is no longer necessarily brief (Decisions
-        // Log #125): by default h9k task work returns as soon as it prints the worktree, branch,
+        // Log #126): by default h9k task work returns as soon as it prints the worktree, branch,
         // and starting prompt, before the operator has pasted it anywhere — so the generic
         // "worktree and prompt being prepared" wording below would misdescribe a fully-prepared
         // claim sitting untouched, possibly for a long while, as still mid-setup.
@@ -141,11 +141,21 @@ internal static class TaskPhaseComposer
         // h9k status inside the milliseconds between a claim and --direct-launch's own
         // Process.Start(), and the run record carries no field distinguishing which launch mode a
         // claim used, so there is no honest way to special-case that path out of this one.
+        //
+        // A deliberate h9k task start claim carries this same Guid.Empty sentinel and can sit
+        // Dispatched indefinitely too, when HeadlessLaunch.SpawnDetached itself throws (claude
+        // missing from PATH, a stale HALL9K_CLAUDE_PATH) — the claim and its Dispatched run
+        // survive that by design, but no prompt was ever printed for a human to paste anywhere
+        // (adversarial review, cycle 1). SessionRoleName's own role suffix is what tells the two
+        // apart here too, exactly as the Running case above already relies on it.
         if (task.ClaimedByNodeId == Guid.Empty && run.State.Value == "Dispatched")
         {
-            return new TaskPhase("awaiting a pasted session", SessionLiveness.NotApplicable,
-                "h9k task work already printed the worktree, branch, and prompt — paste it into a Claude Code "
-                + "session (it self-registers) or h9k task work --direct-launch to launch one yourself");
+            return run.SessionName.EndsWith("-" + SessionRoleName.Build, StringComparison.Ordinal)
+                ? new TaskPhase("awaiting launch", SessionLiveness.NotApplicable,
+                    "h9k task start recorded this claim but its headless session never started — h9k task work re-enters it")
+                : new TaskPhase("awaiting a pasted session", SessionLiveness.NotApplicable,
+                    "h9k task work already printed the worktree, branch, and prompt — paste it into a Claude Code "
+                    + "session (it self-registers) or h9k task work --direct-launch to launch one yourself");
         }
 
         return run.State.Value switch

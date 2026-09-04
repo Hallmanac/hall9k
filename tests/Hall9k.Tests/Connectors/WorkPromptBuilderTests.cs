@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -158,6 +159,10 @@ public sealed class WorkPromptBuilderTests
 
         prompt.Should().Contain("run by the operator explicitly");
         prompt.Should().Contain("nothing pushes or");
+        prompt.Should().Contain(
+            "only once the",
+            "the self-delivery bullet later in the prompt must not read as unqualified permission to deliver unprompted");
+        prompt.Should().Contain("never your own unprompted call");
     }
 
     [Fact]
@@ -199,6 +204,32 @@ public sealed class WorkPromptBuilderTests
         withSelfRegistration.Should().Contain("Co-Authored-By");
         withoutSelfRegistration.Should().NotContain(
             "Co-Authored-By", "--direct-launch always passes --settings itself, so nothing here can be skipped");
+    }
+
+    [Fact]
+    public void Timeout_reminder_names_this_projects_own_gates_rather_than_a_hardcoded_dotnet_fact()
+    {
+        TaskDetails task = SomeTask();
+        ProjectDetails nodeProject = SomeProject();
+        nodeProject.VerifyCommands.Add(new VerifyCommand("test", "npm test"));
+
+        string prompt = WorkPromptBuilder.Build(
+            task, nodeProject, "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().Contain("`npm test`");
+        prompt.Should().NotContain("dotnet test", "this project configures no such gate");
+    }
+
+    [Fact]
+    public void Timeout_reminder_names_no_gate_honestly_when_the_project_configures_none()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().Contain("configures no verification gates");
+        prompt.Should().NotContain("dotnet test");
     }
 
     private string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>

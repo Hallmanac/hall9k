@@ -372,7 +372,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             }
 
             // Re-read rather than assumed still Dispatched/Running: the widened self-invocation
-            // exemption (Decisions Log #125) lets this very child call h9k task deliver or handback
+            // exemption (Decisions Log #126) lets this very child call h9k task deliver or handback
             // on itself while still attached, which moves this run past Dispatched/Running under the
             // same runId deliver's own AgentSessionCompleted append does — and RunDetailsProjection's
             // EndSessions clears ActiveSessions unconditionally, with no role filter, so an
@@ -518,7 +518,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // Whatever the earlier session left — committed or not — is already sitting in this
         // worktree. Under --direct-launch, re-entry resumes that recorded conversation itself
         // (--resume) rather than handing a fresh session the same prompt to rediscover it
-        // (Decisions Log #124); the prompt-handoff default (#125) never launches or resumes
+        // (Decisions Log #124); the prompt-handoff default (#126) never launches or resumes
         // anything itself, so this value simply goes unused on that path.
         // run.InteractiveClaudeSessionId is the most recently recorded InteractiveSessionStarted's
         // own ClaudeSessionId. When none has ever landed for this run, this falls back to

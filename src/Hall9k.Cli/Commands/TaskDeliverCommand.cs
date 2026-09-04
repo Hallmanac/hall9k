@@ -244,7 +244,6 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 + "session has something to start from.[/]");
         }
 
-
         await WriteHandoffAsync(run.RunDirectory, handoff, CancellationToken.None);
 
         // Re-checked immediately before the append that hands this run to the daemon's
