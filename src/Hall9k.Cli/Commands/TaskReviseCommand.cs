@@ -84,6 +84,19 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         [CommandOption("--clear-epic")]
         [Description("Leave the epic this task currently belongs to")]
         public bool ClearEpic { get; init; }
+
+        [CommandOption("--queue-first")]
+        [Description(
+            "Mark this task to take the next free dispatch slot regardless of assignment age — a "
+            + "recorded task-level fact (task 45136b29) the dispatcher's claim query orders on ahead "
+            + "of assignment age. Clears itself automatically once the run it earns actually "
+            + "dispatches. The one field this command still accepts once a task has left Draft, as "
+            + "long as nothing else is revised in the same call")]
+        public bool QueueFirst { get; init; }
+
+        [CommandOption("--clear-queue-first")]
+        [Description("Remove the queue-first marker without waiting for it to dispatch")]
+        public bool ClearQueueFirst { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -97,6 +110,12 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         if (settings.ClearEpic && settings.Epic.IsNotBlank())
         {
             throw new DomainValidationException("--clear-epic and --epic say opposite things; pass one.");
+        }
+
+        if (settings.QueueFirst && settings.ClearQueueFirst)
+        {
+            throw new DomainValidationException(
+                "--queue-first and --clear-queue-first say opposite things; pass one.");
         }
 
         string? objective = settings.Objective;
@@ -149,8 +168,15 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                     session, epic, task.ProjectId, cancellationToken))
                 : Optional<Guid?>.None;
 
+        Optional<bool> queuePriority = settings.QueueFirst
+            ? Optional<bool>.Of(true)
+            : settings.ClearQueueFirst
+                ? Optional<bool>.Of(false)
+                : Optional<bool>.None;
+
         if (namesCurrentEpic && task.EpicId is { } currentEpic && objective.IsBlank() && criteria.Count == 0
-            && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank())
+            && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank()
+            && !queuePriority.HasValue)
         {
             AnsiConsole.MarkupLine(
                 $"[green]Already in epic[/] {TaskListCommand.ShortId(currentEpic)}. [dim]Nothing to do.[/]");
@@ -168,12 +194,29 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             model.IsBlank() ? Optional<AgentModel>.None : Optional<AgentModel>.Of(AgentModel.FromInput(model)),
             DateTimeOffset.UtcNow,
             context.OwnerId,
-            epicId);
+            epicId,
+            queuePriority);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
+
+        // The one revision TaskDecider.Revise lets through past Draft (task 45136b29): a call
+        // that touched only the marker gets its own confirmation, since "Draft X revised" and
+        // "Next: h9k task publish" are both wrong for a task that already left Draft.
+        bool queuePriorityOnly = revised.QueuePriority.HasValue && !revised.Objective.HasValue
+            && !revised.AcceptanceCriteria.HasValue && !revised.AgentContext.HasValue
+            && !revised.BlockedBy.HasValue && !revised.Type.HasValue && !revised.Model.HasValue
+            && !revised.EpicId.HasValue;
+        if (queuePriorityOnly && task.State != TaskState.Draft)
+        {
+            AnsiConsole.MarkupLine(revised.QueuePriority.Value
+                ? $"[blue]Task {shortId} marked queue-first[/] — it takes the next free dispatch slot regardless of assignment age."
+                : $"[blue]Task {shortId}'s queue-first marker cleared[/].");
+            return ExitCodes.Ok;
+        }
+
         AnsiConsole.MarkupLine($"[blue]Draft {shortId} revised[/]: {string.Join(", ", Changed(revised))}.");
         AnsiConsole.MarkupLine($"[dim]Next:[/] h9k task publish {shortId}");
         return ExitCodes.Ok;
@@ -221,6 +264,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             yield return revised.EpicId.Value is { } epicId
                 ? $"epic {TaskListCommand.ShortId(epicId)}"
                 : "epic cleared";
+        }
+
+        if (revised.QueuePriority.HasValue)
+        {
+            yield return revised.QueuePriority.Value ? "marked queue-first" : "queue-first marker cleared";
         }
     }
 
