@@ -3,7 +3,7 @@ namespace Hall9k.Tests.Integration;
 /// <summary>
 /// A permit-file bound: at most <c>maxConcurrent</c> holders of everything under
 /// <c>gateDirectory</c>-as-passed-to-<see cref="AcquireAsync"/> may be active at
-/// once, enforced machine-wide rather than per <c>dotnet test</c> process (Decisions Log #130,
+/// once, enforced machine-wide rather than per <c>dotnet test</c> process (Decisions Log #131,
 /// following up #108). <see cref="PostgresFixture"/>'s original <c>ConcurrencyGate</c> was a static
 /// <c>SemaphoreSlim</c>, which only ever bounded one process: N of them running at once —
 /// concurrent gate runs under a raised ceiling, a fix session's own foreground suite, an
