@@ -292,10 +292,38 @@ public sealed class PullRequestOpener(
     /// </summary>
     private static async Task PushBranchAsync(string worktreePath, string branch, CancellationToken cancellationToken)
     {
+        ProcessRunner git = ExternalProcess.RunnerWithDeadline(PushDeadline);
         try
         {
-            await ForceWithLeasePusher.PushAsync(
-                ExternalProcess.RunnerWithDeadline(PushDeadline), worktreePath, branch, cancellationToken);
+            await ForceWithLeasePusher.PushAsync(git, worktreePath, branch, cancellationToken);
+        }
+        catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
+        {
+            // git itself exited 0 here — the read or the push it was running genuinely completed
+            // — but a spawned credential helper held the output pipe open past
+            // ExternalProcess.DrainGrace (ProcessOutputStuckException's own doc comment: exit code
+            // 0 can tell a genuine success from a genuine failure). Exit 0 alone does not say
+            // *which* of ForceWithLeasePusher's own git calls (the read-only
+            // ls-remote/merge-base/reflog, or the push itself) is the one that got stuck, so
+            // origin's actual tip for the branch is read back rather than assumed — the same
+            // distinction the closeout engine's mechanical rebase fast path draws for the
+            // identical reason (independent pre-PR review, cycle 1, both lenses; swept here as the
+            // same shape).
+            ProcessResult localHead = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+            ProcessResult originTip = await git(
+                "git", ["ls-remote", "--exit-code", "origin", $"refs/heads/{branch}"], worktreePath, cancellationToken);
+            string? originHead = originTip.ExitCode == 0
+                ? originTip.StandardOutput.Split('\t', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim()
+                : null;
+
+            if (localHead.ExitCode == 0 && originHead is not null && originHead == localHead.StandardOutput.Trim())
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"{exception.Message} This fails the run, so h9k task retry is the way to requeue "
+                + "once the branch or the remote are sorted out.");
         }
         catch (Exception exception) when (exception is InvalidOperationException or TimeoutException)
         {
