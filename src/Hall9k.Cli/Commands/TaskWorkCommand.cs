@@ -150,6 +150,23 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 taskId, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        // Checked here, ahead of the fresh-claim/re-entry branch below, rather than only inside
+        // ClaimAndCutAsync's own refusal: auto-pr-review's Now speed
+        // (AutoPrReviewEngine.CreateOneAsync) puts a pr-review task into Claimed under the
+        // identical Guid.Empty sentinel an attended interactive claim uses, so task.IsInteractiveClaim
+        // reads true for it too — without this, that already-Claimed state routes straight into
+        // ReenterAsync, which carries no pr-review refusal of its own, and h9k task deliver would
+        // then push its read-only detached refs/pull/<n>/head worktree into PrReviewEngine.DriveAsync
+        // with no PrReviewBaseRefName and no adversarial report (independent pre-PR review, cycle 1,
+        // conformance lens).
+        if (task.Type == TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is a pr-review task — it has no diff of its own for an interactive session to "
+                + "build; it dispatches headlessly against the pull request instead. h9k task show "
+                + $"{taskId} to see where it stands.");
+        }
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         // Minted once per invocation, whether or not it ends up used: a fresh claim records it
