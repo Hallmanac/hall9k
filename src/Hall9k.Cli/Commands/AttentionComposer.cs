@@ -329,7 +329,7 @@ internal static class AttentionComposer
             // completes closeout on its own, only follow-ups do not — so the cause must not
             // claim nothing is watching when the sweep's own candidate query would in fact
             // find this row.
-            "Failed" or "Killed" => IsOrphanSweepCandidate(run)
+            "Failed" or "Killed" => IsOrphanSweepCandidate(task, run)
                 ? new TaskAttention(AttentionLevel.NeedsYou,
                     "the run ended without a merge being observed; this pull request is still eligible "
                     + "for closeout's merge observation, but nothing will fix or follow up on it: "
@@ -422,9 +422,31 @@ internal static class AttentionComposer
     /// sweep's own <c>r.NodeId == nodeId</c> scoping: a run dispatched from another node is a
     /// candidate here even though no sweep on this machine will ever match it, so a multi-node
     /// install can still see this claim outlive the node that would have to act on it.
+    /// <para>
+    /// Also mirrors <c>CloseoutEngine.NeedsMissingRunSweep</c>'s other admitted shape and the three
+    /// guards <c>InspectMissingRunAsync</c> revalidates before acting on it (independent pre-PR
+    /// review, cycle 1, adversarial): a terminal, not-Completed run carrying no pull-request number
+    /// of its own, whose owning task nonetheless recorded one, is not a <c>pr-review</c> task (that
+    /// type's own <c>PullRequestUrl</c> names the pull request it reviewed, never one of its own,
+    /// per <c>TaskResolveCommand</c>'s identical guard). The missing-run sweep completes that
+    /// shape's closeout directly against the intact record — it is watched, even though
+    /// <paramref name="run"/>'s own <c>PullRequestNumber</c> reads null — so without this second arm
+    /// this pane told the reader nothing was watching a pull request the daemon was about to close
+    /// out on its own within one poll interval. <c>Delivered</c>'s own caller only ever reaches
+    /// here with a Done task carrying a <c>PullRequestUrl</c> (<c>TaskStatusComposer</c>'s own
+    /// <c>pushed</c> reading), so the blank-URL and non-Done arms of that revalidation can never
+    /// actually turn this false in practice; the <c>pr-review</c> exclusion is the one that can,
+    /// for a task a human resolved onto a pull request by hand (<c>h9k task resolve --pr</c>) that
+    /// was never enrolled in the sweep's own watch (AGENTS.md's recovery-levers table).
+    /// </para>
     /// </summary>
-    internal static bool IsOrphanSweepCandidate(RunDetails run) =>
-        run.PullRequestNumber is > 0 && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge;
+    internal static bool IsOrphanSweepCandidate(TaskListItem task, RunDetails run) =>
+        (run.PullRequestNumber is > 0 && run.FailureReason != RunDetails.PullRequestClosedWithoutMerge)
+        || (run.PullRequestNumber is null
+            && task.Type != TaskType.PrReview
+            && task.PullRequestUrl.IsNotBlank()
+            && run.State.IsTerminal
+            && run.State != Domain.Features.Run.RunState.Completed);
 
     /// <summary>
     /// What actually moves a Done task whose run ended with no merge observed. <c>h9k pr resolve</c>

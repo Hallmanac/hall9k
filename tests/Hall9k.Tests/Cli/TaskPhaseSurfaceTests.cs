@@ -848,15 +848,29 @@ public sealed class TaskPhaseSurfaceTests
     /// sweep actually watches this row for a merge, so this phase line must not say the same
     /// thing it says for a run whose pull request truly is unwatched — that would contradict
     /// the attention line printed directly under it (AttentionComposer.IsOrphanSweepCandidate).
+    /// A run recording no pull-request number of its own is ALSO watched, by the missing-run
+    /// sweep rather than the orphan one, as long as the owning task itself carries the
+    /// PullRequestUrl (independent pre-PR review, cycle 1, adversarial) — the only shape left
+    /// that is genuinely unwatched is a pr-review task, whose own PullRequestUrl names the pull
+    /// request it reviewed rather than one of its own and is never enrolled in either sweep.
     /// </summary>
     [Fact]
-    public void A_failed_run_with_no_recorded_pull_request_is_unwatched_but_a_recorded_one_is_still_watched()
+    public void A_failed_runs_pull_request_is_watched_whether_or_not_the_run_recorded_its_own_number()
     {
         Guid unwatchedRunId = DomainId.New();
         RunDetails unwatched = StatusFixtures.Run(unwatchedRunId, RunState.Failed, sessionProcessId: null);
         StatusFixtures.Compose(
-                StatusFixtures.Task(TaskState.Done, unwatchedRunId, "https://github.com/x/y/pull/24"), unwatched)
+                StatusFixtures.Task(
+                    TaskState.Done, unwatchedRunId, "https://github.com/x/y/pull/24", type: TaskType.PrReview),
+                unwatched)
             .Phase.Detail.Should().Be("nothing is watching it any more");
+
+        Guid missingNumberRunId = DomainId.New();
+        RunDetails missingNumber = StatusFixtures.Run(missingNumberRunId, RunState.Failed, sessionProcessId: null);
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, missingNumberRunId, "https://github.com/x/y/pull/24"),
+                missingNumber)
+            .Phase.Detail.Should().Be("still eligible for closeout's merge observation");
 
         Guid watchedRunId = DomainId.New();
         RunDetails watched = StatusFixtures.Run(
@@ -870,16 +884,26 @@ public sealed class TaskPhaseSurfaceTests
     /// The "Failed" arm above previously had no "Killed" counterpart, so a Killed run fell to the
     /// generic "watching" default while the attention line printed directly under it already gave
     /// Killed the same rich treatment as Failed (independent pre-PR review, cycle 3, low). Killed
-    /// gets the identical two readings Failed does, for the identical reason.
+    /// gets the identical readings Failed does, for the identical reason — including the
+    /// missing-run sweep's own watch over a run that never recorded its own pull-request number.
     /// </summary>
     [Fact]
-    public void A_killed_run_with_no_recorded_pull_request_is_unwatched_but_a_recorded_one_is_still_watched()
+    public void A_killed_runs_pull_request_is_watched_whether_or_not_the_run_recorded_its_own_number()
     {
         Guid unwatchedRunId = DomainId.New();
         RunDetails unwatched = StatusFixtures.Run(unwatchedRunId, RunState.Killed, sessionProcessId: null);
         StatusFixtures.Compose(
-                StatusFixtures.Task(TaskState.Done, unwatchedRunId, "https://github.com/x/y/pull/24"), unwatched)
+                StatusFixtures.Task(
+                    TaskState.Done, unwatchedRunId, "https://github.com/x/y/pull/24", type: TaskType.PrReview),
+                unwatched)
             .Phase.Detail.Should().Be("nothing is watching it any more");
+
+        Guid missingNumberRunId = DomainId.New();
+        RunDetails missingNumber = StatusFixtures.Run(missingNumberRunId, RunState.Killed, sessionProcessId: null);
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, missingNumberRunId, "https://github.com/x/y/pull/24"),
+                missingNumber)
+            .Phase.Detail.Should().Be("still eligible for closeout's merge observation");
 
         Guid watchedRunId = DomainId.New();
         RunDetails watched = StatusFixtures.Run(
