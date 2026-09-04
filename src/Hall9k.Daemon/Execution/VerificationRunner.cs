@@ -401,7 +401,7 @@ public sealed partial class VerificationRunner(
 
         // Where CrossProcessContainerGate.AcquireAsync leaves durable evidence that a
         // dotnet-test-shaped gate was still queued on the machine-wide container gate at the
-        // moment it was killed (PLAN.md §16 #131). Never the gate's own captured console output:
+        // moment it was killed (PLAN.md §16 #132). Never the gate's own captured console output:
         // vstest.console buffers a testhost's Console.Error internally and only relays it if
         // vstest.console itself survives long enough to report the crash, which
         // process.Kill(entireProcessTree: true) below does not allow — root, dotnet test,
@@ -505,7 +505,7 @@ public sealed partial class VerificationRunner(
 
             // A gate whose own permit wait is still unresolved at the moment of the kill is a
             // second, distinct shape of infrastructure timeout: the process never got past
-            // CrossProcessContainerGate.AcquireAsync's own unbounded wait (PLAN.md §16 #131), so
+            // CrossProcessContainerGate.AcquireAsync's own unbounded wait (PLAN.md §16 #132), so
             // it never even reached the agent's own tests, and VerifyGateTimeout's 15-minute
             // budget — sized for one process's own tier duration — can legitimately be
             // outlasted by ordinary cross-process contention under a raised node ceiling or a

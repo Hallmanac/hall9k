@@ -345,7 +345,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
-    /// The gate's own permit wait (CrossProcessContainerGate.AcquireAsync, PLAN.md §16 #131) is
+    /// The gate's own permit wait (CrossProcessContainerGate.AcquireAsync, PLAN.md §16 #132) is
     /// deliberately unbounded, so ordinary cross-process contention under a raised node ceiling or
     /// a concurrent foreground run can legitimately outlast VerifyGateTimeout. A gate still queued
     /// on it when it is killed must classify as infrastructure and retry rather than being blamed

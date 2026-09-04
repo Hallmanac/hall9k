@@ -42,7 +42,7 @@ public static class GateInfrastructureFailureClassifier
 
     /// <summary>
     /// The environment variable name a dotnet-test-shaped gate's own process tree carries the
-    /// cross-process container gate's wait-evidence directory under (PLAN.md §16 #131). Defined
+    /// cross-process container gate's wait-evidence directory under (PLAN.md §16 #132). Defined
     /// here rather than in the test project's own <c>CrossProcessContainerGate.AcquireAsync</c>
     /// (in <c>Hall9k.Tests</c>) because this classifier is the reader and the constant belongs
     /// beside the code that interprets it; <c>Hall9k.Tests</c> already references
@@ -54,7 +54,7 @@ public static class GateInfrastructureFailureClassifier
     /// <summary>
     /// True when the directory named by <see cref="GateWaitEvidenceDirectoryEnvironmentVariable"/>
     /// still holds a file at the moment a gate was killed — i.e. a class was genuinely queued on
-    /// the cross-process container gate (PLAN.md §16 #131) when the timeout landed, not stuck for
+    /// the cross-process container gate (PLAN.md §16 #132) when the timeout landed, not stuck for
     /// some other reason. The gate's own captured console output cannot answer this question: a
     /// wait line written from inside a dotnet-test-shaped gate's testhost is buffered by
     /// vstest.console and only ever relayed if vstest.console itself survives long enough to
