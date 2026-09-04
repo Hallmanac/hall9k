@@ -24,4 +24,12 @@ public sealed record TaskRevised(
     /// leaves it (Decisions Log #100: a task joins or leaves at add or revise, no
     /// ceremony beyond the ordinary Draft-only revision gate).
     /// </summary>
-    Optional<Guid?> EpicId = default);
+    Optional<Guid?> EpicId = default,
+    /// <summary>
+    /// Absent leaves the queue-first marker alone; present sets or clears it (task 45136b29,
+    /// idea fcaded0b's R7 ruling). Unlike every other field here, this one is the single
+    /// exception <see cref="Handlers.TaskDecider.Revise"/>'s own gate carves out of Draft-only:
+    /// a scheduling fact, not part of the readiness contract, so it is settable on a task that
+    /// has already left Draft as long as nothing else in the same revision travels with it.
+    /// </summary>
+    Optional<bool> QueuePriority = default);

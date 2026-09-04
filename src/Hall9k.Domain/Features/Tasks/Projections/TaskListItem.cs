@@ -45,6 +45,13 @@ public sealed class TaskListItem
     /// queue, which is what unassigning and assigning again means.
     /// </summary>
     public DateTimeOffset? AssignedAt { get; set; }
+    /// <summary>
+    /// Whether a human has marked this task to take the next free dispatch slot regardless of
+    /// assignment age (task 45136b29, idea fcaded0b's R7 ruling) — what the daemon's claim
+    /// query orders on ahead of <see cref="AssignedAt"/>. Cleared the moment a run actually
+    /// dispatches for this task, mirroring <see cref="TaskAggregate.QueuePriorityMarked"/>.
+    /// </summary>
+    public bool QueuePriorityMarked { get; set; }
     /// <summary>Declared dependency edges — the cheap re-evaluation query filters on this.</summary>
     public List<Guid> BlockedBy { get; set; } = [];
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
@@ -130,6 +137,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         if (@event.Data.EpicId.HasValue)
         {
             view.EpicId = @event.Data.EpicId.Value;
+        }
+
+        if (@event.Data.QueuePriority.HasValue)
+        {
+            view.QueuePriorityMarked = @event.Data.QueuePriority.Value;
         }
     }
 
@@ -237,6 +249,9 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.ClaimedByNodeId = @event.Data.NodeId;
         view.CurrentRunId = @event.Data.RunId;
         view.State = TaskState.Claimed;
+        // Mirrors TaskAggregate.Apply(TaskClaimed): the marker earned its turn the moment a run
+        // actually dispatches for it, regardless of which claim kind produced this event.
+        view.QueuePriorityMarked = false;
     }
 
     public void Apply(IEvent<TaskRequeued> @event, TaskListItem view)

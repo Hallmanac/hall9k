@@ -224,6 +224,30 @@ public sealed class TaskAggregate
     private readonly List<Guid> _runIds = [];
     public IReadOnlyList<Guid> RunIds => _runIds;
 
+    /// <summary>
+    /// Whether a human has marked this task to take the next free dispatch slot regardless of
+    /// assignment age (task 45136b29, idea fcaded0b's R7 ruling) — a recorded task-level fact,
+    /// not a handback-only flag: <c>h9k task revise --queue-first</c> sets it directly, and
+    /// <c>h9k task handback --first</c> sets it as part of handing a claim back. Cleared the
+    /// moment the run it earned actually dispatches (<see cref="Apply(TaskClaimed)"/>), so it
+    /// never outlives the turn it bought.
+    /// </summary>
+    public bool QueuePriorityMarked { get; private set; }
+
+    /// <summary>
+    /// The still-open blockers a human explicitly warned-and-acknowledged at the most recent
+    /// deliberate claim (<see cref="Handlers.TaskDecider.ClaimDeliberately"/>'s own Blocked-entry
+    /// branch) — what lets a later deliberate claim on the SAME still-open blockers proceed
+    /// without asking again (idea fcaded0b's R7 ruling: "an acknowledgment already given at
+    /// claim time carries forward without re-asking"; <c>h9k task handback --now</c> is the
+    /// mechanic's own consumer, since a claim it hands back always carries exactly the blockers
+    /// it was already warned about). Reset by a fresh assignment (<see cref="Apply(TaskAssigned)"/>,
+    /// <see cref="Apply(TaskUnassigned)"/>): a new assignment cycle's blockers are a new set of
+    /// facts to warn about, even when some ids happen to repeat.
+    /// </summary>
+    private readonly List<Guid> _acknowledgedUnmetDependencyIds = [];
+    public IReadOnlyList<Guid> AcknowledgedUnmetDependencyIds => _acknowledgedUnmetDependencyIds;
+
     public void Apply(TaskAdded @event)
     {
         Id = @event.Id;
@@ -299,6 +323,11 @@ public sealed class TaskAggregate
         {
             EpicId = @event.EpicId.Value;
         }
+
+        if (@event.QueuePriority.HasValue)
+        {
+            QueuePriorityMarked = @event.QueuePriority.Value;
+        }
     }
 
     public void Apply(TaskSessionCapOverridden @event) => SessionCap = @event.SessionCap;
@@ -338,6 +367,10 @@ public sealed class TaskAggregate
         _deadDependencies.Clear();
         _deadDependencyReasons.Clear();
         DependencyFailureReason = null;
+        // A fresh assignment cycle's blockers are a new set of facts to warn about, even when
+        // some ids happen to repeat — an acknowledgment from a prior cycle must not silently
+        // carry into this one (task 45136b29, R7).
+        _acknowledgedUnmetDependencyIds.Clear();
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
@@ -351,6 +384,7 @@ public sealed class TaskAggregate
         _deadDependencies.Clear();
         _deadDependencyReasons.Clear();
         DependencyFailureReason = null;
+        _acknowledgedUnmetDependencyIds.Clear();
         State = TaskState.Published;
     }
 
@@ -436,6 +470,16 @@ public sealed class TaskAggregate
         CurrentRunId = @event.RunId;
         _runIds.Add(@event.RunId);
         State = TaskState.Claimed;
+        // The marker earned its turn the moment a run actually dispatches for it — cleared
+        // regardless of which decider produced this claim (a node's ordinary Claim, an
+        // operator's ClaimInteractively, or a deliberate ClaimDeliberately), so it never
+        // outlives the dispatch it bought (task 45136b29, R7).
+        QueuePriorityMarked = false;
+        if (@event.DependencyOverrideAcknowledged)
+        {
+            _acknowledgedUnmetDependencyIds.Clear();
+            _acknowledgedUnmetDependencyIds.AddRange(_unmetDependencies);
+        }
     }
 
     public void Apply(TaskRequeued @event)

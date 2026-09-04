@@ -619,6 +619,53 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
+    /// The carried-forward acknowledgment (task 45136b29, idea fcaded0b's R7 ruling) is what lets
+    /// h9k task handback --now reclaim a Blocked task without asking again: the still-open
+    /// blocker acknowledged at the original deliberate claim is still on record acknowledged once
+    /// the claim is handed back, since a claim's own unmet-dependency set never changes between
+    /// being acknowledged and being handed back.
+    /// </summary>
+    [Fact]
+    public void HandBack_of_a_deliberately_claimed_blocked_task_carries_the_acknowledgment_forward()
+    {
+        TaskAggregate task = DeliberatelyClaimedBlockedTask(out Guid blockerId);
+        task.AcknowledgedUnmetDependencyIds.Should().ContainSingle().Which.Should().Be(blockerId);
+
+        task.Apply(TaskDecider.HandBack(task, task.CurrentRunId!.Value, "task/x", null, Now, Owner));
+
+        task.AcknowledgedUnmetDependencyIds.Should().ContainSingle().Which.Should().Be(blockerId,
+            "the same still-open blocker the original claim was warned about and acknowledged");
+    }
+
+    /// <summary>
+    /// A fresh assignment cycle's blockers are a new set of facts to warn about, even when some
+    /// ids happen to repeat — an acknowledgment from a prior cycle must not silently carry into
+    /// this one.
+    /// </summary>
+    [Fact]
+    public void Unassigning_a_task_clears_a_carried_forward_acknowledgment()
+    {
+        TaskAggregate task = DeliberatelyClaimedBlockedTask(out _);
+        task.Apply(TaskDecider.HandBack(task, task.CurrentRunId!.Value, "task/x", null, Now, Owner));
+
+        task.Apply(TaskDecider.Unassign(task, "Reconsidering", leaseHeld: false, Now, Owner));
+
+        task.AcknowledgedUnmetDependencyIds.Should().BeEmpty();
+    }
+
+    /// <summary>An ordinary claim off a Queued task never has anything to carry forward.</summary>
+    [Fact]
+    public void ClaimDeliberately_of_a_queued_task_records_no_carried_forward_acknowledgment()
+    {
+        TaskAggregate task = QueuedTask();
+
+        task.Apply(TaskDecider.ClaimDeliberately(
+            task, Owner, DomainId.New(), Now, dependencyOverrideAcknowledged: false));
+
+        task.AcknowledgedUnmetDependencyIds.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// Same invariant, reached through h9k task retry: the worktree cut behind a deliberate claim
     /// can fail and record the task Failed without ever touching UnmetDependencies.
     /// </summary>

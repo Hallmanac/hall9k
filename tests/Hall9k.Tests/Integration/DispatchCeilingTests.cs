@@ -7,11 +7,13 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
 using Marten;
@@ -363,6 +365,41 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         (await engine.ClaimEligibleAsync(cts.Token)).Select(work => work.TaskId).Should().Equal(draftedFirst);
     }
 
+    /// <summary>
+    /// The queue-first marker (task 45136b29, idea fcaded0b's R7 ruling) outranks assignment age:
+    /// a task marked after an older assignment already sits in the queue still takes the next
+    /// free slot first, exactly the ordering h9k task revise --queue-first and h9k task
+    /// handback --first exist to earn.
+    /// </summary>
+    [Fact]
+    public async Task The_deferred_queue_serves_a_marked_task_before_an_older_assignment()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = Store();
+        NodeContext node = await FreshNodeAsync(store, cts.Token);
+        DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
+
+        Guid assignedFirst = await SeedQueuedAsync(store, node, "Assigned first, never marked",
+            addedAt: Now, assignedAt: Now.AddHours(1), cts.Token);
+        Guid markedLater = await SeedMarkedQueuedAsync(store, node, "Assigned later, marked queue-first",
+            addedAt: Now, assignedAt: Now.AddHours(2), cts.Token);
+
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().ContainSingle()
+            .Which.TaskId.Should().Be(markedLater,
+                "the marker takes the next free slot regardless of assignment age");
+
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().BeEmpty("capacity is exhausted");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Delete<TaskLease>(markedLater);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The marker cleared the moment its own claim committed, so the unmarked task is next.
+        (await engine.ClaimEligibleAsync(cts.Token)).Select(work => work.TaskId).Should().Equal(assignedFirst);
+    }
+
     private DocumentStore Store() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);
@@ -422,6 +459,27 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
                 null, null, null, addedAt, node.OwnerId),
             node.OwnerId, assignedAt));
 
+        await session.SaveChangesAsync(cancellationToken);
+        return id;
+    }
+
+    /// <summary>One queued task, recorded with the queue-first marker set (task 45136b29).</summary>
+    private static async Task<Guid> SeedMarkedQueuedAsync(
+        IDocumentStore store, NodeContext node, string objective,
+        DateTimeOffset addedAt, DateTimeOffset assignedAt, CancellationToken cancellationToken)
+    {
+        Guid id = DomainId.New();
+        (TaskAggregate task, object[] events) = TaskSeed.Start(
+            TaskDecider.Add(id, DomainId.New(), objective, ["done"], TaskType.Chore,
+                null, null, null, addedAt, node.OwnerId),
+            node.OwnerId, assignedAt);
+        TaskRevised marked = TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None,
+            assignedAt, node.OwnerId, epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true));
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(id, [.. events, marked]);
         await session.SaveChangesAsync(cancellationToken);
         return id;
     }

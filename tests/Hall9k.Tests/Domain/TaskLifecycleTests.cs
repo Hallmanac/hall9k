@@ -108,6 +108,77 @@ public sealed class TaskLifecycleTests
     }
 
     /// <summary>
+    /// The queue-first marker (task 45136b29, idea fcaded0b's R7 ruling) is the one revision
+    /// Revise lets through past Draft — a Queued task, which nothing else about Revise's gate
+    /// would ever admit.
+    /// </summary>
+    [Fact]
+    public void Revise_of_a_queued_task_can_set_only_the_queue_first_marker()
+    {
+        TaskAggregate task = Queued();
+
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true)));
+
+        task.QueuePriorityMarked.Should().BeTrue();
+        task.State.Should().Be(TaskState.Queued, "the marker changes nothing else about the task");
+    }
+
+    /// <summary>
+    /// The exception is narrow: a call that names the marker alongside anything else still needs
+    /// the full unassign -> draft -> revise -> publish -> assign ceremony.
+    /// </summary>
+    [Fact]
+    public void Revise_of_a_queued_task_refuses_when_queue_priority_travels_with_another_field()
+    {
+        TaskAggregate task = Queued();
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.Of("Also reword it"), Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true));
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*only a draft can be revised*");
+    }
+
+    /// <summary>Nothing here will ever be queued again, so marking it is refused rather than silently recorded.</summary>
+    [Fact]
+    public void Revise_of_a_done_task_setting_only_queue_priority_refuses()
+    {
+        TaskAggregate task = Queued();
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/x/y/pull/1", Now));
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true));
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*nothing here will ever be queued again*");
+    }
+
+    /// <summary>
+    /// The marker earns its clearing the moment a run actually dispatches for it, whichever kind
+    /// of claim that turns out to be — it must not survive into the run it bought.
+    /// </summary>
+    [Fact]
+    public void Claiming_a_marked_task_clears_the_queue_first_marker()
+    {
+        TaskAggregate task = Queued();
+        task.Apply(TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true)));
+        task.QueuePriorityMarked.Should().BeTrue();
+
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+
+        task.QueuePriorityMarked.Should().BeFalse("the run it earned just dispatched");
+    }
+
+    /// <summary>
     /// A task joins an epic at creation, or later through the same revision gate every other
     /// field goes through — no separate ceremony (Decisions Log #100).
     /// </summary>
