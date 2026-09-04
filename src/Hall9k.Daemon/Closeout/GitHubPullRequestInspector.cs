@@ -83,13 +83,17 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     {
         string viewJson = await RunGhAsync(
             repositoryPath,
-            ["pr", "view", pullRequestNumber.ToString(), "--json", "state,mergedAt,closedAt,statusCheckRollup"],
+            ["pr", "view", pullRequestNumber.ToString(), "--json", "state,mergedAt,closedAt,statusCheckRollup,baseRefName"],
             cancellationToken);
 
         using JsonDocument view = JsonDocument.Parse(viewJson);
         string state = view.RootElement.GetProperty("state").GetString() ?? "";
         DateTimeOffset? mergedAt = ReadTimestamp(view.RootElement, "mergedAt");
         DateTimeOffset? closedAt = ReadTimestamp(view.RootElement, "closedAt");
+        string? baseRefName = view.RootElement.TryGetProperty("baseRefName", out JsonElement baseRefElement)
+            && baseRefElement.ValueKind == JsonValueKind.String
+                ? baseRefElement.GetString()
+                : null;
         (IReadOnlyList<string> failing, bool pending) = ReadChecks(view.RootElement);
 
         // Reviews matter only while the PR is open; skip the second call otherwise.
@@ -114,7 +118,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             UnresolvedReviewThreadIds: reviews.UnresolvedThreadIds,
             UnresolvedHumanThreadIds: reviews.UnresolvedHumanThreadIds,
             PendingReviewRequestLogins: reviews.PendingReviewRequestLogins,
-            IsConflicting: reviews.IsConflicting);
+            IsConflicting: reviews.IsConflicting,
+            BaseRefName: baseRefName);
     }
 
     /// <summary>

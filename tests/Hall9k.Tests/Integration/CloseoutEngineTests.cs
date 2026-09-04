@@ -1807,6 +1807,55 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             "the fallback spends the ordinary automatic budget, unlike a bare success would have");
     }
 
+    /// <summary>
+    /// GitHub's own CONFLICTING read can be against a base the pull request was retargeted to on
+    /// GitHub itself, never project.BaseBranch (the stacked-PR shape AGENTS.md documents as current
+    /// practice). Rebasing onto project.BaseBranch there would not address what GitHub reads as
+    /// conflicting, and could still "make progress" and force-push the branch onto a base it was
+    /// never meant to be on, so the mechanical attempt must be skipped outright — without ever
+    /// fetching or rebasing — whenever the observed base disagrees with the project's own
+    /// (independent pre-PR review, cycle 1, adversarial lens). Main is deliberately moved forward
+    /// with a change the branch could rebase onto cleanly, so a passing test here is proof the skip
+    /// fired on the base mismatch rather than on some other reason a clean rebase would not.
+    /// </summary>
+    [Fact]
+    public async Task A_conflicting_pull_request_retargeted_to_a_different_base_skips_the_mechanical_rebase()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        File.WriteAllText(Path.Combine(repoPath, "OTHER.md"), "unrelated change on main\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm \"main moved, no overlap\"");
+        Git(repoPath, "push -q origin main");
+
+        string branchTipBeforeSweep = TryGit(worktree.Path, "rev-parse HEAD").Output.Trim();
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true, BaseRefName = "release" },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastMechanicalRebaseSucceeded.Should().BeFalse(
+            "the pull request's actual base is not this project's own — a mechanical rebase must not run at all");
+        run.LastMechanicalRebaseDetail.Should().Contain("actual base is release");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued, "a base mismatch falls back to the ordinary reopen pipeline");
+        task.FollowUpKind.Should().Be(FollowUpKind.Rebase);
+
+        TryGit(worktree.Path, "rev-parse HEAD").Output.Trim().Should().Be(branchTipBeforeSweep,
+            "the skip must never fetch or rebase — the worktree's own branch tip is untouched");
+    }
+
     /// <summary>Pushes a commit to origin/main that touches the same file the task branch's own seed commit did, so a real rebase genuinely conflicts.</summary>
     private static void SeedGenuineConflictOnMain(string repoPath)
     {

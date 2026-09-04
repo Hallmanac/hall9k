@@ -132,6 +132,17 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// history, since a superseded review's threads are not what "landed" now names alongside itself
 /// (Decisions Log #89).
 /// </para>
+/// <para>
+/// BaseRefName is the pull request's actual base branch name, as GitHub reports it — never
+/// assumed to be the project's own configured base branch. A human can retarget a pull request's
+/// base on GitHub itself (the stacked-PR shape AGENTS.md documents as current practice here), and
+/// when they do, GitHub's own <see cref="IsConflicting"/> read is against that retargeted base,
+/// not against <c>project.BaseBranch</c>: the closeout engine's mechanical rebase fast path reads
+/// this field before ever fetching or rebasing, specifically so it never force-pushes a rebase
+/// onto the wrong base (independent pre-PR review, cycle 1, adversarial lens). Null when the
+/// provider read predates this field being collected — treated as "unknown, proceed as before"
+/// rather than as a mismatch.
+/// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(
     bool IsMerged,
@@ -150,7 +161,8 @@ public sealed record PullRequestSnapshot(
     IReadOnlyList<string>? UnresolvedReviewThreadIds = null,
     IReadOnlyList<string>? UnresolvedHumanThreadIds = null,
     IReadOnlyList<string>? PendingReviewRequestLogins = null,
-    bool IsConflicting = false)
+    bool IsConflicting = false,
+    string? BaseRefName = null)
 {
     /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
     public IReadOnlyList<string> ThreadIds => UnresolvedReviewThreadIds ?? [];

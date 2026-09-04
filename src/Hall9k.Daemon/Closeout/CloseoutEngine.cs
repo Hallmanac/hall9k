@@ -795,7 +795,27 @@ public sealed class CloseoutEngine(
             // only duplicate it. A clean apply is never reopened for; anything else (a real
             // conflict, a missing or unusable worktree, a refused push) falls back byte-for-byte
             // to the reopen-and-review lap below, unchanged.
-            MechanicalRebaseOutcome mechanical = await TryMechanicalRebaseAsync(project, run, cancellationToken);
+            //
+            // GitHub's own CONFLICTING read is against the pull request's ACTUAL base, which a
+            // human can retarget away from project.BaseBranch on GitHub itself (the stacked-PR
+            // shape AGENTS.md documents as current practice). Rebasing onto project.BaseBranch in
+            // that case would not address what GitHub reads as conflicting, could still "make
+            // progress" and force-push (the no-progress guard below only catches the narrower case
+            // where the branch already contains origin/<base>'s tip), and would silently rewrite
+            // the branch onto a base it was never meant to be on — so the mechanical attempt is
+            // skipped outright, without ever fetching or rebasing, whenever GitHub reports a base
+            // other than the project's own (independent pre-PR review, cycle 1, adversarial lens).
+            // BaseRefName null (a provider read that predates this field) proceeds exactly as
+            // before rather than guessing at a mismatch that was never observed.
+            MechanicalRebaseOutcome mechanical =
+                snapshot.BaseRefName is not null && snapshot.BaseRefName != project.BaseBranch
+                    ? new MechanicalRebaseOutcome(
+                        false,
+                        $"the pull request's actual base is {snapshot.BaseRefName}, not this project's own base "
+                        + $"branch {project.BaseBranch} — a mechanical rebase onto {project.BaseBranch} would not "
+                        + "address what GitHub reads as conflicting",
+                        null)
+                    : await TryMechanicalRebaseAsync(project, run, cancellationToken);
             session.Events.Append(run.Id, new PullRequestMechanicalRebaseAttempted(
                 run.Id, mechanical.Succeeded, mechanical.Detail, mechanical.PushedCommit, now));
 
@@ -2049,6 +2069,22 @@ public sealed class CloseoutEngine(
     /// reopen-and-review lap picks the branch back up exactly as it always has — nothing here
     /// changes what that path does when it runs.
     /// </para>
+    /// <para>
+    /// A <see cref="TimeoutException"/> from any of the fetch, rebase or push calls (the
+    /// <see cref="GitDeadline"/> expiring, or a wedged credential helper's own
+    /// <see cref="ProcessOutputStuckException"/>, itself a <see cref="TimeoutException"/>) is
+    /// caught here rather than left to escape into the sweep's own outer handler: an escape skips
+    /// the outcome event this method's caller appends, skips the worktree restore below, and skips
+    /// the fallback reopen-and-review lap for this sweep entirely, leaving the worktree silently
+    /// rebased (or, if the rebase itself was killed mid-apply, mid-rebase and detached) with
+    /// nothing pushed (independent pre-PR review, cycle 1, both lenses — the sibling site,
+    /// <c>PullRequestOpener.PushBranchAsync</c>, already catches this for exactly this reason).
+    /// Recovery is best-effort and always attempted in the same order regardless of which call
+    /// timed out: <c>git rebase --abort</c> restores an interrupted rebase's original branch and
+    /// tip (a no-op, harmless failure when no rebase is in progress), then a hard reset to
+    /// <c>preRebaseHead</c> undoes a rebase that had already completed by the time a later call —
+    /// the push — timed out.
+    /// </para>
     /// </summary>
     private async Task<MechanicalRebaseOutcome> TryMechanicalRebaseAsync(
         ProjectDetails project, RunDetails run, CancellationToken cancellationToken)
@@ -2082,61 +2118,101 @@ public sealed class CloseoutEngine(
         ProcessResult preRebaseHeadResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
         string? preRebaseHead = preRebaseHeadResult.ExitCode == 0 ? preRebaseHeadResult.StandardOutput.Trim() : null;
 
-        ProcessResult fetch = await git("git", ["fetch", "origin", project.BaseBranch], worktreePath, cancellationToken);
-        if (fetch.ExitCode != 0)
-        {
-            return new MechanicalRebaseOutcome(
-                false, $"git fetch origin {project.BaseBranch} failed: {FirstLine(fetch.StandardError)}", null);
-        }
-
-        ProcessResult rebase = await git(
-            "git", ["rebase", $"origin/{project.BaseBranch}"], worktreePath, cancellationToken);
-        if (rebase.ExitCode != 0)
-        {
-            await git("git", ["rebase", "--abort"], worktreePath, cancellationToken);
-            return new MechanicalRebaseOutcome(
-                false,
-                $"git rebase onto origin/{project.BaseBranch} did not apply cleanly: {FirstLine(rebase.StandardError)}",
-                null);
-        }
-
-        ProcessResult headCommit = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
-        string pushedCommit = headCommit.ExitCode == 0 ? headCommit.StandardOutput.Trim() : "unknown";
-
-        if (preRebaseHead is not null && preRebaseHead == pushedCommit)
-        {
-            return new MechanicalRebaseOutcome(
-                false,
-                $"git rebase onto origin/{project.BaseBranch} made no change (already at {pushedCommit}) — "
-                + "GitHub's own conflict read is against something this rebase cannot address",
-                null);
-        }
-
         try
         {
-            await ForceWithLeasePusher.PushAsync(git, worktreePath, run.Branch, cancellationToken);
+            ProcessResult fetch = await git("git", ["fetch", "origin", project.BaseBranch], worktreePath, cancellationToken);
+            if (fetch.ExitCode != 0)
+            {
+                return new MechanicalRebaseOutcome(
+                    false, $"git fetch origin {project.BaseBranch} failed: {FirstLine(fetch.StandardError)}", null);
+            }
+
+            ProcessResult rebase = await git(
+                "git", ["rebase", $"origin/{project.BaseBranch}"], worktreePath, cancellationToken);
+            if (rebase.ExitCode != 0)
+            {
+                await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+                return new MechanicalRebaseOutcome(
+                    false,
+                    $"git rebase onto origin/{project.BaseBranch} did not apply cleanly: {FirstLine(rebase.StandardError)}",
+                    null);
+            }
+
+            ProcessResult headCommit = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+            string pushedCommit = headCommit.ExitCode == 0 ? headCommit.StandardOutput.Trim() : "unknown";
+
+            if (preRebaseHead is not null && preRebaseHead == pushedCommit)
+            {
+                return new MechanicalRebaseOutcome(
+                    false,
+                    $"git rebase onto origin/{project.BaseBranch} made no change (already at {pushedCommit}) — "
+                    + "GitHub's own conflict read is against something this rebase cannot address",
+                    null);
+            }
+
+            try
+            {
+                await ForceWithLeasePusher.PushAsync(git, worktreePath, run.Branch, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                // Restores the worktree to the tip it held before this attempt's rebase, rather than
+                // leaving the branch rewritten onto the new base with nothing pushed: every other
+                // fallback above already leaves the worktree exactly as it was, and the ordinary
+                // reopen-and-review lap this fallback triggers hands the follow-up agent a prompt
+                // telling it the branch "now conflicts with main" and to rebase it — true only if
+                // this rebase is undone first (independent pre-PR review, cycle 1, adversarial lens).
+                await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+                return new MechanicalRebaseOutcome(
+                    false, $"the force-push after the mechanical rebase was refused: {exception.Message}", null);
+            }
+
+            return new MechanicalRebaseOutcome(
+                true,
+                $"Rebased onto origin/{project.BaseBranch} and force-pushed cleanly (new head {pushedCommit}).",
+                pushedCommit);
         }
-        catch (InvalidOperationException exception)
+        catch (TimeoutException exception)
         {
-            // Restores the worktree to the tip it held before this attempt's rebase, rather than
-            // leaving the branch rewritten onto the new base with nothing pushed: every other
-            // fallback above already leaves the worktree exactly as it was, and the ordinary
-            // reopen-and-review lap this fallback triggers hands the follow-up agent a prompt
-            // telling it the branch "now conflicts with main" and to rebase it — true only if
-            // this rebase is undone first (independent pre-PR review, cycle 1, adversarial lens).
+            // A git call exceeded GitDeadline, or a credential helper wedged the output pipe past
+            // the drain grace (ProcessOutputStuckException, also a TimeoutException) — see this
+            // method's own doc comment for why this must not be left to escape uncaught the way it
+            // did before (independent pre-PR review, cycle 1, both lenses).
+            await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+            return new MechanicalRebaseOutcome(
+                false, $"a git call exceeded its deadline during the mechanical rebase: {exception.Message}", null);
+        }
+    }
+
+    /// <summary>
+    /// Best-effort recovery shared by every mechanical-rebase failure past the rebase itself:
+    /// restores the worktree to the tip it held before this attempt started, rather than leaving it
+    /// rewritten onto the new base with nothing pushed. <c>git rebase --abort</c> covers a rebase
+    /// interrupted mid-apply — a killed process leaves a detached HEAD and rebase-merge state, and
+    /// <c>--abort</c> restores the original branch and tip — and fails harmlessly when no rebase is
+    /// in progress; the hard reset covers a rebase that had already completed cleanly by the time a
+    /// later call (the push) failed instead. Recovery failures are logged, never thrown: a failed
+    /// recovery must not mask the original failure the caller is already reporting.
+    /// </summary>
+    private async Task RestoreWorktreeBestEffortAsync(
+        ProcessRunner git, string worktreePath, string? preRebaseHead, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await git("git", ["rebase", "--abort"], worktreePath, cancellationToken);
+
             if (preRebaseHead is not null)
             {
                 await git("git", ["reset", "--hard", preRebaseHead], worktreePath, cancellationToken);
             }
-
-            return new MechanicalRebaseOutcome(
-                false, $"the force-push after the mechanical rebase was refused: {exception.Message}", null);
         }
-
-        return new MechanicalRebaseOutcome(
-            true,
-            $"Rebased onto origin/{project.BaseBranch} and force-pushed cleanly (new head {pushedCommit}).",
-            pushedCommit);
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Mechanical rebase recovery failed to restore {Path} to {Head}",
+                worktreePath, preRebaseHead ?? "(unknown)");
+        }
     }
 
     private static string FirstLine(string text) =>
