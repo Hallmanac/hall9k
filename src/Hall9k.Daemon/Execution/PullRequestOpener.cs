@@ -274,76 +274,26 @@ public sealed class PullRequestOpener(
     /// Pushes the branch with the lease pinned to a value this node knows is safe to overwrite,
     /// rather than trusting the bare <c>--force-with-lease</c> flag against whatever this node's
     /// remote-tracking ref currently reads (see the caller's comment for why that ref alone is
-    /// not proof the local branch actually accounts for it). Origin's current tip for the branch
-    /// is safe to overwrite when it fast-forwards into local HEAD, or when it was ever this
-    /// branch's own local tip per the branch ref's reflog — a rewrite of this node's own history
-    /// (the narrative-rebase follow-up path, Decisions Log #26, and the checkpoint-recompose path
-    /// this task adds) — the identical reflog check
-    /// <c>Hall9k.Connectors.Worktrees.GitWorktreeManager.WasEverLocalHeadAsync</c> uses on the pull
-    /// side. Anything else is a tip this node has never incorporated — someone else moved the
-    /// branch — and the push is refused rather than forced.
+    /// not proof the local branch actually accounts for it). The ancestor-or-reflog guard itself
+    /// lives in <see cref="ForceWithLeasePusher"/>, shared with the closeout engine's mechanical
+    /// rebase fast path — only the recovery lever named in a refusal differs per caller.
     /// </summary>
     private static async Task PushBranchAsync(string worktreePath, string branch, CancellationToken cancellationToken)
     {
-        // Asked of origin directly via ls-remote rather than read off the local
-        // refs/remotes/origin/<branch> tracking ref: that local ref is only ever refreshed
-        // by a fetch, BestEffortFetchAsync never prunes, and a branch origin has since
-        // lost (an earlier run's own push, later cleaned up by hand or by
-        // DeleteBranchEverywhereAsync elsewhere) would still read as a stale tip here
-        // (adversarial review, cycle 3).
-        (int tipExit, string tipOutput, string tipError) = await TryRunInWorktreeAsync(
-            worktreePath, "git", ["ls-remote", "--exit-code", "origin", $"refs/heads/{branch}"], cancellationToken);
-        if (tipExit == 2)
+        try
         {
-            // Exit code 2 is ls-remote's documented signal that no ref on origin matched.
-            // The lease is pinned explicitly to "must not exist yet"
-            // (`--force-with-lease=<branch>:`, empty expected value) rather than left bare:
-            // a bare lease with no explicit value still falls back to protecting against
-            // this node's own (possibly stale) refs/remotes/origin/<branch>, which would
-            // reject exactly the push this branch exists to allow. The explicit
-            // expect-nonexistent form only succeeds when origin genuinely has nothing for
-            // this branch right now, and rejects if it does (verified empirically).
-            await RunInWorktreeAsync(worktreePath, "git", ["push", $"--force-with-lease={branch}:", "origin", branch], cancellationToken);
-            return;
+            await ForceWithLeasePusher.PushAsync(
+                Hall9k.Connectors.Processes.ExternalProcess.Runner, worktreePath, branch, cancellationToken);
         }
-
-        if (tipExit != 0)
+        catch (InvalidOperationException exception)
         {
-            // Any other nonzero exit (an unreachable remote, a 5xx, a dropped connection —
-            // verified an unreachable remote exits 128, distinct from the 2 above) means
-            // origin could not be read at all, not that origin is empty. Guessing "nothing
-            // there" from a failed read is exactly the unobserved-fact guess AGENTS.md
-            // rules out; fail the run honestly instead (adversarial review, cycle 4).
+            // ForceWithLeasePusher's own message is shared with the closeout engine's mechanical
+            // rebase path and says nothing about which lever recovers a failed push — this run's
+            // own recovery lever, named here rather than there.
             throw new InvalidOperationException(
-                $"could not read origin's current tip for {branch} (git ls-remote exited {tipExit}): "
-                + $"{tipError}. This fails the run rather than guessing origin has nothing for this "
-                + "branch; h9k task retry is the way to requeue once origin is reachable again.");
+                $"{exception.Message} This fails the run, so h9k task retry is the way to requeue "
+                + "once the branch or the remote are sorted out.");
         }
-
-        string originTip = tipOutput.Split('\t', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-        (int ancestorExit, _, _) = await TryRunInWorktreeAsync(
-            worktreePath, "git", ["merge-base", "--is-ancestor", originTip, "HEAD"], cancellationToken);
-        bool safe = ancestorExit == 0;
-        if (!safe)
-        {
-            (int reflogExit, string reflogOutput, _) = await TryRunInWorktreeAsync(
-                worktreePath, "git", ["reflog", "show", branch, "--format=%H"], cancellationToken);
-            safe = reflogExit == 0 && reflogOutput
-                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Contains(originTip, StringComparer.Ordinal);
-        }
-
-        if (!safe)
-        {
-            throw new InvalidOperationException(
-                $"origin/{branch} is at {originTip}, a tip this node's own history never held and cannot "
-                + "fast-forward into — someone else moved the branch since this node last accounted for "
-                + "it. Refusing to force-push over it; this fails the run, so h9k task retry is the way "
-                + "to requeue once the branch is sorted out.");
-        }
-
-        await RunInWorktreeAsync(
-            worktreePath, "git", ["push", $"--force-with-lease={branch}:{originTip}", "origin", branch], cancellationToken);
     }
 
     private static async Task<string> RunInWorktreeAsync(
