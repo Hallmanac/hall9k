@@ -57,9 +57,28 @@ public sealed class TaskListItem
     /// auto-created reviewer assignment currently believes is requested, or null when none is on
     /// record. What the auto-pr-review poll's unassignment check reads to tell an auto-created
     /// task apart from one a human minted by hand with h9k task add --from-pr — only the former
-    /// is this feature's to recall (idea e5e98a33).
+    /// is this feature's to recall (idea e5e98a33). Transient by design: a recall nulls it even
+    /// for a task whose run keeps going (<see cref="PullRequestReviewAssignmentRecalled.ConcludesBeforeDispatch"/>
+    /// false), because its only reader (<c>ConcludeWithdrawnAsync</c>'s watched-task query) asks
+    /// "is this still worth polling for a recall", which a task already recalled once answers no
+    /// to regardless of how it later finishes. <see cref="WasAutoPrReviewCreated"/> is the
+    /// permanent sibling for "was this task ever genuinely auto-created" — do not repurpose this
+    /// field for that question (independent pre-PR review, cycle 2, adversarial lens: reusing it
+    /// for both lifetimes let a "work continues" recall permanently erase the re-review provenance
+    /// <c>CreateOneAsync</c>'s own previousReview lookup depends on).
     /// </summary>
     public string? AutoPrReviewAssigneeLogin { get; set; }
+    /// <summary>
+    /// Whether this task was ever genuinely auto-created by the auto-pr-review poll — set once,
+    /// permanently, the moment <see cref="PullRequestReviewAssignmentObserved"/> lands, and never
+    /// cleared by a later <see cref="PullRequestReviewAssignmentRecalled"/> the way
+    /// <see cref="AutoPrReviewAssigneeLogin"/> is. What <c>CreateOneAsync</c>'s own previousReview
+    /// lookup reads instead of that transient field, so a task recalled mid-run with "the work
+    /// continues" (<see cref="PullRequestReviewAssignmentRecalled.ConcludesBeforeDispatch"/> false)
+    /// still answers a later genuine re-request with its own re-review note once it reaches Done or
+    /// Abandoned, rather than reading as if auto-pr-review never touched it at all.
+    /// </summary>
+    public bool WasAutoPrReviewCreated { get; set; }
     /// <summary>Declared dependency edges — the cheap re-evaluation query filters on this.</summary>
     public List<Guid> BlockedBy { get; set; } = [];
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
@@ -386,8 +405,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<WorkItemLinked> @event, TaskListItem view) =>
         view.ExternalReference = @event.Data.Reference.ToString();
 
-    public void Apply(IEvent<PullRequestReviewAssignmentObserved> @event, TaskListItem view) =>
+    public void Apply(IEvent<PullRequestReviewAssignmentObserved> @event, TaskListItem view)
+    {
         view.AutoPrReviewAssigneeLogin = @event.Data.AssigneeLogin;
+        view.WasAutoPrReviewCreated = true;
+    }
 
     public void Apply(IEvent<PullRequestReviewAssignmentRecalled> @event, TaskListItem view) =>
         view.AutoPrReviewAssigneeLogin = null;
