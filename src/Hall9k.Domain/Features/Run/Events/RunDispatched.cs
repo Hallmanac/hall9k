@@ -43,6 +43,17 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// than re-checked live the way the review-cycle caps are. Null replays as
 /// <see cref="ReviewStageComposition.FullPipeline"/> — the shape every run had before this
 /// setting existed.
+/// DispatchingNodeId is the physical daemon process that actually spawned this run, distinct
+/// from <see cref="NodeId"/> whenever the latter carries the ceiling-exempt <see cref="Guid.Empty"/>
+/// sentinel (independent pre-PR review, cycle 1, conformance lens): an ordinary dispatch's
+/// NodeId already IS the dispatching node, but auto-pr-review's "now" speed launches a
+/// <c>PrReview</c> task under the sentinel from whichever daemon's own sweep found the
+/// candidate, and <see cref="Hall9k.Daemon.Execution.RunSupervisor"/>'s own sentinel-run
+/// adoption needs to tell that daemon apart from any other node sharing the same database —
+/// otherwise a restarting node could adopt, and fail, a sentinel run a different node's daemon
+/// still has alive. Guid.Empty only on a stream written before this field existed; every dispatch
+/// since carries the real dispatching node — equal to NodeId itself for an ordinary (non-sentinel)
+/// dispatch, since that is the one node making the call there too.
 /// </summary>
 public sealed record RunDispatched(
     Guid Id,
@@ -60,4 +71,5 @@ public sealed record RunDispatched(
     string RunDirectory = "",
     string? PrReviewBaseRefName = null,
     string SessionName = "",
-    ReviewStageComposition? ReviewStageComposition = null);
+    ReviewStageComposition? ReviewStageComposition = null,
+    Guid DispatchingNodeId = default);

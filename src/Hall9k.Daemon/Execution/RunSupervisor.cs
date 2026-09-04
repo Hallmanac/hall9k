@@ -112,7 +112,7 @@ public sealed class RunSupervisor(
                 AdoptableRunStates[3], AdoptableRunStates[4], AdoptableRunStates[5]))
             .ToListAsync(cancellationToken);
         IReadOnlyList<RunDetails> sentinelPrReview = await SentinelPrReviewCandidatesAsync(
-            query, AdoptableRunStates, cancellationToken);
+            query, nodeId, AdoptableRunStates, cancellationToken);
         List<RunDetails> candidates = [.. ownNode, .. sentinelPrReview];
 
         int adopted = 0;
@@ -239,7 +239,7 @@ public sealed class RunSupervisor(
         // it Done (independent pre-PR review, cycle 1, both lenses — the restart-stranding finding
         // applies here too, since the daemon never even needs to restart for this path to matter).
         IReadOnlyList<RunDetails> sentinelPrReview = await SentinelPrReviewCandidatesAsync(
-            query, StrandedRunStates, cancellationToken);
+            query, nodeId, StrandedRunStates, cancellationToken);
         IReadOnlyList<RunDetails> stranded = [.. ownNode, .. sentinelPrReview];
 
         foreach (RunDetails run in stranded.Where(r => !_monitors.ContainsKey(r.Id)))
@@ -255,32 +255,35 @@ public sealed class RunSupervisor(
 
     /// <summary>
     /// Every run carrying the ceiling-exempt <see cref="Guid.Empty"/> sentinel (Decisions Log
-    /// #103, #125) whose owning task is a pr-review task, in one of <paramref name="states"/>.
-    /// The sentinel ordinarily means "a human owns this claim, not a daemon" — but <c>h9k task
-    /// work</c> and <c>h9k task start</c> both refuse a pr-review task outright
-    /// (<c>TaskWorkCommand.cs</c>, <c>TaskStartCommand.cs</c>: "it has no diff of its own... it
-    /// dispatches headlessly against the pull request instead"), so a pr-review task was never a
-    /// human's claim to begin with. The only caller that ever launches one under this sentinel is
-    /// this daemon's own auto-pr-review "now" speed (idea e5e98a33, PLAN.md §16 #128,
+    /// #103, #125) whose owning task is a pr-review task and whose own
+    /// <see cref="RunDetails.DispatchingNodeId"/> names THIS node, in one of
+    /// <paramref name="states"/>. The sentinel ordinarily means "a human owns this claim, not a
+    /// daemon" — but <c>h9k task work</c> and <c>h9k task start</c> both refuse a pr-review task
+    /// outright (<c>TaskWorkCommand.cs</c>, <c>TaskStartCommand.cs</c>: "it has no diff of its
+    /// own... it dispatches headlessly against the pull request instead"), so a pr-review task
+    /// was never a human's claim to begin with. The only caller that ever launches one under this
+    /// sentinel is this daemon's own auto-pr-review "now" speed (idea e5e98a33, PLAN.md §16 #128,
     /// <c>AutoPrReviewEngine.CreateOneAsync</c>, via <c>RunLauncher.LaunchAsync</c> — the sole
     /// caller that ever passes <see cref="Guid.Empty"/> to it), spawned in-process by whichever
-    /// node's daemon ran that sweep. On the default single-daemon install (AGENTS.md: "On the
-    /// default install there is one database and one daemon") that node is always this one, so
-    /// adopting it here closes the gap neither the ordinary <c>NodeId == nodeId</c> filter above
-    /// nor the lease-expiry sweep (no <see cref="Domain.Features.Tasks.Documents.TaskLease"/> is
-    /// ever written for a deliberate claim) would otherwise ever see again. A genuine multi-node
-    /// install running auto-pr-review from more than one node is a narrower, pre-existing
-    /// limitation this does not solve — both nodes already race the same GitHub poll before this
-    /// method ever runs — and fails safely rather than silently: a pid recorded by a different
-    /// machine is never alive on this one, so the worst case is an honest "died without a result"
-    /// rather than corrupted state.
+    /// node's daemon ran that sweep — recorded as that sweep's own <c>NodeContext.NodeId</c> on
+    /// <see cref="Hall9k.Domain.Features.Run.Events.RunDispatched.DispatchingNodeId"/>, since
+    /// <c>NodeId</c> itself carries only the ceiling-exempt sentinel and cannot say which physical
+    /// daemon this is. Filtering on it here closes the gap neither the ordinary
+    /// <c>NodeId == nodeId</c> filter above nor the lease-expiry sweep (no
+    /// <see cref="Domain.Features.Tasks.Documents.TaskLease"/> is ever written for a deliberate
+    /// claim) would otherwise ever see again, on a single-daemon install exactly as before — and,
+    /// on a genuine multi-node install sharing one database, without ever adopting (and failing) a
+    /// sentinel run a different node's own daemon is still driving (independent pre-PR review,
+    /// cycle 1, conformance lens: filtering on <c>NodeId == Guid.Empty</c> alone let any node
+    /// adopt any other node's sentinel run, since the sentinel itself carries no node identity).
     /// </summary>
     private async Task<IReadOnlyList<RunDetails>> SentinelPrReviewCandidatesAsync(
-        IQuerySession query, string[] states, CancellationToken cancellationToken)
+        IQuerySession query, Guid nodeId, string[] states, CancellationToken cancellationToken)
     {
         string placeholders = string.Join(", ", states.Select(_ => "?"));
         IReadOnlyList<RunDetails> sentinel = await query.Query<RunDetails>()
             .Where(r => r.NodeId == Guid.Empty)
+            .Where(r => r.DispatchingNodeId == nodeId)
             .Where(r => r.MatchesSql($"d.data ->> 'state' in ({placeholders})", states))
             .ToListAsync(cancellationToken);
         if (sentinel.Count == 0)

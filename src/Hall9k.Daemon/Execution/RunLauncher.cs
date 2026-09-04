@@ -45,7 +45,27 @@ public sealed class RunLauncher(
     IOptions<DaemonOptions> options,
     ILogger<RunLauncher> logger)
 {
-    public async Task LaunchAsync(Guid taskId, Guid runId, Guid nodeId, Guid ownerId, int leaseGeneration, CancellationToken cancellationToken)
+    /// <summary>
+    /// The ordinary shape, for every dispatch where the calling node IS the dispatching node —
+    /// every caller except auto-pr-review's "now" speed, which needs the overload below.
+    /// </summary>
+    public Task LaunchAsync(
+        Guid taskId, Guid runId, Guid nodeId, Guid ownerId, int leaseGeneration, CancellationToken cancellationToken)
+        => LaunchAsync(taskId, runId, nodeId, ownerId, leaseGeneration, dispatchingNodeId: null, cancellationToken);
+
+    /// <summary>
+    /// <paramref name="dispatchingNodeId"/> names the physical daemon actually making this call,
+    /// for the one case it can differ from <paramref name="nodeId"/>: auto-pr-review's "now"
+    /// speed passes the ceiling-exempt <see cref="Guid.Empty"/> sentinel as <paramref name="nodeId"/>
+    /// but still needs <see cref="Hall9k.Domain.Features.Run.Events.RunDispatched.DispatchingNodeId"/>
+    /// to name this node, so <see cref="RunSupervisor"/>'s sentinel-run adoption can tell this
+    /// node's own sentinel runs apart from another node's sharing the same database. Null resolves
+    /// to <paramref name="nodeId"/> itself, which is already the dispatching node for every ordinary
+    /// (non-sentinel) dispatch — the overload above is that ordinary shape.
+    /// </summary>
+    public async Task LaunchAsync(
+        Guid taskId, Guid runId, Guid nodeId, Guid ownerId, int leaseGeneration, Guid? dispatchingNodeId,
+        CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
@@ -245,7 +265,8 @@ public sealed class RunLauncher(
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
                 IsFollowUp: followUp is not null, Model: model, RunDirectory: runDirectory,
                 PrReviewBaseRefName: prReviewFacts?.BaseRefName, SessionName: sessionName,
-                ReviewStageComposition: reviewStageComposition));
+                ReviewStageComposition: reviewStageComposition,
+                DispatchingNodeId: dispatchingNodeId ?? nodeId));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
