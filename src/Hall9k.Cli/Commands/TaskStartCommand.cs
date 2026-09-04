@@ -32,10 +32,11 @@ namespace Hall9k.Cli.Commands;
 /// dispatcher's own ceiling and ordering to reach it. On a Published task assigned to nobody, this
 /// assigns it to the operator's own owner and claims it in the same atomic event append
 /// <c>h9k task work</c>'s own Published entry already uses (task 688a1ccf-h9k) — the task is never
-/// observably Queued in between. Unmet dependencies do not refuse outright the way
-/// <c>h9k task work</c>'s claim does: the platform advises, naming every open blocker, and
-/// <c>--acknowledge-unmet-dependencies</c> is the human's recorded override to start anyway (the
-/// idea's own ruling, fcaded0b: "the platform advises rather than refuses"). An already-Blocked
+/// observably Queued in between. Unmet dependencies warn rather than refuse outright, the same
+/// shape <c>h9k task work</c>'s claim shares (task 0ac72cb8-h9k): the platform advises, naming
+/// every open blocker, and <c>--acknowledge-unmet-dependencies</c> is the human's recorded
+/// override to start anyway (the idea's own ruling, fcaded0b: "the platform advises rather than
+/// refuses"). An already-Blocked
 /// task — assigned by a plain <c>h9k task assign</c>, or landed there by a handed-back or retried
 /// deliberate claim — shares that same warn-and-acknowledge shape
 /// (<see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>, task 45136b29's R7 ruling, task
@@ -69,8 +70,10 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         [CommandOption("--acknowledge-unmet-dependencies")]
         [Description(
-            "Start a Published task even though not every dependency has closed out yet — the platform names "
-            + "the open blockers first; this is your recorded override to start anyway.")]
+            "Start a task even though not every dependency has closed out yet — Published or already Blocked "
+            + "alike — the platform names the open blockers first; this is your recorded override to start "
+            + "anyway. Not needed when this task already carries a covering acknowledgment from an earlier "
+            + "claim on the same still-open blockers.")]
         public bool AcknowledgeUnmetDependencies { get; init; }
     }
 
