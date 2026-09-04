@@ -214,9 +214,15 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // mechanism h9k task start runs — not a second implementation of it (task 45136b29, R7):
         // the aggregate is re-read fresh off the stream this handback just committed, landed
         // Queued (the ordinary case) or Blocked (only when every still-open blocker was already
-        // acknowledged at the claim this handback is releasing — TaskStartCommand.ClaimAndCutAsync's
-        // own carried-forward branch, which is always true here since a claim's unmet-dependency
-        // set never changes between being acknowledged and being handed back).
+        // acknowledged at the claim this handback is releasing). acknowledgeUnmetDependencies is
+        // passed false, not true: this claim was never asked anything of its own, so it must take
+        // TaskStartCommand.PrepareDeliberateClaimFromBlocked's own carried-forward branch rather
+        // than claim a fresh acknowledgment that was never actually given here. That branch is
+        // always available when the aggregate lands Blocked, since a claim's unmet-dependency set
+        // never changes between being acknowledged and being handed back — the claim this handback
+        // just released could only have reached Claimed over those exact blockers by already
+        // carrying DependencyOverrideAcknowledged (review, cycle 1, both lenses: passing true here
+        // recorded a fresh acknowledgment nobody gave, on a claim nobody was asked about).
         if (settings.Now)
         {
             StreamState? nowFence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
@@ -230,7 +236,7 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Task {taskId} handed back — dispatching immediately (--now).[/]");
             return await TaskStartCommand.RunDeliberateStartAsync(
-                store, session, nowTask, nowFence, context, acknowledgeUnmetDependencies: true, cancellationToken);
+                store, session, nowTask, nowFence, context, acknowledgeUnmetDependencies: false, cancellationToken);
         }
 
         // TaskAggregate.Apply(TaskHandedBack) clears the claim but never touches
