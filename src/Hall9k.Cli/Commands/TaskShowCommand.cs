@@ -319,6 +319,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             WriteUnfixedFindings(newestRun);
             WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
+            WriteMechanicalRebaseOutcome(newestRun);
             await WriteSessionsAsync(session, runs, runDetailsById, cancellationToken);
             await WriteGateDurationAnomaliesAsync(session, details.ProjectId, runs[^1], cancellationToken);
         }
@@ -464,6 +465,28 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         composition == ReviewStageComposition.FullPipeline
             ? "[dim]full[/]"
             : $"[yellow]{composition.Value.EscapeMarkup()}[/]";
+
+    /// <summary>
+    /// Closeout's mechanical rebase-before-reopen fast path (recommendation 3, idea fc85f609): the
+    /// newest run's most recent attempt, if any — a clean apply pushed with no reopen, or a
+    /// fallback and why, immediately followed (still in the same sweep) by the ordinary
+    /// reopen-and-review lap the fallback reads as ongoing.
+    /// </summary>
+    private static void WriteMechanicalRebaseOutcome(RunDetails? run)
+    {
+        if (run is not { LastMechanicalRebaseAt: not null })
+        {
+            return;
+        }
+
+        string outcome = run.LastMechanicalRebaseSucceeded == true
+            ? $"[green]clean-pushed[/] [dim]— {run.LastMechanicalRebaseDetail?.EscapeMarkup()}[/]"
+            : $"[yellow]fell back to the full review lap[/] [dim]— {run.LastMechanicalRebaseDetail?.EscapeMarkup()}[/]";
+
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Mechanical rebase[/]  {outcome} "
+            + $"[dim]({run.LastMechanicalRebaseAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
+    }
 
     /// <summary>
     /// The Runs table's own Gates cell (task: gate wall-clock duration is recorded and
