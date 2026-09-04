@@ -721,6 +721,20 @@ actually failed*.
 | `h9k pr resolve <id> [--checks \| --rebase]` | The row reads **Delivered**, which is a pull request open with the merge not yet observed, and review feedback, failing CI, or a conflict with its base branch needs another pass. | Dispatches a follow-up run onto the existing branch and resets the monitor's automatic retry budget. |
 | `h9k review resolve <id> --merge-ready [--reason "…"]` / `--needs-fixes "<why>"` | A run parked **before** its pull request, in the internal review loop, waiting on your verdict. | `--merge-ready` runs one mandatory full-scope verification gate over the fix unless this tip was already gated at full scope (nothing merges on scoped green alone), and proceeds to the pull request only if it passes. `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget. `--merge-ready` is refused when the park is a disputed rebase conflict (nothing has been rebased yet, so there is nothing ready to merge) — only `--needs-fixes` applies there. Either verdict's reason is recorded on the task and carried into every later review pass as a settled ruling — except on a thread-dispute park, which settles a disputed thread before any reviewer ever read the diff and so is not recorded as a review ruling — so pair `--merge-ready` with `--reason` when you dismiss a finding rather than leaving the next fresh-context reviewer to rediscover it. |
 
+A branch obstructed only by a conflict with its own base does not always reach `pr resolve`
+at all. Before dispatching the reopen-and-review follow-up, closeout tries a mechanical fix
+first: a plain `git fetch` + `git rebase` onto the project's own base branch in the run's
+retained worktree, with no agent session and no local build/test gate — GitHub's own CI on the
+push is treated as the authoritative gate here, so a local run would only duplicate it. A clean
+apply is force-pushed and the task is never reopened for it; anything else (a genuine conflict, a
+missing or unusable worktree, a refused push, or a pull request retargeted to a base other than
+the project's own configured one) falls back byte-for-byte to the ordinary reopen-and-review lap
+described above, spending the same budget it always has (PLAN.md Decisions Log #131). The attempt
+is always recorded, whichever way it goes: `h9k task show` prints a **Mechanical rebase** line —
+`clean-pushed` when it needed no reopen, or `fell back to the full review lap` with the reason —
+so nothing about a rewritten branch history under an open pull request is invisible to whoever
+reads the task next.
+
 Two distinctions get confused, so they are worth stating flatly:
 
 - **`review resolve` is pre-PR; `pr resolve` is post-PR.** No pull request yet means the park is

@@ -24,7 +24,13 @@ with confidence, never on the run's first pass or the mandatory full pass immedi
 pull request, so nothing merges on scoped green alone (PLAN.md Decisions Log #98). Then it
 watches that pull request until the merge is observed, dispatching bounded follow-up runs for
 failing checks, unresolved review threads, and a branch that has fallen behind and now conflicts
-with its base along the way, and removing the worktree and the branch at true closeout.
+with its base along the way, and removing the worktree and the branch at true closeout. A branch
+obstructed only by a conflict with its own base gets a mechanical fix tried first: a plain fetch +
+rebase + force-push in the run's retained worktree, no agent session and no local gates, since
+GitHub's own CI on the push is treated as the authoritative gate here — the follow-up run only
+dispatches when that mechanical attempt genuinely fails (a real conflict, an unusable worktree, a
+refused push, or a pull request retargeted to a base other than the project's own) rather than for
+every conflicting branch (PLAN.md Decisions Log #131).
 
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a
