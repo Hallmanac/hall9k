@@ -69,7 +69,8 @@ public static class ProjectDecider
         Optional<int?> lifetimeReviewCycleBudget = default,
         Optional<BranchNameTemplate> branchNameTemplate = default,
         Optional<string?> reviewStageComposition = default,
-        bool reviewStageCompositionAcknowledged = false)
+        bool reviewStageCompositionAcknowledged = false,
+        Optional<AutoPrReviewSpeed> autoPrReview = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -181,6 +182,25 @@ public static class ProjectDecider
                 : null)
             : Optional<ReviewStageComposition?>.None;
 
+        // Off is not a value to defer with here — the BacklogPolicy idiom, not the
+        // CommitStyle/ReviewRerequestPolicy one: there is no owner- or node-level auto-pr-review
+        // setting underneath this to fall back to, so the closed set is exactly the four static
+        // instances, checked the same way BacklogPolicy is: only ever compared against its own
+        // statics, never interpolated anywhere, so a speed built some way other than Parse or
+        // FromInput is refused here rather than trusted.
+        if (autoPrReview.HasValue
+            && autoPrReview.Value is { } chosenSpeed
+            && chosenSpeed != AutoPrReviewSpeed.Off
+            && chosenSpeed != AutoPrReviewSpeed.Normal
+            && chosenSpeed != AutoPrReviewSpeed.First
+            && chosenSpeed != AutoPrReviewSpeed.Now)
+        {
+            throw new DomainValidationException(
+                $"The auto-pr-review speed must be {AutoPrReviewSpeed.Off}, {AutoPrReviewSpeed.Normal}, "
+                + $"{AutoPrReviewSpeed.First}, or {AutoPrReviewSpeed.Now} (how fast a GitHub reviewer "
+                + "assignment to this install's own login starts the pr-review task it mints).");
+        }
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -203,7 +223,8 @@ public static class ProjectDecider
             lifetimeReviewCycleBudget,
             branchNameTemplate,
             normalizedComposition,
-            ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(normalizedRaw, reviewStageCompositionAcknowledged));
+            ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(normalizedRaw, reviewStageCompositionAcknowledged),
+            autoPrReview);
     }
 
     /// <summary>

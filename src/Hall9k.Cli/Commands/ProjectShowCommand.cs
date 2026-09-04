@@ -118,6 +118,12 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Max final-full-pass rounds", ReviewCapRow(project, project.MaxFinalFullPassRounds, "max-final-full-pass-rounds"));
         table.AddRow("Lifetime review-cycle budget", ReviewCapRow(project, project.LifetimeReviewCycleBudget, "lifetime-review-cycle-budget"));
         table.AddRow("Review stage composition", ReviewStageCompositionRow(project));
+        table.AddRow("Auto pr-review", project.AutoPrReview == AutoPrReviewSpeed.Off
+            ? $"[dim]off — a GitHub reviewer assignment mints nothing; opt in: "
+              + $"h9k project set {project.Name.EscapeMarkup()} --auto-pr-review normal[/]"
+            : $"{project.AutoPrReview.Value.ToLowerInvariant().EscapeMarkup()} [dim]— a pull request GitHub "
+              + "assigns to this install's own login here mints, publishes, and starts a pr-review task "
+              + "automatically (idea e5e98a33)[/]");
         table.AddRow("Settings changed", project.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");

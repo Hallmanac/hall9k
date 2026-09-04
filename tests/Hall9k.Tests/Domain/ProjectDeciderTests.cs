@@ -394,6 +394,43 @@ public sealed class ProjectDeciderTests
     }
 
     [Fact]
+    public void ChangeSettings_rejects_an_auto_pr_review_speed_outside_the_vocabulary()
+    {
+        Action act = () => ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            autoPrReview: Optional<AutoPrReviewSpeed>.Of("fast"));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*Off*Normal*First*Now*");
+    }
+
+    [Fact]
+    public void ChangeSettings_carries_an_auto_pr_review_speed_and_lets_off_clear_it()
+    {
+        ProjectAggregate project = Registered();
+        project.AutoPrReview.Should().Be(AutoPrReviewSpeed.Off, "off is the platform's original behavior, byte-for-byte");
+
+        ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Now));
+        project.Apply(set);
+        project.AutoPrReview.Should().Be(AutoPrReviewSpeed.Now);
+
+        ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off));
+        project.Apply(cleared);
+        project.AutoPrReview.Should().Be(AutoPrReviewSpeed.Off);
+
+        ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+        untouched.AutoPrReview.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
+    }
+
+    [Fact]
     public void ChangeSettings_lets_a_blank_routing_guidance_clear_it()
     {
         ProjectAggregate project = Registered();

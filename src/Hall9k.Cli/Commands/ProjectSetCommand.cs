@@ -190,6 +190,22 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "adversarial-only, or conformance-only; passed alongside any other value it is silently "
             + "dropped rather than refused, since there is no consequence to acknowledge there.")]
         public bool AcceptReducedReview { get; init; }
+
+        [CommandOption("--auto-pr-review <off|normal|first|now>")]
+        [Description(
+            "Whether a pull request GitHub assigns to this install's own login, in this project's repo, "
+            + "automatically mints, publishes, and starts a pr-review task — the reviewer assignment on "
+            + "GitHub becomes the go signal instead of a human running h9k task add --from-pr by hand "
+            + "(idea e5e98a33). Default 'off', the platform's original behavior, byte-for-byte. 'normal' "
+            + "joins the ordinary dispatch queue like any other assigned task. 'first' also marks it "
+            + "queue-first (Decisions Log #127), so it takes the next free dispatch slot regardless of "
+            + "assignment age, ahead of everything unmarked. 'now' claims it immediately, ceiling-exempt, "
+            + "through the same sentinel-node-id mechanism h9k task start uses — it starts alongside "
+            + "whatever else is already running on this node, outside the concurrency ceiling h9k config "
+            + "set --max-concurrent-task-runs enforces for everything else. No review-specific scheduling "
+            + "exists: a human re-speeds any auto-created task afterward with the same general levers "
+            + "(h9k task revise --queue-first, h9k task start).")]
+        public string? AutoPrReview { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -304,7 +320,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             reviewStageComposition: settings.ReviewStageComposition is { } composition
                 ? Optional<string?>.Of(composition)
                 : Optional<string?>.None,
-            reviewStageCompositionAcknowledged: settings.AcceptReducedReview);
+            reviewStageCompositionAcknowledged: settings.AcceptReducedReview,
+            autoPrReview: settings.AutoPrReview is { } autoPrReview
+                ? Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Parse(autoPrReview))
+                : Optional<AutoPrReviewSpeed>.None);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);
@@ -325,6 +344,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 ReviewStageComposition.FromInput(changed.ReviewStageComposition.Value)) is { Length: > 0 } consequence)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]review-stage-composition consequence: {consequence}[/]");
+        }
+
+        // Setting anything but off is a standing consent that a GitHub reviewer assignment, not a
+        // human at this CLI, starts work from here on — the #34 amendment's own second human act
+        // (PLAN.md §16), so the consequence including its cost is said out loud at the moment
+        // consent is given rather than discovered later on a busy queue or a surprising bill.
+        if (settings.AutoPrReview is not null && AutoPrReviewSpeed.Parse(settings.AutoPrReview) is { } speed && speed != AutoPrReviewSpeed.Off)
+        {
+            AnsiConsole.MarkupLine(AutoPrReviewConsequence(speed));
         }
 
         // The home's AGENTS.md is a render of exactly the facts this command changes (the Jira
@@ -371,6 +399,33 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// What was just agreed to, and its cost — printed once, at the moment of consent, because
+    /// this setting is the standing half of the #34 amendment's two human acts (PLAN.md §16):
+    /// an assigner's GitHub click is the other, and it should not be a surprise what that click
+    /// now does or what it costs on this project going forward.
+    /// </summary>
+    private static string AutoPrReviewConsequence(AutoPrReviewSpeed speed) => speed switch
+    {
+        var s when s == AutoPrReviewSpeed.Normal =>
+            "[yellow]From now on, a pull request GitHub assigns to this install's own login in this "
+            + "project's repo mints, publishes, and assigns a pr-review task automatically — no human runs "
+            + "h9k task add --from-pr for it. It joins the ordinary dispatch queue like any other assigned "
+            + "task, at the cost of one more task competing for this node's normal rotation.[/]",
+        var s when s == AutoPrReviewSpeed.First =>
+            "[yellow]From now on, a pull request GitHub assigns to this install's own login in this "
+            + "project's repo mints, publishes, and assigns a pr-review task automatically, marked "
+            + "queue-first — it takes the next free dispatch slot regardless of assignment age, ahead of "
+            + "everything already waiting, at the cost of whatever it displaces from that slot.[/]",
+        var s when s == AutoPrReviewSpeed.Now =>
+            "[yellow]From now on, a pull request GitHub assigns to this install's own login in this "
+            + "project's repo mints, publishes, and dispatches a pr-review task immediately, ceiling-exempt "
+            + "— it starts alongside whatever else is already running on this node, at the cost of an "
+            + "extra concurrent agent session outside the ceiling h9k config set --max-concurrent-task-runs "
+            + "otherwise enforces.[/]",
+        _ => string.Empty,
+    };
 
     /// <summary>
     /// The word that clears a binding rather than setting one. Spelled out here because "none" is

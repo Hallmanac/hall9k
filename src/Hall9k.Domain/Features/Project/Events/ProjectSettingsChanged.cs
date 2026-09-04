@@ -80,4 +80,12 @@ public sealed record ProjectSettingsChanged(
     /// on any change that never actually needed the acknowledgment, so the stream never asserts
     /// an unobserved fact.
     /// </summary>
-    bool ReviewStageCompositionAcknowledged = false);
+    bool ReviewStageCompositionAcknowledged = false,
+    /// <summary>
+    /// Whether a pull request GitHub assigns to this install's own login, in this project's
+    /// repo, automatically mints and starts a pr-review task, and at what speed (idea e5e98a33).
+    /// Off is both the default and the explicit "don't" — the <see cref="Project.BacklogPolicy.None"/>
+    /// idiom. Trailing and optional so every stream written before this feature existed replays
+    /// byte-for-byte unchanged.
+    /// </summary>
+    Optional<AutoPrReviewSpeed> AutoPrReview = default);
