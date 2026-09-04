@@ -53,7 +53,7 @@ public static class TaskDecider
         Guid[] dependencies = Dependencies(id, blockedBy);
         string? normalizedComposition = VetReviewStageComposition(
             reviewStageComposition, reviewStageCompositionAcknowledged, "--review-stage-composition");
-        RefuseCompositionOnPrReview(id, type, normalizedComposition);
+        RefuseCompositionOnPrReview(type, normalizedComposition);
 
         return new TaskAdded(
             id, projectId, objective, criteria, type, agentContext, constraints,
@@ -97,10 +97,14 @@ public static class TaskDecider
     /// are: <c>h9k task add</c> knows the task's type before it prompts for acceptance criteria and
     /// adopts the pull request, so it vets this mismatch there too, rather than paying for both and
     /// discarding them when this decider throws (independent pre-PR review, cycle 1, conformance
-    /// lens).
+    /// lens). Takes no task id: <c>Add</c>'s own call and <c>h9k task add</c>'s early duplicate of
+    /// it both fire before any task exists to name, since the throw is exactly what stops that task
+    /// from ever being created — an id here would be an unobserved fact, not the one <see
+    /// cref="Revise"/> supplies for an already-persisted task (independent pre-PR review, cycle 1,
+    /// conformance lens).
     /// </para>
     /// </summary>
-    public static void RefuseCompositionOnPrReview(Guid taskId, TaskType type, string? normalizedComposition)
+    public static void RefuseCompositionOnPrReview(TaskType type, string? normalizedComposition)
     {
         if (normalizedComposition is null || type != TaskType.PrReview)
         {
@@ -108,7 +112,7 @@ public static class TaskDecider
         }
 
         throw new DomainValidationException(
-            $"Task {taskId} is a pr-review task — its pipeline is fixed (the primary session already is the "
+            "This task is a pr-review task — its pipeline is fixed (the primary session already is the "
             + "adversarial lens, and the conformance lens always dispatches after it), so "
             + "--review-stage-composition has no pipeline shape left here to change. Leave it unset.");
     }
@@ -426,7 +430,7 @@ public static class TaskDecider
         // backing field at TaskType's own default (null, a reference type), so the two read
         // identically and this avoids a nullable-to-non-nullable assignment warning.
         TaskType effectiveType = type.Value ?? task.Type;
-        RefuseCompositionOnPrReview(task.Id, effectiveType, normalizedComposition.Value);
+        RefuseCompositionOnPrReview(effectiveType, normalizedComposition.Value);
 
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue

@@ -250,7 +250,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // conformance lens): refusing this mismatch only at the decider would pay for a real
         // network call and re-typed criteria and then throw both away.
         Guid taskId = DomainId.New();
-        TaskDecider.RefuseCompositionOnPrReview(taskId, taskType, reviewStageComposition);
+        TaskDecider.RefuseCompositionOnPrReview(taskType, reviewStageComposition);
         Guid? epicId = epic.IsNotBlank()
             ? await EpicIdResolver.ResolveForMembershipAsync(session, epic, projectDetails.Id, cancellationToken)
             : null;
