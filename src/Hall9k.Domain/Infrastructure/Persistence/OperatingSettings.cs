@@ -237,6 +237,16 @@ public sealed class RoleModelSettings
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? ReviewVerify { get; set; }
 
+    /// <summary>
+    /// The Review role's model for the mandatory FinalFullPass specifically (task: completing the
+    /// per-stage model set #105 started for Verify): blank falls through to whatever
+    /// <see cref="Review"/> itself resolves to, so this is not a seventh role — a FinalFullPass is
+    /// still Review-role work — it is a narrower override <see
+    /// cref="Hall9k.Daemon.Review.ReviewEngine"/>'s FinalFullPass dispatch reads on its own.
+    /// </summary>
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
+    public string? ReviewFinalFullPass { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
@@ -246,6 +256,7 @@ public sealed class RoleModelSettings
         yield return (nameof(Build), Build);
         yield return (nameof(Review), Review);
         yield return (nameof(ReviewVerify), ReviewVerify);
+        yield return (nameof(ReviewFinalFullPass), ReviewFinalFullPass);
         yield return (nameof(Fix), Fix);
         yield return (nameof(Synthesis), Synthesis);
         yield return (nameof(Refinement), Refinement);

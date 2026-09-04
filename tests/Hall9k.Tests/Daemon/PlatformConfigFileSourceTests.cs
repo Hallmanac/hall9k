@@ -26,6 +26,7 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
         "Hall9k__ModelByRole__Build",
         "Hall9k__ModelByRole__Review",
         "Hall9k__ModelByRole__ReviewVerify",
+        "Hall9k__ModelByRole__ReviewFinalFullPass",
         "Hall9k__ModelByRole__Fix",
         "Hall9k__MaxComplianceReviewCycles",
         "Hall9k__MaxAdversarialReviewCycles",
@@ -119,6 +120,28 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
         PlatformConfigFileSource.Insert(builder);
 
         Bind(builder).ModelByRole.ReviewVerify.Should().Be("haiku");
+    }
+
+    /// <summary>
+    /// <c>ReviewFinalFullPass</c> is read by <c>DaemonOptions.ResolveFinalFullPassReviewModel</c>
+    /// directly rather than through <c>RoleModelDefaults.For(AgentRole)</c> (task: completing the
+    /// per-stage model set #105 started for Verify — it is a pass-shape override, not a seventh
+    /// <c>AgentRole</c>), so this confirms the property name the resolver reports under
+    /// (<see cref="RoleModelSettings.ReviewFinalFullPass"/>) is the exact one
+    /// <c>ConfigurationBinder</c> actually binds — a mismatch there would make
+    /// <c>h9k config show</c>/<c>h9k daemon status</c> report a value the daemon never runs on.
+    /// </summary>
+    [Fact]
+    public async Task Model_by_role_review_finalpass_binds_from_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            s => s.ModelByRole.ReviewFinalFullPass = "haiku", CancellationToken.None);
+        ConfigurationBuilder builder = new();
+        builder.AddEnvironmentVariables();
+
+        PlatformConfigFileSource.Insert(builder);
+
+        Bind(builder).ModelByRole.ReviewFinalFullPass.Should().Be("haiku");
     }
 
     [Fact]

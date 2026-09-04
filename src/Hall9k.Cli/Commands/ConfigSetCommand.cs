@@ -83,6 +83,13 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "itself resolves to.")]
         public string? ModelReviewVerify { get; init; }
 
+        [CommandOption("--model-review-finalpass <MODEL>")]
+        [Description(
+            "This node's model for the mandatory FinalFullPass review specifically — the fresh, both-lenses read "
+            + "immediately before a run may settle — a narrower knob under --model-review, not a new role. 'default' "
+            + "clears it, falling through to whatever --model-review itself resolves to.")]
+        public string? ModelReviewFinalPass { get; init; }
+
         [CommandOption("--model-fix <MODEL>")]
         [Description("This node's model for the Fix role — the session that applies review findings. 'default' clears it.")]
         public string? ModelFix { get; init; }
@@ -220,6 +227,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
+            && settings.ModelReviewFinalPass is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.MaxComplianceReviewCycles is null
             && settings.MaxAdversarialReviewCycles is null && settings.MaxFinalFullPassRounds is null
@@ -246,6 +254,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         if (settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
+            && settings.ModelReviewFinalPass is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
             && settings.ModelPublication is null && settings.InteractiveClaimStaleAfterDays is null
             && settings.MaxComplianceReviewCycles is null && settings.MaxAdversarialReviewCycles is null
@@ -373,6 +382,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         ApplyModel("model (review)", settings.ModelReview, value => operating.ModelByRole.Review = value, changed);
         ApplyModel(
             "model (review-verify)", settings.ModelReviewVerify, value => operating.ModelByRole.ReviewVerify = value, changed);
+        ApplyModel(
+            "model (review-finalpass)", settings.ModelReviewFinalPass,
+            value => operating.ModelByRole.ReviewFinalFullPass = value, changed);
         ApplyModel("model (fix)", settings.ModelFix, value => operating.ModelByRole.Fix = value, changed);
         ApplyModel("model (synthesis)", settings.ModelSynthesis, value => operating.ModelByRole.Synthesis = value, changed);
         ApplyModel("model (refinement)", settings.ModelRefinement, value => operating.ModelByRole.Refinement = value, changed);

@@ -953,9 +953,13 @@ public sealed class ReviewEngine(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
             priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions, sinceSha: sinceSha);
         ExecutorMode executorMode = context.Run.ExecutorMode;
-        // Every lens is review work, so they resolve the same role in the chain (log #33) —
-        // and each dispatch records the model it actually got, per pass.
-        AgentModel model = _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
+        // Every lens is review work, so they resolve the same role in the chain (log #33) — except
+        // the mandatory FinalFullPass, which resolves its own knob (task: completing the per-stage
+        // model set #105 started for Verify), defaulting to whatever Review itself resolves to.
+        // Discovery is untouched. Each dispatch records the model it actually got, per pass.
+        AgentModel model = mode == ReviewMode.FinalFullPass
+            ? _options.ResolveFinalFullPassReviewModel(context.Task.Model, context.Project.Model)
+            : _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Review(lens, cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, executorMode, model,
