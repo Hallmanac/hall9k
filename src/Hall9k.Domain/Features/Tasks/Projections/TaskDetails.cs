@@ -152,14 +152,6 @@ public sealed class TaskDetails
     /// <see cref="DependencyOverrideAcknowledged"/> whenever the claim is given back.
     /// </summary>
     public bool DependencyOverrideCarriedForward { get; set; }
-    /// <summary>
-    /// Blocker ids acknowledged by any claim since the most recent assignment — mirrors
-    /// <see cref="TaskAggregate.AcknowledgedUnmetDependencyIds"/>, durable across a requeue,
-    /// handback, or retry (unlike <see cref="DependencyOverrideAcknowledged"/> above, which is
-    /// about only the current claim) so a later reclaim can tell whether its still-open blockers
-    /// are already covered.
-    /// </summary>
-    public List<Guid> AcknowledgedUnmetDependencyIds { get; set; } = [];
     public Guid? CurrentRunId { get; set; }
     public List<Guid> RunIds { get; set; } = [];
     public List<TaskQuestion> Conversation { get; set; } = [];
@@ -345,9 +337,6 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
-        // Mirrors TaskAggregate.Apply(TaskAssigned): a fresh assignment recomputes the blocker
-        // set, so an acknowledgment recorded against the previous set no longer means anything.
-        view.AcknowledgedUnmetDependencyIds = [];
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
@@ -359,7 +348,6 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
-        view.AcknowledgedUnmetDependencyIds = [];
         view.State = TaskState.Published;
     }
 
@@ -445,20 +433,6 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.DependencyOverrideAcknowledged = @event.Data.DependencyOverrideAcknowledged;
         view.DependencyOverrideCarriedForward = @event.Data.DependencyOverrideCarriedForward;
         view.State = TaskState.Claimed;
-
-        // Mirrors TaskAggregate.Apply(TaskClaimed): whichever still-open blockers this claim
-        // covered, freshly acknowledged or carried forward, are now on record acknowledged for
-        // whatever reclaims this task next.
-        if (@event.Data.DependencyOverrideAcknowledged)
-        {
-            foreach (Guid dependencyId in view.UnmetDependencies)
-            {
-                if (!view.AcknowledgedUnmetDependencyIds.Contains(dependencyId))
-                {
-                    view.AcknowledgedUnmetDependencyIds.Add(dependencyId);
-                }
-            }
-        }
     }
 
     // ResumesFromHandback survives a requeue's own state reset by default, but WorkPromptBuilder
