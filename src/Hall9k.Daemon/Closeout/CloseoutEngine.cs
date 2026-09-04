@@ -2015,18 +2015,45 @@ public sealed class CloseoutEngine(
     /// what decides the outcome.
     /// </para>
     /// <para>
+    /// The fetch, rebase and push are taken under <see cref="IWorktreeManager.AcquireRepositoryLockAsync"/>
+    /// on <paramref name="project"/>'s own repository — the same lock every worktree-add/fetch
+    /// operation on that repository already serializes behind (Decisions Log #4, adversarial
+    /// review cycle 4), so this path cannot lose a ref update to, or clobber, a dispatch or an
+    /// operator's <c>h9k task work</c> racing the same repository (independent pre-PR review,
+    /// cycle 1, both lenses).
+    /// </para>
+    /// <para>
+    /// A rebase that lands exactly where it started (HEAD unchanged) made no progress against
+    /// whatever GitHub actually thinks conflicts — the pull request's base was retargeted away
+    /// from <paramref name="project"/>'s own base branch being the recurring case — so it is
+    /// reported as a fallback rather than a success, the same as a rebase that fails outright:
+    /// otherwise nothing would ever stop this path from fetching, rebasing and force-pushing the
+    /// identical no-op every sweep, forever, with no budget spent and no park (independent pre-PR
+    /// review, cycle 1, both lenses).
+    /// </para>
+    /// <para>
     /// Every fallback is a plain, checkable reason and touches nothing beyond the worktree's own
     /// git state: a missing retained worktree, one not checked out on the run's own branch, one
     /// with uncommitted changes, a fetch failure, a rebase that did not apply cleanly (aborted
-    /// before returning, leaving the worktree exactly as it was), or a push the ancestor-or-reflog
-    /// guard refused. Whichever it is, the ordinary reopen-and-review lap picks the branch back up
-    /// exactly as it always has — nothing here changes what that path does when it runs.
+    /// before returning, leaving the worktree exactly as it was), a rebase that made no progress,
+    /// or a push the ancestor-or-reflog guard refused. Whichever it is, the ordinary
+    /// reopen-and-review lap picks the branch back up exactly as it always has — nothing here
+    /// changes what that path does when it runs.
     /// </para>
     /// </summary>
-    private static async Task<MechanicalRebaseOutcome> TryMechanicalRebaseAsync(
+    /// <summary>
+    /// The same reasoning as <c>PullRequestOpener.PushDeadline</c>: <see cref="ExternalProcess.Deadline"/>
+    /// (120 seconds) is sized for a short metadata read, not a fetch or a push that transfers real
+    /// data, and this path's own fetch/rebase/push runs the identical risk on a large repository or
+    /// a slow uplink that the plain runner would kill mid-transfer (independent pre-PR review,
+    /// cycle 1, adversarial lens — sibling site swept from the PullRequestOpener.cs:285 finding).
+    /// </summary>
+    private static readonly TimeSpan GitDeadline = TimeSpan.FromMinutes(10);
+
+    private async Task<MechanicalRebaseOutcome> TryMechanicalRebaseAsync(
         ProjectDetails project, RunDetails run, CancellationToken cancellationToken)
     {
-        ProcessRunner git = Hall9k.Connectors.Processes.ExternalProcess.Runner;
+        ProcessRunner git = Hall9k.Connectors.Processes.ExternalProcess.RunnerWithDeadline(GitDeadline);
         string worktreePath = run.WorktreePath;
 
         if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
@@ -2049,6 +2076,12 @@ public sealed class CloseoutEngine(
                 false, "the retained worktree is not usable — it has uncommitted changes", null);
         }
 
+        await using IAsyncDisposable repositoryLock =
+            await worktrees.AcquireRepositoryLockAsync(project.RepositoryPath, cancellationToken);
+
+        ProcessResult preRebaseHeadResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+        string? preRebaseHead = preRebaseHeadResult.ExitCode == 0 ? preRebaseHeadResult.StandardOutput.Trim() : null;
+
         ProcessResult fetch = await git("git", ["fetch", "origin", project.BaseBranch], worktreePath, cancellationToken);
         if (fetch.ExitCode != 0)
         {
@@ -2070,12 +2103,32 @@ public sealed class CloseoutEngine(
         ProcessResult headCommit = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
         string pushedCommit = headCommit.ExitCode == 0 ? headCommit.StandardOutput.Trim() : "unknown";
 
+        if (preRebaseHead is not null && preRebaseHead == pushedCommit)
+        {
+            return new MechanicalRebaseOutcome(
+                false,
+                $"git rebase onto origin/{project.BaseBranch} made no change (already at {pushedCommit}) — "
+                + "GitHub's own conflict read is against something this rebase cannot address",
+                null);
+        }
+
         try
         {
             await ForceWithLeasePusher.PushAsync(git, worktreePath, run.Branch, cancellationToken);
         }
         catch (InvalidOperationException exception)
         {
+            // Restores the worktree to the tip it held before this attempt's rebase, rather than
+            // leaving the branch rewritten onto the new base with nothing pushed: every other
+            // fallback above already leaves the worktree exactly as it was, and the ordinary
+            // reopen-and-review lap this fallback triggers hands the follow-up agent a prompt
+            // telling it the branch "now conflicts with main" and to rebase it — true only if
+            // this rebase is undone first (independent pre-PR review, cycle 1, adversarial lens).
+            if (preRebaseHead is not null)
+            {
+                await git("git", ["reset", "--hard", preRebaseHead], worktreePath, cancellationToken);
+            }
+
             return new MechanicalRebaseOutcome(
                 false, $"the force-push after the mechanical rebase was refused: {exception.Message}", null);
         }
