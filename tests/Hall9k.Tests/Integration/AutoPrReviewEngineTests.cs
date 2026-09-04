@@ -31,16 +31,15 @@ namespace Hall9k.Tests.Integration;
 /// <summary>
 /// AutoPrReviewEngine's own behavioral core (idea e5e98a33, PLAN.md §16 #34's amendment, #128)
 /// had no test of any kind before this (independent pre-PR review, cycle 1, conformance lens).
-/// Scoped to what is actually reachable without shelling to a real <c>gh</c>: the mint path
-/// (<c>CreateOneAsync</c>) always constructs its own <c>GitHubWorkItemProvider</c>/
-/// <c>GitHubPullRequestProvider</c> through <c>WorkItemConnections.ImporterAsync</c>, which takes
-/// no injectable <see cref="ProcessRunner"/> — a pre-existing gap this branch does not widen or
-/// fix, since doing so would ripple into every other caller of that shared connectors entry
-/// point. What is fully reachable: the dedup-timestamp comparison the re-mint-loop fix added
+/// The mint path (<c>CreateOneAsync</c>) used to be unreachable through a scripted <c>gh</c>
+/// (independent pre-PR review, cycle 1, adversarial lens): <c>WorkItemConnections.ImporterAsync</c>
+/// ignored this engine's own injected <see cref="ProcessRunner"/> and always built its GitHub
+/// providers against the real one. Now that it is threaded through, the mint path's speed
+/// dispatch (the immediate-launch cap in particular) is reachable through
+/// <see cref="AutoPrReviewEngine.PollOnceAsync"/> like everything else here. Also covered: the
+/// dedup-timestamp comparison the re-mint-loop fix added
 /// (<see cref="AutoPrReviewEngine.IsGenuineReRequestAsync"/>, made internal for exactly this), and
-/// the withdrawal/recall half of the sweep (<c>ConcludeWithdrawnAsync</c>/<c>ConcludeOneAsync</c>),
-/// which never imports anything and only ever calls back through the injected
-/// <see cref="ProcessRunner"/> this engine already takes.
+/// the withdrawal/recall half of the sweep (<c>ConcludeWithdrawnAsync</c>/<c>ConcludeOneAsync</c>).
 /// </summary>
 [Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
@@ -368,15 +367,17 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
-    /// The misattribution the independent pre-PR review found (adversarial lens, cycle 1): a
-    /// timeline carrying only the original request event, no removal at all, must record
-    /// RecalledByLogin as honestly null rather than naming the requester as the recaller.
+    /// A deeper defect than the misattribution it started as (independent pre-PR review, cycle 1,
+    /// adversarial lens): absence from the review-requested search alone — a merge, a submitted
+    /// review that cleared the request, or a transient gh failure — is not proof of an actual
+    /// recall. A timeline carrying only the original request event, no removal at all, must
+    /// record nothing rather than concluding a withdrawal nobody actually made.
     /// </summary>
     [Fact]
-    public async Task A_withdrawal_with_no_removal_event_on_the_timeline_never_names_the_original_requester()
+    public async Task A_missing_removal_event_on_the_timeline_concludes_nothing()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        (DocumentStore store, NodeContext node, Guid _, Guid taskId) = await SeedWatchedTaskAsync(TaskState.Queued, cts.Token);
+        (DocumentStore store, NodeContext node, Guid projectId, Guid taskId) = await SeedWatchedTaskAsync(TaskState.Queued, cts.Token);
         using DocumentStore _ = store;
 
         const string requestOnlyJson = """
@@ -388,13 +389,28 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node), ScriptedGh("brian", requestOnlyJson), NullLogger<AutoPrReviewEngine>.Instance);
 
-        await engine.PollOnceAsync(cts.Token);
+        try
+        {
+            AutoPrReviewSweepResult sweep = await engine.PollOnceAsync(cts.Token);
 
-        await using IQuerySession query = store.QuerySession();
-        IReadOnlyList<JasperFx.Events.IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
-        PullRequestReviewAssignmentRecalled recalled = stream.Select(recorded => recorded.Data)
-            .OfType<PullRequestReviewAssignmentRecalled>().Single();
-        recalled.RecalledByLogin.Should().BeNull("alice requested; nobody has recalled anything — a guess is worse than an honest gap");
+            sweep.AssignmentsRecalled.Should().Be(0, "no removal event was observed — absence from the search alone is not proof of a recall");
+            await using IQuerySession query = store.QuerySession();
+            IReadOnlyList<JasperFx.Events.IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+            stream.Select(recorded => recorded.Data).OfType<PullRequestReviewAssignmentRecalled>().Should().BeEmpty(
+                "alice requested; nobody has recalled anything — recording an unattributed recall on absence alone was itself the defect");
+            TaskAggregate? task = await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token);
+            task!.State.Should().Be(TaskState.Queued, "nothing concludes this task without positive evidence of a withdrawal");
+        }
+        finally
+        {
+            // Unlike every sibling withdrawal test, this one's own task is never concluded — it
+            // deliberately stays Queued with its AutoPrReviewAssigneeLogin still set (the fix
+            // under test: absence alone must not conclude anything), so it would otherwise remain
+            // watched forever and get swept — with whatever a later sibling test's own gh script
+            // reports — by any test that runs after it in this shared-database class (see the
+            // mint-path tests' own note on why).
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
     }
 
     /// <summary>
@@ -424,5 +440,363 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
         TaskAggregate? task = await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token);
         task!.State.Should().Be(TaskState.Claimed, "findings already in flight are never discarded for a reviewer reshuffle");
         task.AutoPrReviewAssigneeLogin.Should().BeNull("the recall is still recorded, as an observation");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // The mint path (CreateOneAsync), now reachable through a scripted gh (WorkItemConnections
+    // .ImporterAsync's own processRunner threading fix, independent pre-PR review, cycle 1,
+    // adversarial lens).
+    // -------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A sweep offering two candidates at Now speed: the first takes the sweep's one immediate
+    /// ceiling-exempt launch (MaxImmediateLaunchesPerSweep), the second is not silently dropped —
+    /// it still takes the queue-first marker First speed uses, so it takes the next free ordinary
+    /// dispatch slot rather than waiting a full poll interval for nothing to happen. A regression
+    /// in this exact dispatch (the review's own named risk: the cap's off-by-one inverting, or
+    /// the queue-first fallback silently dropped) would have compiled and passed dotnet test
+    /// green before this test existed.
+    /// </summary>
+    [Fact]
+    public async Task Now_speed_immediate_launch_cap_defers_the_second_candidate_to_queue_first()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        // A repository and pull request numbers found nowhere else in this file: every other
+        // test's seed hardcodes acme/widgets#42, and CreateOneAsync's own dedup queries key on
+        // the canonical external reference alone, unscoped by project — a collision there would
+        // read a same-class sibling's leftover task as this sweep's own previous review.
+        const string repository = "acme/mint-cap-test";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), "auto-pr-review-now-cap", "/tmp/auto-pr-review-now-cap-repo",
+                new Uri($"https://github.com/{repository}"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
+                autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Now));
+            session.Events.Append(projectId, optedIn);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string listJson = """
+            [
+              {"number":9101,"url":"https://github.com/acme/mint-cap-test/pull/9101","title":"First","body":"no links here"},
+              {"number":9102,"url":"https://github.com/acme/mint-cap-test/pull/9102","title":"Second","body":"no links here"}
+            ]
+            """;
+        const string emptyTimelineJson = """{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}""";
+
+        ProcessRunner gh = (fileName, arguments, _, _) =>
+        {
+            if (arguments.Contains("user"))
+            {
+                return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
+            }
+
+            if (arguments.Contains("list"))
+            {
+                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+            }
+
+            if (arguments.Contains("view"))
+            {
+                // The requested repository is echoed back into the response's own url (exactly
+                // as a real gh pr view --repo <repo> would answer for that repo) rather than
+                // hardcoded to this test's own repository: this class shares one Postgres
+                // database across every test method (see the finally block below), so an
+                // already-opted-in leftover project from a sibling test sweeps in this same
+                // PollOnceAsync call too, and a hardcoded url would hand it this test's own
+                // canonical reference — minting under the wrong project and starving this
+                // project's own candidate via the dedup check.
+                int number = arguments
+                    .Select(argument => int.TryParse(argument, out int parsed) ? parsed : (int?)null)
+                    .First(parsed => parsed.HasValue)!.Value;
+                int repoIndex = arguments.ToList().IndexOf("--repo");
+                string requestRepository = repoIndex >= 0 && repoIndex + 1 < arguments.Count
+                    ? arguments[repoIndex + 1]
+                    : repository;
+                string json = $$"""
+                    {"number":{{number}},"title":"Pull request #{{number}}","body":"no links here",
+                     "state":"OPEN","url":"https://github.com/{{requestRepository}}/pull/{{number}}","baseRefName":"main"}
+                    """;
+                return Task.FromResult(new ProcessResult(0, json, string.Empty));
+            }
+
+            // graphql — the actor-provenance timeline read; empty means unattributed, which
+            // never blocks minting a fresh candidate (no previous review exists to compare against).
+            return Task.FromResult(new ProcessResult(0, emptyTimelineJson, string.Empty));
+        };
+
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            // Not asserted on sweep.TasksCreated: this class shares one Postgres database across
+            // every test method, and an already-opted-in leftover project from a sibling test
+            // (never turned off, since that is not this test's job to police) sweeps in this same
+            // call too and can mint its own unrelated task — a global total would make this test
+            // depend on which sibling tests happened to run first. Every assertion below is scoped
+            // to this test's own projectId instead, which only this project's own candidates can
+            // ever satisfy.
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            IReadOnlyList<TaskListItem> minted = await query.Query<TaskListItem>()
+                .Where(task => task.ProjectId == projectId)
+                .ToListAsync(cts.Token);
+            minted.Should().HaveCount(2);
+            TaskListItem first = minted.Single(task => task.ExternalReference!.EndsWith("#9101"));
+            TaskListItem second = minted.Single(task => task.ExternalReference!.EndsWith("#9102"));
+
+            IReadOnlyList<JasperFx.Events.IEvent> firstStream = await query.Events.FetchStreamAsync(first.Id, token: cts.Token);
+            firstStream.Select(recorded => recorded.Data).OfType<TaskClaimed>().Should().ContainSingle(
+                "the sweep's one immediate ceiling-exempt launch went to the first candidate");
+
+            IReadOnlyList<JasperFx.Events.IEvent> secondStream = await query.Events.FetchStreamAsync(second.Id, token: cts.Token);
+            secondStream.Select(recorded => recorded.Data).OfType<TaskClaimed>().Should().BeEmpty(
+                "the second candidate is beyond this sweep's own immediate-launch cap");
+            secondStream.Select(recorded => recorded.Data).OfType<TaskRevised>().Should().ContainSingle(
+                revised => revised.QueuePriority.HasValue && revised.QueuePriority.Value,
+                "a Now candidate beyond the cap still takes the queue-first marker rather than waiting a full poll interval");
+        }
+        finally
+        {
+            // This class shares one Postgres database across every test method (PostgresFixture's
+            // own doc: "one Postgres container per test class"), and PollOnceAsync's own outer
+            // loop sweeps every opted-in project regardless of which test created it — left
+            // opted-in, this project's still-Published/Claimed tasks would be swept, and
+            // mis-recalled, by whichever sibling test happens to run next.
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>Restores a test-created project to AutoPrReview.Off so PollOnceAsync's later, unrelated sweeps in this same shared-database test class never revisit it.</summary>
+    private static async Task TurnOffAutoPrReviewAsync(DocumentStore store, Guid projectId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectAggregate? project = await session.Events.AggregateStreamAsync<ProjectAggregate>(projectId, token: cancellationToken);
+        if (project is null)
+        {
+            return;
+        }
+
+        ProjectSettingsChanged turnedOff = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, DateTimeOffset.UtcNow, ownerId,
+            autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off));
+        session.Events.Append(projectId, turnedOff);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The task type/pull-request contract's own imported-context clause (AGENTS.md): an
+    /// auto-created review's agent context carries a linked issue's own content exactly as
+    /// h9k task add --from-pr's context does, now that CreateOneAsync composes it through the
+    /// same shared LinkedWorkItemImport.TryImportContextAsync (independent pre-PR review, cycle
+    /// 1, conformance lens — the two adoption paths had silently drifted apart).
+    /// </summary>
+    [Fact]
+    public async Task A_linked_issue_referenced_by_the_pull_request_is_imported_into_the_agent_context()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+
+        // A repository, pull request and issue number found nowhere else in this file — see the
+        // Now-speed cap test's own note on why: CreateOneAsync's dedup queries key on the
+        // canonical external reference alone, unscoped by project.
+        const string repository = "acme/mint-linked-issue-test";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), "auto-pr-review-linked-issue", "/tmp/auto-pr-review-linked-issue-repo",
+                new Uri($"https://github.com/{repository}"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
+                autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Normal));
+            session.Events.Append(projectId, optedIn);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string listJson = """
+            [{"number":9201,"url":"https://github.com/acme/mint-linked-issue-test/pull/9201","title":"Add rate limiting","body":"Closes #9202."}]
+            """;
+        const string emptyTimelineJson = """{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}""";
+
+        ProcessRunner gh = (fileName, arguments, _, _) =>
+        {
+            if (arguments.Contains("user"))
+            {
+                return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
+            }
+
+            if (arguments.Contains("list"))
+            {
+                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+            }
+
+            // The requested repository is echoed back into each response's own url rather than
+            // hardcoded (see the Now-speed cap test's own note): this class shares one Postgres
+            // database across every test method, so an already-opted-in leftover project from a
+            // sibling test sweeps in this same PollOnceAsync call too, and a hardcoded url would
+            // hand it this test's own canonical reference — minting under the wrong project and
+            // starving this project's own candidate via the dedup check.
+            int repoIndex = arguments.ToList().IndexOf("--repo");
+            string requestRepository = repoIndex >= 0 && repoIndex + 1 < arguments.Count
+                ? arguments[repoIndex + 1]
+                : repository;
+
+            if (arguments.Contains("issue"))
+            {
+                string issueJson = $$"""
+                    {"number":9202,"title":"Auth endpoints have no rate limiting","body":"An attacker can hammer login.",
+                     "state":"OPEN","url":"https://github.com/{{requestRepository}}/issues/9202"}
+                    """;
+                return Task.FromResult(new ProcessResult(0, issueJson, string.Empty));
+            }
+
+            if (arguments.Contains("view"))
+            {
+                string prJson = $$"""
+                    {"number":9201,"title":"Add rate limiting","body":"Closes #9202.","state":"OPEN",
+                     "url":"https://github.com/{{requestRepository}}/pull/9201","baseRefName":"main"}
+                    """;
+                return Task.FromResult(new ProcessResult(0, prJson, string.Empty));
+            }
+
+            return Task.FromResult(new ProcessResult(0, emptyTimelineJson, string.Empty));
+        };
+
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            // Not asserted on sweep.TasksCreated: see the Now-speed cap test's own note — a
+            // sibling test's still-opted-in leftover project sweeps in this same call too.
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            TaskListItem minted = (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+            IReadOnlyList<JasperFx.Events.IEvent> stream = await query.Events.FetchStreamAsync(minted.Id, token: cts.Token);
+            TaskAdded added = stream.Select(recorded => recorded.Data).OfType<TaskAdded>().Single();
+
+            added.AgentContext.Should().NotBeNull().And.Contain(
+                "Auth endpoints have no rate limiting",
+                "the linked issue #9202 is imported alongside the pull request, exactly as h9k task add --from-pr does");
+        }
+        finally
+        {
+            // See the Now-speed cap test's own note: this class shares one Postgres database
+            // across every test method, so a project left opted-in here would be revisited by
+            // whichever sibling test's own sweep runs next.
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// The gh pr view subprocess the import always pays is skipped for the overwhelmingly common
+    /// case — a live task already covers this pull request — via a cheap case-insensitive match
+    /// against the reference guessed from the project's own repository casing, never gh's own
+    /// canonical casing (independent pre-PR review, cycle 1, conformance lens, low). The
+    /// project's own recorded repository casing deliberately differs from the candidate's, so a
+    /// plain case-sensitive guess would miss it and pay the subprocess anyway.
+    /// </summary>
+    [Fact]
+    public async Task An_already_covered_candidate_is_recognized_without_ever_calling_gh_pr_view()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        Guid existingTaskId = DomainId.New();
+        const string repository = "Acme/Mint-FastPath-Test";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), "auto-pr-review-fastpath", "/tmp/auto-pr-review-fastpath-repo",
+                new Uri($"https://github.com/{repository}"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
+                autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Normal));
+            session.Events.Append(projectId, optedIn);
+
+            TaskAdded added = TaskDecider.Add(
+                existingTaskId, projectId, "Review pull request acme/mint-fastpath-test#7001",
+                ["every finding is directed"], TaskType.PrReview, null, null,
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/mint-fastpath-test#7001"),
+                Now, node.OwnerId);
+            session.Events.StartStream<TaskAggregate>(existingTaskId, added);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string listJson = """
+            [{"number":7001,"url":"https://github.com/acme/mint-fastpath-test/pull/7001","title":"Already covered","body":"no links here"}]
+            """;
+        List<IReadOnlyList<string>> unexpectedCalls = [];
+        ProcessRunner gh = (fileName, arguments, _, _) =>
+        {
+            if (arguments.Contains("user"))
+            {
+                return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
+            }
+
+            if (arguments.Contains("list"))
+            {
+                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+            }
+
+            // view/issue/graphql for THIS test's own repository should never be reached — the
+            // fast path recognizes this candidate as already covered before any of them would
+            // run. A call for some other repository is a sibling test's own still-opted-in
+            // leftover project sweeping in this same call too (see the Now-speed cap test's own
+            // note) and is legitimately reached — not this assertion's concern.
+            int repoIndex = arguments.ToList().IndexOf("--repo");
+            string? requestRepository = repoIndex >= 0 && repoIndex + 1 < arguments.Count ? arguments[repoIndex + 1] : null;
+            if (string.Equals(requestRepository, repository, StringComparison.OrdinalIgnoreCase))
+            {
+                unexpectedCalls.Add(arguments);
+            }
+
+            return Task.FromResult(new ProcessResult(0, "{}", string.Empty));
+        };
+
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            unexpectedCalls.Should().BeEmpty(
+                "a live task already covers this pull request — the fast path must recognize that without shelling out to gh pr view");
+
+            await using IQuerySession query = store.QuerySession();
+            IReadOnlyList<TaskListItem> matching = await query.Query<TaskListItem>()
+                .Where(task => task.ProjectId == projectId)
+                .ToListAsync(cts.Token);
+            matching.Should().ContainSingle("the fast path must skip minting, not merely skip the subprocess");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
     }
 }

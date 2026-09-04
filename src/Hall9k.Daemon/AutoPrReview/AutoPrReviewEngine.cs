@@ -8,11 +8,13 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Daemon.AutoPrReview;
@@ -196,7 +198,33 @@ public sealed class AutoPrReviewEngine(
         IDocumentSession session, ProjectDetails project, string repository, ReviewRequestedPullRequest candidate,
         string login, CancellationToken cancellationToken)
     {
-        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken);
+        // A cheap fast path in front of the gh pr view subprocess the import below always pays
+        // (independent pre-PR review, cycle 1, conformance lens, low): the overwhelmingly common
+        // case on every sweep after the first is "a live task already covers this pull request",
+        // and a case-insensitive match against the reference guessed from repository — never
+        // gh's own canonical casing, per the discipline the canonical dedup check below still
+        // enforces — catches it without ever shelling out. A guess that finds nothing here is not
+        // trusted as "nothing exists": it is only a fast path in front of the canonical check,
+        // never a replacement for it, so the import and the exact-match dedup still run
+        // regardless of what this finds.
+        string guessedReference = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#{candidate.Number}";
+        bool likelyAlreadyCovered = await session.Query<TaskListItem>()
+            .Where(task => task.MatchesSql("lower(d.data ->> 'externalReference') = lower(?)", guessedReference))
+            .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
+            .Where(task => task.MatchesSql(
+                "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
+                TaskType.PrReview.Value, TaskState.Done.Value))
+            .AnyAsync(cancellationToken);
+        if (likelyAlreadyCovered)
+        {
+            return 0;
+        }
+
+        // processRunner threaded through explicitly (independent pre-PR review, cycle 1,
+        // adversarial lens): ImporterAsync's own default construction ignores whatever runner it
+        // is handed unless asked, which silently shells to the real gh underneath this engine's
+        // own injected ProcessRunner and left this whole mint path unreachable by a scripted test.
+        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken, processRunner: processRunner);
         ImportedWorkItem imported = await importer.ImportAsync(
             new WorkItemImportRequest(WorkItemProvider.GitHubPullRequest, $"{repository}#{candidate.Number}", project.RepositoryPath),
             cancellationToken);
@@ -214,10 +242,17 @@ public sealed class AutoPrReviewEngine(
             return 0;
         }
 
+        // Both terminal states, not Done alone (independent pre-PR review, cycle 1, both
+        // lenses): an operator who abandons an auto-created review the standing request never
+        // cleared must have that stick, exactly like a Done one does, or the very next sweep
+        // re-mints it — h9k task abandon cannot decline an auto-created review at all while the
+        // request stands otherwise. IsGenuineReRequestAsync below still lets a real re-request
+        // through either way; only the same-standing-request case is what this guards.
         TaskListItem? previousReview = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
             .Where(task => task.MatchesSql(
-                "d.data ->> 'type' = ? AND d.data ->> 'state' = ?", TaskType.PrReview.Value, TaskState.Done.Value))
+                "d.data ->> 'type' = ? AND d.data ->> 'state' IN (?, ?)",
+                TaskType.PrReview.Value, TaskState.Done.Value, TaskState.Abandoned.Value))
             .OrderByDescending(task => task.AddedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -250,11 +285,22 @@ public sealed class AutoPrReviewEngine(
             : $"GitHub reviewer assignment observed: {login} was requested as a reviewer (the actor who "
               + "requested it could not be read from GitHub's own timeline).";
         string? reReviewNote = previousReview is not null
-            ? $"This is a re-review: task {DomainId.Short(previousReview.Id)} already reviewed this pull "
-              + $"request and closed Done on {previousReview.AddedAt:yyyy-MM-dd}."
+            ? previousReview.State == TaskState.Abandoned
+                ? $"This is a re-review: an earlier auto-created task ({DomainId.Short(previousReview.Id)}) "
+                  + $"covered this same standing request and was abandoned on {previousReview.AddedAt:yyyy-MM-dd}."
+                : $"This is a re-review: task {DomainId.Short(previousReview.Id)} already reviewed this pull "
+                  + $"request and closed Done on {previousReview.AddedAt:yyyy-MM-dd}."
             : null;
         string additionalContext = reReviewNote is null ? provenance : $"{provenance}\n{reReviewNote}";
-        string agentContext = WorkItemContext.Compose(imported, additionalContext);
+        // Exactly as h9k task add --from-pr does (independent pre-PR review, cycle 1, conformance
+        // lens: the two adoption paths had drifted apart, and an auto-created review carried
+        // strictly less to check the diff against than an identical hand-created one).
+        string? linkedContext = await LinkedWorkItemImport.TryImportContextAsync(
+            session, project, imported, cancellationToken, processRunner: processRunner);
+        string composedAdditional = linkedContext.IsNotBlank()
+            ? $"{linkedContext}\n\n{additionalContext}"
+            : additionalContext;
+        string agentContext = WorkItemContext.Compose(imported, composedAdditional);
 
         string[] criteria =
         [
@@ -319,6 +365,7 @@ public sealed class AutoPrReviewEngine(
             deliberateLeaseGeneration = claimed.LeaseGeneration;
         }
 
+        long claimedVersion = events.Count;
         session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
         await session.SaveChangesAsync(cancellationToken);
 
@@ -328,15 +375,66 @@ public sealed class AutoPrReviewEngine(
 
         if (deliberateRunId is { } runId && deliberateLeaseGeneration is { } generation)
         {
-            // The ceiling-exempt sentinel node id, exactly as h9k task start's own claim uses:
-            // launched through this daemon's own run-launching mechanism (RunLauncher already
-            // knows how to dispatch a pr-review task, per Decisions Log #99 — nothing about that
-            // is rebuilt here) rather than waiting for the ordinary claim sweep, which would never
-            // pick this run up anyway since NodeLoad never counts a Guid.Empty-claimed run.
-            await launcher.LaunchAsync(taskId, runId, Guid.Empty, node.OwnerId, generation, cancellationToken);
+            try
+            {
+                // The ceiling-exempt sentinel node id, exactly as h9k task start's own claim uses:
+                // launched through this daemon's own run-launching mechanism (RunLauncher already
+                // knows how to dispatch a pr-review task, per Decisions Log #99 — nothing about
+                // that is rebuilt here) rather than waiting for the ordinary claim sweep, which
+                // would never pick this run up anyway since NodeLoad never counts a
+                // Guid.Empty-claimed run. dispatchingNodeId names this physical daemon so
+                // RunSupervisor's own sentinel-run adoption can tell this node's runs apart from
+                // another node's sharing the same database.
+                await launcher.LaunchAsync(
+                    taskId, runId, Guid.Empty, node.OwnerId, generation,
+                    dispatchingNodeId: node.NodeId, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // RunLauncher.LaunchAsync's own catch handles every ordinary launch failure by
+                // failing the task through RecordLaunchFailureAsync, but deliberately excludes
+                // cancellation so a daemon shutdown mid-launch propagates rather than being
+                // recorded as an agent failure — uncaught here, that would leave this task
+                // permanently Claimed with no run stream and nothing that ever recovers it
+                // (independent pre-PR review, cycle 1, adversarial lens), the same gap h9k task
+                // start's own FailDeliberateClaimAsync closes for the identical deliberate-claim
+                // shape.
+                await FailDeliberateLaunchAsync(
+                    taskId, runId, claimedVersion,
+                    "the daemon stopped while launching this auto-created review", CancellationToken.None);
+                throw;
+            }
         }
 
         return 1;
+    }
+
+    /// <summary>
+    /// The compensation <c>TaskStartCommand.FailDeliberateClaimAsync</c> runs for the identical
+    /// deliberate-claim shape: a fenced check that nothing else already moved this stream past the
+    /// claim this call is compensating for, then an honest <see cref="TaskFailed"/> rather than a
+    /// permanently stranded Claimed task with no run and no lease.
+    /// </summary>
+    private async Task FailDeliberateLaunchAsync(
+        Guid taskId, Guid runId, long claimedVersion, string reason, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken);
+        if (fence is null || fence.Version != claimedVersion)
+        {
+            return;
+        }
+
+        TaskAggregate? current = await session.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, version: fence.Version, token: cancellationToken);
+        if (current is null || !TaskDecider.CanFail(current))
+        {
+            return;
+        }
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1,
+            TaskDecider.Fail(current, runId, $"Auto-pr-review's immediate launch failed: {reason}", DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>
@@ -408,8 +506,10 @@ public sealed class AutoPrReviewEngine(
 
             try
             {
-                await ConcludeOneAsync(watchedTask, project, repository, number, login, cancellationToken);
-                recalled++;
+                if (await ConcludeOneAsync(watchedTask, project, repository, number, login, cancellationToken))
+                {
+                    recalled++;
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -426,7 +526,8 @@ public sealed class AutoPrReviewEngine(
         return recalled;
     }
 
-    private async Task ConcludeOneAsync(
+    /// <summary>Returns whether a recall was actually recorded — false for every path that leaves the task untouched.</summary>
+    private async Task<bool> ConcludeOneAsync(
         TaskListItem watchedTask, ProjectDetails project, string repository,
         int number, string login, CancellationToken cancellationToken)
     {
@@ -434,13 +535,28 @@ public sealed class AutoPrReviewEngine(
             OwnerFrom(repository), NameFrom(repository), number, login,
             ReviewTimelineEventKind.Removed, project.RepositoryPath, cancellationToken);
 
+        if (!actor.Found)
+        {
+            // Dropping out of the review-requested search is not proof of a recall (independent
+            // pre-PR review, cycle 1, adversarial lens): a merge, a submitted review that cleared
+            // the request, or a transient gh failure all look identical from here, and none of
+            // them means the assignment was withdrawn. Only a timeline that actually shows the
+            // removal event is positive evidence of one — absence alone concludes nothing, and
+            // the next sweep's fresh read decides instead.
+            logger.LogDebug(
+                "Auto-pr-review saw {Repository}#{Number} drop out of the review-requested search for task "
+                + "{TaskId}, but the timeline shows no removal event — not concluding a recall this sweep",
+                repository, number, watchedTask.Id);
+            return false;
+        }
+
         await using IDocumentSession session = store.LightweightSession();
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(watchedTask.Id, token: cancellationToken);
         if (task is null || task.AutoPrReviewAssigneeLogin is null)
         {
             // Already handled by an earlier tick, or the stream moved since this sweep's own
             // read — a lost race, not a defect: the next poll's own fresh read is authoritative.
-            return;
+            return false;
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -458,7 +574,7 @@ public sealed class AutoPrReviewEngine(
             logger.LogInformation(
                 "Task {TaskId}'s GitHub reviewer assignment was recalled after its run already started — "
                 + "recorded as an observation; the work continues", task.Id);
-            return;
+            return true;
         }
 
         task.Apply(recalled);
@@ -476,6 +592,7 @@ public sealed class AutoPrReviewEngine(
         logger.LogInformation(
             "Task {TaskId} concluded: its GitHub reviewer assignment was recalled before the run dispatched",
             task.Id);
+        return true;
     }
 
     private static string OwnerFrom(string repository) => repository.Split('/')[0];
