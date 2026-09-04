@@ -41,10 +41,10 @@ public static class TaskLifecycleProjectionBackfill
     /// <para>
     /// Markers here apply to both <see cref="TaskListItem"/> and <see cref="TaskDetails"/>: every
     /// field named below exists on both projections' current shape. A marker for a field only one
-    /// of the two carries belongs on <see cref="StaleDetailsOnlyDocument"/> instead — mixing it in
-    /// here would make the OTHER document type read as permanently stale, since a key that
-    /// projection never writes at all is indistinguishable from one an old document is merely
-    /// missing.
+    /// of the two carries belongs on <see cref="StaleDetailsOnlyDocument"/> (details-only) or
+    /// <see cref="StaleListOnlyDocument"/> (list-only) instead — mixing it in here would make the
+    /// OTHER document type read as permanently stale, since a key that projection never writes at
+    /// all is indistinguishable from one an old document is merely missing.
     /// </para>
     /// <para>
     /// <see cref="TaskListItem.EpicId"/> and <see cref="TaskDetails.EpicId"/> (Decisions Log #100)
@@ -81,6 +81,27 @@ public static class TaskLifecycleProjectionBackfill
         + " or not jsonb_exists(d.data, 'failedRunId')"
         + " or not jsonb_exists(d.data, 'resolvedRunId')"
         + " or not jsonb_exists(d.data, 'untrackedAttested'))";
+
+    /// <summary>
+    /// <see cref="StaleDocument"/>'s markers, plus the field <see cref="TaskListItem"/> alone
+    /// carries: <see cref="TaskListItem.QueuePriorityMarked"/> (task 45136b29) exists only on the
+    /// list item — <see cref="TaskDetails"/> never gained it, since the dispatcher's claim query
+    /// and <c>h9k status</c>'s queued-section ordering are its only two readers and both already
+    /// work from <see cref="TaskListItem"/>. Mixing it into <see cref="StaleDocument"/> itself
+    /// would make every <see cref="TaskDetails"/> document read as permanently stale, since that
+    /// projection never writes the key at all — the same hazard <see cref="StaleDetailsOnlyDocument"/>
+    /// exists to avoid for the fields only <see cref="TaskDetails"/> carries.
+    /// <para>
+    /// Without this marker, a <see cref="TaskListItem"/> document written before the field
+    /// existed sorts <c>NULL</c> for <c>OrderByDescending(QueuePriorityMarked)</c>
+    /// (<see cref="Dispatch.DispatchEngine.ClaimEligibleAsync"/>), and PostgreSQL's default
+    /// <c>DESC</c> ordering puts <c>NULL</c> <em>first</em> — ahead of a genuinely marked row —
+    /// which is exactly backwards from what the marker is for.
+    /// </para>
+    /// </summary>
+    private const string StaleListOnlyDocument =
+        "(" + StaleDocument
+        + " or not jsonb_exists(d.data, 'queuePriorityMarked'))";
 
     /// <summary>
     /// Rebuilds every task stream still carrying an out-of-date document and returns the ids it
@@ -160,7 +181,7 @@ public static class TaskLifecycleProjectionBackfill
         await using IQuerySession session = store.QuerySession();
 
         IReadOnlyList<Guid> rows = await session.Query<TaskListItem>()
-            .Where(task => task.MatchesSql(StaleDocument))
+            .Where(task => task.MatchesSql(StaleListOnlyDocument))
             .Select(task => task.Id)
             .ToListAsync(cancellationToken);
         IReadOnlyList<Guid> details = await session.Query<TaskDetails>()
