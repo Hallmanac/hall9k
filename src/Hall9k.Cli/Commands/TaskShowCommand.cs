@@ -900,14 +900,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     {
         string shortId = TaskListCommand.ShortId(details.Id);
         // h9k task work is refused outright for a pr-review task (TaskWorkCommand.ClaimAndCutAsync:
-        // "it has no diff of its own for an interactive session to build") and for a task with an
-        // open dependency (PrepareInteractiveClaimFromPublished holds an interactive claim to the
-        // same bar h9k task assign already holds an assignment to), so the hint is named only
-        // where the claim would actually be accepted (DescribeDoneRemedy's own rule, independent
-        // pre-PR review, cycle 3 and adversarial lens cycle 1).
-        string interactiveClaimHint = details.Type == TaskType.PrReview || hasOpenDependency
+        // "it has no diff of its own for an interactive session to build"), so the hint is named
+        // only where the claim would actually be accepted (DescribeDoneRemedy's own rule,
+        // independent pre-PR review, cycle 3). An open dependency no longer suppresses the hint
+        // (task 0ac72cb8-h9k): h9k task work now warns and asks instead of refusing outright, so
+        // the hint just names the flag that answers it (adversarial lens, cycle 1).
+        string interactiveClaimHint = details.Type == TaskType.PrReview
             ? string.Empty
-            : $" (or h9k task work {shortId} to claim and work it yourself)";
+            : hasOpenDependency
+                ? $" (or h9k task work {shortId} --acknowledge-unmet-dependencies to claim across the open dependency yourself)"
+                : $" (or h9k task work {shortId} to claim and work it yourself)";
         string? next = details.State.Value switch
         {
             "Draft" => details.AcceptanceCriteria.Count == 0
@@ -916,7 +918,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             "Published" => $"[dim]Next:[/] h9k task assign {shortId} [dim]— it will not run until you do"
                 + $"{interactiveClaimHint}[/]",
             "Blocked" => $"[dim]It queues itself when its dependencies close out. To stop waiting:[/] "
-                + $"h9k task unassign {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies",
+                + $"h9k task unassign {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies"
+                + $" [dim]— or claim across the open dependency yourself:[/] h9k task work {shortId} --acknowledge-unmet-dependencies",
             "Queued" => $"[dim]Waiting for a dispatch cycle on one of the assignee's nodes. To take it back:[/] h9k task unassign {shortId}",
             _ => null,
         };
