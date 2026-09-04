@@ -62,6 +62,23 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim delivers this way.");
         }
 
+        // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
+        // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
+        // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), which reads identically to
+        // one on IsInteractiveClaim's own Guid.Empty discriminator. Delivering it here would push its
+        // read-only detached refs/pull/<n>/head worktree and hand a run with no PrReviewBaseRefName
+        // and no adversarial report into PrReviewEngine.DriveAsync — the same failure
+        // TaskWorkCommand.ClaimAndCutAsync's own pr-review refusal exists to prevent, reachable here
+        // only because this command has no refusal of its own (independent pre-PR review, cycle 1,
+        // conformance lens).
+        if (task.Type == TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is a pr-review task — it has no diff of its own to deliver; it dispatches "
+                + "headlessly against the pull request instead and resolves through h9k review resolve. "
+                + $"h9k task show {taskId} to see where it stands.");
+        }
+
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainConflictException(
                 $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
