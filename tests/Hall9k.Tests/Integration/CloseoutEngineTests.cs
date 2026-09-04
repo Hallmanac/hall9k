@@ -1108,6 +1108,52 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// Two sweeps racing the same intact-but-terminal run through the missing-run path
+    /// (independent pre-PR review, cycle 1, both lenses): the whole second sweep lands inside
+    /// the first one's own pull-request read and commits the merge first — exactly the same
+    /// overlap shape <see cref="Overlapping_sweeps_issue_one_countersign_between_them"/> already
+    /// exercises for the review-rerequest path. By the time the first sweep's own
+    /// <c>ReconstructAndCompleteAsync</c> reloads this run it is already <see
+    /// cref="RunState.Completed"/>, so that call must report it never committed anything —
+    /// otherwise the first sweep's own <c>InspectMissingRunAsync</c> reports
+    /// <c>MergeObserved</c> for a merge only the second sweep actually observed, double-counting
+    /// it in <see cref="CloseoutSweepResult.MergesObserved"/> and the daemon's own sweep log.
+    /// </summary>
+    [Fact]
+    public async Task A_missing_run_race_the_loser_does_not_double_count_the_merge()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (_, Guid runId, _) = await SeedResolvedFailedRunWithPullRequestAsync(
+            store, node, worktrees, repoPath, cts.Token, recordOnRun: false);
+
+        PullRequestSnapshot merged = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-2) };
+        FakeInspector second = new() { Snapshot = merged };
+        CloseoutEngine secondSweep = NewEngine(store, node, second, worktrees);
+        FakeInspector first = new()
+        {
+            Snapshot = merged,
+            // The whole second sweep lands inside the first one's own state-only read and
+            // commits first, exactly like Overlapping_sweeps_issue_one_countersign_between_them.
+            OnInspect = () => secondSweep.PollOnceAsync(cts.Token),
+        };
+
+        CloseoutSweepResult sweep = await NewEngine(store, node, first, worktrees).PollOnceAsync(cts.Token);
+
+        sweep.MergesObserved.Should().Be(0,
+            "the second sweep already committed this merge; the first sweep's own attempt lost the race "
+            + "and must not claim a merge it did not itself observe");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.Completed, "the second sweep's own commit is the one that actually landed");
+    }
+
+    /// <summary>
     /// Mirrors what <c>h9k task resolve --pr</c> itself appends (TaskFailed then TaskResolved on
     /// the task stream, RunFailed then, when a pull request was named, PullRequestRecordedOnFailedRun
     /// on the run stream) — the run never passes through PullRequestOpened at all, the same shape

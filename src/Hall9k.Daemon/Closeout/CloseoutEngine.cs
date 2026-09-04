@@ -438,10 +438,10 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
-        await ReconstructAndCompleteAsync(
+        bool committed = await ReconstructAndCompleteAsync(
             session, task, project, runId, node.NodeId, node.OwnerId, snapshot.MergedAt, DateTimeOffset.UtcNow,
             cancellationToken);
-        return InspectionOutcome.MergeObserved;
+        return committed ? InspectionOutcome.MergeObserved : InspectionOutcome.Inspected;
     }
 
     /// <summary>
@@ -476,8 +476,17 @@ public sealed class CloseoutEngine(
     /// silently doubling the merge comment, the handoff, and the dependents-unblock (independent
     /// pre-PR review, cycle 1, both lenses).
     /// </para>
+    /// <para>
+    /// Returns whether this call actually committed the closeout. A concurrent winner already
+    /// having finished it (the <see cref="RunState.Completed"/> short-circuit above, the
+    /// <see cref="ExistingStreamIdCollisionException"/> catch, or the
+    /// <see cref="EventStreamUnexpectedMaxEventIdException"/> catch — all three mean nothing was
+    /// committed by this call) returns <see langword="false"/>, so <see
+    /// cref="InspectMissingRunAsync"/> does not report a merge this call did not itself observe
+    /// (independent pre-PR review, cycle 1, conformance finding).
+    /// </para>
     /// </summary>
-    public async Task ReconstructAndCompleteAsync(
+    public async Task<bool> ReconstructAndCompleteAsync(
         IDocumentSession session,
         TaskAggregate task,
         ProjectDetails project,
@@ -520,7 +529,7 @@ public sealed class CloseoutEngine(
         {
             logger.LogDebug(
                 "Run {RunId} was already completed by a concurrent closeout; not completing it twice", runId);
-            return;
+            return false;
         }
         else
         {
@@ -533,7 +542,7 @@ public sealed class CloseoutEngine(
                 logger.LogDebug(
                     "Run {RunId} disappeared between the load above and its own fence; deferring to the next sweep",
                     runId);
-                return;
+                return false;
             }
 
             expectedRunVersion = runFence.Version;
@@ -542,6 +551,7 @@ public sealed class CloseoutEngine(
         try
         {
             await CompleteCloseoutAsync(session, run, project, task, mergedAt, now, expectedRunVersion, cancellationToken);
+            return true;
         }
         catch (ExistingStreamIdCollisionException)
         {
@@ -551,6 +561,7 @@ public sealed class CloseoutEngine(
             logger.LogDebug(
                 "Run {RunId} was reconstructed and completed by a concurrent closeout while this call was in flight",
                 runId);
+            return false;
         }
         catch (EventStreamUnexpectedMaxEventIdException)
         {
@@ -561,6 +572,7 @@ public sealed class CloseoutEngine(
             logger.LogDebug(
                 "Run {RunId} advanced past its fenced version while this call was completing its closeout; "
                 + "another sweep got there first", runId);
+            return false;
         }
     }
 
