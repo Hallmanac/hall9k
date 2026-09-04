@@ -58,6 +58,12 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim verifies this way.");
         }
 
+        RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
+            ?? throw new DomainConflictException(
+                $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
+                + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
+                + "dispatch queue.");
+
         // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
         // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
         // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), already running headlessly
@@ -65,7 +71,12 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         // execute the untrusted pull-request-head worktree's own code under the operator's account —
         // exactly the boundary RunLauncher's UntrustedWorkingDirectory flag and ClaudeExecutor's own
         // settings/hooks/MCP stripping exist to hold (independent pre-PR review, cycle 6, conformance
-        // lens). Mirrors TaskHandbackCommand's and TaskReleaseCommand's identical guard.
+        // lens). Mirrors TaskHandbackCommand's and TaskReleaseCommand's identical guard. Checked
+        // after the run-record load above, not before: a crashed Now-speed launch (no RunDispatched
+        // ever committed) has no run to be "already running headlessly" in, and this guard used to
+        // fire unconditionally on task.Type alone ahead of that load, overclaiming an unobserved
+        // "running" fact for exactly the case the no-record message above exists to describe
+        // honestly instead (independent pre-PR review, cycle 7, conformance lens).
         if (task.Type == TaskType.PrReview)
         {
             throw new DomainConflictException(
@@ -73,12 +84,6 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 + "already running headlessly under the daemon's own supervision, not an interactive "
                 + $"claim to verify. h9k task show {taskId} to see where it stands.");
         }
-
-        RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
-            ?? throw new DomainConflictException(
-                $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
-                + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
-                + "dispatch queue.");
 
         // An operator's own session, still attached in another terminal, is editing and possibly
         // rebuilding this same worktree right now — running gates here would collide with it in

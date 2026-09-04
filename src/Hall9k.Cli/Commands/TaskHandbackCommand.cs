@@ -109,11 +109,16 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // run — would misreport it as "already running headlessly" when nothing ever ran, closing
         // off h9k task release's own recovery path with a claim that overclaims what was actually
         // observed (independent pre-PR review, cycle 6, class sweep off TaskReleaseCommand.cs:61,
-        // the same shape adversarial cycle 6 found there). A live run, by contrast, is already being
-        // driven by this daemon's own RunSupervisor, exactly like an ordinary headless dispatch —
-        // superseding it here would requeue the task while the live run keeps going, dispatching a
-        // second run alongside it (independent pre-PR review, cycle 1, adversarial lens).
-        if (task.Type == TaskType.PrReview && (run.State == RunState.Dispatched || run.State == RunState.Running))
+        // the same shape adversarial cycle 6 found there). "Live" is RunState.IsLive, not just
+        // Dispatched/Running: a pr-review sentinel run spends real time in Verifying and UnderReview
+        // too, and matching only the first two states let those two fall through to the generic
+        // "handed off with h9k task deliver" refusal below, which safely refuses but for a false
+        // reason — a pr-review task is never delivered (independent pre-PR review, cycle 7,
+        // adversarial lens). A live run, by contrast, is already being driven by this daemon's own
+        // RunSupervisor, exactly like an ordinary headless dispatch — superseding it here would
+        // requeue the task while the live run keeps going, dispatching a second run alongside it
+        // (independent pre-PR review, cycle 1, adversarial lens).
+        if (task.Type == TaskType.PrReview && run.State.IsLive)
         {
             throw new DomainConflictException(
                 $"Task {taskId} is a pr-review task dispatched by auto-pr-review's now speed — it is "
