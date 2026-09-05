@@ -72,6 +72,7 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
                 // stream.jsonl is the only record of — otherwise never read back once this run
                 // is retired (conformance review, cycle 1, on h9k task start).
                 HeadlessTokenRecovery.AppendIfRecorded(session, run, supersededAt);
+                HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, run, supersededAt);
                 session.Events.Append(currentRunId, new RunSuperseded(currentRunId, task.LeaseGeneration, supersededAt));
             }
         }

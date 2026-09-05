@@ -141,6 +141,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             // above only catches committed work) — its own stream.jsonl is otherwise never read
             // back once this run is retired (conformance review, cycle 1, on h9k task start).
             HeadlessTokenRecovery.AppendIfRecorded(session, supersededRun, supersededAt);
+            HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, supersededRun, supersededAt);
             session.Events.Append(supersededRunId, new RunSuperseded(supersededRunId, task.LeaseGeneration + 1, supersededAt));
         }
         try

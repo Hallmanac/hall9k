@@ -84,6 +84,7 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         if (previousRun is not null && previousRun.NodeId == Guid.Empty && task.Type != TaskType.PrReview)
         {
             HeadlessTokenRecovery.AppendIfRecorded(session, previousRun, DateTimeOffset.UtcNow);
+            HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, previousRun, DateTimeOffset.UtcNow);
         }
 
         session.Delete<TaskLease>(taskId);

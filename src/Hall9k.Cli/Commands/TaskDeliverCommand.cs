@@ -242,8 +242,28 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // claim never writes a stream.jsonl at all (LaunchInteractiveClaudeAsync attaches claude
         // to this terminal directly, no --output-format stream-json), so this read finds nothing
         // there and PromptForHandoff's own blank-default behavior is unchanged for that claim.
+        //
+        // headlessResult stays scoped to the run-level file alone — its Usage feeds the
+        // run-level TokensRecorded append below, and HeadlessTokenRecovery.AppendDelegatedPhaseTokens
+        // further down already walks every delegation's own session file for its own tokens;
+        // reading a delegation's file into headlessResult here too would double-count whichever
+        // delegation happened to be latest.
         HeadlessResult headlessResult = ReadHeadlessResult(run.RunDirectory);
-        string handoff = settings.Handoff ?? PromptForHandoff(headlessResult.Handoff);
+
+        // The latest delegation's own session-scoped stream file (RunPaths.SessionStreamFile)
+        // wins over the run-level one for HANDOFF TEXT ONLY when this run was ever delegated: h9k
+        // task delegate never writes the run-level file (a second delegation would otherwise
+        // truncate the first contractor's own transcript), and a delegation is always the newest
+        // activity on a run when it happened at all — delivering, handing back, releasing,
+        // retrying, or abandoning a claim all end the run outright, so nothing can delegate again
+        // afterward (mirrors LogsCommand's identical preference; independent pre-PR review, cycle
+        // 1, on h9k task delegate). Without this, a claim built entirely through delegation would
+        // deliver with no recovered handoff at all, even though the last contractor wrote one.
+        string? recoveredHandoff = run.PhaseDelegations is { Count: > 0 } delegations
+            ? ReadHeadlessResultFromStreamFile(
+                RunPaths.SessionStreamFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory), delegations[^1].SessionName)).Handoff
+            : headlessResult.Handoff;
+        string handoff = settings.Handoff ?? PromptForHandoff(recoveredHandoff);
         if (handoff.IsBlank() && settings.Handoff is null && !AnsiConsole.Profile.Capabilities.Interactive)
         {
             // The one case worth flagging rather than writing silently: a self-delivering agent
@@ -328,6 +348,13 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
                 usage.CacheReadInputTokens, usage.CacheCreationInputTokens, run.Model));
         }
 
+        // A delegated contractor (h9k task delegate) writes its own session-scoped stream file,
+        // never the run-level one headlessResult above just read — otherwise identical to
+        // headlessResult's own reasoning (independent pre-PR review, cycle 1, on h9k task
+        // delegate): nothing else ever reads it back, so every phase this claim delegated would
+        // under-count the node's periodic token-spend budget by exactly what that phase spent.
+        HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, run, completedAt);
+
         await session.SaveChangesAsync(CancellationToken.None);
 
         await Doorbell.RingAsync($"task-delivered:{taskId}", CancellationToken.None);
@@ -382,9 +409,17 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
     /// that authored no handoff and spent no tokens rather than one this command could not
     /// measure (AGENTS.md: never guess at unobserved facts).
     /// </summary>
-    internal static HeadlessResult ReadHeadlessResult(string runDirectory)
+    internal static HeadlessResult ReadHeadlessResult(string runDirectory) =>
+        ReadHeadlessResultFromStreamFile(RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(runDirectory)));
+
+    /// <summary>
+    /// The same parse <see cref="ReadHeadlessResult"/> runs, pointed at an explicit stream file
+    /// rather than always the run-level one — <see cref="HeadlessTokenRecovery"/> needs this to
+    /// read a delegated contractor's own session-scoped stream file
+    /// (<see cref="RunPaths.SessionStreamFile"/>), which never shares the run-level file's path.
+    /// </summary>
+    internal static HeadlessResult ReadHeadlessResultFromStreamFile(string streamFile)
     {
-        string streamFile = RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(runDirectory));
         if (!File.Exists(streamFile))
         {
             return new HeadlessResult(null, null);
