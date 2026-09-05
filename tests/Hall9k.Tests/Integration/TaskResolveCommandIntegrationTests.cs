@@ -47,7 +47,7 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         await using IDocumentSession session = store.LightweightSession();
         TaskResolveCommand.RunStreamPullRequestOutcome outcome =
             await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
-                session, task, "https://github.com/x/y/pull/24", Now, cts.Token);
+                session, task, "https://github.com/x/y/pull/24", Now, new Uri("https://github.com/x/y"), cts.Token);
         await session.SaveChangesAsync(cts.Token);
 
         outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.NoRunStream,
@@ -73,7 +73,7 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         await using IDocumentSession session = store.LightweightSession();
         TaskResolveCommand.RunStreamPullRequestOutcome outcome =
             await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
-                session, task, "https://github.com/x/y/pull/24", Now, cts.Token);
+                session, task, "https://github.com/x/y/pull/24", Now, new Uri("https://github.com/x/y"), cts.Token);
         await session.SaveChangesAsync(cts.Token);
 
         outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.Recorded);
@@ -97,7 +97,8 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         await using IDocumentSession session = store.LightweightSession();
         TaskResolveCommand.RunStreamPullRequestOutcome outcome =
             await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
-                session, task, "https://github.com/other-org/other-repo/pull/24", Now, cts.Token);
+                session, task, "https://github.com/other-org/other-repo/pull/24", Now,
+                new Uri("https://github.com/x/y"), cts.Token);
         await session.SaveChangesAsync(cts.Token);
 
         outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.NotRecorded,
@@ -130,7 +131,7 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         await using IDocumentSession session = store.LightweightSession();
         TaskResolveCommand.RunStreamPullRequestOutcome outcome =
             await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
-                session, task, "https://github.com/x/y/pull/24", Now, cts.Token);
+                session, task, "https://github.com/x/y/pull/24", Now, new Uri("https://github.com/x/y"), cts.Token);
         await session.SaveChangesAsync(cts.Token);
 
         outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.NotRecorded,
@@ -160,9 +161,11 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{\"url\":\"https://github.com/x/y\"}");
 
         await using IDocumentSession session = store.LightweightSession();
+        Uri? projectRepositoryUrl = await TaskResolveCommand.ResolveProjectRepositoryUrlAsync(
+            session, task, "https://github.com/other-org/other-repo/pull/24", cts.Token, gh.Runner);
         TaskResolveCommand.RunStreamPullRequestOutcome outcome =
             await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
-                session, task, "https://github.com/other-org/other-repo/pull/24", Now, cts.Token, gh.Runner);
+                session, task, "https://github.com/other-org/other-repo/pull/24", Now, projectRepositoryUrl, cts.Token);
         await session.SaveChangesAsync(cts.Token);
 
         outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.NotRecorded,
@@ -185,9 +188,11 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{\"url\":\"https://github.com/x/y\"}");
 
         await using IDocumentSession session = store.LightweightSession();
+        Uri? projectRepositoryUrl = await TaskResolveCommand.ResolveProjectRepositoryUrlAsync(
+            session, task, "https://github.com/x/y/pull/24", cts.Token, gh.Runner);
         TaskResolveCommand.RunStreamPullRequestOutcome outcome =
             await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
-                session, task, "https://github.com/x/y/pull/24", Now, cts.Token, gh.Runner);
+                session, task, "https://github.com/x/y/pull/24", Now, projectRepositoryUrl, cts.Token);
         await session.SaveChangesAsync(cts.Token);
 
         outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.Recorded);
@@ -202,7 +207,9 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
     /// (independent pre-PR review, cycle 2, medium): with no URL to check safety for, there is
     /// nothing worth resolving the project's repository for at all, so a --repo-only project
     /// (no --repo-url) must never pay ResolveProjectRepositoryUrlAsync's gh fallback just to
-    /// discard the answer immediately.
+    /// discard the answer immediately. Resolved exactly once now (independent pre-PR review,
+    /// cycle 1, adversarial, medium), so this guard lives in ResolveProjectRepositoryUrlAsync
+    /// itself rather than in each of its two callers.
     /// </summary>
     [Fact]
     public async Task A_resolve_with_no_pull_request_url_never_shells_out_to_gh()
@@ -216,81 +223,86 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{\"url\":\"https://github.com/x/y\"}");
 
         await using IDocumentSession session = store.LightweightSession();
+        Uri? projectRepositoryUrl = await TaskResolveCommand.ResolveProjectRepositoryUrlAsync(
+            session, task, null, cts.Token, gh.Runner);
+        projectRepositoryUrl.Should().BeNull();
+        gh.Calls.Should().BeEmpty("no --pr was given, so there is nothing to resolve the repository for");
+
         TaskResolveCommand.RunStreamPullRequestOutcome outcome =
             await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
-                session, task, null, Now, cts.Token, gh.Runner);
+                session, task, null, Now, projectRepositoryUrl, cts.Token);
         await session.SaveChangesAsync(cts.Token);
 
         outcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.NotRecorded);
-        gh.Calls.Should().BeEmpty("no --pr was given, so there is nothing to resolve the repository for");
     }
 
     /// <summary>
-    /// <see cref="TaskResolveCommand.SafePullRequestUrlWithoutRunStreamAsync"/> is the guard the
-    /// task-stream side needs when there is no run stream at all: nothing on the run side can ever
-    /// protect this task from CloseoutEngine's missing-run sweep, since no RunDetails row will ever
-    /// materialize to drop it back out of TasksWithMissingRunRecordsAsync's own candidate shape, and
-    /// that sweep applies neither the pr-review nor the repository-match guard on its own (routed
-    /// to a task of its own rather than fixed here). A pr-review task's --pr names the pull request
-    /// it reviewed, never one of its own, even with no run stream to protect it (independent pre-PR
-    /// review, cycle 1, medium).
+    /// A pr-review task with no <see cref="TaskAggregate.CurrentRunId"/> at all — a Failed task
+    /// that never reached a live run, the same shape the class-level doc comment above describes —
+    /// pays neither the <c>ProjectDetails</c> load nor the <c>gh</c> fallback for its repository:
+    /// both downstream guards discard the answer regardless (independent pre-PR review, cycle 1,
+    /// adversarial, low). <see cref="RecordPullRequestOnRunStreamAsync"/> returns
+    /// <see cref="TaskResolveCommand.RunStreamPullRequestOutcome.NoRunStream"/> before ever touching
+    /// it, and <see cref="TaskResolveCommand.SafeTaskStreamPullRequestUrl"/> excludes a pr-review
+    /// task's URL outright in exactly that shape.
     /// </summary>
     [Fact]
-    public async Task A_pr_review_tasks_missing_run_stream_records_nothing_on_the_task_stream_either()
+    public async Task A_pr_review_task_with_no_current_run_never_resolves_a_repository()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         Guid ownerId = DomainId.New();
-        Guid runId = DomainId.New();
 
-        TaskAggregate task = await SeedFailedInteractiveClaimWithNoRunStreamAsync(
-            store, ownerId, runId, cts.Token, TaskType.PrReview);
+        TaskAggregate task = SeedQueuedTask(ownerId, TaskType.PrReview).Task;
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{\"url\":\"https://github.com/x/y\"}");
 
         await using IDocumentSession session = store.LightweightSession();
-        string? recorded = await TaskResolveCommand.SafePullRequestUrlWithoutRunStreamAsync(
-            session, task, "https://github.com/x/y/pull/24", cts.Token);
+        Uri? projectRepositoryUrl = await TaskResolveCommand.ResolveProjectRepositoryUrlAsync(
+            session, task, "https://github.com/x/y/pull/24", cts.Token, gh.Runner);
 
-        recorded.Should().BeNull(
-            "a pr-review task's --pr names the pull request it reviewed, and with no run stream to " +
-            "protect it, recording it on the task stream would still reach CloseoutEngine's missing-run sweep");
+        projectRepositoryUrl.Should().BeNull();
+        gh.Calls.Should().BeEmpty(
+            "a pr-review task with no current run has no downstream guard left that would ever use " +
+            "the answer, so resolving it — gh fallback included — is pure waste");
     }
 
+    /// <summary>
+    /// The routed defect this method exists to close: with a run stream that DID exist,
+    /// <see cref="TaskResolveCommand.RecordPullRequestOnRunStreamAsync"/> refuses to append a
+    /// foreign --pr onto the run stream (it comes back <c>NotRecorded</c>), but before this fix the
+    /// task stream's own copy was written from <c>settings.PullRequestUrl</c> verbatim in that case —
+    /// reasoning only "a run stream exists, so this must already be safe". A task later reopened
+    /// through <c>h9k pr resolve</c> would carry that unguarded URL into
+    /// <c>RunLauncher.TryCloseOutMergedPullRequestAsync</c>'s own dispatch-time recheck, which parses
+    /// only the number and asks <c>gh</c> about it inside the project's own repository — so an
+    /// unrelated repository's merged pull request could falsely close this task out.
+    /// </summary>
     [Fact]
-    public async Task A_foreign_pull_request_with_no_run_stream_records_nothing_on_the_task_stream_either()
+    public async Task A_foreign_pull_request_whose_run_stream_exists_records_nothing_on_the_task_stream_either()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         Guid ownerId = DomainId.New();
         Guid runId = DomainId.New();
 
-        TaskAggregate task = await SeedFailedInteractiveClaimWithNoRunStreamAsync(store, ownerId, runId, cts.Token);
+        TaskAggregate task = await SeedFailedDispatchedRunAsync(store, ownerId, runId, cts.Token);
+        Uri projectRepositoryUrl = new("https://github.com/x/y");
 
         await using IDocumentSession session = store.LightweightSession();
-        string? recorded = await TaskResolveCommand.SafePullRequestUrlWithoutRunStreamAsync(
-            session, task, "https://github.com/other-org/other-repo/pull/24", cts.Token);
+        TaskResolveCommand.RunStreamPullRequestOutcome runStreamOutcome =
+            await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
+                session, task, "https://github.com/other-org/other-repo/pull/24", Now, projectRepositoryUrl,
+                cts.Token);
+        runStreamOutcome.Should().Be(TaskResolveCommand.RunStreamPullRequestOutcome.NotRecorded,
+            "the run stream existed, but the URL names a foreign repository");
+
+        string? recorded = TaskResolveCommand.SafeTaskStreamPullRequestUrl(
+            task, "https://github.com/other-org/other-repo/pull/24", runStreamOutcome, projectRepositoryUrl);
 
         recorded.Should().BeNull(
-            "with no run stream to protect it, recording a foreign pull request on the task stream " +
-            "would still reach CloseoutEngine's missing-run sweep");
-    }
-
-    [Fact]
-    public async Task An_ordinary_pull_request_with_no_run_stream_still_records_on_the_task_stream()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
-        Guid ownerId = DomainId.New();
-        Guid runId = DomainId.New();
-
-        TaskAggregate task = await SeedFailedInteractiveClaimWithNoRunStreamAsync(store, ownerId, runId, cts.Token);
-
-        await using IDocumentSession session = store.LightweightSession();
-        string? recorded = await TaskResolveCommand.SafePullRequestUrlWithoutRunStreamAsync(
-            session, task, "https://github.com/x/y/pull/24", cts.Token);
-
-        recorded.Should().Be("https://github.com/x/y/pull/24",
-            "this is exactly the missing-run sweep's own candidate shape, and the URL is safe: it " +
-            "names the project's own repository and this is not a pr-review task");
+            "a run stream existing must never be read as \"this URL is already safe\" — the task " +
+            "stream's own guard has to be checked independently, or a later h9k pr resolve could " +
+            "watch an unrelated repository's pull request and falsely close this task out");
     }
 
     private DocumentStore NewStore() => DocumentStore.For(opts =>
@@ -306,9 +318,9 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
     /// RunDispatched is only ever appended after the checkout succeeds.
     /// </summary>
     private static async Task<TaskAggregate> SeedFailedInteractiveClaimWithNoRunStreamAsync(
-        DocumentStore store, Guid ownerId, Guid runId, CancellationToken cancellationToken, TaskType? type = null)
+        DocumentStore store, Guid ownerId, Guid runId, CancellationToken cancellationToken)
     {
-        (Guid taskId, TaskAggregate task, List<object> taskEvents, Guid projectId) = SeedQueuedTask(ownerId, type);
+        (Guid taskId, TaskAggregate task, List<object> taskEvents, Guid projectId) = SeedQueuedTask(ownerId);
 
         Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
             TaskDecider.ClaimInteractively(task, ownerId, runId, Now);

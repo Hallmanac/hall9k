@@ -341,18 +341,21 @@ public sealed class RunLauncher(
     /// must not fall through to a fresh dispatch either.
     /// <para>
     /// Applies the same repository-match guard <see cref="PullRequestUrls.IsSafePullRequestUrl"/>
-    /// enforces everywhere else a task's own <c>PullRequestUrl</c> reaches <c>gh</c> (independent
-    /// pre-PR review sibling finding, self-review, medium): <c>TaskResolveCommand</c>'s own
-    /// "a run stream already existed" path records a mismatched <c>--pr</c> onto the task stream
-    /// verbatim, unguarded, reasoning only about the missing-run sweep's own candidate shape — a
-    /// task later reopened through <c>h9k pr resolve</c> (which resumes the real, already-pushed
-    /// branch off <c>RunDetails</c>, never the recorded URL, so the guard on <c>Reopen</c> itself
-    /// stops nothing here) still carries that unguarded URL into this very check on its next
-    /// dispatch, and without this guard <c>gh pr view &lt;number&gt;</c> below would resolve a
-    /// foreign URL's number inside the project's own repository, exactly the hazard the sibling
-    /// guards exist to prevent. A pr-review task's own <c>PullRequestUrl</c> can never carry a
-    /// live URL into this dispatch-time recheck (Reopen refuses the type outright, so a pr-review
-    /// task's Done state has no lever back to this method), so that half of the check is
+    /// enforces everywhere else a task's own <c>PullRequestUrl</c> reaches <c>gh</c>. This is now
+    /// belt-and-suspenders rather than a closed exploit path on its own: <c>TaskResolveCommand.ExecuteAsync</c>'s
+    /// task-stream write (<c>SafeTaskStreamPullRequestUrl</c>) used to record a mismatched
+    /// <c>--pr</c> onto the task stream verbatim, unguarded, whenever a run stream already existed —
+    /// reasoning only about the missing-run sweep's own candidate shape — and a task later reopened
+    /// through <c>h9k pr resolve</c> (which resumes the real, already-pushed branch off
+    /// <c>RunDetails</c>, never the recorded URL, so the guard on <c>Reopen</c> itself stops nothing
+    /// here) would carry that unguarded URL into this very check on its next dispatch, where without
+    /// this guard <c>gh pr view &lt;number&gt;</c> below would resolve a foreign URL's number inside
+    /// the project's own repository (routed defect fix, independent pre-PR review, cycle 1, medium:
+    /// that write site is now guarded unconditionally, so this check no longer has a known live path
+    /// feeding it an unsafe URL — but it stays, since nothing about this method's own contract
+    /// depends on that write site staying guarded). A pr-review task's own <c>PullRequestUrl</c> can
+    /// never carry a live URL into this dispatch-time recheck (Reopen refuses the type outright, so a
+    /// pr-review task's Done state has no lever back to this method), so that half of the check is
     /// belt-and-suspenders here rather than a closed exploit path the way the repository check is.
     /// </para>
     /// </summary>

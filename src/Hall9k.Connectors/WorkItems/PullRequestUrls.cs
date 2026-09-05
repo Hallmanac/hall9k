@@ -74,16 +74,32 @@ public static class PullRequestUrls
             return false;
         }
 
-        if (projectRepositoryUrl is not null
-            && Uri.TryCreate(pullRequestUrl, UriKind.Absolute, out Uri? parsedPullRequestUrl)
-            && RepositoryFrom(projectRepositoryUrl) is { } projectRepository
-            && RepositoryFrom(parsedPullRequestUrl) is { } pullRequestRepository
-            && (!string.Equals(projectRepositoryUrl.Host, parsedPullRequestUrl.Host, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(projectRepository, pullRequestRepository, StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
-
-        return true;
+        return !NamesForeignRepository(pullRequestUrl, projectRepositoryUrl);
     }
+
+    /// <summary>
+    /// Whether <paramref name="pullRequestUrl"/> names a repository other than
+    /// <paramref name="projectRepositoryUrl"/>'s own — the repository-match half of
+    /// <see cref="IsSafePullRequestUrl"/>'s check, split out for a caller that must still record a
+    /// URL for display even when it does not parse to a pull request number at all (a commit link,
+    /// an issue link, a URL on some other host entirely): <c>TaskResolveCommand</c>'s task-stream
+    /// guard records <c>--pr</c> unconditionally, per the option's own help text and AGENTS.md, and
+    /// narrows only on an actual repository mismatch — <see cref="IsSafePullRequestUrl"/>'s own
+    /// <see cref="ParseNumber"/> gate would otherwise also drop that non-pull-request-shaped URL,
+    /// which is a call to <em>enrollment</em> (does need a real pull request number to watch for a
+    /// merge), not to display (independent pre-PR review, cycle 1, conformance and adversarial,
+    /// medium: an earlier version of the task-stream guard called <see cref="IsSafePullRequestUrl"/>
+    /// directly and so dropped display for exactly this shape too). Never a mismatch when
+    /// <paramref name="pullRequestUrl"/> does not even parse as an absolute URL, or when
+    /// <paramref name="projectRepositoryUrl"/> is not known — the same best-effort-against-a-known-
+    /// repository courtesy <see cref="IsSafePullRequestUrl"/>'s own doc comment describes.
+    /// </summary>
+    public static bool NamesForeignRepository(string? pullRequestUrl, Uri? projectRepositoryUrl) =>
+        projectRepositoryUrl is not null
+        && !pullRequestUrl.IsBlank()
+        && Uri.TryCreate(pullRequestUrl, UriKind.Absolute, out Uri? parsedPullRequestUrl)
+        && RepositoryFrom(projectRepositoryUrl) is { } projectRepository
+        && RepositoryFrom(parsedPullRequestUrl) is { } pullRequestRepository
+        && (!string.Equals(projectRepositoryUrl.Host, parsedPullRequestUrl.Host, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(projectRepository, pullRequestRepository, StringComparison.OrdinalIgnoreCase));
 }
