@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -13,6 +14,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -31,12 +33,23 @@ namespace Hall9k.Daemon.Execution;
 /// sitting in the worktree — a failure that names every file left behind, of either kind, so a
 /// human or a retry session finds the whole feature instead of committing only the modified
 /// half of it and shipping a hollow branch. The reviewer agent is Slice 3.
+/// <para>
+/// The uncommitted-files check is not only a failure any more (task: when a session ends with
+/// finished work uncommitted, the daemon recovers on its own): a run that has not already spent
+/// its one attempt gets a single bounded, commit-only recovery session spawned into the SAME
+/// worktree before this method ever calls <see cref="FailBeforeGatesAsync"/> — see
+/// <see cref="RecoverUncommittedWorkOrExplainAsync"/> for the whole mechanism. The detection
+/// itself (<see cref="DetectStrandedWorkAsync"/>) is unchanged either way; only what happens
+/// once it finds something is new.
+/// </para>
 /// </summary>
 public sealed partial class VerificationRunner(
     IDocumentStore store,
     IOptions<DaemonOptions> options,
     ILogger<VerificationRunner> logger,
-    IWorktreeManager worktrees)
+    IWorktreeManager worktrees,
+    IExecutor executor,
+    IProcessManager processManager)
 {
     /// <summary>
     /// Runs the project's gates (task: a fix cycle's verification gate). <paramref name="scopeSinceSha"/>
@@ -63,135 +76,31 @@ public sealed partial class VerificationRunner(
             return false;
         }
 
-        // Fail fast on an agent that left work behind uncommitted, before any gate runs
-        // against a tree the pull request will never actually carry (origin incident:
-        // task 08's agent completed all its work uncommitted; gates passed vacuously on
-        // the unmodified tree and the failure surfaced two stages late as "No commits
-        // between main and branch" at PR creation). Two distinct shapes of that same
-        // failure, checked separately because they need different words (backlog 57):
-        // zero commits at all, and — the shape the zero-commit check alone always missed —
-        // some commits landed but the session still ended with modified-but-uncommitted
-        // files sitting in the worktree (origin incidents, both 2026-08-26: the PR #53
-        // follow-up's cycle-3 fix round left eight files uncommitted, caught only by the
-        // next review pass; task df277369 failed twice backgrounding its own test suite and
-        // ending the session before it finished). Either way the reason names the files, so
-        // a human or a retry session finds the finished work instead of rediscovering it.
+        // Fail fast on an agent that left work behind uncommitted, before any gate runs against
+        // a tree the pull request will never actually carry — see DetectStrandedWorkAsync's own
+        // doc for the two failure shapes this observes, and RecoverUncommittedWorkOrExplainAsync's
+        // for what happens before either one is allowed to fail the run outright.
         if (project is not null)
         {
-            (IReadOnlyList<string>? modifiedFiles, IReadOnlyList<string> untrackedFiles) =
-                await ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
+            StrandedWorkCheck check = await DetectStrandedWorkAsync(run, task, project, cancellationToken);
+            string? failureReason = check.FailureReason;
 
-            if (modifiedFiles is null)
+            // Recovery-eligible only when there is something a commit-only session could
+            // actually do something about (task: when a session ends with finished work
+            // uncommitted, the daemon recovers on its own) — a task that produced zero commits
+            // AND left nothing sitting in the worktree did not strand work, it did nothing, and
+            // no commit session fixes that. At most one attempt per run: a run that already
+            // carries an UncommittedWorkRecovery record spent it already, whatever the outcome.
+            if (failureReason is not null && check.StrandedFiles.Count > 0 && run.UncommittedWorkRecovery is null)
             {
-                // Git is unobservable here (not a repo, permission denied, `git` missing from
-                // PATH); never guess — proceed and let the gates surface whatever is actually
-                // broken, but say so, the same as the no-commit check's own unobservable case
-                // below: an unlogged skip here would leave an operator with no record of why a
-                // session's stranded work went uncaught.
-                logger.LogWarning(
-                    "Run {RunId}: could not read the worktree's status at {WorktreePath}; skipping the uncommitted-files check",
-                    runId, run.WorktreePath);
+                failureReason = await RecoverUncommittedWorkOrExplainAsync(
+                    run, task, project, check.StrandedFiles, failureReason, cancellationToken);
             }
 
-            // An untracked path under src/ or tests/ is treated as first-class strandable work,
-            // not a softer signal: it is exactly the shape that stranded a feature's own core
-            // files (TwgJiraExecutor.cs, JiraWriteCoordinator.cs) behind a failure message that
-            // named only the modified files, so an agent that faithfully committed the named
-            // list still delivered a hollow branch (origin incident, 2026-08-29, the Jira
-            // compose/execute task). git status is run with `--untracked-files=all`, so a new
-            // file inside a wholly untracked directory is reported by its own path rather than
-            // collapsed into one directory entry (conformance review, independent pre-PR review
-            // cycle 2), and .gitignore matches (bin/, obj/, artifacts/) never appear here at
-            // all — git status omits an ignored path by default. That still leaves a known
-            // .NET build/test byproduct that lands inside src/ or tests/ on a project whose own
-            // .gitignore has not caught up with it — a `dotnet test --logger trx` run's default
-            // `TestResults/` directory chief among them — which IsKnownBuildOrTestOutput excludes
-            // by well-known directory name regardless of .gitignore, the same way `bin/` and
-            // `obj/` are excluded whether or not a project ignores them (independent pre-PR
-            // review cycle 1: without this, a fully committed session could fail before any gate
-            // over its own gate's coverage output, a defect no retry can ever clear since the
-            // next session's gates regenerate the same file). Anything untracked outside src/ or
-            // tests/ (a coverage report at the repo root, a project home's own workspace notes)
-            // is still just as likely a gate byproduct the project's .gitignore has not caught up
-            // with, so it stays a warn-only signal — failing on it would be the same unclearable
-            // defect.
-            (IReadOnlyList<string> strandableUntrackedFiles, IReadOnlyList<string> byproductUntrackedFiles) =
-                WorktreeGitStatus.SplitUntracked(untrackedFiles);
-
-            if (byproductUntrackedFiles.Count > 0)
+            if (failureReason is not null)
             {
-                logger.LogWarning(
-                    "Run {RunId}: the worktree at {WorktreePath} has untracked file(s) not counted against the " +
-                    "uncommitted-files check: {Files}",
-                    runId, run.WorktreePath, SummarizeFiles(byproductUntrackedFiles));
-            }
-
-            // The failing list a resuming agent or a human sees: every untracked new file under
-            // src/ or tests/, plus every modified-but-uncommitted tracked file — untracked first
-            // so `SummarizeFiles`' MaxListedFiles cap, on a wide session, never drops preferentially
-            // from the class this check exists to make visible (conformance review finding: a
-            // session with 22 modified files and 3 new untracked ones would otherwise list all 22
-            // modified and elide the 3 untracked as "and 3 more"). Named together so committing
-            // only the modified ones can never look sufficient. Null only when git itself was
-            // unobservable above; in that case untracked came back empty too, so there is nothing
-            // to strand.
-            IReadOnlyList<string>? strandedFiles = modifiedFiles is null
-                ? null
-                : [.. strandableUntrackedFiles, .. modifiedFiles];
-
-            // "Uncommitted" alone stopped saying enough once strandedFiles started mixing
-            // tracked-modified paths (already `git add`ed; `git commit` alone picks them up) with
-            // brand-new untracked ones (`git add` first, since `git commit -am` silently skips
-            // them) — a resuming agent reading only "uncommitted" could `git commit -am` the
-            // modified half and reproduce the exact hollow-branch shape this check exists to catch
-            // (independent pre-PR review, conformance finding, cycle 3). Built once so both reasons
-            // below stay in sync.
-            string? untrackedClarification = strandableUntrackedFiles.Count > 0
-                ? $" {strandableUntrackedFiles.Count} of these {(strandableUntrackedFiles.Count == 1 ? "is" : "are")} " +
-                  "new and untracked, not modified — `git add` before `git commit`, since `git commit -a` alone will not pick them up."
-                : null;
-
-            // Research tasks are exempt from the no-commit check — their deliverable is the
-            // transcript, not commits (the one TaskType whose legitimate output is empty);
-            // every other type ships its work as commits. The uncommitted-files check right
-            // below is not exempt: a research task that left modified or untracked files behind
-            // still stranded work, whatever its deliverable is.
-            if (task.Type != TaskType.Research)
-            {
-                int? commits = await CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
-                if (commits == 0)
-                {
-                    string reason = strandedFiles is { Count: > 0 }
-                        ? $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
-                          $"'{project.BaseBranch}'. The session ended with uncommitted files still sitting " +
-                          $"in the worktree instead of being committed: {SummarizeFiles(strandedFiles)}." +
-                          $"{untrackedClarification}"
-                        : $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
-                          $"'{project.BaseBranch}'. The session ended without committing its work, so the " +
-                          "gates were not run against the unmodified tree.";
-                    await FailBeforeGatesAsync(runId, taskId, reason, cancellationToken);
-                    logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, reason);
-                    return false;
-                }
-
-                if (commits is null)
-                {
-                    // Git is unobservable here (not a repo, unknown base ref); never guess —
-                    // proceed and let the gates surface whatever is actually broken.
-                    logger.LogWarning(
-                        "Run {RunId}: could not count commits on branch {Branch} against {BaseBranch}; skipping the no-commit check",
-                        runId, run.Branch, project.BaseBranch);
-                }
-            }
-
-            if (strandedFiles is { Count: > 0 })
-            {
-                string reason =
-                    "The session ended with uncommitted files still sitting in the worktree: " +
-                    $"{SummarizeFiles(strandedFiles)}.{untrackedClarification} Finished work left uncommitted " +
-                    "never reaches the pull request, so the gates were not run until it is committed.";
-                await FailBeforeGatesAsync(runId, taskId, reason, cancellationToken);
-                logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, reason);
+                await FailBeforeGatesAsync(runId, taskId, failureReason, cancellationToken);
+                logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, failureReason);
                 return false;
             }
         }
@@ -393,6 +302,249 @@ public sealed partial class VerificationRunner(
             runId, gates.Count,
             scope is null ? "" : $"; test gate ran {testGateModeDescription}");
         return true;
+    }
+
+    /// <summary>
+    /// The pre-gate uncommitted-work observation (backlog 57), unchanged from before this run
+    /// ever gained an automatic recovery: null <see cref="FailureReason"/> means the tree is fine
+    /// to gate; otherwise it names the failure exactly as <see cref="FailBeforeGatesAsync"/> would
+    /// report it today. <see cref="StrandedFiles"/> is always the raw list — even when
+    /// <see cref="FailureReason"/> is the no-commit variant that already folds them into its own
+    /// text — so a caller deciding whether to recover never has to re-derive it from prose.
+    /// </summary>
+    private readonly record struct StrandedWorkCheck(string? FailureReason, IReadOnlyList<string> StrandedFiles);
+
+    /// <summary>
+    /// Fail fast on an agent that left work behind uncommitted, before any gate runs against a
+    /// tree the pull request will never actually carry (origin incident: task 08's agent
+    /// completed all its work uncommitted; gates passed vacuously on the unmodified tree and the
+    /// failure surfaced two stages late as "No commits between main and branch" at PR creation).
+    /// Two distinct shapes of that same failure, checked separately because they need different
+    /// words (backlog 57): zero commits at all, and — the shape the zero-commit check alone
+    /// always missed — some commits landed but the session still ended with
+    /// modified-but-uncommitted files sitting in the worktree (origin incidents, both 2026-08-26:
+    /// the PR #53 follow-up's cycle-3 fix round left eight files uncommitted, caught only by the
+    /// next review pass; task df277369 failed twice backgrounding its own test suite and ending
+    /// the session before it finished). Either way the reason names the files, so a human or a
+    /// recovery session finds the finished work instead of rediscovering it.
+    /// </summary>
+    private async Task<StrandedWorkCheck> DetectStrandedWorkAsync(
+        RunDetails run, TaskDetails task, ProjectDetails project, CancellationToken cancellationToken)
+    {
+        (IReadOnlyList<string>? modifiedFiles, IReadOnlyList<string> untrackedFiles) =
+            await ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
+
+        if (modifiedFiles is null)
+        {
+            // Git is unobservable here (not a repo, permission denied, `git` missing from
+            // PATH); never guess — proceed and let the gates surface whatever is actually
+            // broken, but say so, the same as the no-commit check's own unobservable case
+            // below: an unlogged skip here would leave an operator with no record of why a
+            // session's stranded work went uncaught.
+            logger.LogWarning(
+                "Run {RunId}: could not read the worktree's status at {WorktreePath}; skipping the uncommitted-files check",
+                run.Id, run.WorktreePath);
+        }
+
+        // An untracked path under src/ or tests/ is treated as first-class strandable work,
+        // not a softer signal: it is exactly the shape that stranded a feature's own core
+        // files (TwgJiraExecutor.cs, JiraWriteCoordinator.cs) behind a failure message that
+        // named only the modified files, so an agent that faithfully committed the named
+        // list still delivered a hollow branch (origin incident, 2026-08-29, the Jira
+        // compose/execute task). git status is run with `--untracked-files=all`, so a new
+        // file inside a wholly untracked directory is reported by its own path rather than
+        // collapsed into one directory entry (conformance review, independent pre-PR review
+        // cycle 2), and .gitignore matches (bin/, obj/, artifacts/) never appear here at
+        // all — git status omits an ignored path by default. That still leaves a known
+        // .NET build/test byproduct that lands inside src/ or tests/ on a project whose own
+        // .gitignore has not caught up with it — a `dotnet test --logger trx` run's default
+        // `TestResults/` directory chief among them — which IsKnownBuildOrTestOutput excludes
+        // by well-known directory name regardless of .gitignore, the same way `bin/` and
+        // `obj/` are excluded whether or not a project ignores them (independent pre-PR
+        // review cycle 1: without this, a fully committed session could fail before any gate
+        // over its own gate's coverage output, a defect no retry can ever clear since the
+        // next session's gates regenerate the same file). Anything untracked outside src/ or
+        // tests/ (a coverage report at the repo root, a project home's own workspace notes)
+        // is still just as likely a gate byproduct the project's .gitignore has not caught up
+        // with, so it stays a warn-only signal — failing on it would be the same unclearable
+        // defect.
+        (IReadOnlyList<string> strandableUntrackedFiles, IReadOnlyList<string> byproductUntrackedFiles) =
+            WorktreeGitStatus.SplitUntracked(untrackedFiles);
+
+        if (byproductUntrackedFiles.Count > 0)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the worktree at {WorktreePath} has untracked file(s) not counted against the " +
+                "uncommitted-files check: {Files}",
+                run.Id, run.WorktreePath, SummarizeFiles(byproductUntrackedFiles));
+        }
+
+        // The failing list a resuming agent or a human sees: every untracked new file under
+        // src/ or tests/, plus every modified-but-uncommitted tracked file — untracked first
+        // so `SummarizeFiles`' MaxListedFiles cap, on a wide session, never drops preferentially
+        // from the class this check exists to make visible (conformance review finding: a
+        // session with 22 modified files and 3 new untracked ones would otherwise list all 22
+        // modified and elide the 3 untracked as "and 3 more"). Named together so committing
+        // only the modified ones can never look sufficient. Null only when git itself was
+        // unobservable above; in that case untracked came back empty too, so there is nothing
+        // to strand.
+        IReadOnlyList<string>? strandedFiles = modifiedFiles is null
+            ? null
+            : [.. strandableUntrackedFiles, .. modifiedFiles];
+
+        // "Uncommitted" alone stopped saying enough once strandedFiles started mixing
+        // tracked-modified paths (already `git add`ed; `git commit` alone picks them up) with
+        // brand-new untracked ones (`git add` first, since `git commit -am` silently skips
+        // them) — a resuming agent reading only "uncommitted" could `git commit -am` the
+        // modified half and reproduce the exact hollow-branch shape this check exists to catch
+        // (independent pre-PR review, conformance finding, cycle 3). Built once so both reasons
+        // below stay in sync.
+        string? untrackedClarification = strandableUntrackedFiles.Count > 0
+            ? $" {strandableUntrackedFiles.Count} of these {(strandableUntrackedFiles.Count == 1 ? "is" : "are")} " +
+              "new and untracked, not modified — `git add` before `git commit`, since `git commit -a` alone will not pick them up."
+            : null;
+
+        // Research tasks are exempt from the no-commit check — their deliverable is the
+        // transcript, not commits (the one TaskType whose legitimate output is empty);
+        // every other type ships its work as commits. The uncommitted-files check right
+        // below is not exempt: a research task that left modified or untracked files behind
+        // still stranded work, whatever its deliverable is.
+        if (task.Type != TaskType.Research)
+        {
+            int? commits = await CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
+            if (commits == 0)
+            {
+                string reason = strandedFiles is { Count: > 0 }
+                    ? $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
+                      $"'{project.BaseBranch}'. The session ended with uncommitted files still sitting " +
+                      $"in the worktree instead of being committed: {SummarizeFiles(strandedFiles)}." +
+                      $"{untrackedClarification}"
+                    : $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
+                      $"'{project.BaseBranch}'. The session ended without committing its work, so the " +
+                      "gates were not run against the unmodified tree.";
+                return new StrandedWorkCheck(reason, strandedFiles ?? []);
+            }
+
+            if (commits is null)
+            {
+                // Git is unobservable here (not a repo, unknown base ref); never guess —
+                // proceed and let the gates surface whatever is actually broken.
+                logger.LogWarning(
+                    "Run {RunId}: could not count commits on branch {Branch} against {BaseBranch}; skipping the no-commit check",
+                    run.Id, run.Branch, project.BaseBranch);
+            }
+        }
+
+        if (strandedFiles is { Count: > 0 })
+        {
+            string reason =
+                "The session ended with uncommitted files still sitting in the worktree: " +
+                $"{SummarizeFiles(strandedFiles)}.{untrackedClarification} Finished work left uncommitted " +
+                "never reaches the pull request, so the gates were not run until it is committed.";
+            return new StrandedWorkCheck(reason, strandedFiles);
+        }
+
+        return new StrandedWorkCheck(null, strandedFiles ?? []);
+    }
+
+    /// <summary>
+    /// One bounded, commit-only recovery session (task: when a session ends with finished work
+    /// uncommitted, the daemon recovers on its own), spawned into the SAME worktree the failed
+    /// session left dirty — never a second worktree checkout, since this run's own is still
+    /// sitting right there with the retained work in it. Returns null when the recovery session
+    /// actually leaves the tree clean, so the caller proceeds to the gates exactly as if nothing
+    /// had gone wrong; otherwise returns the failure reason to record, always built from a FRESH
+    /// re-check of the worktree — the ground truth of what actually happened, never the
+    /// session's own self-reported result — rather than assumed from <paramref name="originalReason"/>.
+    /// <para>
+    /// Fresh session, not a <c>--resume</c> of the one that left the mess: a resumed session
+    /// would still carry whatever review findings or fix instructions produced the uncommitted
+    /// state, and this session's only job is committing what is already there
+    /// (<see cref="AgentPromptBuilder.BuildUncommittedWorkRecovery"/>). Bounded twice over —
+    /// <see cref="DaemonOptions.UncommittedWorkRecoveryMaxTurns"/> as a hard turn cap enforced by
+    /// the executor itself, <see cref="DaemonOptions.UncommittedWorkRecoveryTimeout"/> as a
+    /// wall-clock backstop enforced here — so a recovery can never cost anywhere near what the
+    /// run it is recovering already cost.
+    /// </para>
+    /// </summary>
+    private async Task<string?> RecoverUncommittedWorkOrExplainAsync(
+        RunDetails run, TaskDetails task, ProjectDetails project, IReadOnlyList<string> strandedFiles,
+        string originalReason, CancellationToken cancellationToken)
+    {
+        Guid recoverySessionId = DomainId.New();
+
+        // Recorded — and saved — before the spawn, not after: a daemon restart mid-wait must
+        // find this fact on the stream even though the spawn's own outcome is still unknown
+        // (the "save the decision before the wait" discipline commit 372acb38 fixed for the
+        // session-error-retry leg). This is also what makes the attempt one-shot: the next
+        // VerifyAsync call for this run — whether this same call's own post-recovery re-check,
+        // or a wholly separate later fix cycle's — reads this back and never spawns a second one.
+        await using (IDocumentSession recordSession = store.LightweightSession())
+        {
+            recordSession.Events.Append(run.Id, new RunUncommittedWorkRecoveryAttempted(
+                run.Id, recoverySessionId, strandedFiles, originalReason, DateTimeOffset.UtcNow));
+            await recordSession.SaveChangesAsync(cancellationToken);
+        }
+
+        string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        string streamFile = RunPaths.SessionStreamFile(runDirectory, SessionRoleName.CommitRecovery);
+        string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(task, strandedFiles);
+
+        SpawnedAgent agent;
+        try
+        {
+            agent = await executor.SpawnAsync(new AgentSpawnRequest(
+                run.Id, recoverySessionId, run.WorktreePath, run.RunDirectory, prompt, run.ExecutorMode, run.Model,
+                project.SkipPermissions, SessionArtifactName: SessionRoleName.CommitRecovery,
+                MaxTurns: options.Value.UncommittedWorkRecoveryMaxTurns)
+            {
+                SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CommitRecovery),
+            }, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception, "Run {RunId}: the automatic uncommitted-work recovery session could not be spawned", run.Id);
+            return $"{originalReason} An automatic commit-only recovery session could not even be started " +
+                   $"({exception.Message}) — h9k task retry resumes this same worktree by hand.";
+        }
+
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(options.Value.UncommittedWorkRecoveryTimeout);
+        AgentResult? result;
+        try
+        {
+            result = await SessionResultWaiter.WaitAsync(
+                streamFile, agent.ProcessId, agent.StartedAt, processManager, onOutput: null, timeoutSource.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The turn cap is the primary bound; this is the backstop for the one thing it
+            // cannot cover — a single turn whose own tool call hangs. Terminated rather than
+            // left running, so a later `h9k task retry` never finds two sessions touching the
+            // same worktree at once.
+            processManager.Terminate(agent.ProcessId, agent.StartedAt);
+            logger.LogWarning(
+                "Run {RunId}: the automatic uncommitted-work recovery session exceeded its {Timeout} bound and was terminated",
+                run.Id, options.Value.UncommittedWorkRecoveryTimeout);
+            result = null;
+        }
+
+        logger.LogInformation(
+            "Run {RunId}: automatic uncommitted-work recovery session ended ({Outcome})",
+            run.Id,
+            result is null ? "no result" : result.IsError ? $"error: {result.Summary ?? "(no message)"}" : "ok");
+
+        // The objective ground truth, not the session's own self-report: even a session that
+        // errored out (hit its own turn cap right after committing everything, say) can have
+        // left the tree clean, and even one that reported success can still have left something
+        // behind. Re-running the identical detection this method's own caller already ran is
+        // what makes that an observation rather than a guess.
+        StrandedWorkCheck recheck = await DetectStrandedWorkAsync(run, task, project, cancellationToken);
+        return recheck.FailureReason is null
+            ? null
+            : $"{recheck.FailureReason} An automatic commit-only recovery session already ran once for this " +
+              "run and still did not leave the tree clean — h9k task retry resumes this same worktree by hand.";
     }
 
     private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull)>

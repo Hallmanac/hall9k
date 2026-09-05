@@ -968,9 +968,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     {
         processManager ??= ProcessManagers.ForCurrentPlatform();
         options ??= new DaemonOptions();
+        IExecutor resolvedExecutor =
+            executor ?? new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions()));
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), resolvedExecutor, processManager);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())), processManager, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
@@ -978,8 +980,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())), processManager,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
-        PrimarySessionResumer primarySessionResumer = new(
-            executor ?? new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())));
+        PrimarySessionResumer primarySessionResumer = new(resolvedExecutor);
         return new RunSupervisor(store, node, processManager, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             primarySessionResumer, Options.Create(options), logger ?? NullLogger<RunSupervisor>.Instance);

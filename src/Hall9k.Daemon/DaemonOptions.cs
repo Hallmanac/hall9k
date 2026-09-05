@@ -181,6 +181,31 @@ public sealed class DaemonOptions
     public TimeSpan SessionErrorRetryBackoff { get; set; } = TimeSpan.FromSeconds(90);
 
     /// <summary>
+    /// The turn cap the one automatic uncommitted-work recovery session is spawned with (task:
+    /// when a session ends with finished work uncommitted, the daemon recovers on its own),
+    /// passed straight through as <c>claude -p --max-turns</c>. Bounded by construction rather
+    /// than by the prompt's own promise to be quick: the recovery this replaces — a human
+    /// running <c>h9k task retry</c> after this exact failure class — measured 100 minutes on
+    /// average and still failed again 14 times in 21, which is the outcome this cap exists to
+    /// rule out for the automatic case. The recovery's whole job is reading `git status`, running
+    /// the commit-plan skill, and committing — a handful of tool calls for a worktree the
+    /// original session already finished — so 20 turns is generous headroom for that job, not a
+    /// tight budget for it.
+    /// </summary>
+    public int UncommittedWorkRecoveryMaxTurns { get; set; } = 20;
+
+    /// <summary>
+    /// The wall-clock ceiling on the same recovery session, on top of
+    /// <see cref="UncommittedWorkRecoveryMaxTurns"/> rather than instead of it: a turn cap bounds
+    /// how many round trips the session takes, not how long any single one of them runs, so a
+    /// hung tool call inside one turn could otherwise idle past the whole point of the cap. A
+    /// timeout here terminates the process and the run fails exactly as an uncompleted recovery
+    /// always does — named as such, so a human reading the failure knows the recovery itself
+    /// never finished rather than finished and failed.
+    /// </summary>
+    public TimeSpan UncommittedWorkRecoveryTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
     /// Cycles the conformance track may run before the run parks for a human (Decisions Log
     /// #63). Conformance has no severity grades to gate on — a criterion is met or it is not —
     /// so its bound is simply "how many times may a machine be told the same thing". A

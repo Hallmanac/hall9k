@@ -1896,6 +1896,60 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// The one automatic uncommitted-work recovery session (task: when a session ends with
+    /// finished work uncommitted, the daemon recovers on its own): a FRESH session — never a
+    /// <c>--resume</c> of the errored one, unlike <see cref="BuildSessionErrorRetry"/> and
+    /// <see cref="BuildBudgetRetry"/> above — spawned into the same retained worktree the prior
+    /// session left dirty. Fresh rather than resumed on purpose: a resumed session would still
+    /// carry whatever review findings or fix instructions the prior session was working from,
+    /// and this session's entire job is committing what is already finished, not reasoning about
+    /// any of that again. No task or project context beyond the objective is restated —
+    /// deliberately narrow, so it stays cheap by construction — but unlike a `--resume`, this
+    /// session starts with zero memory of the branch, so it needs enough orientation to tell
+    /// genuinely finished work apart from something the prior session may have left half-written
+    /// on purpose.
+    /// </summary>
+    public static string BuildUncommittedWorkRecovery(TaskDetails task, IReadOnlyList<string> strandedFiles)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("A previous session working this task ended with finished work sitting uncommitted");
+        prompt.AppendLine("in this worktree:");
+        prompt.AppendLine();
+        prompt.AppendLine(SummarizeStrandedFiles(strandedFiles));
+        prompt.AppendLine();
+        prompt.AppendLine($"The task's objective, for orientation: {task.Objective}");
+        prompt.AppendLine();
+        prompt.AppendLine("Your only job is turning this into well-formed commits, then stopping. If this repo");
+        prompt.AppendLine("ships a commit-plan skill, invoke it now — that is exactly the judgment call it exists");
+        prompt.AppendLine("for: organize what is genuinely finished work into cohesive, buildable commits, and");
+        prompt.AppendLine("deliberately leave out anything that looks like scratch state or was left uncommitted");
+        prompt.AppendLine("on purpose, rather than sweeping everything in blind. If this repo ships no such skill,");
+        prompt.AppendLine("use the same judgment by hand: `git add` and `git commit` what belongs, in as many");
+        prompt.AppendLine("commits as the change actually needs.");
+        prompt.AppendLine();
+        prompt.AppendLine("Do not read or act on any review findings. Do not fix bugs, add tests, or change any");
+        prompt.AppendLine("file's content beyond what committing requires. Do not run the build or test suite.");
+        prompt.AppendLine("Do not open a pull request — the platform does that once this run reaches its gates on");
+        prompt.AppendLine("its own. When `git status` shows nothing left uncommitted that belongs in this change —");
+        prompt.AppendLine("or you have deliberately decided a file should not be committed and said so — stop.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// Every stranded file named for the recovery prompt above, capped the same way
+    /// <c>VerificationRunner.SummarizeFiles</c> caps the failure reason it is built from — a
+    /// session recovering from an unusually wide strand should not open on a wall of filenames.
+    /// </summary>
+    private const int MaxListedRecoveryFiles = 30;
+
+    private static string SummarizeStrandedFiles(IReadOnlyList<string> strandedFiles) =>
+        strandedFiles.Count <= MaxListedRecoveryFiles
+            ? string.Join('\n', strandedFiles.Select(file => $"- {file}"))
+            : string.Join('\n', strandedFiles.Take(MaxListedRecoveryFiles).Select(file => $"- {file}"))
+              + $"\n- and {strandedFiles.Count - MaxListedRecoveryFiles} more (run `git status` for the rest)";
+
+    /// <summary>
     /// The fix leg of the review loop (Decisions Log #23): a fresh session resolves the
     /// reviewers' verified findings in the same worktree. One fix session per cycle handles
     /// every track's findings together (log #59) — the findings it is handed are the cycle's

@@ -320,6 +320,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
             WriteSessionErrorRetries(newestRun);
+            WriteUncommittedWorkRecovery(newestRun);
 
             // Not necessarily newestRun: a fallback supersedes the run it recorded the outcome
             // on within the same sweep that dispatches the follow-up, so the newest run by
@@ -531,6 +532,30 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         AnsiConsole.MarkupLine(
             $"\n[bold]Session error retries[/]  {run.SessionErrorRetries.Count} ({legs.EscapeMarkup()}) {outcome}");
+    }
+
+    /// <summary>
+    /// The one automatic uncommitted-work recovery the newest run may have gotten (task: when a
+    /// session ends with finished work uncommitted, the daemon recovers on its own) — a
+    /// commit-only session spawned onto the retained worktree before the run was allowed to fail
+    /// on a dirty tree. The outcome is inferred the same way <see cref="WriteSessionErrorRetries"/>
+    /// infers its own: a run that is not Failed recovered, and a Failed run whose reason still
+    /// names a dirty tree is one whose recovery session also could not leave it clean.
+    /// </summary>
+    private static void WriteUncommittedWorkRecovery(RunDetails? run)
+    {
+        if (run?.UncommittedWorkRecovery is not { } recovery)
+        {
+            return;
+        }
+
+        string outcome = run.State != RunState.Failed
+            ? "[green]recovered — the run reached its gates[/]"
+            : "[red]also ended dirty — the run failed[/]";
+
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Uncommitted-work recovery[/]  attempted {recovery.AttemptedAt.ToLocalTime():g} "
+            + $"({recovery.StrandedFiles.Count} file(s)) {outcome}");
     }
 
     private static string SessionErrorRetryLabel(SessionErrorRetryRecord retry)

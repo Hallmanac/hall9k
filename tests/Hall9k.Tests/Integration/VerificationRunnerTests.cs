@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -415,7 +416,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             store,
             Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(1) }),
             NullLogger<VerificationRunner>.Instance,
-            NewWorktreeManager());
+            NewWorktreeManager(), new InstantRecoveryFailureExecutor(), new FakeProcessManager());
 
         await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -448,7 +449,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             store,
             Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(1) }),
             NullLogger<VerificationRunner>.Instance,
-            NewWorktreeManager());
+            NewWorktreeManager(), new InstantRecoveryFailureExecutor(), new FakeProcessManager());
 
         bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -498,7 +499,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             store,
             Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(1) }),
             NullLogger<VerificationRunner>.Instance,
-            NewWorktreeManager());
+            NewWorktreeManager(), new InstantRecoveryFailureExecutor(), new FakeProcessManager());
 
         bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -763,6 +764,108 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
+    /// A commit-only recovery session that actually commits the stranded file leaves the run to
+    /// reach its gates exactly as a clean session would have — the failure this test would
+    /// otherwise assert on (see <see cref="Committed_work_with_an_uncommitted_file_still_fails_before_the_gates"/>)
+    /// never lands.
+    /// </summary>
+    [Fact]
+    public async Task Automatic_recovery_that_commits_the_stranded_file_lets_the_run_reach_its_gates()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+        CommittingRecoveryExecutor recovery = new(_worktree);
+
+        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeTrue("the recovery session committed the stranded file, so the tree is clean for the gates");
+        recovery.Spawns.Should().ContainSingle().Which.SessionArtifactName.Should().Be(SessionRoleName.CommitRecovery);
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Verifying", "a passing verification never transitions state itself");
+        run.UncommittedWorkRecovery.Should().NotBeNull();
+        run.UncommittedWorkRecovery!.StrandedFiles.Should().Contain("half-done.cs");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryAttempted>().Should().ContainSingle();
+        events.Select(e => e.Data).OfType<RunFailed>().Should().BeEmpty("the recovery succeeded; nothing ever failed");
+    }
+
+    /// <summary>
+    /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
+    /// A recovery session that does not actually commit anything (the default fake in this file,
+    /// standing in for a resumed session that could not do the job) leaves the run to fail exactly
+    /// as it always has, with the original diagnosis intact plus an explanation that a recovery
+    /// was already tried — never a second one.
+    /// </summary>
+    [Fact]
+    public async Task Automatic_recovery_that_also_ends_dirty_fails_the_run_naming_both()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeFalse("the recovery session never touched the worktree, so it is still dirty");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("uncommitted files", "the original diagnosis still names the shape");
+        run.FailureReason.Should().Contain("half-done.cs", "the original diagnosis still names the file");
+        run.FailureReason.Should().Contain("recovery", "the failure explains a recovery was already tried");
+        run.FailureReason.Should().Contain("h9k task retry");
+        run.UncommittedWorkRecovery.Should().NotBeNull();
+        run.FailedGates.Should().BeEmpty("no gate ever ran");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryAttempted>().Should().ContainSingle(
+            "recovery is attempted at most once per run");
+    }
+
+    /// <summary>
+    /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
+    /// A run that already carries an <see cref="RunUncommittedWorkRecoveryAttempted"/> record —
+    /// whether this method's own earlier call spent it, or (as seeded directly here) a prior
+    /// daemon lifetime already did — never spawns a second recovery session, however capable the
+    /// executor handed to it would have been.
+    /// </summary>
+    [Fact]
+    public async Task A_second_dirty_ending_never_earns_a_second_recovery_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunUncommittedWorkRecoveryAttempted(
+                runId, DomainId.New(), ["half-done.cs"], "already tried once", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+        CommittingRecoveryExecutor recovery = new(_worktree);
+
+        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeFalse("a run that already spent its one recovery attempt fails outright");
+        recovery.Spawns.Should().BeEmpty("an already-attempted recovery is never retried");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().NotContain(
+            "already ran once for this run", "this path never even attempted a NEW recovery to explain");
+    }
+
+    /// <summary>
     /// The generation fence (backlog 39): a requeue-and-reclaim moved the task on to
     /// generation 2 while this run — still generation 1 — was mid-gate. The run's own
     /// failure is still recorded honestly, but it must not fail the task the live
@@ -790,7 +893,9 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
 
         ListLogger<VerificationRunner> logger = new();
-        VerificationRunner runner = new(store, Options.Create(new DaemonOptions()), logger, NewWorktreeManager());
+        VerificationRunner runner = new(
+            store, Options.Create(new DaemonOptions()), logger, NewWorktreeManager(),
+            new InstantRecoveryFailureExecutor(), new FakeProcessManager());
         await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
         await using IQuerySession query = store.QuerySession();
@@ -889,7 +994,9 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             [new VerifyCommand("test", "dotnet test --help; echo 'No test matches the given testcase filter'")], cts.Token);
 
         ListLogger<VerificationRunner> logger = new();
-        VerificationRunner runner = new(store, Options.Create(new DaemonOptions()), logger, NewWorktreeManager());
+        VerificationRunner runner = new(
+            store, Options.Create(new DaemonOptions()), logger, NewWorktreeManager(),
+            new InstantRecoveryFailureExecutor(), new FakeProcessManager());
         bool passed = await runner.VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", cts.Token);
 
         passed.Should().BeTrue("the fallback's own full run genuinely passed");
@@ -1193,8 +1300,71 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         opts.ConfigureHall9k(AutoCreate.All);
     });
 
-    private static VerificationRunner NewRunner(DocumentStore store) =>
-        new(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance, NewWorktreeManager());
+    private static VerificationRunner NewRunner(
+        DocumentStore store, IExecutor? executor = null, IProcessManager? processManager = null) =>
+        new(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance, NewWorktreeManager(),
+            executor ?? new InstantRecoveryFailureExecutor(), processManager ?? new FakeProcessManager());
+
+    /// <summary>
+    /// The default executor for every test in this file that is not itself exercising the
+    /// automatic uncommitted-work recovery session (task: when a session ends with finished work
+    /// uncommitted, the daemon recovers on its own): every stranded-file test above now also
+    /// triggers ONE such recovery attempt ahead of the ordinary failure it asserts on. This fake
+    /// writes an immediate error result to whichever artifact stream file the request names —
+    /// without touching the worktree at all — so the recovery concludes (still dirty) on
+    /// SessionResultWaiter's very first poll rather than idling for the recovery's own timeout,
+    /// and the original failure text every one of those tests asserts on survives unchanged as a
+    /// substring of the real recovery attempt's own explanation.
+    /// </summary>
+    private sealed class InstantRecoveryFailureExecutor : IExecutor
+    {
+        private int _nextProcessId = 81_000;
+
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            string runDirectory = RunPaths.ResolveCurrentDirectory(request.RunDirectory);
+            Directory.CreateDirectory(runDirectory);
+            string streamFile = request.SessionArtifactName is { } artifact
+                ? RunPaths.SessionStreamFile(runDirectory, artifact)
+                : RunPaths.StreamFile(runDirectory);
+            File.WriteAllText(
+                streamFile,
+                """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"scripted: no-op"}""" + "\n");
+            return Task.FromResult(new SpawnedAgent(_nextProcessId++, DateTimeOffset.UtcNow));
+        }
+    }
+
+    /// <summary>
+    /// The success-path executor: acts like the real commit-only recovery session actually did
+    /// its job, committing everything currently sitting in <see cref="_worktree"/> before
+    /// reporting success — so the caller's own post-recovery re-check finds a clean tree and
+    /// proceeds to the gates.
+    /// </summary>
+    private sealed class CommittingRecoveryExecutor(string worktree) : IExecutor
+    {
+        private int _nextProcessId = 82_000;
+
+        public List<AgentSpawnRequest> Spawns { get; } = [];
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Spawns.Add(request);
+            await RunShellAsync(worktree, "git add -A", cancellationToken);
+            await RunShellAsync(
+                worktree, "git -c user.email=t@t -c user.name=t commit -q -m recovered", cancellationToken);
+
+            string runDirectory = RunPaths.ResolveCurrentDirectory(request.RunDirectory);
+            Directory.CreateDirectory(runDirectory);
+            string streamFile = request.SessionArtifactName is { } artifact
+                ? RunPaths.SessionStreamFile(runDirectory, artifact)
+                : RunPaths.StreamFile(runDirectory);
+            await File.WriteAllTextAsync(
+                streamFile,
+                """{"type":"result","subtype":"success","is_error":false,"result":"committed"}""" + "\n",
+                cancellationToken);
+            return new SpawnedAgent(_nextProcessId++, DateTimeOffset.UtcNow);
+        }
+    }
 
     // No test in this file exercises the clean-base comparison's own worktree refresh (every
     // seeded project here has no HomeDirectory, so ProjectCheckout.IsHomeDevWorktree is always

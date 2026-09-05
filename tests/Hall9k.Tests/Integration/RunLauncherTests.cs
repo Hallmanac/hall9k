@@ -925,7 +925,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         FakeProcessManager processes = new();
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
