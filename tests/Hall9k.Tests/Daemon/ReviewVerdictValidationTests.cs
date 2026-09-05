@@ -1478,6 +1478,27 @@ public sealed class ReviewVerdictValidationTests
         ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
 
     /// <summary>
+    /// A word that merely starts with a conventionally-extensionless filename, or a dotfile name,
+    /// is not the location itself and must not disqualify the semicolon (cycle-7 verify finding,
+    /// `ReviewVerdictValidation.cs:707`): the semicolon-disqualifier location shape used to be a
+    /// hand-copied duplicate of <see cref="ReviewVerdictValidation.LocationPattern"/>'s three
+    /// alternatives without their word-boundary anchors, so it matched strictly more text as a
+    /// "location" than <see cref="ReviewVerdictValidation.LocationPattern"/> itself would ever
+    /// recognize — "Dockerfiles" matched as a `Dockerfile` prefix and ".gitignored" matched as a
+    /// `.gitignore` prefix, so a plain restating elaboration read as a real second clause and the
+    /// genuine denial was wrongly discarded as an affirming elaboration instead.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "Nothing should change; Dockerfiles need updating for the new base image."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "Nothing should change; .gitignored paths are already excluded everywhere."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_semicolon_joined_near_miss_location_does_not_disqualify_the_denial(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
     /// A paragraph that only denies, but happens to carry the structured contract's own
     /// `Scenario:` label anyway, does not name a finding just because that label is present
     /// (independent pre-PR review, adversarial finding, cycle 1, task 29025f60): the forward walk
