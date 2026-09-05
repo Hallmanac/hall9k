@@ -969,14 +969,21 @@ public sealed class RunAggregateTests
     /// <summary>
     /// Interactive mode's own "build done to review" boundary (task: interactive mode becomes a
     /// recorded property of the task) parks with <c>ParkedFromState</c> also <c>Verifying</c> —
-    /// its gates already passed, unlike the thread-dispute park above, which is caught BEFORE the
-    /// gates. The two parks are otherwise indistinguishable by <c>ParkedFromState</c> alone, so a
-    /// merge-ready resolve here must not be misread as settling a dispute nobody raised
-    /// (independent pre-PR review, cycle 1, both lenses): it should settle straight through to the
-    /// pull request, the same as every other interactive boundary's merge-ready resolve does.
+    /// its gates already passed, cycle 1's review not yet dispatched — the same as the
+    /// thread-dispute park above. No reviewer has read this diff either way, so a merge-ready
+    /// resolve here must earn the identical protection a genuine dispute already gets: it
+    /// re-enters at the gates (a no-op; they already passed) and dispatches a review cycle,
+    /// rather than reporting merge-ready to PullRequestOpener on a verdict no reviewer ever gave.
+    /// An earlier cycle of this same review had this settling straight through instead — the
+    /// actual defect independent pre-PR review, cycle 1 (of the fix pass), found: it let a single
+    /// --merge-ready at the very first boundary open a pull request with zero review passes ever
+    /// dispatched, waiving Decisions Log #92's guarantee with no attestation. A human who wants
+    /// this boundary to advance without a verdict to give uses the bare proceed verb instead
+    /// (<see cref="Review_boundary_approved_from_a_verifying_park_resumes_at_under_review_not_verifying"/>),
+    /// which dispatches cycle 1's review normally.
     /// </summary>
     [Fact]
-    public void Merge_ready_on_an_interactive_gate_park_from_verifying_settles_rather_than_reverifying()
+    public void Merge_ready_on_an_interactive_gate_park_from_verifying_re_enters_at_the_gates_rather_than_settling()
     {
         RunAggregate run = new();
         Guid id = DomainId.New();
@@ -996,10 +1003,11 @@ public sealed class RunAggregateTests
         run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, "Looks fine, skip review.", Now, DomainId.New()));
 
         run.ReviewPhase.Should().Be(
-            ReviewPhase.Settling, "an interactive-gate park is never a dispute — nothing to re-gate or re-review");
-        run.State.Should().Be(RunState.UnderReview);
-        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
-        run.HumanEndedTheLoop.Should().BeTrue();
+            ReviewPhase.Reverify, "no reviewer has read this diff yet — the same protection a genuine dispute gets");
+        run.State.Should().Be(RunState.UnderReview, "the resume sweep drives it from here either way");
+        run.LastReviewVerdict.Should().Be(
+            ReviewVerdict.Unknown, "no reviewer read this diff — recording a verdict would invent one");
+        run.HumanEndedTheLoop.Should().BeFalse("the loop is not ending — a review cycle is still coming");
     }
 
     /// <summary>

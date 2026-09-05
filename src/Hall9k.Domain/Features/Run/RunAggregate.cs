@@ -947,21 +947,27 @@ public sealed class RunAggregate
 
     public void Apply(ReviewParkResolved @event)
     {
-        if (@event.Verdict == ReviewVerdict.MergeReady && ParkedFromState == RunState.Verifying && !ParkedIsInteractiveGate)
+        if (@event.Verdict == ReviewVerdict.MergeReady && ParkedFromState == RunState.Verifying)
         {
-            // A thread-dispute park caught this run before the gates (log #62). The human
-            // decided the disputed thread, not the diff: no gate has run over these commits
-            // and no reviewer has read them, so the pipeline re-enters where the park
-            // interrupted it — Reverify runs the gates, then a review cycle — instead of
-            // reporting merge-ready to PullRequestOpener on a verdict nobody gave.
-            // LastReviewVerdict stays untouched for the same reason: nothing reviewed this.
-            // !ParkedIsInteractiveGate excludes interactive mode's own "build done to review"
-            // boundary (task: interactive mode becomes a recorded property of the task), which
-            // parks at this identical ParkedFromState — Verifying, its gates already having
-            // passed — for an unrelated reason (a routine boundary, not a dispute): without the
-            // exclusion, a --merge-ready resolve there was misread as settling a dispute nobody
-            // raised, re-running the gates and a whole review cycle instead of proceeding straight
-            // to the pull request (independent pre-PR review, cycle 1, both lenses).
+            // A thread-dispute park caught this run before the gates (log #62), and interactive
+            // mode's own "build done to review" boundary (task: interactive mode becomes a
+            // recorded property of the task) parks at this identical ParkedFromState — Verifying,
+            // its gates already having passed, cycle 1's review not yet dispatched. Either way, no
+            // reviewer has read these commits: the pipeline re-enters where the park interrupted
+            // it — Reverify runs the gates (a no-op here; they already passed) then dispatches a
+            // review cycle — instead of reporting merge-ready to PullRequestOpener on a verdict no
+            // reviewer ever gave. LastReviewVerdict stays untouched for the same reason: nothing
+            // reviewed this. An earlier cycle of this same review excluded the interactive gate
+            // from this branch so a --merge-ready resolve there would proceed straight to the pull
+            // request rather than "re-running the gates and a whole review cycle" — but that
+            // exclusion was the actual defect (independent pre-PR review, cycle 1, adversarial
+            // lens): it let a single --merge-ready at the very first boundary open a pull request
+            // with zero review passes ever dispatched, waiving Decisions Log #92's guarantee with
+            // no attestation, the same protection a thread dispute already earns here and
+            // --review-stage-composition none only grants after an explicit
+            // --accept-reduced-review. A human who wants this boundary to advance without a
+            // verdict to give uses the bare proceed verb (h9k review proceed) instead, which
+            // dispatches cycle 1's review normally rather than skipping it.
             ReviewPhase = ReviewPhase.Reverify;
         }
         else if (@event.Verdict == ReviewVerdict.MergeReady)
