@@ -238,7 +238,8 @@ h9k task deliver <id>                # push and hand the claim into the standard
 h9k task handback <id>               # release the claim to a headless agent partway through, resuming the branch
 h9k task handback <id> --first   # same release, plus the queue-first marker: the next free slot takes it regardless of age (Decisions Log #127)
 h9k task handback <id> --now     # same release, dispatched immediately, ceiling-exempt, through h9k task start's own mechanism — refused together with --first
-h9k task release <id>                # give an untouched claim back to the dispatch queue
+h9k task release <id>                # give an untouched claim back to the dispatch queue; clears interactive mode by default (an exit door alongside handback)
+h9k task release <id> --keep-interactive   # same release, but the task's interactive-mode flag survives it, so a later headless run still parks at each boundary
 ```
 
 A deliberate human kick-off dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead

@@ -26,7 +26,8 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <c>AutoPrReviewEngine</c>'s own automated "now"-speed claim on the identical decider method).
 /// It only ever turns <see cref="TaskAggregate.InteractiveModeEnabled"/> on — a plain node
 /// <see cref="Handlers.TaskDecider.Claim"/>, or a reclaim through either decider without this
-/// flag, never turns it back off; only <c>h9k task handback</c> does that (design ruling R9).
+/// flag, never turns it back off; only <c>h9k task handback</c> (design ruling R9) and a default
+/// <c>h9k task release</c> (design ruling R6, amended 2026-09-05) do that.
 /// </param>
 public sealed record TaskClaimed(
     Guid Id,

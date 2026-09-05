@@ -55,7 +55,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // because it is the reason a task's review/fix/re-review/pull-request boundaries keep
             // parking for a routine h9k review proceed rather than advancing on their own — the
             // one recorded, task-level fact behind every one of those rows.
-            header.AddRow("Interactive mode", "[blue]on[/] [dim](every review/fix/PR boundary parks for h9k review proceed; h9k task handback turns it off)[/]");
+            header.AddRow("Interactive mode", "[blue]on[/] [dim](every review/fix/PR boundary parks for h9k review proceed; h9k task handback or a default h9k task release turns it off)[/]");
         }
 
         if (details.Model != AgentModel.Unknown)

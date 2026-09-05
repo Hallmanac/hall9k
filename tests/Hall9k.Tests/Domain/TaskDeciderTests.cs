@@ -758,19 +758,54 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
-    /// The AC's own wording ("clearable only by an explicit human act — handback clears it")
-    /// implies every OTHER give-back leaves it alone: an ordinary requeue (h9k task release) is
-    /// not a handback and must not silently end interactive mode out from under the human who
-    /// turned it on.
+    /// The generic decider method underlies both a node's lease expiring (DispatchEngine,
+    /// RequeueReason.LeaseExpired, no caller-supplied clearInteractiveMode) and, before design
+    /// ruling R6 was amended, h9k task release itself: its own default must stay false, since a
+    /// node's lease expiring is not a human decision about interactive mode and must never turn
+    /// the flag off out from under the human who turned it on.
     /// </summary>
     [Fact]
-    public void Requeue_does_not_clear_interactive_mode()
+    public void Requeue_does_not_clear_interactive_mode_by_default()
     {
         TaskAggregate task = QueuedTask();
         Guid runId = DomainId.New();
         task.Apply(TaskDecider.ClaimInteractively(task, Owner, runId, Now));
 
-        task.Apply(TaskDecider.Requeue(task, RequeueReason.HumanRequested, Now));
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
+
+        task.InteractiveModeEnabled.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Design ruling R6, amended 2026-09-05: releasing an interactive claim is itself the human's
+    /// explicit act of returning the task to the machine, so by default it is a second exit door
+    /// alongside handback — headless dispatch must not gate every phase boundary for a human who
+    /// walked away.
+    /// </summary>
+    [Fact]
+    public void ReleaseInteractiveClaim_clears_interactive_mode_by_default()
+    {
+        TaskAggregate task = QueuedTask();
+        Guid runId = DomainId.New();
+        task.Apply(TaskDecider.ClaimInteractively(task, Owner, runId, Now));
+
+        task.Apply(TaskDecider.ReleaseInteractiveClaim(task, Now));
+
+        task.InteractiveModeEnabled.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// --keep-interactive is the stated exception to R6's default: the operator who wants a
+    /// headless run that still parks at each boundary asks for it explicitly.
+    /// </summary>
+    [Fact]
+    public void ReleaseInteractiveClaim_with_keepInteractive_preserves_interactive_mode()
+    {
+        TaskAggregate task = QueuedTask();
+        Guid runId = DomainId.New();
+        task.Apply(TaskDecider.ClaimInteractively(task, Owner, runId, Now));
+
+        task.Apply(TaskDecider.ReleaseInteractiveClaim(task, Now, keepInteractive: true));
 
         task.InteractiveModeEnabled.Should().BeTrue();
     }
