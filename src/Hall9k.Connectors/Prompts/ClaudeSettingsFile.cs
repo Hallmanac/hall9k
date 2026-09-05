@@ -36,20 +36,20 @@ namespace Hall9k.Connectors.Prompts;
 /// always double whatever default is requested, so a session can still ask for more than the
 /// default via its own explicit per-command timeout on a day the suite runs long — the platform
 /// sizes the floor; the ceiling stays a session's own call. <see cref="DefaultCommandTimeout"/>
-/// (15 minutes, mirroring <c>DaemonOptions.VerifyGateTimeout</c>'s own default) is what a caller
+/// (30 minutes, mirroring <c>DaemonOptions.VerifyGateTimeout</c>'s own default) is what a caller
 /// with no live option in reach falls back to — today, only <c>h9k task work</c>
 /// (<c>TaskWorkCommand</c>, in <c>Hall9k.Cli</c>), which structurally cannot reference
 /// <c>Hall9k.Daemon</c> at all (Reference graph: Cli -> Domain + Connectors). That the platform's
-/// 15 minutes is written down more than once is a choice about which project owns the number
+/// 30 minutes is written down more than once is a choice about which project owns the number
 /// rather than a reference the compiler forbids — see <see cref="DefaultCommandTimeout"/> for
 /// which direction is open and why it is not taken. <c>TaskVerifyCommand</c>'s own hardcoded
-/// 15-minute gate timeout is a third copy of the same number, pinned to nothing.
-/// An operator who raises <c>VerifyGateTimeout</c> past 15 minutes therefore gets the raised
+/// 30-minute gate timeout is a third copy of the same number, pinned to nothing.
+/// An operator who raises <c>VerifyGateTimeout</c> past 30 minutes therefore gets the raised
 /// ceiling on every headless dispatch. Two CLI surfaces stay unmoved by that setting, because
 /// neither can reach <c>DaemonOptions</c>: a foreground gate run inside an interactive
-/// <c>h9k task work</c> claim still falls back to the 15-minute <see cref="DefaultCommandTimeout"/>
+/// <c>h9k task work</c> claim still falls back to the 30-minute <see cref="DefaultCommandTimeout"/>
 /// above, and <c>h9k task verify</c>'s own gate timeout (<c>TaskVerifyCommand</c>, a separate
-/// hardcoded 15-minute <c>CancelAfter</c> on the gate process itself, not a
+/// hardcoded 30-minute <c>CancelAfter</c> on the gate process itself, not a
 /// <see cref="Build"/> caller at all) stays pinned regardless of the option.
 /// </para>
 /// </summary>
@@ -67,7 +67,7 @@ public static class ClaudeSettingsFile
     /// the mirror true instead. This is the fallback for a caller with no live-configured ceiling
     /// in reach.
     /// </summary>
-    public static readonly TimeSpan DefaultCommandTimeout = TimeSpan.FromMinutes(15);
+    public static readonly TimeSpan DefaultCommandTimeout = TimeSpan.FromMinutes(30);
 
     /// <summary>
     /// Builds the settings-file body a session should launch with, sizing

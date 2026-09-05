@@ -79,8 +79,20 @@ public sealed class DaemonOptions
 
     public TimeSpan LeaseTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
-    /// <summary>Per-gate ceiling; an overrunning gate fails, never hangs the pipeline.</summary>
-    public TimeSpan VerifyGateTimeout { get; set; } = TimeSpan.FromMinutes(15);
+    /// <summary>
+    /// Per-gate ceiling; an overrunning gate fails, never hangs the pipeline. 30 minutes, not
+    /// 15 (independent pre-PR review, task e507c143): sized for one process's own tier duration
+    /// until the container gate went cross-process (PLAN.md §16 #132), at which point ordinary
+    /// contention from a second overlapping `dotnet test` invocation can roughly double the
+    /// Postgres tier's own share of a gate run — measured at 9m29s for the whole suite
+    /// single-process, projecting to roughly 17 minutes under just two overlapping runs — leaving
+    /// the old 15-minute ceiling too tight for the very concurrency #132 exists to make safe.
+    /// Mirrored in <c>ClaudeSettingsFile.DefaultCommandTimeout</c> and
+    /// <c>TaskVerifyCommand</c>'s own hardcoded gate timeout, both of which live where this type
+    /// cannot be referenced (see those types' own doc comments for why) and so must be raised
+    /// alongside this one by hand.
+    /// </summary>
+    public TimeSpan VerifyGateTimeout { get; set; } = TimeSpan.FromMinutes(30);
 
     /// <summary>
     /// Closeout poll cadence: how often this node asks gh about each awaiting-review
