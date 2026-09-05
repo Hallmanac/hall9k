@@ -538,9 +538,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// The one automatic uncommitted-work recovery the newest run may have gotten (task: when a
     /// session ends with finished work uncommitted, the daemon recovers on its own) — a
     /// commit-only session spawned onto the retained worktree before the run was allowed to fail
-    /// on a dirty tree. The outcome is inferred the same way <see cref="WriteSessionErrorRetries"/>
-    /// infers its own: a run that is not Failed recovered, and a Failed run whose reason still
-    /// names a dirty tree is one whose recovery session also could not leave it clean.
+    /// on a dirty tree. The outcome is read from the recovery's own recorded verdict — a fresh
+    /// re-detection of the worktree, taken at the time the recovery session ended, never inferred
+    /// from whatever the run's own state happens to be by the time this renders: a run that
+    /// recovered cleanly can still fail later for an unrelated reason (a downstream gate, a push
+    /// refusal), and reading that as "the recovery also ended dirty" would be false (independent
+    /// pre-PR review, cycle 1, both lenses).
     /// </summary>
     private static void WriteUncommittedWorkRecovery(RunDetails? run)
     {
@@ -549,9 +552,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return;
         }
 
-        string outcome = run.State != RunState.Failed
-            ? "[green]recovered — the run reached its gates[/]"
-            : "[red]also ended dirty — the run failed[/]";
+        string outcome = recovery.RecoveredCleanly switch
+        {
+            true => "[green]recovered — the run reached its gates[/]",
+            false => "[red]still did not leave the tree clean[/]",
+            null => "[yellow]outcome not yet recorded[/]",
+        };
 
         AnsiConsole.MarkupLine(
             $"\n[bold]Uncommitted-work recovery[/]  attempted {recovery.AttemptedAt.ToLocalTime():g} "

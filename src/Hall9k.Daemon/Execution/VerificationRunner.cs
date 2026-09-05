@@ -456,6 +456,13 @@ public sealed partial class VerificationRunner(
     /// had gone wrong; otherwise returns the failure reason to record, always built from a FRESH
     /// re-check of the worktree — the ground truth of what actually happened, never the
     /// session's own self-reported result — rather than assumed from <paramref name="originalReason"/>.
+    /// The recheck's own verdict, and the session's token usage, are both recorded on the run
+    /// stream before returning (<see cref="RunUncommittedWorkRecoveryCompleted"/>, and a
+    /// <c>TokensRecorded</c> when the session produced a result) — the same pair
+    /// <c>BlockerContextAssembler.RecordCompletionAsync</c> records for its own one-off
+    /// spawn-and-wait session, so this one's spend is never invisible to the periodic spend
+    /// budget and so <c>h9k task show</c> has a real completion to read instead of inferring one
+    /// from whatever the run's own state happens to be later.
     /// <para>
     /// Fresh session, not a <c>--resume</c> of the one that left the mess: a resumed session
     /// would still carry whatever review findings or fix instructions produced the uncommitted
@@ -465,6 +472,17 @@ public sealed partial class VerificationRunner(
     /// the executor itself, <see cref="DaemonOptions.UncommittedWorkRecoveryTimeout"/> as a
     /// wall-clock backstop enforced here — so a recovery can never cost anywhere near what the
     /// run it is recovering already cost.
+    /// </para>
+    /// <para>
+    /// Spawn and wait are wrapped in one outer catch (the same discipline
+    /// <c>BlockerContextAssembler.SynthesizeOrFallBackAsync</c> applies to its own one-off
+    /// session): an exit that is neither the wait's own successful return nor its own timeout —
+    /// most notably the daemon shutting down mid-wait, which cancels <paramref
+    /// name="cancellationToken"/> itself rather than only the inner timeout source — still
+    /// terminates the spawned process before propagating, so a session this dispatch has stopped
+    /// caring about never keeps writing into the worktree unattended (independent pre-PR review,
+    /// cycle 1, adversarial finding: an untracked orphan there could still be committing when a
+    /// later <c>h9k task retry</c> resumes the same worktree).
     /// </para>
     /// </summary>
     private async Task<string?> RecoverUncommittedWorkOrExplainAsync(
@@ -490,44 +508,86 @@ public sealed partial class VerificationRunner(
         string streamFile = RunPaths.SessionStreamFile(runDirectory, SessionRoleName.CommitRecovery);
         string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(task, strandedFiles);
 
-        SpawnedAgent agent;
-        try
-        {
-            agent = await executor.SpawnAsync(new AgentSpawnRequest(
-                run.Id, recoverySessionId, run.WorktreePath, run.RunDirectory, prompt, run.ExecutorMode, run.Model,
-                project.SkipPermissions, SessionArtifactName: SessionRoleName.CommitRecovery,
-                MaxTurns: options.Value.UncommittedWorkRecoveryMaxTurns)
-            {
-                SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CommitRecovery),
-            }, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(
-                exception, "Run {RunId}: the automatic uncommitted-work recovery session could not be spawned", run.Id);
-            return $"{originalReason} An automatic commit-only recovery session could not even be started " +
-                   $"({exception.Message}) — h9k task retry resumes this same worktree by hand.";
-        }
-
-        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(options.Value.UncommittedWorkRecoveryTimeout);
+        SpawnedAgent? unfinished = null;
         AgentResult? result;
         try
         {
-            result = await SessionResultWaiter.WaitAsync(
-                streamFile, agent.ProcessId, agent.StartedAt, processManager, onOutput: null, timeoutSource.Token);
+            SpawnedAgent agent;
+            try
+            {
+                agent = await executor.SpawnAsync(new AgentSpawnRequest(
+                    run.Id, recoverySessionId, run.WorktreePath, run.RunDirectory, prompt, run.ExecutorMode, run.Model,
+                    project.SkipPermissions, SessionArtifactName: SessionRoleName.CommitRecovery,
+                    MaxTurns: options.Value.UncommittedWorkRecoveryMaxTurns)
+                {
+                    SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CommitRecovery),
+                }, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception, "Run {RunId}: the automatic uncommitted-work recovery session could not be spawned", run.Id);
+                return $"{originalReason} An automatic commit-only recovery session could not even be started " +
+                       $"({exception.Message}) — h9k task retry resumes this same worktree by hand.";
+            }
+
+            unfinished = agent;
+
+            using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(options.Value.UncommittedWorkRecoveryTimeout);
+            try
+            {
+                result = await SessionResultWaiter.WaitAsync(
+                    streamFile, agent.ProcessId, agent.StartedAt, processManager, onOutput: null, timeoutSource.Token);
+                unfinished = null;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // The turn cap is the primary bound; this is the backstop for the one thing it
+                // cannot cover — a single turn whose own tool call hangs. Terminated rather than
+                // left running, so a later `h9k task retry` never finds two sessions touching the
+                // same worktree at once.
+                processManager.Terminate(agent.ProcessId, agent.StartedAt);
+                unfinished = null;
+                logger.LogWarning(
+                    "Run {RunId}: the automatic uncommitted-work recovery session exceeded its {Timeout} bound and was terminated",
+                    run.Id, options.Value.UncommittedWorkRecoveryTimeout);
+                result = null;
+            }
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception exception)
         {
-            // The turn cap is the primary bound; this is the backstop for the one thing it
-            // cannot cover — a single turn whose own tool call hangs. Terminated rather than
-            // left running, so a later `h9k task retry` never finds two sessions touching the
-            // same worktree at once.
-            processManager.Terminate(agent.ProcessId, agent.StartedAt);
-            logger.LogWarning(
-                "Run {RunId}: the automatic uncommitted-work recovery session exceeded its {Timeout} bound and was terminated",
-                run.Id, options.Value.UncommittedWorkRecoveryTimeout);
-            result = null;
+            // Reached only by an exit that is neither the wait's own successful return nor its
+            // own timeout above — the daemon shutting down mid-wait (cancelling
+            // cancellationToken itself, which the timeout catch above deliberately does not
+            // swallow) or a throw between the spawn and the wait. Terminate whatever is still
+            // running before this propagates: nothing else will ever adopt this session (it
+            // reaches no RunProcessStarted-style event a startup adoption sweep keys off), so an
+            // orphan here would keep writing into the worktree while a later h9k task retry
+            // resumes the exact same one.
+            if (unfinished is { } orphan)
+            {
+                try
+                {
+                    processManager.Terminate(orphan.ProcessId, orphan.StartedAt);
+                }
+                catch (Exception terminateException)
+                {
+                    logger.LogWarning(terminateException,
+                        "Run {RunId}: could not terminate the abandoned uncommitted-work recovery session (pid {ProcessId})",
+                        run.Id, orphan.ProcessId);
+                }
+            }
+
+            if (exception is OperationCanceledException)
+            {
+                throw;
+            }
+
+            logger.LogWarning(exception,
+                "Run {RunId}: the automatic uncommitted-work recovery session failed before it could finish", run.Id);
+            return $"{originalReason} An automatic commit-only recovery session failed before it could finish " +
+                   $"({exception.Message}) — h9k task retry resumes this same worktree by hand.";
         }
 
         logger.LogInformation(
@@ -541,7 +601,22 @@ public sealed partial class VerificationRunner(
         // behind. Re-running the identical detection this method's own caller already ran is
         // what makes that an observation rather than a guess.
         StrandedWorkCheck recheck = await DetectStrandedWorkAsync(run, task, project, cancellationToken);
-        return recheck.FailureReason is null
+        bool recoveredCleanly = recheck.FailureReason is null;
+
+        DateTimeOffset completedAt = DateTimeOffset.UtcNow;
+        await using (IDocumentSession completionSession = store.LightweightSession())
+        {
+            if (result is not null)
+            {
+                completionSession.Events.Append(run.Id, result.ToTokensRecorded(run.Id, completedAt, run.Model));
+            }
+
+            completionSession.Events.Append(
+                run.Id, new RunUncommittedWorkRecoveryCompleted(run.Id, recoveredCleanly, completedAt));
+            await completionSession.SaveChangesAsync(cancellationToken);
+        }
+
+        return recoveredCleanly
             ? null
             : $"{recheck.FailureReason} An automatic commit-only recovery session already ran once for this " +
               "run and still did not leave the tree clean — h9k task retry resumes this same worktree by hand.";

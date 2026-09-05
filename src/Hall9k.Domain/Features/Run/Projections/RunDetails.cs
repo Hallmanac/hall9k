@@ -361,10 +361,13 @@ public sealed record SessionErrorRetryRecord(
 
 /// <summary>
 /// The one automatic uncommitted-work recovery attempt <see cref="RunDetailsProjection.Apply(IEvent{RunUncommittedWorkRecoveryAttempted}, RunDetails)"/>
-/// recorded on <see cref="RunDetails.UncommittedWorkRecovery"/>.
+/// recorded on <see cref="RunDetails.UncommittedWorkRecovery"/>. <see cref="RecoveredCleanly"/> is
+/// null until <see cref="RunDetailsProjection.Apply(IEvent{RunUncommittedWorkRecoveryCompleted}, RunDetails)"/>
+/// records a fresh re-detection's own verdict — never guessed from the run's own later state, which is
+/// what a downstream gate failure unrelated to the recovery would otherwise be mistaken for.
 /// </summary>
 public sealed record UncommittedWorkRecoveryRecord(
-    IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt);
+    IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt, bool? RecoveredCleanly = null);
 
 public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
 {
@@ -803,6 +806,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.UncommittedWorkRecovery = new UncommittedWorkRecoveryRecord(
             @event.Data.StrandedFiles, @event.Data.Reason, @event.Data.AttemptedAt);
+    }
+
+    public void Apply(IEvent<RunUncommittedWorkRecoveryCompleted> @event, RunDetails view)
+    {
+        if (view.UncommittedWorkRecovery is { } recovery)
+        {
+            view.UncommittedWorkRecovery = recovery with { RecoveredCleanly = @event.Data.RecoveredCleanly };
+        }
     }
 
     public void Apply(IEvent<RunFailed> @event, RunDetails view)
