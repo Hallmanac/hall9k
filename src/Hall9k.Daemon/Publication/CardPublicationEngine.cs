@@ -355,10 +355,12 @@ public sealed class CardPublicationEngine(
             "Task {TaskId}: adopting card-publication session {SessionId} (pid {ProcessId}, still running: {Alive})",
             task.Id, sessionId, processId, alive);
 
-        (bool linked, string outcome) = await WaitAsync(
+        (bool linked, string outcome, AgentResult? result) = await WaitAsync(
             task.Id, sessionId, new SpawnedAgent(processId, startedAt), cancellationToken);
 
-        await CompleteAsync(task.Id, linked, linked ? outcome : Stranded(alive, outcome), cancellationToken);
+        await CompleteAsync(
+            task.Id, linked, linked ? outcome : Stranded(alive, outcome), cancellationToken,
+            result, task.PublicationSessionModel);
     }
 
     /// <summary>
@@ -619,8 +621,9 @@ public sealed class CardPublicationEngine(
                 task.Id, sessionId, agent.ProcessId, model.Value, RunPaths.GlobalDirectory(sessionId));
 
             waiting = true;
-            (bool linked, string outcome) = await WaitAsync(task.Id, sessionId, agent, cancellationToken);
-            await CompleteAsync(task.Id, linked, outcome, cancellationToken);
+            (bool linked, string outcome, AgentResult? result) = await WaitAsync(
+                task.Id, sessionId, agent, cancellationToken);
+            await CompleteAsync(task.Id, linked, outcome, cancellationToken, result, model);
             return linked ? PublicationAttempt.CardLinked : PublicationAttempt.SessionRan;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -717,7 +720,7 @@ public sealed class CardPublicationEngine(
     /// without a link, and the record says exactly that.
     /// </para>
     /// </summary>
-    private async Task<(bool Linked, string Outcome)> WaitAsync(
+    private async Task<(bool Linked, string Outcome, AgentResult? Result)> WaitAsync(
         Guid taskId, Guid sessionId, SpawnedAgent agent, CancellationToken cancellationToken)
     {
         AgentResult? result;
@@ -749,7 +752,7 @@ public sealed class CardPublicationEngine(
         if (linked)
         {
             return (true, Summarize(result)
-                ?? "The session created the card and reported it through h9k task write-jira.");
+                ?? "The session created the card and reported it through h9k task write-jira.", result);
         }
 
         // Everything from here ends the errand with no link, and completing clears the pending
@@ -785,7 +788,7 @@ public sealed class CardPublicationEngine(
             ? $"{authFailureReason} There is no card to check the board for yet."
             : CheckTheBoard;
 
-        return (false, $"{what} {tail}");
+        return (false, $"{what} {tail}", result);
     }
 
     /// <summary>
@@ -911,14 +914,30 @@ public sealed class CardPublicationEngine(
         }
     }
 
+    /// <summary>
+    /// Ends the publication errand, and — when a session actually reported usage — records it in
+    /// the same transaction, the way <c>RunSupervisor.CompleteRunAsync</c> commits its own
+    /// <c>TokensRecorded</c> alongside the run's terminal event. <paramref name="result"/> is null
+    /// on every path that never watched a session to an end (a refusal, a stopped-for-shutdown, a
+    /// caught dispatch failure): none of those observed any usage, so none of them have anything
+    /// to record — the gap this method closes is a session that finished and reported usage this
+    /// far only to have it discarded, never a session that never ran.
+    /// </summary>
     private async Task CompleteAsync(
-        Guid taskId, bool linkedNow, string outcome, CancellationToken cancellationToken)
+        Guid taskId, bool linkedNow, string outcome, CancellationToken cancellationToken,
+        AgentResult? result = null, AgentModel? model = null)
     {
         try
         {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             await using IDocumentSession session = store.LightweightSession();
-            session.Events.Append(taskId, new WorkItemPublicationCompleted(
-                taskId, linkedNow, outcome, DateTimeOffset.UtcNow));
+            if (result is not null)
+            {
+                session.Events.Append(
+                    taskId, result.ToPublicationTokensRecorded(taskId, now, model ?? AgentModel.Unknown));
+            }
+
+            session.Events.Append(taskId, new WorkItemPublicationCompleted(taskId, linkedNow, outcome, now));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)

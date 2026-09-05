@@ -10,6 +10,8 @@ using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -204,6 +206,49 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         task.ExternalReference.Should().Be("jira:PROJ-123");
         task.PendingPublicationProvider.Should().BeNull("the errand is over");
         task.PublicationOutcome.Should().Contain("Created PROJ-123.");
+    }
+
+    /// <summary>
+    /// The gap this closes (routed from the pre-PR review of task
+    /// 01a05cef-b7d8-722c-bb14-2a2c3e340005): a publication session's usage used to be discarded
+    /// entirely, invisible to the dispatcher's period-spend budget. It has to ride the task's own
+    /// stream rather than a fresh <c>TokensRecorded</c> on some stream of its own, because a
+    /// publication has no run — and a bare <c>TokensRecorded</c> on a stream with no
+    /// <c>RunDispatched</c> would have <see cref="RunDetailsProjection"/> mint a phantom run
+    /// document keyed by whatever id it landed on, which the last assertion here guards against.
+    /// </summary>
+    [Fact]
+    public async Task A_finished_sessions_usage_is_recorded_and_counted_in_the_periods_spend()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, taskId, () => LinkAsync(store, taskId, cts.Token));
+
+        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<PublicationTokensRecorded> recorded = await query.Events
+            .QueryRawEventDataOnly<PublicationTokensRecorded>()
+            .Where(e => e.Id == taskId)
+            .ToListAsync(cts.Token);
+        PublicationTokensRecorded tokens = recorded.Should().ContainSingle(
+            "the scripted session reported usage, and it must not be discarded").Subject;
+        tokens.InputTokens.Should().Be(10, "the scripted result's own usage.input_tokens");
+        tokens.OutputTokens.Should().Be(20, "the scripted result's own usage.output_tokens");
+
+        PeriodSpend spend = await PeriodSpend.ReadAsync(query, Now.AddDays(-1), cts.Token);
+        spend.TotalInputTokens.Should().BeGreaterThanOrEqualTo(
+            10, "PeriodSpend is what the dispatcher's spend budget actually reads");
+
+        RunDetails? phantom = await query.LoadAsync<RunDetails>(taskId, cts.Token);
+        phantom.Should().BeNull(
+            "the task's own id must never surface as a run: PublicationTokensRecorded is its own "
+            + "event type precisely so RunDetailsProjection never sees one on this stream");
     }
 
     /// <summary>

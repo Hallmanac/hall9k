@@ -49,6 +49,13 @@ public sealed class TaskDetails
     /// <summary>Pid and start time together — a process identity, so adoption can tell a live session from a reused pid.</summary>
     public int? PublicationSessionProcessId { get; set; }
     public DateTimeOffset? PublicationSessionStartedAt { get; set; }
+    /// <summary>
+    /// The resolved model the session was dispatched on, read back from
+    /// <see cref="WorkItemPublicationDispatched"/> rather than re-resolved (the auxiliary-session
+    /// pattern, Decisions Log #33): adoption has no other way to learn what a session it did not
+    /// spawn was actually running on. Null for a stream written before this field existed.
+    /// </summary>
+    public AgentModel? PublicationSessionModel { get; set; }
     public DateTimeOffset? PublicationRequestedAt { get; set; }
     /// <summary>Who asked. It is what tells a node whether an outstanding publication is its owner's work to do.</summary>
     public Guid? PublicationRequestedByOwnerId { get; set; }
@@ -665,6 +672,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PublicationSessionId = @event.Data.SessionId;
         view.PublicationSessionNodeId = @event.Data.NodeId;
         view.PublicationSessionDispatchedAt = @event.Data.DispatchedAt;
+        view.PublicationSessionModel = @event.Data.Model;
     }
 
     public void Apply(IEvent<WorkItemPublicationSessionStarted> @event, TaskDetails view)
@@ -776,5 +784,6 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PublicationSessionDispatchedAt = null;
         view.PublicationSessionProcessId = null;
         view.PublicationSessionStartedAt = null;
+        view.PublicationSessionModel = null;
     }
 }
