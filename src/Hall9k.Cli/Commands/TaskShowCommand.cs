@@ -59,7 +59,20 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Session cap", $"{sessionCap} [dim](task override — h9k task set-session-cap)[/]");
         }
 
-        if (details.PreApproved)
+        // A Draft carrying a stale true (TaskAggregate.Apply(TaskReturnedToDraft) leaves the flag
+        // untouched) is excluded the same way PublishedFacts.Compose excludes it on h9k status:
+        // TaskDecider.Publish unconditionally re-records the flag (defaulting false) the moment
+        // this draft is republished, so stating it here would claim a promise one plain
+        // `h9k task publish` away from being silently cleared (independent pre-PR review, cycle
+        // 1, conformance lens). A task at TRUE closeout (row.State == LifecycleState.Done — the
+        // merge observed) is excluded the identical way: raw TaskState.Done alone does not say
+        // so, since it is recorded the moment the pull request opens and never changes at the
+        // later merge, so gating on it alone would claim a future merge for a pull request that
+        // has already merged (independent pre-PR review, cycle 2, both lenses). A row that could
+        // not be composed carries no closeout answer to gate on, so it falls back to the raw
+        // state's own Draft check rather than guessing.
+        bool trueCloseout = row is not null && row.State == LifecycleState.Done;
+        if (details.PreApproved && details.State != TaskState.Draft && !trueCloseout)
         {
             header.AddRow("Pre-approved",
                 "[green]yes[/] [dim]— the daemon merges this task's pull request on its own once GitHub's own "

@@ -342,6 +342,49 @@ public sealed class TaskLifecycleSurfaceTests
     }
 
     /// <summary>
+    /// The pre-approved wait's own age is the pull request's own opened/pushed timestamp when the
+    /// run recorded one (RunDetails.PullRequestPushedAt), not the run's dispatch time — a build
+    /// session that ran for days before ever pushing would otherwise overstate how long the pull
+    /// request has actually been open (independent pre-PR review, cycle 1, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_waiting_line_names_the_pull_requests_own_open_age()
+    {
+        Guid runId = DomainId.New();
+        const string PullRequest = "https://github.com/x/y/pull/24";
+        TaskListItem task = StatusFixtures.Task(TaskState.Done, runId, PullRequest, preApproved: true);
+
+        RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        run.ExternalReviewChecksPending = true;
+        run.PullRequestPushedAt = Now.AddDays(-2);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, run);
+
+        row.Attention.Cause.Should().Contain("open").And.NotContain("dispatched");
+    }
+
+    /// <summary>
+    /// A run recorded before PullRequestPushedAt existed carries no observed open timestamp — the
+    /// wait line says "dispatched" rather than silently reusing the run's own dispatch time as if
+    /// it were the pull request's observed open age, an honest gap rather than a plausibly-filled-in
+    /// fact nobody actually observed (independent pre-PR review, cycle 1, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_waiting_line_says_dispatched_when_the_pull_requests_open_age_was_never_recorded()
+    {
+        Guid runId = DomainId.New();
+        const string PullRequest = "https://github.com/x/y/pull/24";
+        TaskListItem task = StatusFixtures.Task(TaskState.Done, runId, PullRequest, preApproved: true);
+
+        RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        run.ExternalReviewChecksPending = true;
+
+        TaskStatusRow row = StatusFixtures.Compose(task, run);
+
+        row.Attention.Cause.Should().Contain("dispatched").And.NotContain("open ");
+    }
+
+    /// <summary>
     /// LifecycleState.Done renders only at TRUE closeout (the merge observed), so a pre-approved
     /// task's own fact must not survive there: it would claim a future merge for a pull request
     /// that has already merged (independent pre-PR review, cycle 1, conformance lens).
@@ -358,6 +401,25 @@ public sealed class TaskLifecycleSurfaceTests
         row.State.Should().Be(LifecycleState.Done, "closeout observed the merge");
         row.Facts.Should().BeEmpty(
             "the pull request already merged — there is nothing left for pre-approval to govern");
+    }
+
+    /// <summary>
+    /// TaskAggregate.Apply(TaskReturnedToDraft) leaves the pre-approval flag on the stream
+    /// untouched, but TaskDecider.Publish unconditionally re-records it (defaulting false) the
+    /// moment the draft is republished — so a Draft row must not claim a pull request will be
+    /// auto-merged when a plain republish is one command away from silently clearing that promise
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public void A_draft_returned_from_published_no_longer_states_a_stale_pre_approval()
+    {
+        TaskListItem task = StatusFixtures.Task(TaskState.Draft, preApproved: true);
+
+        TaskStatusRow row = StatusFixtures.Compose(task);
+
+        row.State.Should().Be(LifecycleState.Draft);
+        row.Facts.Should().BeEmpty(
+            "a plain republish would silently clear the flag, so a Draft must not claim it still governs anything");
     }
 
     [Fact]
