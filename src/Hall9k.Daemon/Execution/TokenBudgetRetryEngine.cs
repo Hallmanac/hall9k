@@ -1,10 +1,7 @@
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Features.Run.Documents;
-using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
-using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Features.Project.Projections;
 using Marten;
 using Marten.Linq.MatchesSql;
@@ -35,7 +32,7 @@ namespace Hall9k.Daemon.Execution;
 public sealed class TokenBudgetRetryEngine(
     IDocumentStore store,
     NodeContext node,
-    IExecutor executor,
+    PrimarySessionResumer primarySessionResumer,
     RunSupervisor supervisor,
     ILogger<TokenBudgetRetryEngine> logger)
 {
@@ -154,48 +151,8 @@ public sealed class TokenBudgetRetryEngine(
 
         try
         {
-            // A pr-review task's primary session is the adversarial lens reading another
-            // contributor's pull-request head (RunLauncher's UntrustedWorkingDirectory), so a
-            // resume of that same session carries the same distrust forward — otherwise the
-            // resumed --resume spawn would load the foreign checkout's own .claude/ config
-            // and CLAUDE.md/AGENTS.md under the owner's credentials (adversarial review, cycle 2).
-            // Reuses the primary session's own recorded name (RunDispatched.SessionName) rather
-            // than re-deriving it: a resume re-enters the same session, so it keeps the same
-            // name it was dispatched under. A stream written before that field existed falls
-            // back to the identical three-way split RunLauncher used to pick the name in the
-            // first place — run.IsFollowUp and task.FollowUpKind are both already loaded here
-            // for the isolation flag above, so recovering the role costs nothing extra.
-            string sessionRole = task.Type == TaskType.PrReview
-                ? SessionRoleName.ReviewAdversarial(1)
-                : run.IsFollowUp
-                    ? task.FollowUpKind == FollowUpKind.FailingChecks
-                        ? SessionRoleName.Checks
-                        : task.FollowUpKind == FollowUpKind.Rebase
-                            ? SessionRoleName.Rebase
-                            : SessionRoleName.Build
-                    : SessionRoleName.Build;
-            string sessionName = run.SessionName.IsNotBlank()
-                ? run.SessionName
-                : SessionRoleName.For(DomainId.Short(run.TaskId), sessionRole);
-            SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
-                run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, AgentPromptBuilder.BuildBudgetRetry(),
-                run.ExecutorMode, run.Model, project.SkipPermissions,
-                ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: task.Type == TaskType.PrReview)
-            {
-                SessionName = sessionName,
-            }, cancellationToken);
-
-            // The retry's stdout redirect truncates the run's stream file fresh (log #2),
-            // so the tail cursor has to restart at zero with it — otherwise the monitor
-            // seeks to an offset the new file has not grown to yet.
-            session.Store(new RunActivity
-            {
-                Id = run.Id,
-                LastActivityAt = DateTimeOffset.UtcNow,
-                StreamBytesRead = 0,
-            });
-            session.Events.Append(
-                run.Id, new RunResumed(run.Id, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, sessionName));
+            SpawnedAgent agent = await primarySessionResumer.ResumeAsync(
+                session, run, task, project, AgentPromptBuilder.BuildBudgetRetry(), cancellationToken);
             await session.SaveChangesAsync(cancellationToken);
 
             supervisor.StartMonitoring(

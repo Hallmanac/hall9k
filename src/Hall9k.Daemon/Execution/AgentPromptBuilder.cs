@@ -1874,6 +1874,28 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// The retry leg of session-error-result recovery (task: a session that reports an error
+    /// result is retried once in place): the same session resumes after a terminal result that
+    /// carried a generic error rather than the recognizable usage-limit shape
+    /// <see cref="BuildBudgetRetry"/> answers — most likely a transient provider-side hiccup
+    /// (measured 2026-09-05: 41 such failures land in bursts across only 18 distinct hours, the
+    /// signature of an overload or rate-limit window rather than a defect in the work itself) —
+    /// with the full transcript and worktree exactly as the errored attempt left them. No task
+    /// or project context is restated — a resumed session already has all of it — this is only
+    /// the nudge to continue rather than restart.
+    /// </summary>
+    public static string BuildSessionErrorRetry()
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("Your previous session ended with an error partway through — most likely a transient");
+        prompt.AppendLine("provider-side hiccup, not a problem with the work itself. Resume exactly where you left");
+        prompt.AppendLine("off — check `git status` and `git diff` for anything uncommitted — and continue toward");
+        prompt.AppendLine("the acceptance criteria you were already given. Do not restart or re-derive work already done.");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
     /// The fix leg of the review loop (Decisions Log #23): a fresh session resolves the
     /// reviewers' verified findings in the same worktree. One fix session per cycle handles
     /// every track's findings together (log #59) — the findings it is handed are the cycle's
