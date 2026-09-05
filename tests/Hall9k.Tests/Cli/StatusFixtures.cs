@@ -48,7 +48,8 @@ internal static class StatusFixtures
         DateTimeOffset? addedAt = null,
         DateTimeOffset? assignedAt = null,
         Guid? claimedByNodeId = null,
-        TaskType? type = null) => new()
+        TaskType? type = null,
+        bool preApproved = false) => new()
         {
             Id = DomainId.New(),
             ProjectId = projectId ?? DomainId.New(),
@@ -60,6 +61,7 @@ internal static class StatusFixtures
             AddedAt = addedAt ?? Now,
             AssignedAt = assignedAt,
             ClaimedByNodeId = claimedByNodeId,
+            PreApproved = preApproved,
         };
 
     /// <summary>

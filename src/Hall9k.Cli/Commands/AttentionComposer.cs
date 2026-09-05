@@ -261,7 +261,7 @@ internal static class AttentionComposer
 
         if (state == LifecycleState.Delivered)
         {
-            return Delivered(task, run, id);
+            return Delivered(task, run, id, now);
         }
 
         // Still waiting on blockers that are all alive: it queues itself the moment they close
@@ -282,7 +282,7 @@ internal static class AttentionComposer
     /// turn, and saying which is which is the whole reason this state exists (origin incident,
     /// 2026-08-22, PR 24).
     /// </summary>
-    private static TaskAttention Delivered(TaskListItem task, RunDetails? run, string id)
+    private static TaskAttention Delivered(TaskListItem task, RunDetails? run, string id, DateTimeOffset now)
     {
         // Delivered work nobody is assigned to. h9k pr resolve reopens a done task to Queued and
         // keeps its pull request, and h9k task unassign accepts it from there — which leaves an
@@ -315,7 +315,7 @@ internal static class AttentionComposer
 
         return run.State.Value switch
         {
-            "AwaitingReview" => AwaitingReviewAttention(run),
+            "AwaitingReview" => AwaitingReviewAttention(task, run, now),
             // The closeout monitor dispatches a follow-up or parks; while it is neither parked
             // nor out of budget, this is being handled and the reader can leave it alone.
             // Conflicting joins this arm for the identical reason: a rebase follow-up is
@@ -361,6 +361,61 @@ internal static class AttentionComposer
     /// it). Copilot outstanding is not the human's turn yet, so it renders waiting-but-handled
     /// rather than red.
     /// </summary>
+    private static TaskAttention AwaitingReviewAttention(TaskListItem task, RunDetails run, DateTimeOffset now) =>
+        task.PreApproved
+            ? PreApprovedAwaitingReviewAttention(run, now)
+            : AwaitingReviewAttention(run);
+
+    /// <summary>
+    /// The pre-approved arm (task: a task can be published pre-approved): a synchronous human gate
+    /// is exactly what this flag removes, so nothing here is ever <see cref="AttentionLevel.NeedsYou"/>
+    /// — a required human approval or an outstanding requested reviewer is stated as a visible,
+    /// self-resuming wait (design ruling 3), named plainly so the owner can take whatever social
+    /// action they choose on their own initiative; the platform itself never nudges. Age is the
+    /// run's own dispatch time — the closest recorded anchor to "how long this pull request has
+    /// been open" this composer has, since there is no persisted "entered AwaitingReview" timestamp
+    /// of its own.
+    /// </summary>
+    private static TaskAttention PreApprovedAwaitingReviewAttention(RunDetails run, DateTimeOffset now)
+    {
+        List<string> waitingOn = [];
+        // The daemon's own gate checks this ahead of everything else (CloseoutEngine's
+        // HasPendingChecks short-circuit runs before the review-decision and outstanding-reviewer
+        // reads it feeds this composer), so an incomplete CI picture must not let the "GitHub's
+        // own gates read satisfied" claim below fire while checks are still reporting and the
+        // daemon is in fact refusing to merge (independent pre-PR review, cycle 1, both lenses).
+        if (run.ExternalReviewChecksPending)
+        {
+            waitingOn.Add("CI checks to finish reporting");
+        }
+
+        if (run.ExternalReviewState == Domain.Features.Run.ExternalReviewState.RequestedPending)
+        {
+            waitingOn.Add("copilot review");
+        }
+
+        bool reviewDecisionSatisfied = run.ExternalReviewDecision is null or "APPROVED";
+        bool outstandingHumanReviewer = run.ExternalOutstandingHumanReviewerLogins.Count > 0;
+        if (!reviewDecisionSatisfied || outstandingHumanReviewer)
+        {
+            waitingOn.Add("human approval");
+        }
+
+        if (waitingOn.Count == 0)
+        {
+            return new TaskAttention(
+                AttentionLevel.WaitingHandled,
+                "pre-approved — GitHub's own gates read satisfied; the daemon merges it on its own");
+        }
+
+        string age = TaskStatusComposer.RelativeAge(now - run.DispatchedAt);
+        return new TaskAttention(
+            AttentionLevel.WaitingHandled,
+            $"pre-approved; waiting on {string.Join(" and ", waitingOn)} for the pull request "
+            + $"(open {age}) — it merges automatically once satisfied; nothing for you to do here, "
+            + "though you may want to nudge a reviewer yourself");
+    }
+
     private static TaskAttention AwaitingReviewAttention(RunDetails run) => run.ExternalReviewState.Value switch
     {
         "RequestedPending" => new TaskAttention(AttentionLevel.WaitingHandled,

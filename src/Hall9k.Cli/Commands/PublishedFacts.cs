@@ -25,6 +25,9 @@ internal static class PublishedFacts
     private const string QueuePriorityFact =
         "marked queue-first — takes the next free dispatch slot regardless of assignment age";
 
+    private const string PreApprovedFact =
+        "pre-approved — the daemon will merge its pull request on its own once GitHub's gates are satisfied";
+
     /// <summary>
     /// What a Published row is actually waiting for, oldest question first: whether a human has
     /// assigned it at all, then what the platform is waiting on. Empty for any row that is not
@@ -48,8 +51,19 @@ internal static class PublishedFacts
             // a currently-Claimed task reads as LifecycleState.Working, not Published. Without
             // this, a human who marks a running task queue-first sees the marker recorded on the
             // stream but nowhere on the board until it lands back on Queued or Blocked
-            // (independent pre-PR review, cycle 1, conformance lens).
-            return task.QueuePriorityMarked ? [QueuePriorityFact] : [];
+            // (independent pre-PR review, cycle 1, conformance lens). Pre-approval is stated here
+            // too for the identical reason — it is settable on any live non-terminal task, not
+            // only a Published one, and the board must not go quiet about it just because the
+            // task has moved on to Queued, Blocked, or Working. LifecycleState.Done is the one
+            // exception: it renders only at TRUE closeout (the merge observed), so a task's
+            // pre-approval no longer governs anything there — stating it would claim a future
+            // merge for a pull request that has already merged (independent pre-PR review, cycle
+            // 1, conformance lens).
+            return
+            [
+                .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
+                .. task.PreApproved && state != LifecycleState.Done ? (string[])[PreApprovedFact] : [],
+            ];
         }
 
         IReadOnlyList<string> facts = task.State.Value switch
@@ -92,7 +106,12 @@ internal static class PublishedFacts
         // it is stated wherever it is set — including Blocked, where it is inert until the
         // blocker clears — so a human never has to guess whether a marker they set survived
         // (task 45136b29, idea fcaded0b's R7 ruling).
-        return task.QueuePriorityMarked ? [.. facts, QueuePriorityFact] : facts;
+        return
+        [
+            .. facts,
+            .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
+            .. task.PreApproved ? (string[])[PreApprovedFact] : [],
+        ];
     }
 
     /// <summary>

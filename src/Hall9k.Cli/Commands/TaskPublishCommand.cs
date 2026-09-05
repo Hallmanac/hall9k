@@ -64,6 +64,19 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             + "task (that session mints its card regardless, so --untracked cannot cancel it — link or "
             + "wait for it instead). Recorded on the task stream with who chose it and when")]
         public bool Untracked { get; init; }
+
+        [CommandOption("--pre-approved")]
+        [Description(
+            "Give standing pre-approval at publish (task: a task can be published pre-approved): the owner "
+            + "stops being a synchronous gate at the pull request, and the daemon merges it on its own, "
+            + "deterministically, once GitHub's own gates read satisfied — CI green, the review decision "
+            + "satisfied, no outstanding requested reviewer, every review thread resolved. Every existing "
+            + "human waypoint (a Failed state, a review park, a severity-bar failure, a cap trip) still stops "
+            + "the pipeline exactly as for an unflagged task; this only removes the owner as a synchronous "
+            + "gate at the merge, never any of those. Defaults off. Flippable afterward on any live "
+            + "non-terminal task with h9k task set-pre-approved, without the unassign/draft/revise/publish "
+            + "ceremony a readiness-contract change would otherwise need")]
+        public bool PreApproved { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -90,7 +103,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         TaskPublished published = TaskDecider.Publish(
             task, graph, DateTimeOffset.UtcNow, context.OwnerId, project.BacklogPolicy,
-            settings.NoExistingItem, settings.Untracked);
+            settings.NoExistingItem, settings.Untracked, settings.PreApproved);
         session.Events.Append(taskId, published);
         task.Apply(published);
 
@@ -113,6 +126,12 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         string shortId = TaskListCommand.ShortId(taskId);
         AnsiConsole.MarkupLine(
             $"[green]Task {shortId} published[/]: {ExternalText.OneLineMarkup(task.Objective)}");
+        if (published.PreApproved)
+        {
+            AnsiConsole.MarkupLine(
+                "[dim]  Pre-approved: the daemon merges this task's pull request on its own once GitHub's "
+                + "own gates are satisfied — h9k task set-pre-approved to change.[/]");
+        }
 
         // Every published task is tracked automatically: a task adopted with --from-issue or
         // --from-jira already carries a reference (RequestWorkItemPublication and LinkWorkItem
