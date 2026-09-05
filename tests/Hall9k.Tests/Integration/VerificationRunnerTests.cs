@@ -789,9 +789,15 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         run.State.Value.Should().Be("Verifying", "a passing verification never transitions state itself");
         run.UncommittedWorkRecovery.Should().NotBeNull();
         run.UncommittedWorkRecovery!.StrandedFiles.Should().Contain("half-done.cs");
+        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeTrue(
+            "the completion event recorded a fresh re-check that found the tree clean");
 
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
         events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryAttempted>().Should().ContainSingle();
+        events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryCompleted>().Should().ContainSingle()
+            .Which.RecoveredCleanly.Should().BeTrue();
+        events.Select(e => e.Data).OfType<TokensRecorded>().Should().ContainSingle(
+            "the recovery session's own usage is recorded, the same as every other spawn-and-wait session");
         events.Select(e => e.Data).OfType<RunFailed>().Should().BeEmpty("the recovery succeeded; nothing ever failed");
     }
 
@@ -823,11 +829,15 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         run.FailureReason.Should().Contain("recovery", "the failure explains a recovery was already tried");
         run.FailureReason.Should().Contain("h9k task retry");
         run.UncommittedWorkRecovery.Should().NotBeNull();
+        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeFalse(
+            "the completion event recorded a fresh re-check that still found the tree dirty");
         run.FailedGates.Should().BeEmpty("no gate ever ran");
 
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
         events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryAttempted>().Should().ContainSingle(
             "recovery is attempted at most once per run");
+        events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryCompleted>().Should().ContainSingle()
+            .Which.RecoveredCleanly.Should().BeFalse();
     }
 
     /// <summary>
@@ -863,6 +873,38 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         run.State.Value.Should().Be("Failed");
         run.FailureReason.Should().NotContain(
             "already ran once for this run", "this path never even attempted a NEW recovery to explain");
+    }
+
+    /// <summary>
+    /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
+    /// A daemon shutdown mid-wait (the caller's own <c>cancellationToken</c> cancelled, not the
+    /// recovery's own inner timeout) must not leave the spawned recovery session running
+    /// untracked: the same discipline <c>BlockerContextAssembler</c> already applies to its own
+    /// one-off spawn-and-wait session (independent pre-PR review, cycle 1, adversarial finding).
+    /// </summary>
+    [Fact]
+    public async Task Daemon_shutdown_mid_recovery_wait_terminates_the_orphan_before_rethrowing()
+    {
+        using CancellationTokenSource hardStop = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, hardStop.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", hardStop.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], hardStop.Token);
+
+        FakeProcessManager processManager = new();
+        using CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(hardStop.Token);
+        HangingExecutor hanging = new(processManager, shutdown);
+        VerificationRunner runner = new(
+            store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance, NewWorktreeManager(),
+            hanging, processManager);
+
+        Func<Task> act = () => runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", shutdown.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "a genuine daemon-shutdown cancellation propagates rather than being swallowed as the recovery's own timeout");
+        processManager.Terminations.Should().ContainSingle(
+            "the orphaned recovery session is terminated before the cancellation propagates, so a later h9k task retry never finds two sessions touching the same worktree");
     }
 
     /// <summary>
@@ -1363,6 +1405,31 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 """{"type":"result","subtype":"success","is_error":false,"result":"committed"}""" + "\n",
                 cancellationToken);
             return new SpawnedAgent(_nextProcessId++, DateTimeOffset.UtcNow);
+        }
+    }
+
+    /// <summary>
+    /// A recovery session that never finishes: marks its own pid alive on the shared
+    /// <see cref="FakeProcessManager"/> so <see cref="SessionResultWaiter.WaitAsync"/> keeps
+    /// polling rather than giving up on a dead process, then — synchronously, before returning —
+    /// cancels <paramref name="shutdownTrigger"/>, the SAME token the caller's own
+    /// <c>VerifyAsync</c> was given. That reproduces "the daemon shuts down while the recovery
+    /// session is still running" deterministically: by the time the wait's linked timeout token
+    /// is created, the outer token it links is already cancelled, so the wait throws immediately
+    /// rather than racing a real clock.
+    /// </summary>
+    private sealed class HangingExecutor(FakeProcessManager processManager, CancellationTokenSource shutdownTrigger)
+        : IExecutor
+    {
+        private int _nextProcessId = 83_000;
+
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            int processId = _nextProcessId++;
+            processManager.MarkAlive(processId);
+            SpawnedAgent agent = new(processId, DateTimeOffset.UtcNow);
+            shutdownTrigger.Cancel();
+            return Task.FromResult(agent);
         }
     }
 
