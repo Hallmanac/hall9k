@@ -17,8 +17,9 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
         [CommandOption("--yes")]
         [Description(
             "Remediate without asking: start Hall9k's own Postgres via the generated compose file "
-            + "and create the schema, non-interactively — the shape a script or a dispatched agent "
-            + "needs, since there is no terminal there to answer a prompt.")]
+            + "and create the schema, or — if hall9k-postgres is already confirmed running — record "
+            + "the connection string that points at it, non-interactively — the shape a script or a "
+            + "dispatched agent needs, since there is no terminal there to answer a prompt.")]
         public bool Yes { get; init; }
     }
 

@@ -26,6 +26,9 @@ namespace Hall9k.Tests.Cli;
 [Collection("Hall9kHome")]
 public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
 {
+    private static readonly TimeSpan ShortTimeout = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan ShortPollInterval = TimeSpan.FromMilliseconds(20);
+
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-doctor-already-running-{Path.GetRandomFileName()}");
     private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
     private readonly string? previousConnectionString =
@@ -49,10 +52,30 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
     public async Task An_unreachable_default_connection_string_records_nothing()
     {
         ConnectionStringResolution? resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
-            assumeYes: true, _ => Task.FromResult(RefusedConnection()), CancellationToken.None);
+            assumeYes: true, _ => Task.FromResult(RefusedConnection()), ShortTimeout, ShortPollInterval, TimeProvider.System, CancellationToken.None);
 
         resolution.Should().BeNull("the container is confirmed Running but nothing actually answered at the default address");
         File.Exists(Hall9kDatabase.ConfigFile).Should().BeFalse("nothing reachable means nothing to record");
+    }
+
+    [Fact]
+    public async Task A_container_still_initialising_is_waited_for_rather_than_reported_unreachable_immediately()
+    {
+        // A freshly-started container can report Running before Postgres inside it has finished
+        // initialising — the sibling OfferAndStartAsync path already waits for this; this
+        // exercises the same wait added here (Decisions Log review finding, DatabaseDoctor.cs:357).
+        int calls = 0;
+        Task<ReachabilityReport> Probe(CancellationToken token)
+        {
+            calls++;
+            return Task.FromResult(calls < 3 ? RefusedConnection() : Reachable());
+        }
+
+        ConnectionStringResolution? resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
+            assumeYes: true, Probe, ShortTimeout, ShortPollInterval, TimeProvider.System, CancellationToken.None);
+
+        resolution.Should().NotBeNull("readiness that arrives on the third probe is still well inside the timeout");
+        calls.Should().Be(3, "the loop must keep polling — a slow start is not the same as a dead one");
     }
 
     [Fact]

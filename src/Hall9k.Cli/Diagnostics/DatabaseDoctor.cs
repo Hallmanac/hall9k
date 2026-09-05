@@ -284,6 +284,13 @@ public static class DatabaseDoctor
                         $"[yellow]Found a stopped {PostgresRuntime.ContainerName} container from a previous "
                         + "session[/] — your database exists, it is just not running.");
                 }
+                else if (container == PostgresContainerStatus.Running)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[dim]Found {PostgresRuntime.ContainerName} confirmed running[/] — if that is what is "
+                        + $"listening at localhost:5432, point {Hall9kDatabase.EnvironmentVariableName} at it "
+                        + "directly, or run h9k doctor --yes to configure it automatically.");
+                }
 
                 break;
             case ContainerRuntimeStatus.NotRunning:
@@ -326,10 +333,40 @@ public static class DatabaseDoctor
     /// bound to the exact host and port <see cref="Hall9kDatabase.DefaultConnectionString"/>
     /// names.
     /// </summary>
+    internal static Task<ConnectionStringResolution?> OfferAndRecordAlreadyRunningContainerAsync(
+        bool assumeYes, Func<CancellationToken, Task<ReachabilityReport>> probe, CancellationToken cancellationToken) =>
+        OfferAndRecordAlreadyRunningContainerAsync(
+            assumeYes, probe, ReadinessTimeout, ReadinessPollInterval, TimeProvider.System, cancellationToken);
+
+    /// <summary>
+    /// Same offer as the 3-argument overload above, with the poll's timeout, interval and clock
+    /// injectable so a test can exercise the not-ready-yet case without the real 30s wait — the
+    /// same seam <see cref="WaitForReadinessAsync(Func{CancellationToken,Task{ReachabilityReport}},TimeSpan,TimeSpan,TimeProvider,CancellationToken)"/>
+    /// already uses for the sibling start-offer's own readiness poll.
+    /// </summary>
     internal static async Task<ConnectionStringResolution?> OfferAndRecordAlreadyRunningContainerAsync(
-        bool assumeYes, Func<CancellationToken, Task<ReachabilityReport>> probe, CancellationToken cancellationToken)
+        bool assumeYes,
+        Func<CancellationToken, Task<ReachabilityReport>> probe,
+        TimeSpan timeout,
+        TimeSpan pollInterval,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
         ReachabilityReport report = await probe(cancellationToken);
+        if (report.Status == ReachabilityStatus.RefusedConnection)
+        {
+            // A freshly-started container can report Running before Postgres inside it has
+            // finished initialising — OfferAndStartAsync's own sibling path already waits up to
+            // ReadinessTimeout for exactly that; this path used to give up after a single probe
+            // instead of waiting the same way (Decisions Log review finding, DatabaseDoctor.cs:357).
+            DateTimeOffset deadline = timeProvider.GetUtcNow() + timeout;
+            while (report.Status == ReachabilityStatus.RefusedConnection && timeProvider.GetUtcNow() < deadline)
+            {
+                await Task.Delay(pollInterval, cancellationToken);
+                report = await probe(cancellationToken);
+            }
+        }
+
         switch (report.Status)
         {
             case ReachabilityStatus.Reachable:
