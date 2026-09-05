@@ -98,6 +98,17 @@ public sealed class ReviewEngine(
     /// </summary>
     private static readonly TimeSpan GitDeadline = TimeSpan.FromMinutes(10);
 
+    /// <summary>
+    /// How many pre-final-pass rebase-recovery sessions one run may have dispatched in a row
+    /// without ever reaching a clean rebase (task: a run rebases its branch onto the current base
+    /// branch) before <see cref="DispatchRebaseRecoverySessionAsync"/> parks instead of spawning
+    /// another one — see <see cref="RunAggregate.RebaseRecoveryRounds"/>'s own doc for the loop
+    /// this bounds. Deliberately a fixed, uninherited constant rather than a task/project/node
+    /// override chain like the review-cycle caps: this is a narrow, mechanical safety bound against
+    /// a session that never actually resolves the conflict, not a knob a team is expected to tune.
+    /// </summary>
+    private const int MaxRebaseRecoveryRounds = 3;
+
     private enum RebaseGateOutcome
     {
         /// <summary>No-op, or a git rebase that applied cleanly (or a fetch/read that could not be completed) — proceed to the mandatory gate in this same iteration.</summary>
@@ -223,6 +234,30 @@ public sealed class ReviewEngine(
                         // (2026-09-01 architecture review; Brian's ruling, 2026-09-02: this task
                         // is the pragmatic settings-plus-engines cut, not that refactor) will
                         // eventually read when it lands, PLAN.md Decisions Log #129.
+                        //
+                        // The rebase still runs first (task: a run rebases its branch onto the
+                        // current base branch, independent pre-PR review, cycle 1, both lenses):
+                        // waiving the review guarantee is not the same as waiving the mergeable-
+                        // on-arrival one, and this composition's PullRequestOpener push is exactly
+                        // as exposed to a moved base as any other's. A conflict here dispatches the
+                        // recovery session and loops; its own completion lands on
+                        // ReviewPhase.Settling, whose own composition-none check just below settles
+                        // it the same way this branch would have.
+                        bool noReviewRebaseLoopAgain = false;
+                        switch (await EnsureRebasedBeforeFinalPassAsync(context, run, cancellationToken))
+                        {
+                            case RebaseGateOutcome.Stop:
+                                return false;
+                            case RebaseGateOutcome.LoopAgain:
+                                noReviewRebaseLoopAgain = true;
+                                break;
+                        }
+
+                        if (noReviewRebaseLoopAgain)
+                        {
+                            break;
+                        }
+
                         await SettleWithNoReviewAsync(run, cancellationToken);
                         break;
                     }
@@ -316,30 +351,50 @@ public sealed class ReviewEngine(
                     bool verifyCommandsFingerprintChanged = lastGateHasComparableFullScope
                         && !await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
 
-                    // Immediately before the mandatory final gate that "nothing merges on scoped
-                    // green alone" is about to run (task: a run rebases its branch onto the
-                    // current base branch): every HEAD-independent signal that this iteration is
-                    // headed there is already known at this point (none of the three depend on a
-                    // live git read), so the rebase lands here — before gateAlreadyRanFullOverCurrentHead's
-                    // own HEAD comparison below, which must read whatever this step leaves in the
-                    // worktree, not a pre-rebase snapshot. The ordinary "nothing owed" settle path
-                    // (none of these three ever true) never reaches this check at all: there is no
-                    // mandatory final gate coming for it to land before (see EnsureRebasedBeforeFinalPassAsync's own doc).
+                    // Run unconditionally on every Settling entry (task: a run rebases its branch
+                    // onto the current base branch, independent pre-PR review, cycle 1, both
+                    // lenses) — including the ordinary "nothing owed" settle path below, where a
+                    // clean Discovery-cycle-1 convergence is the single most common way a run ends
+                    // and, with the longest window since dispatch, the one most likely to have a
+                    // moved base behind it. Gating this on needsFullGateBeforeSettling,
+                    // verifyCommandsFingerprintChanged or HumanEndedTheLoop the way this once read
+                    // meant that path opened its pull request having never fetched or rebased at
+                    // all — exactly the staleness this task exists to catch before the remote ever
+                    // sees it. Unconditional is affordable per Brian's 2026-09-04 ruling this
+                    // method's own doc already rests on: a no-op or a clean git apply costs a
+                    // fetch, not a session or an extra reviewer pass, so paying it on every settle
+                    // (rather than only the mandatory-gate paths) does not reopen that ruling.
                     bool settlingRebaseLoopAgain = false;
-                    if (needsFullGateBeforeSettling || verifyCommandsFingerprintChanged || run.HumanEndedTheLoop)
+                    switch (await EnsureRebasedBeforeFinalPassAsync(context, run, cancellationToken))
                     {
-                        switch (await EnsureRebasedBeforeFinalPassAsync(context, run, cancellationToken))
-                        {
-                            case RebaseGateOutcome.Stop:
-                                return false;
-                            case RebaseGateOutcome.LoopAgain:
-                                settlingRebaseLoopAgain = true;
-                                break;
-                        }
+                        case RebaseGateOutcome.Stop:
+                            return false;
+                        case RebaseGateOutcome.LoopAgain:
+                            settlingRebaseLoopAgain = true;
+                            break;
                     }
 
                     if (settlingRebaseLoopAgain)
                     {
+                        break;
+                    }
+
+                    // Composition: none (task: the review pipeline's stage composition becomes
+                    // configuration recorded per run) — Settling is reached here only by way of a
+                    // pre-final-pass rebase conflict this composition still fetches and rebases for
+                    // above like any other (independent pre-PR review, cycle 1, both lenses): its
+                    // own recovery session's completion always records Settling, never back to
+                    // ReviewPhase.None, so this is the one other place this composition's run can
+                    // land. Short-circuited here, before the ordinary settle-reason logic below
+                    // (which assumes at least one track ever opened) the same way the Reverify
+                    // branch's own identical composition-none check further down already does —
+                    // reusing that logic here would call DeriveSettlement/DeriveResidualTally over
+                    // a run with no tracks and no completed passes, and could record the narrower
+                    // Clean claim SettleWithNoReviewAsync's own doc says this composition can never
+                    // honestly make.
+                    if (run.ReviewStageComposition == ReviewStageComposition.None)
+                    {
+                        await SettleWithNoReviewAsync(run, cancellationToken);
                         break;
                     }
 
@@ -1652,6 +1707,34 @@ public sealed class ReviewEngine(
         string baseBranch = context.Project.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
+        // Checked before anything else touches the worktree, the same order and the same two
+        // checks CloseoutEngine.TryMechanicalRebaseAsync already runs in front of its own `git
+        // rebase` call (independent pre-PR review, cycle 1, conformance lens): a `git rebase` that
+        // exits non-zero without ever starting one — the worktree not on this run's own branch, or
+        // a tracked file left modified or untracked-but-staged in the working tree (the failure
+        // mode AppendRebaseVerificationRule warns fix sessions about) — is not a conflict, and
+        // treating it as one records an unobserved fact (nothing actually conflicted) and spends a
+        // whole recovery session on a false premise. Neither check needs the repository lock below:
+        // both read only this run's own worktree, never the shared bare repository.
+        ProcessResult branchCheck = await git(
+            "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
+        if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != context.Run.Branch)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the worktree is not checked out on its own branch before the mandatory final pass — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
+                context.RunId);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        ProcessResult statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
+        if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the worktree has uncommitted changes before the mandatory final pass — proceeding unrebased rather than risking a false rebase conflict; closeout's own mechanical rebase still covers a stale push",
+                context.RunId);
+            return RebaseGateOutcome.Proceed;
+        }
+
         // The fetch, merge-base read and rebase are taken under the same repository lock every
         // worktree-add/fetch operation on this repository already serializes behind (Decisions
         // Log #4) — the identical convention CloseoutEngine's own mechanical rebase and
@@ -1785,10 +1868,26 @@ public sealed class ReviewEngine(
     /// hours, and the agent's own prompt has it fetch fresh besides — recomputing here is what
     /// keeps the recorded "from/onto" pair honest for either caller instead of a hard-coded
     /// assumption about who already fetched.
+    /// <para>
+    /// Bounded by <see cref="MaxRebaseRecoveryRounds"/> (task: a run rebases its branch onto the
+    /// current base branch, independent pre-PR review, cycle 1, both lenses): a recovery session
+    /// that ends without a parseable resolution — or an undeclared, optimistically-accepted one —
+    /// sends the caller straight back to the identical conflict, which would otherwise dispatch a
+    /// fresh session every lap forever with nothing to stop it (the "never loop on judgment, park
+    /// instead" rule, §16 #11). Checked here rather than in either caller so both the fresh-conflict
+    /// path and the human-guidance retry share one counter and one park.
+    /// </para>
     /// </summary>
     private async Task<bool> DispatchRebaseRecoverySessionAsync(
         ReviewContext context, RunAggregate run, string? humanGuidance, CancellationToken cancellationToken)
     {
+        if (run.RebaseRecoveryRounds >= MaxRebaseRecoveryRounds)
+        {
+            await ParkAsync(
+                context.RunId, context.TaskId, RebaseRecoveryCapParkReason(run), cancellationToken: cancellationToken);
+            return false;
+        }
+
         string worktreePath = context.Run.WorktreePath;
         string baseBranch = context.Project.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
@@ -1967,6 +2066,32 @@ public sealed class ReviewEngine(
             "\"<your resolution>\" — nothing has been pushed. (--merge-ready is refused here: " +
             "nothing has been rebased yet.)";
     }
+
+    /// <summary>
+    /// The park message when <see cref="MaxRebaseRecoveryRounds"/> is reached (task: a run rebases
+    /// its branch onto the current base branch, independent pre-PR review, cycle 1, both lenses) —
+    /// a platform-imposed bound, not a claim that any one recovery session itself declared the
+    /// conflict undecidable (that narrower claim is <see cref="RebaseRecoveryDisputedParkReason"/>'s
+    /// own park). Parks from whatever phase this attempt was dispatched from (ordinarily
+    /// <see cref="ReviewPhase.Settling"/>, or <see cref="ReviewPhase.RebaseRecoveryNeeded"/> for a
+    /// round following an earlier human-resolved dispute) rather than a dedicated one — the same
+    /// way <see cref="FinalFullPassCapParkReason"/> parks a repeatedly-reawakened track generically
+    /// rather than through a track-specific phase. A human resolving with
+    /// <c>h9k review resolve --needs-fixes</c> dispatches an ordinary fix session over their
+    /// guidance into this same worktree, which can still finish the rebase by hand. A
+    /// <c>--merge-ready</c> resolve is not refused here the way <see cref="RebaseRecoveryDisputedParkReason"/>'s
+    /// own park refuses it, but it is not a shortcut past this cap either: the Settling branch's
+    /// own rebase check runs unconditionally on every entry, so an unrebased branch immediately
+    /// re-trips this same cap and re-parks rather than ever reaching <c>PullRequestOpener</c>
+    /// unrebased.
+    /// </summary>
+    private static string RebaseRecoveryCapParkReason(RunAggregate run) =>
+        $"The mandatory final pass's own pre-flight rebase has needed a recovery session " +
+        $"{run.RebaseRecoveryRounds} time(s) in a row without ever landing cleanly — worth a " +
+        "human's look rather than another automatic round. Check the worktree yourself " +
+        "(`git status`, `git log`), then resolve with h9k review resolve --needs-fixes " +
+        "\"<guidance>\" to dispatch a fresh attempt carrying it, or finish the rebase in the " +
+        "worktree by hand and describe what you did.";
 
     private static string RebaseRecoveryArtifactName(Guid sessionId) => SessionRoleName.PreFinalPassRebase(Short(sessionId));
 
@@ -3452,6 +3577,20 @@ public sealed class ReviewEngine(
                 logger.LogWarning(
                     "Run {RunId}: terminated the in-flight fix session (pid {ProcessId}) after the loop crashed",
                     runId, fixProcessId);
+            }
+
+            // The pre-final-pass rebase-recovery session (task: a run rebases its branch onto the
+            // current base branch) is a third leg this crash-cleanup owes exactly the same
+            // guarantee as the review passes and the fix session above: a crash while it is in
+            // flight must not leave it running unread in a worktree the run has just failed
+            // (independent pre-PR review, cycle 1, both lenses).
+            if (run.ActiveRebaseRecoveryProcessId is { } rebaseRecoveryProcessId
+                && run.ActiveRebaseRecoveryProcessStartedAt is { } rebaseRecoveryProcessStartedAt)
+            {
+                processManager.Terminate(rebaseRecoveryProcessId, rebaseRecoveryProcessStartedAt);
+                logger.LogWarning(
+                    "Run {RunId}: terminated the in-flight pre-final-pass rebase-recovery session (pid {ProcessId}) after the loop crashed",
+                    runId, rebaseRecoveryProcessId);
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
