@@ -343,11 +343,28 @@ public sealed class RunDetails
     /// ordinarily does; this is what lets it tell the two apart and finish the retry instead.
     /// </summary>
     public bool PendingBuildSessionErrorRetry { get; set; }
+
+    /// <summary>
+    /// The one automatic commit-only recovery this run may ever get (task: when a session ends
+    /// with finished work uncommitted, the daemon recovers on its own), if the pre-gate
+    /// uncommitted-files check ever triggered one — null otherwise. Never cleared once set: a
+    /// run whose recovery session ALSO ended dirty still shows the attempt here, which is what
+    /// stops the daemon's own verification step from ever spawning a second one for the same
+    /// run.
+    /// </summary>
+    public UncommittedWorkRecoveryRecord? UncommittedWorkRecovery { get; set; }
 }
 
 /// <summary>One retry <see cref="RunDetailsProjection.Apply(IEvent{RunSessionErrorRetried}, RunDetails)"/> recorded on <see cref="RunDetails.SessionErrorRetries"/>.</summary>
 public sealed record SessionErrorRetryRecord(
     RunSessionLeg Leg, int? Cycle, ReviewLens? Lens, string ObservedMessage, DateTimeOffset RetriedAt);
+
+/// <summary>
+/// The one automatic uncommitted-work recovery attempt <see cref="RunDetailsProjection.Apply(IEvent{RunUncommittedWorkRecoveryAttempted}, RunDetails)"/>
+/// recorded on <see cref="RunDetails.UncommittedWorkRecovery"/>.
+/// </summary>
+public sealed record UncommittedWorkRecoveryRecord(
+    IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt);
 
 public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
 {
@@ -780,6 +797,12 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         {
             view.PendingBuildSessionErrorRetry = true;
         }
+    }
+
+    public void Apply(IEvent<RunUncommittedWorkRecoveryAttempted> @event, RunDetails view)
+    {
+        view.UncommittedWorkRecovery = new UncommittedWorkRecoveryRecord(
+            @event.Data.StrandedFiles, @event.Data.Reason, @event.Data.AttemptedAt);
     }
 
     public void Apply(IEvent<RunFailed> @event, RunDetails view)
