@@ -66,6 +66,29 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         {
             RunDetails? run = await session.LoadAsync<RunDetails>(currentRunId, cancellationToken);
             releasedRun = run;
+            if (task.Type == TaskType.PrReview)
+            {
+                // A pr-review task's own Claimed+sentinel state is never a human's own interactive
+                // claim (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is
+                // auto-pr-review's Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync).
+                // Checked ahead of the run-null branch below, not only the terminal/non-terminal
+                // split that branch used to apply after it (independent pre-PR review, cycle 10,
+                // adversarial lens): CreateOneAsync commits TaskClaimed and only afterward calls
+                // LaunchAsync, which fetches the pull request, cuts the worktree, writes the prompt
+                // and spawns before RunDispatched ever commits — so a run-null read here is far more
+                // often "the launch is still in flight" than "the launch died", and the run-null
+                // branch's own "releasing the claim" would dispatch a second run alongside the first
+                // once the doorbell wakes the dispatcher: the exact double-dispatch this guard exists
+                // to prevent. RunState.Unknown when there is no run record yet at all is what that
+                // arm of PrReviewSentinelClaim.Refuse is for: the state genuinely is not recorded,
+                // said out loud rather than guessed at either way (a died launch or one still
+                // running) — h9k task abandon is still the honest way out of a truly dead one. A
+                // live, parked, or terminal run all read as themselves the same way, since a
+                // pr-review task is never delivered and so never takes the ordinary path below at
+                // all (independent pre-PR review, cycles 7 and 8, adversarial lens).
+                throw PrReviewSentinelClaim.Refuse(taskId, run?.State ?? RunState.Unknown, "release");
+            }
+
             if (run is null)
             {
                 // ClaimAndCutAsync commits TaskClaimed, then cuts the worktree, and only then
@@ -79,37 +102,10 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 // TaskVerifyCommand.cs — adversarial review, cycle 2). Nothing has run yet at
                 // this point in ClaimAndCutAsync — RunDispatched is the last thing it commits —
                 // so there is nothing to check and no run to supersede, only the claim itself to
-                // give back (adversarial review, cycle 1).
+                // give back (adversarial review, cycle 1). Unreachable for a pr-review task, which
+                // the branch above already refuses before this one ever sees a null run.
                 AnsiConsole.MarkupLineInterpolated(
                     $"[yellow]Task {taskId}'s run {currentRunId} has no record — its interactive claim never finished setting up (the process likely died while preparing the worktree). Releasing the claim; a partially-cut worktree or branch may be left on disk under this task's id and is safe to remove by hand.[/]");
-            }
-            else if (task.Type == TaskType.PrReview && !run.State.IsTerminal)
-            {
-                // A pr-review task's own Claimed+sentinel state is never a human's own interactive
-                // claim (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is
-                // auto-pr-review's Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync).
-                // Gated on the run record actually existing, not on task state alone: the branch
-                // above already recovers the one case where CreateOneAsync's own launch died before
-                // RunDispatched ever committed, and refusing that case here too would strand it with
-                // no non-terminal way out except h9k task abandon (independent pre-PR review, cycle
-                // 6, adversarial lens). A live run is already running headlessly under this daemon's
-                // own RunSupervisor exactly like an ordinary dispatch — superseding it here would
-                // requeue the task while the live run keeps going, dispatching a second run
-                // alongside it, the exact harm h9k task handback's identical guard
-                // (TaskHandbackCommand.cs) exists to prevent (independent pre-PR review, cycle 4,
-                // both lenses).
-                //
-                // Non-terminal rather than RunState.IsLive: a pr-review sentinel run also parks
-                // ReviewParked (PrReviewEngine.ReviewAsync) and BudgetParked while its task stays
-                // Claimed, and neither is live, so an IsLive gate let both fall through to the
-                // generic "handed off with h9k task deliver (or handback)" refusal below — which
-                // safely refuses but for a false reason, since a pr-review task is never delivered
-                // (independent pre-PR review, cycles 7 and 8, adversarial lens). Stopping at
-                // non-terminal keeps cycle 6's exemption shape intact: a run this task has already
-                // finished with is not a live headless dispatch to protect, so it takes the same
-                // ordinary path any other claim's terminal run takes below rather than a pr-review
-                // refusal of its own.
-                throw PrReviewSentinelClaim.Refuse(taskId, run.State, "release");
             }
             else
             {

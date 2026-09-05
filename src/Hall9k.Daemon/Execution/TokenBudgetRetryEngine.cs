@@ -46,16 +46,26 @@ public sealed class TokenBudgetRetryEngine(
     /// #103), so an interactively delivered run parked mid review loop already carries a real
     /// node id by the time it can reach BudgetParked, and DeliveredByNodeId is new alongside
     /// this feature, so no pre-fix stream with an empty NodeId here can exist to widen for
-    /// (conformance review, cycle 4). Returns how many actually resumed.
+    /// (conformance review, cycle 4). Widened with <see cref="SentinelPrReviewCandidatesAsync"/>
+    /// for the one class this plain filter still misses (independent pre-PR review, cycle 10,
+    /// conformance lens): a Now-speed auto-pr-review sentinel run carries the ceiling-exempt
+    /// <see cref="Guid.Empty"/> on <c>NodeId</c>, so without the widening it never matches
+    /// <c>nodeId</c> here and a run this park caught sits <c>BudgetParked</c> forever — adoption
+    /// deliberately defers to this sweep for that state (<c>RunSupervisor.AdoptOrphansAsync</c>'s
+    /// own comment), so nothing else on the node ever clears it either. Returns how many
+    /// actually resumed.
     /// </summary>
     public async Task<int> RetryParkedRunsAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         Guid nodeId = node.NodeId;
-        IReadOnlyList<RunDetails> parked = await query.Query<RunDetails>()
+        IReadOnlyList<RunDetails> ownNode = await query.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
             .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.BudgetParked.Value))
             .ToListAsync(cancellationToken);
+        IReadOnlyList<RunDetails> sentinelPrReview = await SentinelPrReviewCandidatesAsync(
+            query, nodeId, cancellationToken);
+        List<RunDetails> parked = [.. ownNode, .. sentinelPrReview];
 
         int retried = 0;
         foreach (RunDetails run in parked)
@@ -67,6 +77,40 @@ public sealed class TokenBudgetRetryEngine(
         }
 
         return retried;
+    }
+
+    /// <summary>
+    /// The same sentinel-run widening <c>RunSupervisor.SentinelPrReviewCandidatesAsync</c>
+    /// applies for adoption and stranded-pipeline resumption, applied here for the retry sweep:
+    /// every budget-parked run carrying the ceiling-exempt <see cref="Guid.Empty"/> whose own
+    /// <see cref="RunDetails.DispatchingNodeId"/> names this node and whose owning task is a
+    /// pr-review task — the only caller that ever dispatches one under the sentinel
+    /// (<c>AutoPrReviewEngine.CreateOneAsync</c>'s "now" speed, via <c>RunLauncher.LaunchAsync</c>).
+    /// </summary>
+    private static async Task<IReadOnlyList<RunDetails>> SentinelPrReviewCandidatesAsync(
+        IQuerySession query, Guid nodeId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RunDetails> sentinel = await query.Query<RunDetails>()
+            .Where(r => r.NodeId == Guid.Empty)
+            .Where(r => r.DispatchingNodeId == nodeId)
+            .Where(r => r.MatchesSql("d.data ->> 'state' = ?", RunState.BudgetParked.Value))
+            .ToListAsync(cancellationToken);
+        if (sentinel.Count == 0)
+        {
+            return [];
+        }
+
+        List<RunDetails> prReview = [];
+        foreach (RunDetails run in sentinel)
+        {
+            TaskDetails? owner = await query.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
+            if (owner?.Type == TaskType.PrReview)
+            {
+                prReview.Add(run);
+            }
+        }
+
+        return prReview;
     }
 
     private async Task<bool> RetryOneAsync(RunDetails run, CancellationToken cancellationToken)
