@@ -139,7 +139,7 @@ h9k task publish <id> --untracked                 # the same gate's other exit: 
 h9k task publish <id> --pre-approved              # the owner stops being a synchronous gate at the pull request: the daemon rebase-merges once every real gate (CI, review decision, requested reviewers, threads) reads satisfied (Decisions Log #135)
 h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
 h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
-h9k task set-pre-approved <id> on|off             # flip standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged (Decisions Log #135)
+h9k task set-pre-approved <id> on|off             # flip standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (the flag is part of the readiness contract set at publish) (Decisions Log #135)
 h9k task unassign <id>                            # back to Published (refused while leased)
 h9k task draft <id>                               # Published back to Draft, so it can be revised
 ```

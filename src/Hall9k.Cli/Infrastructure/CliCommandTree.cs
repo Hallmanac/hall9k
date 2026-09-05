@@ -570,7 +570,9 @@ public static class CliCommandTree
             task.AddCommand<TaskSetPreApprovedCommand>("set-pre-approved")
                 .WithDescription(
                     "Flip a task's standing pre-approval after publish (task: a task can be published "
-                    + "pre-approved) — settable on any live non-terminal task, without the "
+                    + "pre-approved) — settable on any live task whose pull request has not yet merged "
+                    + "(a Draft refuses too — the flag is part of the readiness contract set at publish), "
+                    + "without the "
                     + "unassign/draft/revise/publish ceremony a readiness-contract change would otherwise "
                     + "need. Once on, the daemon merges this task's pull request on its own, "
                     + "deterministically, the moment GitHub's own gates read satisfied (CI green, the review "
