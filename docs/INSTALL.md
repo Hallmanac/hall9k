@@ -86,9 +86,12 @@ Nothing, mechanically — the bootstrap script is the same either way. The two d
   generated compose file and creates the schema, when Docker is running) instead of the
   interactive prompts a human would answer by hand. The one machine that ends up somewhere
   else is one already running a Postgres on that port: install says what it skipped and
-  writes nothing, doctor reports "no connection string configured" exactly as it always did,
-  and the decision of which server to use is a human's. See *Connecting a database* below
-  (Decisions Log #118).
+  writes nothing. What doctor reports next depends on what is actually listening there — a
+  `hall9k-postgres` container already running and answering as hall9k gets doctor's offer to
+  record it (or, under `--yes`, records it without asking), since there is nothing to start,
+  only something to point at; anything else still reports "no connection string configured"
+  exactly as it always did, and the decision of which server to use is a human's. See
+  *Connecting a database* below (Decisions Log #118).
 
 ## After bootstrap: staying current
 
@@ -121,7 +124,8 @@ or stop that Postgres if you want Hall9k's. Run `h9k doctor` any time — it is 
 same check, forever, and it teaches the fix at the moment you can act on it: is a connection
 string configured, is it reachable, is the schema there, and (if nothing is configured) what is
 available on this machine to point at, including a stopped `hall9k-postgres` container from
-an earlier session. `h9k doctor --yes` runs the same check and remediates without asking —
+an earlier session, or one already running and answering, where doctor points at it directly
+instead of restarting anything. `h9k doctor --yes` runs the same check and remediates without asking —
 starts Hall9k's own Postgres via the generated compose file and creates the schema — so a
 fresh install on a machine with Docker running reaches a verified install in three commands:
 `h9k doctor --yes`, then a plain `h9k daemon start`, then `h9k daemon status` to confirm `h9kd`
