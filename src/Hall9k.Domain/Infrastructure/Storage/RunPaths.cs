@@ -304,8 +304,9 @@ public static class RunPaths
 
     /// <summary>
     /// Appends one dispute's closing position to the well-known path
-    /// (<see cref="RebaseConflictDisputeFile"/> or <see cref="ReviewThreadDisputeFile"/>) rather
-    /// than overwriting it. A resumed pre-gate dispute can dispute again on that same path
+    /// (<see cref="RebaseConflictDisputeFile"/>, <see cref="ReviewThreadDisputeFile"/>, or
+    /// <see cref="PreFinalPassRebaseDisputeFile"/>) rather than overwriting it. A resumed pre-gate
+    /// dispute can dispute again on that same path
     /// (backlog 44), and the human resolving is pointed at it to decide between the positions —
     /// a plain overwrite would erase the first the moment the second landed, leaving only the
     /// newest attempt to read. Best-effort, like every other run artifact write: losing it must
