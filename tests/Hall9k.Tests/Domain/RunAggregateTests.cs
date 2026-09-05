@@ -896,6 +896,107 @@ public sealed class RunAggregateTests
         run.InteractiveGateCleared.Should().BeTrue("the redirect is the human's own engagement with this boundary");
         run.ParkedIsInteractiveGate.Should().BeFalse();
         run.PendingHumanFindings.Should().Be("Also check the retry path.");
+        run.PendingHumanFindingsFromInteractiveGate.Should().BeTrue(
+            "captured from ParkedIsInteractiveGate at the moment PendingHumanFindings was set, so " +
+            "DispatchFixSessionAsync can still tell this redirect apart from a genuine rebase-dispute " +
+            "resolution at the identical cycle 0");
+    }
+
+    /// <summary>
+    /// DispatchFixSessionAsync's own rebase-dispute discriminator (ReviewEngine.cs) needs to tell
+    /// a genuine rebase-conflict dispute apart from interactive mode's own "build done to review"
+    /// boundary redirected with --needs-fixes: both carry FollowUpKind.Rebase, ReviewCycle == 0,
+    /// and non-blank human findings once resolved, but only the dispute is actually about a
+    /// conflict (independent pre-PR review, cycle 1, adversarial lens). ParkedIsInteractiveGate
+    /// alone cannot make that call by the time the fix dispatches — Apply(ReviewParkResolved)
+    /// already reset it to false — so PendingHumanFindingsFromInteractiveGate, captured before that
+    /// reset and paired to PendingHumanFindings itself, has to survive where ParkedIsInteractiveGate
+    /// does not.
+    /// </summary>
+    [Fact]
+    public void Pending_human_findings_from_interactive_gate_survives_the_resolve_that_clears_parked_is_interactive_gate()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewParked(
+            id, "Interactive mode is on for this task: the verification gates just passed.", Now,
+            IsInteractiveGate: true));
+        run.ParkedIsInteractiveGate.Should().BeTrue();
+
+        run.Apply(new ReviewParkResolved(id, ReviewVerdict.NeedsFixes, "also rename the limiter field", Now, DomainId.New()));
+
+        run.ParkedIsInteractiveGate.Should().BeFalse("the park is over the moment it resolves");
+        run.PendingHumanFindingsFromInteractiveGate.Should().BeTrue(
+            "the discriminator DispatchFixSessionAsync reads after this resolve has already applied");
+    }
+
+    /// <summary>
+    /// The inverse of the above: a genuine dispute park (no IsInteractiveGate) leaves
+    /// PendingHumanFindingsFromInteractiveGate false, so DispatchFixSessionAsync's discriminator
+    /// still lets a real rebase-dispute resolution route to the rebase prompt.
+    /// </summary>
+    [Fact]
+    public void Pending_human_findings_from_interactive_gate_stays_false_for_an_ordinary_dispute_park()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewParked(id, "A rebase follow-up hit an unresolvable conflict.", Now));
+
+        run.ParkedIsInteractiveGate.Should().BeFalse();
+
+        run.Apply(new ReviewParkResolved(id, ReviewVerdict.NeedsFixes, "take theirs for the ReviewEngine.cs hunk", Now, DomainId.New()));
+
+        run.PendingHumanFindingsFromInteractiveGate.Should().BeFalse(
+            "an ordinary dispute park never set ParkedIsInteractiveGate, so the discriminator still lets a " +
+            "genuine rebase dispute resolve to the rebase prompt");
+    }
+
+    /// <summary>
+    /// The exact defect the field's redesign fixes (independent pre-PR review, cycle 3,
+    /// adversarial lens): a budget-exhausted fix session leaves PendingHumanFindings intact and
+    /// re-enters FixNeeded, where interactive mode parks again — an ordinary routine boundary this
+    /// time, unrelated to the original rebase dispute the pending findings still describe. Reading
+    /// the discriminator fresh off whatever ReviewParked happened most recently would let this
+    /// second, unrelated park overwrite it; pairing it to PendingHumanFindings at the moment those
+    /// findings were actually set must not let that happen.
+    /// </summary>
+    [Fact]
+    public void Pending_human_findings_from_interactive_gate_is_not_clobbered_by_a_later_unrelated_park()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        // A genuine rebase-dispute park, resolved with human findings.
+        run.Apply(new ReviewParked(id, "A rebase follow-up hit an unresolvable conflict.", Now));
+        run.Apply(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "take theirs for the ReviewEngine.cs hunk", Now, DomainId.New()));
+        run.PendingHumanFindingsFromInteractiveGate.Should().BeFalse();
+
+        // The fix session dispatches, then dies mid-flight on a budget exhaustion — the run
+        // re-enters FixNeeded with PendingHumanFindings still holding the rebase guidance.
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), 0, 5001, Now, Now));
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached", Now));
+        run.PendingHumanFindings.Should().Be(
+            "take theirs for the ReviewEngine.cs hunk", "RunBudgetExhausted never clears the pending findings");
+
+        // The retry sweep redispatches, and interactive mode's own routine boundary parks again —
+        // an unrelated, ordinary gate this time, nothing disputed.
+        run.Apply(new ReviewParked(
+            id, "Interactive mode is on for this task: the verification gates just passed.", Now,
+            IsInteractiveGate: true));
+
+        run.PendingHumanFindingsFromInteractiveGate.Should().BeFalse(
+            "still describes the original rebase-dispute resolution's own findings — an unrelated later " +
+            "park must not overwrite what this flag says about them");
     }
 
     /// <summary>

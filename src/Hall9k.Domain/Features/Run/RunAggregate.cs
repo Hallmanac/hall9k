@@ -543,6 +543,31 @@ public sealed class RunAggregate
     public bool ParkedIsInteractiveGate { get; private set; }
 
     /// <summary>
+    /// Whether the park that produced the CURRENT <see cref="PendingHumanFindings"/> was
+    /// interactive mode's own routine boundary gate rather than a disputed finding or a cap/budget
+    /// park — captured once, at the exact moment <see cref="Apply(Events.ReviewParkResolved)"/>
+    /// sets <see cref="PendingHumanFindings"/> from <see cref="ParkedIsInteractiveGate"/>, and
+    /// carried alongside it through the identical lifecycle: cleared together at
+    /// <see cref="Apply(Events.ReviewFixCompleted)"/>, left untouched together across
+    /// <see cref="Apply(Events.RunBudgetExhausted)"/>'s redispatch-at-FixNeeded, and never
+    /// overwritten by an unrelated park in between (independent pre-PR review, cycle 3, adversarial
+    /// lens). An earlier version of this field instead mirrored <c>ReviewParked.IsInteractiveGate</c>
+    /// directly and was overwritten by ANY later <see cref="Events.ReviewParked"/> — including one
+    /// belonging to an entirely different park, reached only because
+    /// <see cref="Apply(Events.RunBudgetExhausted)"/> leaves <see cref="PendingHumanFindings"/>
+    /// intact while cycling the run back through FixNeeded — which let a genuine rebase-dispute
+    /// resolution's own findings get misrouted to the ordinary review-fix prompt once an
+    /// intervening routine boundary park re-set the shared flag. Pairing this flag to the findings
+    /// it actually describes, rather than reading it fresh off whatever <see cref="Events.ReviewParked"/>
+    /// happened most recently, is what <see cref="Hall9k.Daemon.Review.ReviewEngine.DispatchFixSessionAsync"/>
+    /// needs to still tell a genuine rebase-dispute resolution (cycle 0, <c>FollowUpKind.Rebase</c>,
+    /// human findings present) apart from a human's <c>--needs-fixes</c> redirect of the interactive
+    /// gate's own "build done to review" boundary, which carries the identical cycle and follow-up
+    /// kind but nothing disputed.
+    /// </summary>
+    public bool PendingHumanFindingsFromInteractiveGate { get; private set; }
+
+    /// <summary>
     /// True the moment a fresh <c>h9k review proceed</c> (or, on the FixNeeded boundary, an
     /// <c>h9k review resolve</c>) has cleared THIS run's own interactive-mode gate for whichever
     /// boundary is next in line, false again the instant the corresponding dispatch actually
@@ -881,6 +906,7 @@ public sealed class RunAggregate
     {
         ClearActiveFixSession();
         PendingHumanFindings = null;
+        PendingHumanFindingsFromInteractiveGate = false;
         // Every fix session is followed by the gates, including the terminal one the severity
         // gate let through: what a settled ending ships unreviewed is the reviewers' reading of
         // those commits, never the build and the tests (log #63). The reverify step is what
@@ -997,6 +1023,11 @@ public sealed class RunAggregate
             LastReviewVerdict = ReviewVerdict.NeedsFixes;
             ReviewPhase = ReviewPhase.FixNeeded;
             PendingHumanFindings = @event.Reason;
+            // Captured from ParkedIsInteractiveGate here, before it is reset to false a few lines
+            // below, and paired with PendingHumanFindings for the rest of its lifecycle: see
+            // PendingHumanFindingsFromInteractiveGate's own doc for why reading a shared,
+            // unpaired flag at dispatch time instead was the bug.
+            PendingHumanFindingsFromInteractiveGate = ParkedIsInteractiveGate;
             // Like a manual pr resolve, the human asking is a fresh grant (log #22): the
             // per-track cycle caps are re-measured from here, so a run parked at its cap does
             // not re-park on the very next cycle. FinalFullPassRounds is an independent bound
