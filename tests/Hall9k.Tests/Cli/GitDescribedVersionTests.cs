@@ -57,6 +57,36 @@ public sealed class GitDescribedVersionTests : IDisposable
     }
 
     [Fact]
+    public async Task An_untracked_file_carries_a_dirty_marker()
+    {
+        Git(repository, "init -q -b main");
+        Git(repository, "-c user.name=Test -c user.email=test@test commit --allow-empty -m first");
+        Git(repository, "tag v0.4.0");
+        File.WriteAllText(Path.Combine(repository, "untracked.txt"), "never added\n");
+
+        GitDescribedVersion.Result result = await GitDescribedVersion.ResolveAsync(repository, CancellationToken.None);
+
+        result.Version.Should().Be("0.4.0-dirty",
+            "git describe --dirty only looks at tracked files, so an untracked file alone must "
+            + "still be caught rather than describing a source tree that differs from HEAD as clean");
+    }
+
+    [Fact]
+    public async Task A_repository_root_nested_under_an_unrelated_repository_falls_back_with_a_named_reason()
+    {
+        Git(repository, "init -q -b main");
+        Git(repository, "-c user.name=Test -c user.email=test@test commit --allow-empty -m first");
+        Git(repository, "tag v9.9.9");
+        string nested = Directory.CreateDirectory(Path.Combine(repository, "inner", "src")).FullName;
+
+        GitDescribedVersion.Result result = await GitDescribedVersion.ResolveAsync(nested, CancellationToken.None);
+
+        result.Version.Should().BeNull(
+            "the outer repository's own tags belong to a tree that isn't the one being published");
+        result.FallbackReason.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
     public async Task No_tags_reachable_falls_back_with_a_named_reason()
     {
         Git(repository, "init -q -b main");
