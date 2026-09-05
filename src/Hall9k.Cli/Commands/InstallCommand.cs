@@ -6,6 +6,7 @@ using System.Security;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Installation;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -85,13 +86,31 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 return ExitCodes.Error;
             }
 
+            // git describe, not the checked-in csproj placeholder: only release.yml's tagged
+            // build is meant to carry a real version via -p:Version, so a local build stamps
+            // itself from the repository's own tag history instead (Origin: h9k --version
+            // printing 0.1.0 on a Sep 2 local install, 2026-09-04). A repo with no tags
+            // reachable, or no git at all, falls back to today's behavior — nothing is passed,
+            // and the checked-in <Version> is what gets embedded, exactly as before this change.
+            GitDescribedVersion.Result described = await GitDescribedVersion.ResolveAsync(repoRoot, cancellationToken);
+            if (described.Version is null)
+            {
+                string reason = described.FallbackReason ?? "unknown reason";
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Could not derive a version from git describe ({reason.EscapeMarkup()}) — publishing with the checked-in csproj version instead.[/]");
+            }
+
             foreach (string project in new[] { "Hall9k.Cli", "Hall9k.Daemon" })
             {
                 AnsiConsole.MarkupLineInterpolated($"[dim]Publishing {project} (Release)…[/]");
-                ExecResult publish = await Exec.RunAsync(
-                    "dotnet",
-                    ["publish", Path.Combine(repoRoot, "src", project), "-c", "Release", "-o", staging, "--nologo"],
-                    cancellationToken);
+                List<string> publishArguments =
+                    ["publish", Path.Combine(repoRoot, "src", project), "-c", "Release", "-o", staging, "--nologo"];
+                if (described.Version is not null)
+                {
+                    publishArguments.Add($"-p:InformationalVersion={described.Version}");
+                }
+
+                ExecResult publish = await Exec.RunAsync("dotnet", publishArguments, cancellationToken);
                 if (!publish.Succeeded)
                 {
                     await Console.Error.WriteLineAsync($"dotnet publish failed for {project}:");
@@ -101,9 +120,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 }
             }
 
-            // Not CliVersion.Current — that's the version of the *running* CLI, which has
-            // no relationship to what dotnet publish just built (the checkout's csproj
-            // carries the placeholder 0.1.0 outside of release.yml's -p:Version). Read
+            // Not CliVersion.Current — that's the version of the *running* CLI, which has no
+            // relationship to what dotnet publish just built (the checkout's csproj carries the
+            // placeholder 0.1.0 unless the git-describe stamp above overrode it via
+            // -p:InformationalVersion, itself unrelated to release.yml's own -p:Version). Read
             // it back off the binary actually staged, the same refusal-to-guess as the
             // --from-release branch's own "unknown" fallback above.
             version = ReadPublishedVersion(staging);
