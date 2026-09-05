@@ -89,10 +89,7 @@ public static partial class ReviewVerdictValidation
     /// proximity heuristic, not something this narrowing was ever positioned to fix.
     /// </para>
     /// </summary>
-    [GeneratedRegex(
-        @"[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(:\d+)?"
-        + @"|\B\.(?:gitignore|gitattributes|gitmodules|dockerignore|editorconfig|env|npmrc|nvmrc)(?::\d+)?\b"
-        + @"|\b(?:Dockerfile|Makefile|Jenkinsfile|Gemfile|Rakefile|Procfile|Vagrantfile)(?::\d+)?\b")]
+    [GeneratedRegex(LocationShape)]
     private static partial Regex LocationPattern();
 
     /// <summary>
@@ -670,9 +667,24 @@ public static partial class ReviewVerdictValidation
     /// ("Nothing should change; .gitignore already excludes it.") has no `.ext` suffix, so the old
     /// disqualifier never recognized it as a location, and the whole sentence was credited as a
     /// denial the same way the pre-fix `Store.cs:40` case was — a genuine finding discarded, not
-    /// the narrower false-credit trade-off the paragraph above discloses. <see cref="SemicolonLocationShape"/>
+    /// the narrower false-credit trade-off the paragraph above discloses. <see cref="LocationShape"/>
     /// now shares the literal three-alternative shape with <see cref="LocationPattern"/> so the two
     /// can no longer drift apart the way they did here.
+    /// </para>
+    /// <para>
+    /// That sharing was itself only a copy at first (cycle-7 verify finding,
+    /// `ReviewVerdictValidation.cs:707`): the copy dropped <see cref="LocationPattern"/>'s
+    /// non-word-boundary before the dotfile alternative and the word boundaries after the dotfile
+    /// and bare-conventional-filename alternatives, so it matched strictly more text than
+    /// <see cref="LocationPattern"/> itself ever recognizes as a location — "Dockerfiles" and
+    /// ".gitignored" both matched the copy as a prefix even though neither is a location
+    /// <see cref="LocationPattern"/> would credit, which let a semicolon-joined clause like
+    /// "Nothing should change; Dockerfiles need updating for the new base image." disqualify the
+    /// denial over a location that was never actually named. <see cref="LocationShape"/> is now
+    /// the one literal <see cref="LocationPattern"/> itself compiles from (via its own
+    /// <c>[GeneratedRegex(LocationShape)]</c>) rather than a hand-copied duplicate, which is what
+    /// actually keeps the two from drifting apart — a shared literal cannot itself drift, where a
+    /// second hand-copy always risks it again the next time either one changes.
     /// </para>
     /// </summary>
     [GeneratedRegex(
@@ -683,7 +695,7 @@ public static partial class ReviewVerdictValidation
         + @"\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
         + @"|\b(?:nothing|none)\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,30}?"
         + @"\b(?:wrong|broken|amiss)\b(?![^.!?]{0,20}(?:\bbut\b|\byet\b|\bhowever\b|"
-        + @";\s*(?:in\s+)?[`*]{0,3}" + SemicolonLocationShape + @"))"
+        + @";\s*(?:in\s+)?[`*]{0,3}" + LocationShape + @"))"
         + @"|\b(?:nothing|none)\b\s+of\s+the\s+(?:defects?|bugs?|issues?|problems?)\b"
         + @"|\bno\b[^.!?]{0,10}\b(?:defects?|bugs?|issues?|problems?)\s+(?:stands?|remains?|exists?|found)\b"
         + @"|\bno\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,30}?"
@@ -691,23 +703,27 @@ public static partial class ReviewVerdictValidation
         + @"\b(?:violat(?:es?|ed)|unmet)\b"
         + @"|\b(?:does|do|did)\s+not\b(?:(?!,|;|\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b))|\b(?:and|which|but)\b)[^.!?]){0,30}?\bdeparts?\b"
         + @"|\b(?:nothing|none)\b\s+should\b(?![^.!?]{0,40}(?:\bbut\b|\byet\b|\bhowever\b|"
-        + @";\s*(?:in\s+)?[`*]{0,3}" + SemicolonLocationShape + @"))",
+        + @";\s*(?:in\s+)?[`*]{0,3}" + LocationShape + @"))",
         RegexOptions.IgnoreCase)]
     private static partial Regex HeadingDenialPattern();
 
     /// <summary>
-    /// The location shape the two semicolon-disqualifier lookaheads above require after the
-    /// semicolon, kept as one literal shared with <see cref="LocationPattern"/>'s own three
-    /// alternatives rather than a hand-copied duplicate of just the first one (cycle-6 verify
-    /// finding, `ReviewVerdictValidation.cs:673`): duplicating only the generic `word.ext[:line]`
-    /// alternative silently dropped the dotfile and bare-conventional-filename alternatives, so a
-    /// second clause naming `Dockerfile` or `.gitignore` was never recognized as a location and
-    /// the sentence was credited as a denial instead of a finding.
+    /// The location shape <see cref="LocationPattern"/> itself compiles from and the two
+    /// semicolon-disqualifier lookaheads in <see cref="HeadingDenialPattern"/> require after the
+    /// semicolon: one literal both use, rather than a hand-copied duplicate that can drift away
+    /// from <see cref="LocationPattern"/>'s own three alternatives the way two earlier copies each
+    /// did in turn (cycle-6 verify finding, `ReviewVerdictValidation.cs:673`, dropped the dotfile
+    /// and bare-conventional-filename alternatives entirely; cycle-7 verify finding,
+    /// `ReviewVerdictValidation.cs:707`, copied all three but without the non-word-boundary before
+    /// the dotfile alternative or the word boundaries after the dotfile and bare-filename
+    /// alternatives, so it matched more text as a location than <see cref="LocationPattern"/>
+    /// itself would — "Dockerfiles" and ".gitignored" both matched as a `Dockerfile`/`.gitignore`
+    /// prefix even though neither is a location <see cref="LocationPattern"/> recognizes).
     /// </summary>
-    private const string SemicolonLocationShape =
-        @"(?:[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(?::\d+)?"
-        + @"|\.(?:gitignore|gitattributes|gitmodules|dockerignore|editorconfig|env|npmrc|nvmrc)(?::\d+)?"
-        + @"|\b(?:Dockerfile|Makefile|Jenkinsfile|Gemfile|Rakefile|Procfile|Vagrantfile)(?::\d+)?)";
+    private const string LocationShape =
+        @"(?:[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(:\d+)?"
+        + @"|\B\.(?:gitignore|gitattributes|gitmodules|dockerignore|editorconfig|env|npmrc|nvmrc)(?::\d+)?\b"
+        + @"|\b(?:Dockerfile|Makefile|Jenkinsfile|Gemfile|Rakefile|Procfile|Vagrantfile)(?::\d+)?\b)";
 
     /// <summary>
     /// Whether a needs-fixes pass's own output states at least one finding, once the verdict
