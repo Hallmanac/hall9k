@@ -968,21 +968,23 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     {
         processManager ??= ProcessManagers.ForCurrentPlatform();
         options ??= new DaemonOptions();
+        IOptions<DaemonOptions> resolvedOptions = Options.Create(options);
+        IExecutor resolvedExecutor =
+            executor ?? new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions);
         VerificationRunner verification = new(
-            store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
+            store, resolvedOptions, NullLogger<VerificationRunner>.Instance,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), resolvedExecutor, processManager);
         ReviewEngine review = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())), processManager, verification,
-            Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager, verification,
+            resolvedOptions, NullLogger<ReviewEngine>.Instance);
         PrReviewEngine prReview = new(
-            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())), processManager,
+            store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-            Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
-        PrimarySessionResumer primarySessionResumer = new(
-            executor ?? new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())));
+            resolvedOptions, NullLogger<PrReviewEngine>.Instance);
+        PrimarySessionResumer primarySessionResumer = new(resolvedExecutor);
         return new RunSupervisor(store, node, processManager, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
-            primarySessionResumer, Options.Create(options), logger ?? NullLogger<RunSupervisor>.Instance);
+            primarySessionResumer, resolvedOptions, logger ?? NullLogger<RunSupervisor>.Instance);
     }
 
     public void Dispose()
