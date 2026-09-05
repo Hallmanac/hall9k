@@ -107,7 +107,7 @@ public static class DatabaseDoctor
             + $"{Directory.GetCurrentDirectory().EscapeMarkup()}.[/]");
 
         (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
-            await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
+            await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: false, cancellationToken);
 
         if (await ContainerRuntimeProbe.PortListeningAsync("localhost", 5432, cancellationToken))
         {
@@ -168,7 +168,7 @@ public static class DatabaseDoctor
                     // 2026-08-21 — a machine reboot leaves the connection string configured
                     // but Docker Desktop, and so hall9k-postgres, not yet back up).
                     (ContainerRuntimeStatus runtime, bool containerConfirmed, PostgresContainerStatus container) =
-                        await ReportContainerRuntimeStatusAsync(runner, cancellationToken);
+                        await ReportContainerRuntimeStatusAsync(runner, connectionStringAlreadyConfigured: true, cancellationToken);
                     if (offerFixes && runtime == ContainerRuntimeStatus.Running
                         && await OfferAndStartAsync(connectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
                     {
@@ -256,9 +256,17 @@ public static class DatabaseDoctor
     /// that falls into this diagnosis — not only when an interactive fix offer happens to
     /// follow (origin incident 2026-08-23: the report was reachable only from inside the
     /// interactive start-offer, so scripted and non-interactive runs never saw it).
+    /// <paramref name="connectionStringAlreadyConfigured"/> distinguishes the two callers for
+    /// the confirmed-<see cref="PostgresContainerStatus.Running"/> case specifically: the
+    /// not-configured path's "point the env var at it, or run h9k doctor --yes" advice is only
+    /// true when nothing is configured yet — the configured-but-refused caller already points
+    /// its connection string at this exact address and already tried it a moment ago, and
+    /// <c>--yes</c> cannot reach the not-configured path's own offer from there either, so both
+    /// halves of that advice would be false on that caller (cycle-1 adversarial review finding,
+    /// on this method).
     /// </summary>
     private static async Task<(ContainerRuntimeStatus Runtime, bool ContainerConfirmed, PostgresContainerStatus Container)> ReportContainerRuntimeStatusAsync(
-        ProcessRunner runner, CancellationToken cancellationToken)
+        ProcessRunner runner, bool connectionStringAlreadyConfigured, CancellationToken cancellationToken)
     {
         ContainerRuntimeStatus runtime = await ContainerRuntimeProbe.RuntimeStatusAsync(runner, cancellationToken);
         bool containerConfirmed = true;
@@ -283,6 +291,14 @@ public static class DatabaseDoctor
                     AnsiConsole.MarkupLine(
                         $"[yellow]Found a stopped {PostgresRuntime.ContainerName} container from a previous "
                         + "session[/] — your database exists, it is just not running.");
+                }
+                else if (container == PostgresContainerStatus.Running && connectionStringAlreadyConfigured)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[dim]Found {PostgresRuntime.ContainerName} confirmed running[/] — but nothing answered "
+                        + "when the already-configured connection string just tried it, so Postgres inside it may "
+                        + "still be finishing initialisation, or something else is bound to that address. Retry in "
+                        + "a moment, or check the container's own logs.");
                 }
                 else if (container == PostgresContainerStatus.Running)
                 {
@@ -358,13 +374,16 @@ public static class DatabaseDoctor
             // A freshly-started container can report Running before Postgres inside it has
             // finished initialising — OfferAndStartAsync's own sibling path already waits up to
             // ReadinessTimeout for exactly that; this path used to give up after a single probe
-            // instead of waiting the same way (Decisions Log review finding, DatabaseDoctor.cs:357).
+            // instead of waiting the same way (cycle-1 review finding on this method).
+            AnsiConsole.Markup("[dim]Waiting for it to come up…[/]");
             DateTimeOffset deadline = timeProvider.GetUtcNow() + timeout;
             while (report.Status == ReachabilityStatus.RefusedConnection && timeProvider.GetUtcNow() < deadline)
             {
                 await Task.Delay(pollInterval, cancellationToken);
                 report = await probe(cancellationToken);
             }
+
+            AnsiConsole.WriteLine();
         }
 
         switch (report.Status)
