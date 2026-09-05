@@ -65,6 +65,21 @@ h9k daemon stop       # graceful: in-flight event appends finish
 h9k daemon status     # running or not, pid, uptime, autostart posture, recent log lines
 ```
 
+**A daemon can be starting, not just running or not.** `h9k daemon start` waits up to 20s for the
+daemon's pid file to land before it says anything; on a machine where that first-boot cost
+(assembly resolution and JIT for the entry point, before the daemon ever reaches its own
+single-instance guard) runs past that wait — observed up to ~15s on one real Windows machine —
+`h9k daemon start` and `h9k daemon status` both report a third, yellow **starting** state instead
+of misreading the still-booting launch as down and inviting a second spawn into the first one's
+singleton lock. The `h9k daemon start` that hits that 20s wait returns exit code 0 (not an error —
+the launch is still in flight); a second `h9k daemon start` run while the state is still starting
+instead refuses outright, with exit code 69, rather than risk racing a guard that hasn't been
+observed to run yet. `h9k daemon stop` run during this window finds no pid to signal, reports
+"not running", and does nothing to the marker — it cannot confirm a launch back down that it
+never observed up. The starting state clears itself only two ways: the daemon's pid file lands,
+or the marker ages past its own 60s grace period with no pid file ever appearing, whichever comes
+first.
+
 **A stopped daemon costs latency, never correctness.** Commands still land in Postgres while it
 is down, and startup catches up on everything that happened meanwhile, in a fixed order: adopt
 live runs, sweep expired leases, then claim new work. It says what it caught up on, both to the
