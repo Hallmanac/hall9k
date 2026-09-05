@@ -6,5 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+    <!-- Shared fallback for every shipped binary's own <Version> (h9k and h9kd alike), so a
+         local build that derives no git-describe stamp reports the checked-in placeholder
+         instead of the SDK's own meaningless default of 1.0.0 (cycle 1 review finding: h9kd
+         carried no <Version> of its own and silently diverged from h9k's 0.1.0). -->
+    <Version>0.1.0</Version>
   </PropertyGroup>
 </Project>
