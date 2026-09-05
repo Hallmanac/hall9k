@@ -203,6 +203,8 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 $"[dim]Run {runId} resolved merge-ready — the daemon re-enters the pipeline at the gates, then review; the pull request opens if both pass.[/]",
             (true, false) =>
                 $"[dim]Run {runId} resolved merge-ready — the daemon runs one mandatory full-scope verification gate over the fix, unless this tip was already gated at full scope, then opens the pull request if it passes.[/]",
+            (false, _) when run.ParkedNeedsFixesOffersNoProgress =>
+                $"[dim]Run {runId} resolved needs-fixes — but this park's review-cycle cap or lifetime budget is already spent, so it will not clear: the run re-parks with the identical reason instead of a fix session's progress clearing it. Raise the cap first (h9k task set-review-caps, or the project/node default) if you want the fix session to actually land.[/]",
             _ =>
                 $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fix session with your reason as its findings.[/]",
         };
