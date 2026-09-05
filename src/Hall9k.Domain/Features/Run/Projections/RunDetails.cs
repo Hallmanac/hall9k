@@ -372,10 +372,14 @@ public sealed class RunDetails
     /// the same build-role-suffix discriminator <c>TaskPhaseComposer</c> already relies on to
     /// tell an attended claim from a start-it-mine one.
     /// <para>
-    /// Null when nobody has ever run <c>h9k task register-session</c> against this run (a run
-    /// dispatched headless from the start under interactive mode via <c>h9k task start</c>, or a
-    /// handback nobody re-attached to) — the honest "no registered session" case a dispatched
-    /// agent's outbound milestone rules degrade against. Empty when a human did register but their
+    /// Null when nobody has ever run <c>h9k task register-session</c> against this run — every
+    /// fresh headless dispatch under interactive mode starts this way (<c>h9k task start</c>, an
+    /// ordinary dispatch carrying the flag forward from an earlier <c>h9k task release
+    /// --keep-interactive</c>, or a retry, reopen, or follow-up redispatch, each a new run with no
+    /// registration carried forward from an earlier one) — the honest "no registered session" case
+    /// a dispatched agent's outbound milestone rules degrade against. A handback is never one of
+    /// these cases: it clears the interactive-mode flag unconditionally, so a handback-dispatched
+    /// run never reaches those rules at all. Empty when a human did register but their
     /// own session carried no display name to send to
     /// (<c>TaskRegisterSessionCommand.ReadClaudeSessionName</c> returning null) — a second,
     /// equally honest "nothing to address" case, told apart from the first only by a caller that
