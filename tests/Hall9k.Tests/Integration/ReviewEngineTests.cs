@@ -891,6 +891,66 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens: <c>EnsureInteractiveProceedAsync</c>
+    /// used to read <c>InteractiveModeEnabled</c> off <see cref="ReviewEngine"/>'s own
+    /// <c>ReviewContext.Task</c>, loaded once at the top of <c>DriveAsync</c> and held fixed for
+    /// the run's whole review phase — which can span real wall-clock minutes to hours. An operator
+    /// running <c>h9k task revise --clear-interactive-mode</c> while a cycle's review pass and fix
+    /// session are still in flight would not be seen until this run's NEXT top-level
+    /// <c>ReviewAsync</c> entry, so the very next phase boundary inside the SAME call would still
+    /// park on the stale snapshot even though the flag was already off. <c>OnSpawnByIndex[0]</c>
+    /// clears it mid-flight, synchronously, the moment the cycle-1 review pass spawns — before the
+    /// "review verdict to fix" boundary check that follows moments later in this same call — so
+    /// the fix session dispatches instead of parking, and the whole run settles in one call with no
+    /// second <see cref="ReviewParked"/> ever recorded.
+    /// </summary>
+    [Fact]
+    public async Task Clearing_interactive_mode_mid_flight_is_seen_at_the_very_next_boundary_in_the_same_call()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, interactiveMode: true, reviewStageComposition: ReviewStageComposition.AdversarialOnly);
+
+        // Interactive mode's own "build done to review" boundary parks before cycle 1 ever dispatches.
+        bool step1 = await NewEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token);
+        step1.Should().BeFalse("interactive mode parks before cycle 1's review ever dispatches");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewBoundaryApproved(runId, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            // Cycle 1: the sole (adversarial) lens finds something, calling for a fix.
+            "FINDING: severity=medium; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: the widget never initializes.\n\nVERDICT: needs-fixes",
+            "Initialized the widget.\n\nRESOLUTION: fixed",
+            // Cycle 2: only the adversarial track is active, so it gets one Verify pass.
+            "The widget initializes now.\n\nVERDICT: merge-ready",
+            // The mandatory final full pass, fresh, over the sole lens this composition ever runs.
+            "Criteria still met.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[0] = () => ClearInteractiveModeAsync(store, taskId, cts.Token).GetAwaiter().GetResult();
+        executor.OnSpawnByIndex[1] = () => CommitDocOnlyChange(worktreePath);
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue(
+            "once the flag is cleared mid-flight, no further boundary in this same call should park — " +
+            "the whole cycle should run through to a settled merge-ready verdict");
+        executor.Spawns.Should().HaveCount(
+            4, "review, fix, the cycle-2 verify pass, and the mandatory final full pass — none of the " +
+                "three later boundaries paused for a proceed that a stale InteractiveModeEnabled read would have asked for");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewParked>().Should().ContainSingle(
+            "only the very first boundary — parked before the flag was ever cleared — should have parked; " +
+            "a stale read would have produced a second ReviewParked at the review-verdict-to-fix boundary");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 3, adversarial lens: <c>VerifyCommandsFingerprintMatchesAsync</c>
     /// must read a never-recorded <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/> — a
     /// stream written before that field existed — as "unknown", not as "the gates changed". Seeds
@@ -1047,6 +1107,24 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         File.WriteAllText(Path.Combine(worktreePath, "NOTES.md"), "fix notes\n");
         Git(worktreePath, "add -A");
         Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m fix-notes");
+    }
+
+    /// <summary>The mid-run mutation <c>h9k task revise --clear-interactive-mode</c> makes, for tests that need it to land while a single <see cref="ReviewEngine.ReviewAsync"/> call is still in flight (the same "mutate between spawns" shape <see cref="ChangeVerifyCommandsAsync"/> already gives the verify-commands fingerprint tests).</summary>
+    private async Task ClearInteractiveModeAsync(DocumentStore store, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        session.Events.Append(taskId, new TaskRevised(
+            taskId,
+            Optional<string>.None,
+            Optional<IReadOnlyList<string>>.None,
+            Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None,
+            Optional<TaskType>.None,
+            Optional<AgentModel>.None,
+            Now, task!.AddedByOwnerId,
+            ClearInteractiveMode: true));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>Like <see cref="SeedVerifiedRunAsync(DocumentStore, CancellationToken)"/>, but a real git worktree and a real `dotnet test`-shaped gate, for tests that need <see cref="VerificationRunner"/>'s own scoping to run for real rather than short-circuit on "no gates configured".</summary>
