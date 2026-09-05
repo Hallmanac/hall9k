@@ -50,6 +50,19 @@ public static class SessionRoleName
     /// </summary>
     public const string CommitRecovery = "commit-recovery";
 
+    /// A narrow recovery session resolving a conflict the pre-final-pass rebase check hit (task:
+    /// a run rebases its branch onto the current base branch) — dispatched inside the build run
+    /// itself, unlike <see cref="Rebase"/>'s own post-PR follow-up. The one shared prefix both
+    /// <c>ReviewEngine.RebaseRecoveryArtifactName</c> (Daemon) and <c>TaskPhaseComposer</c> (Cli)
+    /// key off, so the phase line can tell this session apart from an ordinary
+    /// <see cref="Fix"/> session sharing the same <c>AgentRole</c> without the two ever drifting
+    /// out of sync with each other.
+    /// </summary>
+    public const string PreFinalPassRebasePrefix = "pre-final-pass-rebase";
+
+    /// <summary>One dispatch of the pre-final-pass rebase-recovery session, distinguished by session id since it can redispatch more than once (an error retry, or a human's needs-fixes guidance).</summary>
+    public static string PreFinalPassRebase(string sessionIdShort) => $"{PreFinalPassRebasePrefix}-{sessionIdShort}";
+
     /// <summary>A fix session applying a cycle's review findings.</summary>
     public static string Fix(int cycle) => $"fix-{cycle}";
 

@@ -92,6 +92,39 @@ public sealed class RunAggregate
     /// <summary>When the last mechanical rebase attempt was made; null until one is.</summary>
     public DateTimeOffset? LastMechanicalRebaseAt { get; private set; }
 
+    /// <summary>
+    /// Whether the mandatory final full pass's own pre-flight rebase last applied — cleanly or
+    /// through the recovery session — or found nothing to do (task: a run rebases its branch
+    /// onto the current base branch); null until one is attempted. See
+    /// <see cref="Events.RunRebasedOntoBase"/>.
+    /// </summary>
+    public bool? LastPreFinalPassRebaseWasNoOp { get; private set; }
+
+    /// <summary>Whether the last non-no-op pre-final-pass rebase needed the recovery session rather than applying cleanly on its own.</summary>
+    public bool LastPreFinalPassRebaseRecovered { get; private set; }
+
+    /// <summary>The base commit the branch was rebased from, as of the last pre-final-pass rebase attempt.</summary>
+    public string? LastPreFinalPassRebaseFromCommit { get; private set; }
+
+    /// <summary>The base commit the branch was rebased onto, as of the last pre-final-pass rebase attempt.</summary>
+    public string? LastPreFinalPassRebaseOntoCommit { get; private set; }
+
+    /// <summary>What the last pre-final-pass rebase attempt actually did.</summary>
+    public string? LastPreFinalPassRebaseDetail { get; private set; }
+
+    /// <summary>When the last pre-final-pass rebase attempt was made; null until one is.</summary>
+    public DateTimeOffset? LastPreFinalPassRebaseAt { get; private set; }
+
+    /// <summary>The in-flight pre-final-pass rebase-recovery session, cleared when its outcome is recorded. Identity for adoption.</summary>
+    public Guid? ActiveRebaseRecoverySessionId { get; private set; }
+    public int? ActiveRebaseRecoveryProcessId { get; private set; }
+    public DateTimeOffset? ActiveRebaseRecoveryProcessStartedAt { get; private set; }
+    /// <summary>The model the in-flight rebase-recovery session was spawned on.</summary>
+    public AgentModel ActiveRebaseRecoveryModel { get; private set; } = AgentModel.Unknown;
+    /// <summary>The base commits the in-flight (or most recently dispatched) recovery session is rebasing, carried from dispatch to completion.</summary>
+    public string? ActiveRebaseRecoveryFromCommit { get; private set; }
+    public string? ActiveRebaseRecoveryOntoCommit { get; private set; }
+
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; private set; }
 
@@ -522,14 +555,19 @@ public sealed class RunAggregate
     public RunState ParkedFromState { get; private set; } = RunState.Unknown;
 
     /// <summary>
-    /// The <see cref="ReviewPhase"/> this run was about to act on when the park interrupted it
-    /// (task: interactive mode becomes a recorded property of the task) — captured the same way
-    /// <see cref="ParkedFromState"/> already is, from <see cref="ReviewPhase"/> immediately before
-    /// <see cref="Apply(Events.ReviewParked)"/> overwrites it. Only meaningful for an interactive
-    /// gate (<see cref="ParkedIsInteractiveGate"/>): a bare <c>h9k review proceed</c> carries no
+    /// The <see cref="ReviewPhase"/> this run was about to act on when the park interrupted it,
+    /// captured the same way <see cref="ParkedFromState"/> already is, from
+    /// <see cref="ReviewPhase"/> immediately before <see cref="Apply(Events.ReviewParked)"/>
+    /// overwrites it. Two consumers read it for two different reasons: for an interactive gate
+    /// (<see cref="ParkedIsInteractiveGate"/>), a bare <c>h9k review proceed</c> carries no
     /// verdict of its own, so <see cref="Apply(Events.ReviewBoundaryApproved)"/> resumes the loop
     /// by restoring exactly this phase rather than deriving a new one the way
-    /// <see cref="Apply(Events.ReviewParkResolved)"/>'s verdict-bearing branches do.
+    /// <see cref="Apply(Events.ReviewParkResolved)"/>'s verdict-bearing branches do; and
+    /// <see cref="ParkedFromState"/> alone cannot tell a disputed pre-final-pass rebase park
+    /// (task: a run rebases its branch onto the current base branch) apart from every other park
+    /// that also lands from <see cref="RunState.UnderReview"/>, so <c>Apply(ReviewParkResolved)</c>
+    /// also uses this as the narrower discriminator that routes a rebase-recovery dispute's
+    /// resolution to its own dedicated path instead of the ordinary FixNeeded one.
     /// </summary>
     public ReviewPhase ParkedFromReviewPhase { get; private set; } = ReviewPhase.None;
 
@@ -589,6 +627,9 @@ public sealed class RunAggregate
     /// budget still blocks.
     /// </summary>
     public bool ParkedNeedsFixesOffersNoProgress { get; private set; }
+
+    /// <summary>Human guidance from a resolved pre-final-pass rebase-recovery dispute (h9k review resolve --needs-fixes), consumed by the next recovery-session dispatch.</summary>
+    public string? PendingRebaseRecoveryGuidance { get; private set; }
 
     /// <summary>Whether this run handed anything down at true closeout, and when not, why (log #36).</summary>
     public HandoffOutcome HandoffOutcome { get; private set; } = HandoffOutcome.Unknown;
@@ -938,7 +979,11 @@ public sealed class RunAggregate
     public void Apply(ReviewParked @event)
     {
         // Captured before the overwrite: State (and, for interactive mode's own gate, ReviewPhase)
-        // still hold where the park caught the run.
+        // still hold where the park caught the run, and ReviewPhase also holds which kind of park
+        // this is (task: a run rebases its branch onto the current base branch —
+        // ParkedFromReviewPhase is what lets a resolved rebase-recovery dispute route to its own
+        // resume path below rather than the ordinary FixNeeded one every other UnderReview park
+        // already takes).
         ParkedFromState = State;
         ParkedFromReviewPhase = ReviewPhase;
         ParkedNeedsFixesOffersNoProgress = @event.NeedsFixesOffersNoProgress;
@@ -973,6 +1018,21 @@ public sealed class RunAggregate
 
     public void Apply(ReviewParkResolved @event)
     {
+        if (ParkedFromReviewPhase == ReviewPhase.RebaseRecoveryDisputed)
+        {
+            // A disputed pre-final-pass rebase conflict (task: a run rebases its branch onto the
+            // current base branch) needs its own dedicated resume: the ordinary FixNeeded route
+            // just below hands PendingHumanFindings to DispatchFixSessionAsync as though it were
+            // an ordinary review finding, which is the wrong prompt for "here is how to resolve
+            // the conflict." ReviewResolveCommand refuses --merge-ready against this park (nothing
+            // has been rebased yet), so a MergeReady verdict is not expected to reach here.
+            ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
+            PendingRebaseRecoveryGuidance = @event.Reason;
+            ParkedNeedsFixesOffersNoProgress = false;
+            State = RunState.UnderReview;
+            return;
+        }
+
         if (@event.Verdict == ReviewVerdict.MergeReady && ParkedFromState == RunState.Verifying)
         {
             // A thread-dispute park caught this run before the gates (log #62), and interactive
@@ -1297,6 +1357,16 @@ public sealed class RunAggregate
         ActiveFixSessionModel = AgentModel.Unknown;
     }
 
+    private void ClearActiveRebaseRecoverySession()
+    {
+        ActiveRebaseRecoverySessionId = null;
+        ActiveRebaseRecoveryProcessId = null;
+        ActiveRebaseRecoveryProcessStartedAt = null;
+        ActiveRebaseRecoveryModel = AgentModel.Unknown;
+        ActiveRebaseRecoveryFromCommit = null;
+        ActiveRebaseRecoveryOntoCommit = null;
+    }
+
     // No-op: a logged interaction never changes RunState or any field the write path fences on
     // — it exists here only so this stream replays every event without a gap, the same convention
     // every other Run event upholds (RunDetails.ExternalInteractions is the read model anything
@@ -1378,6 +1448,46 @@ public sealed class RunAggregate
         LastMechanicalRebaseDetail = @event.Detail;
         LastMechanicalRebasePushedCommit = @event.PushedCommit;
         LastMechanicalRebaseAt = @event.AttemptedAt;
+    }
+
+    // Informational only, exactly like Apply(PullRequestMechanicalRebaseAttempted) above: a
+    // clean or no-op outcome leaves ReviewPhase and State untouched, so the mandatory final gate
+    // and pass that were already about to run simply read the tree this event just produced.
+    public void Apply(RunRebasedOntoBase @event)
+    {
+        LastPreFinalPassRebaseWasNoOp = @event.WasNoOp;
+        LastPreFinalPassRebaseRecovered = @event.RecoveredByAgentSession;
+        LastPreFinalPassRebaseFromCommit = @event.RebasedFromCommit;
+        LastPreFinalPassRebaseOntoCommit = @event.RebasedOntoCommit;
+        LastPreFinalPassRebaseDetail = @event.Detail;
+        LastPreFinalPassRebaseAt = @event.RebasedAt;
+    }
+
+    public void Apply(PreFinalPassRebaseRecoveryDispatched @event)
+    {
+        ActiveRebaseRecoverySessionId = @event.SessionId;
+        ActiveRebaseRecoveryProcessId = @event.ProcessId;
+        ActiveRebaseRecoveryProcessStartedAt = @event.ProcessStartedAt;
+        ActiveRebaseRecoveryModel = @event.Model ?? AgentModel.Unknown;
+        ActiveRebaseRecoveryFromCommit = @event.RebasedFromCommit;
+        ActiveRebaseRecoveryOntoCommit = @event.RebasedOntoCommit;
+        ReviewPhase = ReviewPhase.AwaitingRebaseRecovery;
+        State = RunState.UnderReview;
+    }
+
+    public void Apply(PreFinalPassRebaseRecoveryCompleted @event)
+    {
+        ClearActiveRebaseRecoverySession();
+        PendingRebaseRecoveryGuidance = null;
+        // Resolved (or undeclared — treated optimistically, the same as an ordinary fix session's
+        // Unknown outcome) returns straight to Settling: the loop's own next check re-reads the
+        // worktree, finds the base already merged, and proceeds to the mandatory gate and pass
+        // exactly as a clean rebase would have. Disputed parks instead — see
+        // ReviewPhase.RebaseRecoveryDisputed's own doc for why this is a phase of its own rather
+        // than a reuse of Disputed.
+        ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed
+            ? ReviewPhase.RebaseRecoveryDisputed
+            : ReviewPhase.Settling;
     }
 
     public void Apply(ReviewRerequested @event)
@@ -1475,6 +1585,11 @@ public sealed class RunAggregate
         {
             ClearActiveFixSession();
             ReviewPhase = ReviewPhase.FixNeeded;
+        }
+        else if (@event.Leg == RunSessionLeg.RebaseRecovery)
+        {
+            ClearActiveRebaseRecoverySession();
+            ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
         }
     }
 

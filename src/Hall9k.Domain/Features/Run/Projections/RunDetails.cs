@@ -161,6 +161,28 @@ public sealed class RunDetails
     public string? LastMechanicalRebasePushedCommit { get; set; }
     /// <summary>When the last mechanical rebase attempt was made; null until one is.</summary>
     public DateTimeOffset? LastMechanicalRebaseAt { get; set; }
+    /// <summary>Whether the mandatory final full pass's own pre-flight rebase last found nothing to do (task: a run rebases its branch onto the current base branch); null until one is attempted. See <see cref="Events.RunRebasedOntoBase"/>.</summary>
+    public bool? LastPreFinalPassRebaseWasNoOp { get; set; }
+    /// <summary>Whether the last non-no-op pre-final-pass rebase needed the recovery session rather than applying cleanly on its own.</summary>
+    public bool LastPreFinalPassRebaseRecovered { get; set; }
+    /// <summary>The base commit the branch was rebased from, as of the last pre-final-pass rebase attempt.</summary>
+    public string? LastPreFinalPassRebaseFromCommit { get; set; }
+    /// <summary>The base commit the branch was rebased onto, as of the last pre-final-pass rebase attempt.</summary>
+    public string? LastPreFinalPassRebaseOntoCommit { get; set; }
+    /// <summary>What the last pre-final-pass rebase attempt actually did.</summary>
+    public string? LastPreFinalPassRebaseDetail { get; set; }
+    /// <summary>When the last pre-final-pass rebase attempt was made; null until one is.</summary>
+    public DateTimeOffset? LastPreFinalPassRebaseAt { get; set; }
+    /// <summary>
+    /// Whether the run's current park (if any) is a disputed pre-final-pass rebase conflict
+    /// (task: a run rebases its branch onto the current base branch) — the discriminator
+    /// <c>AttentionComposer</c> and <c>ReviewResolveCommand</c> need to route the lever
+    /// (`--needs-fixes`, never `--merge-ready`) to this park rather than the ordinary one, since
+    /// unlike <see cref="Hall9k.Domain.Features.Tasks.FollowUpKind.Rebase"/>'s cycle-0 dispute
+    /// this one carries no task-level fact to key on. Set when the recovery session disputes, and
+    /// cleared once the park resolves.
+    /// </summary>
+    public bool ParkedOnRebaseRecoveryDispute { get; set; }
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; set; }
     /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
@@ -795,6 +817,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ParkedReason = null;
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
+        view.ParkedOnRebaseRecoveryDispute = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
         EndSessions(view);
         view.State = RunState.UnderReview;
@@ -900,6 +923,32 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.LastMechanicalRebaseDetail = @event.Data.Detail;
         view.LastMechanicalRebasePushedCommit = @event.Data.PushedCommit;
         view.LastMechanicalRebaseAt = @event.Data.AttemptedAt;
+    }
+
+    // Informational only — see RunAggregate.Apply(RunRebasedOntoBase).
+    public void Apply(IEvent<RunRebasedOntoBase> @event, RunDetails view)
+    {
+        view.LastPreFinalPassRebaseWasNoOp = @event.Data.WasNoOp;
+        view.LastPreFinalPassRebaseRecovered = @event.Data.RecoveredByAgentSession;
+        view.LastPreFinalPassRebaseFromCommit = @event.Data.RebasedFromCommit;
+        view.LastPreFinalPassRebaseOntoCommit = @event.Data.RebasedOntoCommit;
+        view.LastPreFinalPassRebaseDetail = @event.Data.Detail;
+        view.LastPreFinalPassRebaseAt = @event.Data.RebasedAt;
+    }
+
+    public void Apply(IEvent<PreFinalPassRebaseRecoveryDispatched> @event, RunDetails view)
+    {
+        StartSession(
+            view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: @event.Data.SessionName);
+        view.State = RunState.UnderReview;
+    }
+
+    /// <summary>The recovery session ended — see Apply(IEvent&lt;ReviewFixCompleted&gt;) above for why nothing is left running either way.</summary>
+    public void Apply(IEvent<PreFinalPassRebaseRecoveryCompleted> @event, RunDetails view)
+    {
+        EndSessions(view);
+        view.ParkedOnRebaseRecoveryDispute = @event.Data.Outcome == ReviewFixOutcome.Disputed;
     }
 
     public void Apply(IEvent<ReviewRerequested> @event, RunDetails view)

@@ -33,4 +33,26 @@ public enum ReviewPhase
     Disputed,
     /// <summary>The run is parked for a human; the loop is over until someone intervenes.</summary>
     Parked,
+    /// <summary>
+    /// A narrow, non-agentic rebase onto the base branch conflicted immediately before the
+    /// mandatory final full pass (task: a run rebases its branch onto the current base branch),
+    /// and a recovery session is (or was) in flight resolving it with judgment — the
+    /// rebase-onto-main skill, dispatched inside this same run rather than through a task
+    /// reopen. Its outcome has not been recorded.
+    /// </summary>
+    AwaitingRebaseRecovery,
+    /// <summary>
+    /// The recovery session judged the conflict genuinely undecidable — both sides changed the
+    /// same behavior, not just the same lines; a park is next. Kept distinct from
+    /// <see cref="Disputed"/> (rather than reusing it) so the park message names the rebase
+    /// conflict rather than the ordinary review-finding-disputed text <see cref="Disputed"/>'s
+    /// own park reason is written for.
+    /// </summary>
+    RebaseRecoveryDisputed,
+    /// <summary>
+    /// A human granted guidance on a disputed pre-final-pass rebase conflict
+    /// (h9k review resolve --needs-fixes); a fresh recovery session carrying that guidance is
+    /// next.
+    /// </summary>
+    RebaseRecoveryNeeded,
 }
