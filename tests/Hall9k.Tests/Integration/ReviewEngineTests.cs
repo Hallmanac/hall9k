@@ -1335,8 +1335,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<RunRebasedOntoBase>().Should().ContainSingle(
-            e => e.WasNoOp, "origin/main never moved past this branch's own merge base");
+        // Two, not one: the rebase check now runs on every Settling entry (task: a run rebases its
+        // branch onto the current base branch — the ordinary settle path must never open a stale
+        // pull request just because an earlier entry into Settling already checked). This run
+        // enters Settling once after cycle 1's fix (needsFullGateBeforeSettling) and again after the
+        // mandatory final pass concludes on the severity bar — both no-ops, since origin/main never
+        // moved either time.
+        events.OfType<RunRebasedOntoBase>().Should().HaveCount(2)
+            .And.OnlyContain(e => e.WasNoOp, "origin/main never moved past this branch's own merge base");
     }
 
     /// <summary>
@@ -1370,6 +1376,41 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         executor.Spawns.Should().HaveCount(6, "a clean rebase costs no review of its own");
         File.Exists(Path.Combine(worktreePath, "unrelated.txt")).Should().BeTrue(
             "the branch is now rebased onto the merge that landed while this run was building");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().ContainSingle(
+            e => !e.WasNoOp && !e.RecoveredByAgentSession, "git applied every commit without a conflict");
+    }
+
+    /// <summary>
+    /// Task: a run rebases its branch onto the current base branch (independent pre-PR review,
+    /// cycle 1, both lenses). A run whose review converges merge-ready at cycle 1 with no fix ever
+    /// dispatched settles through the "nothing owed" path, which never triggers the mandatory
+    /// final gate — but the rebase must still run there: it is the single most common way a run
+    /// ends, and the one with the longest window for the base to have moved underneath it.
+    /// </summary>
+    [Fact]
+    public async Task A_clean_cycle_one_settle_with_nothing_owed_still_rebases_onto_a_moved_base()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        PushToOrigin(originPath, "unrelated.txt", "merged while this run was building\n", "unrelated merge");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(2, "both lenses converged clean at cycle 1 — nothing owed a fix session");
+        File.Exists(Path.Combine(worktreePath, "unrelated.txt")).Should().BeTrue(
+            "the branch is rebased onto the merge that landed while this run was building, even though no fix or mandatory gate was ever owed");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -1480,6 +1521,50 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         File.ReadAllText(RunPaths.PreFinalPassRebaseDisputeFile(RunPaths.GlobalDirectory(runId)))
             .Should().Contain("Both sides change Widget.cs");
+    }
+
+    /// <summary>
+    /// Task: a run rebases its branch onto the current base branch (independent pre-PR review,
+    /// cycle 1, both lenses). A recovery session that repeatedly claims the conflict is resolved
+    /// without ever actually rebasing sends <c>EnsureRebasedBeforeFinalPassAsync</c> straight back
+    /// to the identical conflict every time Settling is re-entered — bounded here so the loop parks
+    /// for a human once it has spent its round cap, rather than spawning a fresh agent session
+    /// forever with nothing to stop it.
+    /// </summary>
+    [Fact]
+    public async Task A_rebase_recovery_session_that_never_actually_resolves_parks_once_the_round_cap_is_spent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _, string originPath) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        // A genuine add/add conflict that never resolves itself: every fresh `git rebase
+        // origin/main` attempt reconflicts identically, because nothing about the branch's own
+        // Widget.cs ever changes between attempts here.
+        PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main */ }\n", "add Widget from main");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready",
+            "Claiming this is resolved without touching the worktree.\n\nRESOLUTION: fixed",
+            "Claiming this is resolved without touching the worktree.\n\nRESOLUTION: fixed",
+            "Claiming this is resolved without touching the worktree.\n\nRESOLUTION: fixed");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the round cap parks the run rather than dispatching a fourth recovery session");
+        executor.Spawns.Should().HaveCount(
+            5, "two lenses converging clean, plus exactly the round cap's worth of recovery sessions and never a fourth");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should().Contain("3 time(s) in a row");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().HaveCount(
+            3, "the cap stops the fourth dispatch before it ever spawns");
     }
 
     /// <summary>

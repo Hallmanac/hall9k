@@ -125,6 +125,21 @@ public sealed class RunAggregate
     public string? ActiveRebaseRecoveryFromCommit { get; private set; }
     public string? ActiveRebaseRecoveryOntoCommit { get; private set; }
 
+    /// <summary>
+    /// How many pre-final-pass rebase-recovery sessions this run has dispatched in a row without
+    /// ever reaching a clean rebase (task: a run rebases its branch onto the current base branch)
+    /// — the independent bound <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s dispatch checks
+    /// before spawning another one, the same shape <see cref="FinalFullPassRounds"/> already gives
+    /// the mandatory final pass: a recovery session that ends without actually resolving the
+    /// conflict (an undeclared or falsely-optimistic outcome, or a worktree state git itself keeps
+    /// refusing) would otherwise send <c>EnsureRebasedBeforeFinalPassAsync</c> straight back to the
+    /// identical conflict forever, dispatching a fresh agent session each lap with nothing to stop
+    /// it (independent pre-PR review, cycle 1, both lenses). A fresh human grant
+    /// (<see cref="Apply(Events.ReviewParkResolved)"/>) resets it, exactly like
+    /// <see cref="FinalFullPassRounds"/> already resets there.
+    /// </summary>
+    public int RebaseRecoveryRounds { get; private set; }
+
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; private set; }
 
@@ -1077,6 +1092,12 @@ public sealed class RunAggregate
             // review cycle does, and the moment something changes MaySettleReason's ordering back,
             // this reset is what keeps that path correct without needing to be rediscovered.
             FinalFullPassRounds = 0;
+            // RebaseRecoveryRounds is the identical independent bound for the pre-final-pass
+            // rebase check (task: a run rebases its branch onto the current base branch) — reset
+            // for the same reason FinalFullPassRounds is just above: without it, a run parked on
+            // that cap re-parks on the very next check regardless of how many fresh grants the
+            // human gives.
+            RebaseRecoveryRounds = 0;
         }
         else
         {
@@ -1096,6 +1117,9 @@ public sealed class RunAggregate
             // matter how many fresh grants the human gives, because nothing else ever lowers it.
             ReviewBudgetBaseCycle = ReviewCycle;
             FinalFullPassRounds = 0;
+            // Same fresh-grant reset for the pre-final-pass rebase-recovery bound — see the
+            // MergeReady branch above.
+            RebaseRecoveryRounds = 0;
         }
 
         ParkedNeedsFixesOffersNoProgress = false;
@@ -1473,6 +1497,7 @@ public sealed class RunAggregate
         ActiveRebaseRecoveryOntoCommit = @event.RebasedOntoCommit;
         ReviewPhase = ReviewPhase.AwaitingRebaseRecovery;
         State = RunState.UnderReview;
+        RebaseRecoveryRounds++;
     }
 
     public void Apply(PreFinalPassRebaseRecoveryCompleted @event)
@@ -1551,6 +1576,16 @@ public sealed class RunAggregate
             case ReviewPhase.AwaitingFix:
                 ClearActiveFixSession();
                 ReviewPhase = ReviewPhase.FixNeeded;
+                break;
+            case ReviewPhase.AwaitingRebaseRecovery:
+                // Mirrors the AwaitingFix case above (task: a run rebases its branch onto the
+                // current base branch): the exhausted recovery session's process is gone, so the
+                // leg is cleared here rather than left for the budget retry sweep to "resume" a
+                // dead process. RebaseRecoveryNeeded re-enters DispatchRebaseRecoverySessionAsync
+                // fresh, with no human guidance attached (this was never a dispute), the same way
+                // an ordinary conflict's own first attempt does.
+                ClearActiveRebaseRecoverySession();
+                ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
                 break;
         }
 

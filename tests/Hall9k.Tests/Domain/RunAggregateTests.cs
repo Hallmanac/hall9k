@@ -1357,6 +1357,44 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The pre-final-pass rebase-recovery counterpart (task: a run rebases its branch onto the
+    /// current base branch, independent pre-PR review, cycle 1, both lenses): before this fix,
+    /// <c>Apply(RunBudgetExhausted)</c> left <see cref="ReviewPhase.AwaitingRebaseRecovery"/> and
+    /// the active recovery session's identity untouched, so <c>TokenBudgetRetryEngine</c>'s own
+    /// resume — which trusts that the exhausted leg was already cleared — re-awaited a process that
+    /// had already exited, over and over, every retry sweep. Clearing the leg and reopening
+    /// <see cref="ReviewPhase.RebaseRecoveryNeeded"/> here is what lets the very next pass through
+    /// the loop redispatch a fresh recovery session instead.
+    /// </summary>
+    [Fact]
+    public void Budget_exhausted_rebase_recovery_session_parks_and_reopens_rebase_recovery_needed()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new PreFinalPassRebaseRecoveryDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown, "abc1234", "def5678", "rebase-recovery"));
+
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now));
+
+        run.State.Should().Be(RunState.BudgetParked);
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.RebaseRecoveryNeeded, "the exhausted recovery session redispatches fresh, not resumes");
+        run.ActiveRebaseRecoverySessionId.Should().BeNull();
+        run.ActiveRebaseRecoveryProcessId.Should().BeNull();
+
+        run.Apply(new PreFinalPassRebaseRecoveryDispatched(
+            id, DomainId.New(), 6002, Now, Now, AgentModel.Unknown, "abc1234", "def5678", "rebase-recovery"));
+        run.State.Should().Be(RunState.UnderReview, "redispatching the recovery session is what clears the park");
+        run.ReviewPhase.Should().Be(ReviewPhase.AwaitingRebaseRecovery);
+    }
+
+    /// <summary>
     /// The pr-review conformance lens's own budget-exhaustion recovery: PrReviewEngine
     /// deliberately never touches ReviewPhase (it stays None throughout, asserted elsewhere), so
     /// TokenBudgetRetryEngine cannot tell a pr-review park apart from a primary-session park by
