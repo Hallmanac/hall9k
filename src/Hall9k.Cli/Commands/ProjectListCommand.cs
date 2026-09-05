@@ -58,7 +58,7 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             + "so a row sums to that project's tasks.[/]");
         AnsiConsole.MarkupLine(
             $"[dim]Settings and recent tasks:[/] h9k project show {first} [dim]· "
-            + $"browse its tasks:[/] h9k task list --project {first}");
+            + $"browse its tasks:[/] h9k task list --project {first} --include-archived");
 
         if (rows.Any(row => row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
         {
