@@ -411,7 +411,7 @@ public sealed class RunSupervisor(
         session.Events.Append(runId, new AgentSessionCompleted(runId, now));
         session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
 
-        SpawnedAgent? retriedAgent = null;
+        bool willRetryBuildSession = false;
         if (result.IsError && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, not a machine or code fault (backlog 40): the run
@@ -428,16 +428,14 @@ public sealed class RunSupervisor(
         {
             // The first error for the build session (task: a session that reports an error
             // result is retried once in place — measured 2026-09-05: bursty across only 18
-            // distinct hours, the shape of a provider-side burst, not a code defect). A null
-            // return here — missing task/project docs, or the resumed spawn itself throwing —
-            // falls through to the ordinary failure below exactly as if no retry existed.
-            retriedAgent = await TryRetryBuildSessionAsync(
-                session, runId, taskId, result.Summary ?? "(no message)", now, cancellationToken);
-            if (retriedAgent is null)
-            {
-                session.Events.Append(runId, new RunFailed(runId, "Agent reported an error result.", now));
-                await AppendFencedTaskFailureAsync(session, runId, taskId, "Agent reported an error result.", now, cancellationToken);
-            }
+            // distinct hours, the shape of a provider-side burst, not a code defect). Recorded
+            // and saved BELOW before the backoff wait even starts — RetryBuildSessionAsync does
+            // the actual spawn afterward, in its own session — so a crash mid-backoff leaves a
+            // run that already remembers its one retry was spent, rather than events sitting
+            // unsaved in memory across a real-time wait.
+            session.Events.Append(
+                runId, new RunSessionErrorRetried(runId, RunSessionLeg.Build, Cycle: null, Lens: null, result.Summary ?? "(no message)", now));
+            willRetryBuildSession = true;
         }
         else if (result.IsError)
         {
@@ -472,12 +470,23 @@ public sealed class RunSupervisor(
             result.OutputTokens,
             result.IsError);
 
-        if (retriedAgent is { } agent)
+        if (willRetryBuildSession)
         {
-            logger.LogWarning(
-                "Run {RunId}: the primary session reported an error result — retried once in place (pid {ProcessId})",
-                runId, agent.ProcessId);
-            return (agent.ProcessId, agent.StartedAt);
+            (int ProcessId, DateTimeOffset ProcessStartedAt)? retried =
+                await RetryBuildSessionAsync(runId, taskId, cancellationToken);
+            if (retried is { } resumed)
+            {
+                logger.LogWarning(
+                    "Run {RunId}: the primary session reported an error result — retried once in place (pid {ProcessId})",
+                    runId, resumed.ProcessId);
+                return resumed;
+            }
+
+            // The retry was already recorded as spent above; only the spawn itself failed
+            // (missing task/project docs, or the resumed spawn throwing) — fail exactly as if
+            // no retry had ever been attempted.
+            await FailRunAsync(runId, taskId, "Agent reported an error result.", cancellationToken);
+            return null;
         }
 
         // A pr-review task's primary session IS the adversarial review lens: there is no
@@ -524,17 +533,21 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
-    /// Spawns the build session's own error-result retry (task: a session that reports an error
-    /// result is retried once in place), on <paramref name="session"/> so
-    /// <see cref="RunSessionErrorRetried"/> lands atomically with the caller's other
-    /// events. Null means no retry happened — the docs this needs were missing, or the resumed
-    /// spawn itself threw — and the caller falls back to failing the run exactly as if this
-    /// leg had never retried.
+    /// The actual "--resume" spawn for the build session's error-result retry, split out from
+    /// the event append above so the "this leg's one retry is spent" fact is durably saved
+    /// BEFORE the backoff wait even starts: a crash during the wait then resumes into a run
+    /// that already remembers the retry happened, rather than one where it and the primary
+    /// session's own completion facts sat unsaved in memory across a real-time delay. Null
+    /// means no retry happened — the docs this needs were missing, or the resumed spawn itself
+    /// threw — and the caller falls back to failing the run exactly as if this leg had never
+    /// retried.
     /// </summary>
-    private async Task<SpawnedAgent?> TryRetryBuildSessionAsync(
-        IDocumentSession session, Guid runId, Guid taskId, string observedMessage, DateTimeOffset now,
-        CancellationToken cancellationToken)
+    private async Task<(int ProcessId, DateTimeOffset ProcessStartedAt)?> RetryBuildSessionAsync(
+        Guid runId, Guid taskId, CancellationToken cancellationToken)
     {
+        await Task.Delay(_options.SessionErrorRetryBackoff, cancellationToken);
+
+        await using IDocumentSession session = store.LightweightSession();
         RunDetails? runDetails = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
         ProjectDetails? project = task is null
@@ -545,14 +558,12 @@ public sealed class RunSupervisor(
             return null;
         }
 
-        session.Events.Append(
-            runId, new RunSessionErrorRetried(runId, RunSessionLeg.Build, Cycle: null, Lens: null, observedMessage, now));
-
         try
         {
-            await Task.Delay(_options.SessionErrorRetryBackoff, cancellationToken);
-            return await primarySessionResumer.ResumeAsync(
+            SpawnedAgent agent = await primarySessionResumer.ResumeAsync(
                 session, runDetails, task, project, AgentPromptBuilder.BuildSessionErrorRetry(), cancellationToken);
+            await session.SaveChangesAsync(cancellationToken);
+            return (agent.ProcessId, agent.StartedAt);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
