@@ -8,8 +8,9 @@ namespace Hall9k.Tests.Daemon;
 /// The never-guess rule, applied exactly as backlog 40 applied it to budget exhaustion
 /// (backlog 53): only the literal, recognizable shape of a connection-class failure — Npgsql
 /// connection refused/reset/timeout, the SSLRequest handshake mismatch, Testcontainers itself
-/// failing to start — classifies as infrastructure. Anything else, including a test's own
-/// assertion output, stays a real failure.
+/// failing to start — or MSBuild's own MSB4166 child-node-exited-prematurely shape (Windows
+/// field report item 3, ruled 2026-09-01) classifies as infrastructure. Anything else,
+/// including a test's own assertion output, stays a real failure.
 /// </summary>
 public sealed class GateInfrastructureFailureClassifierTests
 {
@@ -20,8 +21,28 @@ public sealed class GateInfrastructureFailureClassifierTests
     [InlineData("Gate 'test' exited 1. Output: DotNet.Testcontainers.Containers.ContainerNotFoundException: the container could not be started")]
     [InlineData("Gate 'test' exited 1. Output: Docker.DotNet.DockerApiException: 500 Internal Server Error")]
     [InlineData("Gate 'test' exited 1. Output: Connection reset by peer")]
-    public void A_connection_class_signature_classifies_as_infrastructure(string gateOutput) =>
+    public void A_recognized_infrastructure_signature_classifies_as_infrastructure(string gateOutput) =>
         GateInfrastructureFailureClassifier.IsInfrastructureFailure(gateOutput).Should().BeTrue();
+
+    /// <summary>
+    /// Kept out of the shared theory above, unlike every other marker there, so a broken
+    /// classifier failing this one specific case does not render the MSB4166 marker text into
+    /// this fact's own failing display name — a `[Fact]` has none, where a `[Theory]`'s default
+    /// display embeds its `[InlineData]` argument — and get the resulting `dotnet test` output
+    /// misclassified as the very infrastructure failure this test exists to recognize (adversarial
+    /// review, cycle 1). The pre-existing markers above already carry this same self-reference
+    /// risk; this one is isolated rather than the whole theory reworked, since only this entry is
+    /// this branch's own change.
+    /// </summary>
+    [Fact]
+    public void An_MSB4166_child_node_crash_classifies_as_infrastructure()
+    {
+        string gateOutput =
+            "Gate 'test' exited 1. Output: MSBUILD : error MSB4166: Child node \"1\" exited prematurely. " +
+            "Diagnostic information may be found in files in " +
+            "\"C:\\Users\\vssadmin\\AppData\\Local\\Temp\\MSBuild_pid-11064_3.failure.txt\". Shutting down. Fatal error.";
+        GateInfrastructureFailureClassifier.IsInfrastructureFailure(gateOutput).Should().BeTrue();
+    }
 
     [Theory]
     [InlineData("Gate 'test' exited 1. Output: Assert.Equal() Failure\nExpected: 3\nActual:   4")]
@@ -29,6 +50,8 @@ public sealed class GateInfrastructureFailureClassifierTests
     [InlineData("Gate 'boom' exited 3. Output: exploding")]
     [InlineData("Gate 'build' exited 1. Output: error CS0246: The type or namespace could not be found")]
     [InlineData("Gate 'test' exited 1. Output: Npgsql.PostgresException: 23505: duplicate key value violates unique constraint")]
+    [InlineData(
+        "Gate 'test' exited 1. Output: Xunit.Sdk.EqualException: expected the log to mention MSBuild, but it did not")]
     public void A_test_assertion_or_build_error_stays_a_real_failure(string gateOutput) =>
         GateInfrastructureFailureClassifier.IsInfrastructureFailure(gateOutput).Should().BeFalse();
 
@@ -48,6 +71,12 @@ public sealed class GateInfrastructureFailureClassifierTests
     public void MatchingExcerpt_is_null_for_a_real_failure() =>
         GateInfrastructureFailureClassifier.MatchingExcerpt("Xunit.Sdk.EqualException: expected true, was false")
             .Should().BeNull();
+
+    [Fact]
+    public void MatchingExcerpt_names_the_MSB4166_marker_so_the_recorded_retry_cause_says_what_triggered_it() =>
+        GateInfrastructureFailureClassifier.MatchingExcerpt(
+                "MSBUILD : error MSB4166: Child node \"1\" exited prematurely. Shutting down. Fatal error.")
+            .Should().Contain("MSB4166");
 
     // A directory rather than a captured-output string, deliberately: the gate's own console
     // output cannot be relied on here (see IsUnresolvedGateWaitTimeout's own doc comment) —

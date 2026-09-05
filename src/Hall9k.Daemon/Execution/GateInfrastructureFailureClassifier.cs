@@ -5,18 +5,20 @@ namespace Hall9k.Daemon.Execution;
 /// <summary>
 /// Tells a gate failure caused by the verification environment itself — Postgres refusing or
 /// dropping a connection, Testcontainers failing to bring a container up, the SSLRequest
-/// handshake mismatch a container answers before Postgres inside it is ready — apart from a
-/// gate that failed because the agent's work is actually broken (backlog 53).
+/// handshake mismatch a container answers before Postgres inside it is ready, MSBuild's own
+/// shared child node crashing under concurrent gates on Windows — apart from a gate that failed
+/// because the agent's work is actually broken (backlog 53; the MSBuild shape is Windows field
+/// report item 3, ruled 2026-09-01).
 /// <para>
 /// The never-guess rule, applied exactly as backlog 40 applied it to budget exhaustion:
-/// classification fires only on the literal, recognizable shape of a connection-class failure.
-/// A test's own assertion output mentioning "connection" in passing does not carry any of
-/// these markers and stays a real failure.
+/// classification fires only on the literal, recognizable shape of an infrastructure failure.
+/// A test's own assertion output mentioning "connection" or "MSBuild" in passing does not carry
+/// any of these markers and stays a real failure.
 /// </para>
 /// </summary>
 public static class GateInfrastructureFailureClassifier
 {
-    private static readonly string[] ConnectionFailureMarkers =
+    private static readonly string[] InfrastructureFailureMarkers =
     [
         // Npgsql connection refused / reset / timeout. Npgsql.PostgresException is
         // deliberately not a marker here: per Npgsql's own docs it is thrown whenever
@@ -36,11 +38,20 @@ public static class GateInfrastructureFailureClassifier
         // Testcontainers itself failing to bring the container up.
         "DotNet.Testcontainers",
         "Docker.DotNet.DockerApiException",
+        // MSBuild's own error code for a shared child node dying mid-build (Windows field
+        // report item 3, ruled 2026-09-01: two concurrent dotnet-test-shaped gates on one
+        // Windows machine crashed each other's reused MSBuild nodes). The code alone, not the
+        // surrounding "Child node ... exited prematurely" prose, is the marker: MSB4166 is
+        // MSBuild's own defined identifier for exactly this failure and nothing else, so a
+        // test's own assertion output that merely mentions "MSBuild" in passing never carries
+        // it and stays a real failure — the same literal-marker discipline every marker above
+        // already holds to.
+        "MSB4166",
     ];
 
     public static bool IsInfrastructureFailure(string? gateOutput) =>
         gateOutput is not null
-        && ConnectionFailureMarkers.Any(marker => gateOutput.Contains(marker, StringComparison.OrdinalIgnoreCase));
+        && InfrastructureFailureMarkers.Any(marker => gateOutput.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// The environment variable name a dotnet-test-shaped gate's own process tree carries the
@@ -162,7 +173,7 @@ public static class GateInfrastructureFailureClassifier
             return null;
         }
 
-        foreach (string marker in ConnectionFailureMarkers)
+        foreach (string marker in InfrastructureFailureMarkers)
         {
             int index = gateOutput.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
             if (index < 0)
