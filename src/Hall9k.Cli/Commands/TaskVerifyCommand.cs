@@ -218,6 +218,12 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             // verify gate that cannot pass on clean main is caught before it costs a run) — best
             // effort here too, so an operator watching this command's own output is not left to
             // rediscover by hand that the gate itself, not their branch, is what is broken.
+            // Announced up front, the same as ProjectSetCommand's own validation loop, so an
+            // operator watching a failed gate's output is not left staring at a silent terminal
+            // for up to this comparison's own timeout with no indication anything is still
+            // happening (independent pre-PR review, cycle 1, adversarial lens, low).
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Checking whether gate '{gate.Name}' also fails against a clean checkout of '{project.BaseBranch}'...[/]");
             if (await DescribeCleanBaseComparisonAsync(project, gate, cancellationToken) is { } note)
             {
                 AnsiConsole.MarkupLineInterpolated($"[yellow]{note}[/]");
@@ -237,11 +243,16 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
     /// <summary>
     /// Whether <paramref name="gate"/> also fails when run once against a clean checkout of the
     /// project's own base branch — null when the comparison cannot be made (no reachable checkout,
-    /// a bare clone, or a repo/dev this call cannot confirm is at the base branch's current tip) or
-    /// when the gate passes there, in which case this run's own failure is real and a note here
-    /// would only be noise. Mirrors VerificationRunner.DescribeCleanBaseComparisonAsync's own
-    /// daemon-side logic (this project cannot reference Hall9k.Daemon), best effort: a failure
-    /// here is swallowed rather than replacing the real gate failure this command already reported.
+    /// a bare clone, a repo/dev this call cannot confirm is at the base branch's current tip, or the
+    /// attempt is <see cref="GateCheckOutcome.Inconclusive"/>) or when the gate is actually observed
+    /// to pass there, in which case this run's own failure is real and a note here would only be
+    /// noise. Mirrors VerificationRunner.DescribeCleanBaseComparisonAsync's own daemon-side logic
+    /// (this project cannot reference Hall9k.Daemon), best effort: a failure here is swallowed
+    /// rather than replacing the real gate failure this command already reported. Whether the
+    /// checkout itself is confirmed clean and on the base branch is checked and named in the note
+    /// rather than gating whether the note is made at all — the gate command genuinely did run and
+    /// exit with a real code either way (independent pre-PR review, cycle 1, both lenses, sweeping
+    /// the identical shape found in VerificationRunner's own version of this method).
     /// </summary>
     private static async Task<string?> DescribeCleanBaseComparisonAsync(
         ProjectDetails project, VerifyCommand gate, CancellationToken cancellationToken)
@@ -254,9 +265,10 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 return null;
             }
 
+            GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
+
             if (ProjectCheckout.IsHomeDevWorktree(project, checkout))
             {
-                GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
                 CheckoutRefresh refresh = await worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken);
                 if (!refresh.UpToDate)
                 {
@@ -264,16 +276,34 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 }
             }
 
-            GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, GateTimeout, cancellationToken);
-            return result.Passed
-                ? null
-                : $"Gate '{gate.Name}' also fails when run against a clean checkout of '{project.BaseBranch}': {result.OutputTail}";
+            string? uncleanNote = await CheckoutCleanliness.DescribeNotConfirmedCleanAsync(checkout, project.BaseBranch, cancellationToken);
+
+            // Serializes this checkout's gate spawn against every other caller that can run a
+            // command in it at the same time (the daemon's own post-failure comparison, another
+            // concurrent h9k task verify, h9k project set --verify) — the identical reasoning
+            // VerificationRunner.DescribeCleanBaseComparisonAsync's own lock documents.
+            await using IAsyncDisposable gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, cancellationToken);
+            GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, CleanBaseComparisonTimeout, cancellationToken);
+            if (result.Outcome != GateCheckOutcome.Failed)
+            {
+                return null;
+            }
+
+            string suffix = uncleanNote is null
+                ? string.Empty
+                : $" (checkout {uncleanNote}, so this may reflect the checkout's own local state rather than '{project.BaseBranch}' itself)";
+            return $"Gate '{gate.Name}' also fails when run against a clean checkout of '{project.BaseBranch}'{suffix}: {result.OutputTail}";
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return null;
         }
     }
+
+    // Bounded well under GateTimeout below the same way VerificationRunner.CleanBaseComparisonTimeoutCap
+    // is: this is a best-effort diagnostic on top of a failure already reported either way, not the
+    // gate itself, so it has no claim on the same 30-minute budget a real gate run gets.
+    private static readonly TimeSpan CleanBaseComparisonTimeout = TimeSpan.FromMinutes(5);
 
     // Mirrors DaemonOptions.VerifyGateTimeout's own default (30 minutes, PLAN.md §16 #132's
     // follow-up review) — this project cannot reference Hall9k.Daemon (Reference graph:

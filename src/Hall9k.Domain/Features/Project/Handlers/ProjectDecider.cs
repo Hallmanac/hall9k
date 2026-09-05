@@ -70,7 +70,8 @@ public static class ProjectDecider
         Optional<BranchNameTemplate> branchNameTemplate = default,
         Optional<string?> reviewStageComposition = default,
         bool reviewStageCompositionAcknowledged = false,
-        Optional<AutoPrReviewSpeed> autoPrReview = default)
+        Optional<AutoPrReviewSpeed> autoPrReview = default,
+        bool acceptedBrokenGate = false)
     {
         if (repositoryPath.HasValue)
         {
@@ -224,7 +225,8 @@ public static class ProjectDecider
             branchNameTemplate,
             normalizedComposition,
             ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(normalizedRaw, reviewStageCompositionAcknowledged),
-            autoPrReview);
+            autoPrReview,
+            acceptedBrokenGate);
     }
 
     /// <summary>
