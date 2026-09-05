@@ -124,10 +124,15 @@ public sealed class HomeEnvironmentIsolationTests
         "DaemonRuntime.PidFile",
         "DaemonRuntime.LockFile",
         "DaemonRuntime.StopRequestFile",
+        "DaemonRuntime.StartingMarkerFile",
         // Reaches PlatformPaths.Home through RunPaths.Root by way of the private
         // LaunchScriptFile property, not through anything already on this list — a production
         // accessor found the same way as everything above, not a test-side helper.
         "WindowsDaemonAutostart.TaskXmlContent(",
+        // Reach RunPaths.Root through DaemonRuntime.PidFile / DaemonRuntime.StartingMarkerFile
+        // without a caller having to name either directly (task 92da629d).
+        "DaemonProcess.Probe(",
+        "DaemonProcess.ProbeBootStatus(",
     ];
 
     private static readonly Regex ClassDeclaration = new(
