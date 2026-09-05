@@ -103,7 +103,14 @@ public static class DatabaseDoctor
                 + $"{Hall9kDatabase.EnvironmentVariableName} at it.[/]");
         }
 
-        if (runtime == ContainerRuntimeStatus.Running && offerFixes
+        if (offerFixes && containerConfirmed && container == PostgresContainerStatus.Running)
+        {
+            if (await OfferAndRecordAlreadyRunningContainerAsync(assumeYes, cancellationToken) is { } recorded)
+            {
+                return recorded;
+            }
+        }
+        else if (runtime == ContainerRuntimeStatus.Running && offerFixes
             && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
         {
             await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
@@ -285,6 +292,66 @@ public static class DatabaseDoctor
         }
 
         return (runtime, containerConfirmed, container);
+    }
+
+    /// <summary>
+    /// The not-configured path's other fix, alongside <see cref="OfferAndStartAsync"/>'s
+    /// start-something shape: <see cref="PostgresContainerStatus.Running"/> means there is
+    /// nothing to start, only something to point at, and <see cref="OfferAndStartAsync"/>
+    /// itself refuses that case outright (restarting an already-running container is never the
+    /// fix for whatever else is wrong) — which used to leave a machine with a live, confirmed
+    /// <c>hall9k-postgres</c> dead-ending on "Set one: export …" advice instead (the finding
+    /// this method fixes). Probes <see cref="Hall9kDatabase.DefaultConnectionString"/> directly
+    /// — the container is confirmed by name, not by the connection string a caller happens to
+    /// have configured, since nothing is configured yet on this path — and, if it answers,
+    /// records it exactly the way <see cref="OfferAndStartAsync"/>'s own caller already does.
+    /// Offer-never-force still applies: it asks before writing (or is told
+    /// <paramref name="assumeYes"/> in its place), because writing the platform config file is
+    /// the same kind of fix as starting a container, even though nothing here starts anything.
+    /// Takes <paramref name="probe"/> rather than calling <see cref="DatabaseReachability.ProbeAsync"/>
+    /// directly so a test can substitute a fake answer instead of depending on a real Postgres
+    /// bound to the exact host and port <see cref="Hall9kDatabase.DefaultConnectionString"/>
+    /// names.
+    /// </summary>
+    private static Task<ConnectionStringResolution?> OfferAndRecordAlreadyRunningContainerAsync(
+        bool assumeYes, CancellationToken cancellationToken) =>
+        OfferAndRecordAlreadyRunningContainerAsync(
+            assumeYes,
+            token => DatabaseReachability.ProbeAsync(Hall9kDatabase.DefaultConnectionString, token),
+            cancellationToken);
+
+    internal static async Task<ConnectionStringResolution?> OfferAndRecordAlreadyRunningContainerAsync(
+        bool assumeYes, Func<CancellationToken, Task<ReachabilityReport>> probe, CancellationToken cancellationToken)
+    {
+        ReachabilityReport report = await probe(cancellationToken);
+        if (report.Status != ReachabilityStatus.Reachable)
+        {
+            return null;
+        }
+
+        if (!assumeYes && !AnsiConsole.Profile.Capabilities.Interactive)
+        {
+            // Same rule as the schema and start offers: a skipped prompt names itself and the
+            // flag that answers it, rather than falling through to generic advice as though
+            // nothing here could have been fixed automatically (origin: Windows install
+            // friction log item 3).
+            AnsiConsole.MarkupLine(
+                $"[dim]{PostgresRuntime.ContainerName} is already running and answering, but skipping the offer "
+                + "to point at it — stdin is not a terminal, so there is nobody to confirm this. Re-run with "
+                + "h9k doctor --yes to configure it automatically.[/]");
+            return null;
+        }
+
+        if (!assumeYes && !AnsiConsole.Confirm(
+            $"Found {PostgresRuntime.ContainerName} already running and answering. Configure h9k to use it?",
+            defaultValue: true))
+        {
+            return null;
+        }
+
+        await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
+        AnsiConsole.MarkupLine($"[green]Configured[/]: wrote the connection string to {Hall9kDatabase.ConfigFile.EscapeMarkup()}.");
+        return Hall9kDatabase.Resolve();
     }
 
     /// <summary>
