@@ -30,7 +30,13 @@ rebase + force-push in the run's retained worktree, no agent session and no loca
 GitHub's own CI on the push is treated as the authoritative gate here — the follow-up run only
 dispatches when that mechanical attempt genuinely fails (a real conflict, an unusable worktree, a
 refused push, or a pull request retargeted to a base other than the project's own) rather than for
-every conflicting branch (PLAN.md Decisions Log #131).
+every conflicting branch (PLAN.md Decisions Log #131). That is the after-push half; the before-push
+half runs earlier still, immediately before the mandatory full pass just mentioned: the run fetches
+the base branch and, if it moved, rebases onto it right there in its own worktree, so the mandatory
+gate and pass read the rebased tree and the pull request that opens afterward is mergeable on
+arrival. A no-op or a clean rebase costs nothing extra; a conflict is handed to a narrow recovery
+session dispatched inside the same run (never a task reopen), and only a conflict that session
+cannot honestly resolve parks for a human (PLAN.md Decisions Log #138).
 
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a
