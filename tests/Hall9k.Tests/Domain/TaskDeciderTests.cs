@@ -309,6 +309,103 @@ public sealed class TaskDeciderTests
     }
 
     [Fact]
+    public void Publish_records_pre_approval_when_asked_and_defaults_off_when_not()
+    {
+        TaskAggregate preApprovedTask = DraftTask();
+        TaskPublished published = TaskDecider.Publish(
+            preApprovedTask, TaskDependencyGraph.Empty, Now, Owner, preApproved: true);
+        published.PreApproved.Should().BeTrue();
+        preApprovedTask.Apply(published);
+        preApprovedTask.PreApproved.Should().BeTrue();
+
+        TaskAggregate unflagged = DraftTask();
+        TaskPublished ordinaryPublish = TaskDecider.Publish(unflagged, TaskDependencyGraph.Empty, Now, Owner);
+        ordinaryPublish.PreApproved.Should().BeFalse("an unflagged task's behaviour is entirely unchanged");
+    }
+
+    [Fact]
+    public void SetPreApproved_applies_while_the_tasks_run_is_live_unlike_revise()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        TaskPreApprovedSet set = TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false);
+        task.Apply(set);
+
+        task.PreApproved.Should().BeTrue(
+            "pre-approval is settable on any live non-terminal task, without the edit dance a "
+            + "readiness-contract change would otherwise need");
+    }
+
+    [Fact]
+    public void SetPreApproved_withdraws_pre_approval_when_flipped_back_off()
+    {
+        TaskAggregate task = ClaimedTask();
+        task.Apply(TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false));
+
+        task.Apply(TaskDecider.SetPreApproved(task, false, Now, Owner, taskClosedOut: false));
+
+        task.PreApproved.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// TaskState.Done is also the entire window a task's pull request is open and CloseoutEngine
+    /// is watching it (rendered as Delivered) — exactly the live window this flag governs, so Done
+    /// alone must not refuse it (independent pre-PR review, cycle 1, both lenses: the previous
+    /// guard refused every Done task unconditionally and made the flag unreachable for the one
+    /// window it matters).
+    /// </summary>
+    [Fact]
+    public void SetPreApproved_applies_to_a_done_task_whose_pull_request_is_still_open()
+    {
+        TaskAggregate task = DoneTask("https://github.com/acme/widgets/pull/9");
+
+        TaskPreApprovedSet set = TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false);
+        task.Apply(set);
+
+        task.PreApproved.Should().BeTrue(
+            "the pull request is still open and closeout is still watching it — this is the live "
+            + "window the flag exists to govern");
+    }
+
+    [Fact]
+    public void SetPreApproved_refuses_a_task_whose_pull_request_has_already_merged()
+    {
+        TaskAggregate task = DoneTask("https://github.com/acme/widgets/pull/9");
+
+        Action act = () => TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: true);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*merged*",
+            "closeout already observed the merge — there is no future pull request left to govern");
+    }
+
+    [Fact]
+    public void SetPreApproved_refuses_an_abandoned_task()
+    {
+        TaskAggregate task = ClaimedTask();
+        task.Apply(TaskDecider.Abandon(task, "no longer needed", Now, Owner));
+
+        Action act = () => TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*Abandoned*");
+    }
+
+    /// <summary>
+    /// Refused rather than silently lost: Publish unconditionally records
+    /// TaskPublished.PreApproved (defaulting false), so a value set here on a still-Draft task
+    /// would otherwise be clobbered back to false by an ordinary publish that forgot to repeat
+    /// --pre-approved (independent self-review finding).
+    /// </summary>
+    [Fact]
+    public void SetPreApproved_refuses_a_draft_so_publish_can_never_silently_clobber_it()
+    {
+        TaskAggregate task = DraftTask();
+
+        Action act = () => TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*publish*--pre-approved*");
+    }
+
+    [Fact]
     public void Publish_refuses_untracked_combined_with_no_existing_item_as_contradictory()
     {
         TaskAggregate task = DraftTask();

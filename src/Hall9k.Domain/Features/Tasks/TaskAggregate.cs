@@ -68,6 +68,26 @@ public sealed class TaskAggregate
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
 
     /// <summary>
+    /// The owner's standing pre-approval (task: a task can be published pre-approved): once true,
+    /// the daemon merges this task's pull request on its own, deterministically, the moment
+    /// GitHub's own gates read satisfied — CI green, the review decision satisfied, no outstanding
+    /// requested reviewer, every review thread resolved, and no follow-up live or queued. Every
+    /// existing human waypoint (Failed, a review park, a severity-bar failure, a cap trip) still
+    /// stops the pipeline exactly as it does for an unflagged task; this flag only removes the
+    /// owner as a SYNCHRONOUS gate at the pull request, never any of those. Set at publish
+    /// (<see cref="Events.TaskPublished.PreApproved"/>), defaulting false, and flippable
+    /// afterward on any live non-terminal task via <see cref="Events.TaskPreApprovedSet"/>.
+    /// </summary>
+    public bool PreApproved { get; private set; }
+
+    /// <summary>
+    /// This pre-approved task's own mechanical-resolution budget spend — see
+    /// <see cref="Events.TaskMechanicalResolutionAttempted"/>'s own doc for the shape and why it
+    /// is a single pool. Meaningless on an unflagged task, which never spends it.
+    /// </summary>
+    public int MechanicalResolutionAttempts { get; private set; }
+
+    /// <summary>
     /// This task's own override of how many agent sessions its run may hold simultaneously; null
     /// means the node's global <c>SessionCapPerRun</c> default decides (Decisions Log #111).
     /// Unlike <see cref="Model"/>, settable at any time — including mid-run — via
@@ -315,7 +335,15 @@ public sealed class TaskAggregate
         State = TaskState.Queued;
     }
 
-    public void Apply(TaskPublished @event) => State = TaskState.Published;
+    public void Apply(TaskPublished @event)
+    {
+        State = TaskState.Published;
+        PreApproved = @event.PreApproved;
+    }
+
+    public void Apply(TaskPreApprovedSet @event) => PreApproved = @event.PreApproved;
+
+    public void Apply(TaskMechanicalResolutionAttempted @event) => MechanicalResolutionAttempts++;
 
     // Absent means "left alone" — a revision that reworded the objective must not also claim
     // the criteria were retyped identically (Optional carries that distinction).
@@ -639,6 +667,11 @@ public sealed class TaskAggregate
         _automaticLapHistory.Clear();
         _knownHumanReviewThreadIds.Clear();
         _knownPendingReviewRequestLogins.Clear();
+        // A human grant (a manual h9k pr resolve) or a fresh pull request (a retry that opens a
+        // second one) restarts the pre-approved auto-merge budget alongside the ordinary closeout
+        // one, the same "matching the existing pr-resolve retry-budget pattern" the feature's own
+        // acceptance criteria calls for.
+        MechanicalResolutionAttempts = 0;
     }
 
     // The mirror of TaskRetried, from Claimed (interactive) rather than Failed: the branch an

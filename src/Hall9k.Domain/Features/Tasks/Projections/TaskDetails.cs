@@ -74,6 +74,11 @@ public sealed class TaskDetails
     public DateTimeOffset? UntrackedAttestedAt { get; set; }
     /// <summary>Who made it (see <see cref="Events.TaskPublished.PublishedByOwnerId"/>).</summary>
     public Guid? UntrackedAttestedByOwnerId { get; set; }
+    /// <summary>
+    /// The owner's standing pre-approval (task: a task can be published pre-approved) — see
+    /// <see cref="TaskAggregate.PreApproved"/>'s own doc for what it does.
+    /// </summary>
+    public bool PreApproved { get; set; }
     /// <summary>The write hall9k has outstanding against Jira for this task, or null when none is (Brian's design, 2026-08-28).</summary>
     public Guid? PendingJiraWriteId { get; set; }
     /// <summary>Which of create, update, or comment the outstanding write is.</summary>
@@ -269,7 +274,10 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.UntrackedAttested = @event.Data.UntrackedAttested;
         view.UntrackedAttestedAt = @event.Data.UntrackedAttested ? @event.Data.PublishedAt : null;
         view.UntrackedAttestedByOwnerId = @event.Data.UntrackedAttested ? @event.Data.PublishedByOwnerId : null;
+        view.PreApproved = @event.Data.PreApproved;
     }
+
+    public void Apply(IEvent<TaskPreApprovedSet> @event, TaskDetails view) => view.PreApproved = @event.Data.PreApproved;
 
     // Absent means "left alone": a revision that reworded the objective must not also claim
     // the criteria were retyped identically.
