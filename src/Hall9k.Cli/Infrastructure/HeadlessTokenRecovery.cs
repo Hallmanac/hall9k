@@ -1,6 +1,8 @@
 using Hall9k.Cli.Commands;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
 
 namespace Hall9k.Cli.Infrastructure;
@@ -22,11 +24,44 @@ internal static class HeadlessTokenRecovery
     public static void AppendIfRecorded(IDocumentSession session, RunDetails run, DateTimeOffset recordedAt)
     {
         TaskDeliverCommand.HeadlessResult result = TaskDeliverCommand.ReadHeadlessResult(run.RunDirectory);
-        if (result.Usage is { } usage)
+        AppendUsage(session, run, result.Usage, recordedAt);
+    }
+
+    /// <summary>
+    /// The delegation counterpart of <see cref="AppendIfRecorded"/>: <c>h9k task delegate</c>
+    /// spawns each contractor into its own session-scoped stream file
+    /// (<see cref="RunPaths.SessionStreamFile"/>), never the run-level one, so this run's own
+    /// <see cref="RunDetails.PhaseDelegations"/> is the only index of which files exist to read
+    /// back. Called alongside <see cref="AppendIfRecorded"/> at every lever that can retire a run
+    /// carrying delegations (deliver, handback, release, retry, abandon) — none of which observed
+    /// a delegated contractor's own spend before this, letting the node's periodic token-spend
+    /// budget under-count every phase a claim ever delegated (independent pre-PR review, cycle 1,
+    /// both lenses, on h9k task delegate).
+    /// </summary>
+    public static void AppendDelegatedPhaseTokens(IDocumentSession session, RunDetails run, DateTimeOffset recordedAt)
+    {
+        if (run.PhaseDelegations.Count == 0)
+        {
+            return;
+        }
+
+        string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        foreach (PhaseDelegation delegation in run.PhaseDelegations)
+        {
+            string sessionStreamFile = RunPaths.SessionStreamFile(resolvedRunDirectory, delegation.SessionName);
+            TaskDeliverCommand.HeadlessResult result = TaskDeliverCommand.ReadHeadlessResultFromStreamFile(sessionStreamFile);
+            AppendUsage(session, run, result.Usage, recordedAt);
+        }
+    }
+
+    private static void AppendUsage(
+        IDocumentSession session, RunDetails run, TaskDeliverCommand.HeadlessUsage? usage, DateTimeOffset recordedAt)
+    {
+        if (usage is { } value)
         {
             session.Events.Append(run.Id, new TokensRecorded(
-                run.Id, usage.InputTokens, usage.OutputTokens, usage.CostUsd, recordedAt,
-                usage.CacheReadInputTokens, usage.CacheCreationInputTokens, run.Model));
+                run.Id, value.InputTokens, value.OutputTokens, value.CostUsd, recordedAt,
+                value.CacheReadInputTokens, value.CacheCreationInputTokens, run.Model));
         }
     }
 }

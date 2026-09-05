@@ -225,6 +225,7 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // headless session handed back mid-run had its token spend discarded permanently
         // (conformance review, cycle 1, on h9k task start).
         HeadlessTokenRecovery.AppendIfRecorded(session, run, supersededAt);
+        HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, run, supersededAt);
         session.Events.Append(runId, new RunSuperseded(runId, task.LeaseGeneration + 1, supersededAt));
         try
         {

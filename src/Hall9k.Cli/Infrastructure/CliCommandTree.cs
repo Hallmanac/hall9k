@@ -848,6 +848,28 @@ public static class CliCommandTree
                 .WithExample("task", "handback", "28b19893", "--reason", "\"Need to step away; the migration script is drafted but untested\"")
                 .WithExample("task", "handback", "28b19893", "--first")
                 .WithExample("task", "handback", "28b19893", "--now");
+            task.AddCommand<TaskDelegateCommand>("delegate")
+                .WithDescription(
+                    "Delegate the build to a contractor for one phase while staying at the wheel — distinct from "
+                    + "h9k task handback, which ends interactive mode: this dispatches a headless build agent onto "
+                    + "your own interactive claim's existing run, worktree, and branch, but the task stays yours, "
+                    + "still in interactive mode, so it still parks at each review-engine boundary for your "
+                    + "recorded h9k review proceed once it reaches one. Ceiling-exempt through the identical "
+                    + "mechanism h9k task start uses (the claim's own sentinel node id already exempts it), "
+                    + "launched under the <task-shortid>-build name. Works before or after any work exists in the "
+                    + "worktree — a branch with prior work dispatches with ResumesPreviousWork exactly as a "
+                    + "resumed retry does — and refuses everything except your own live interactive claim "
+                    + "(h9k task work), naming why. --note is required and carries your handoff into the "
+                    + "contractor's starting prompt in the blocker-handoff mold (what was attempted, what is "
+                    + "deliberate versus abandoned, what latitude is granted); its default posture toward "
+                    + "whatever the branch already holds is conservative — discard or rewrite latitude exists "
+                    + "only when the note grants it explicitly. The reverse move: once the contractor reports "
+                    + "back, h9k task work re-enters this same worktree interactively so you can finish the build "
+                    + "yourself — the wheel changes hands in both directions, always at a boundary. Refused when "
+                    + "the claim's session was recorded on another machine this one cannot check — --force "
+                    + "attests you confirmed by hand that it has exited.")
+                .WithExample("task", "delegate", "28b19893", "--note",
+                    "\"Drafted the migration; untested past the happy path. Latitude: rewrite the rollback stub freely.\"");
         });
     }
 

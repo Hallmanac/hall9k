@@ -50,7 +50,20 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
         // whole directory relocated into or out of tasks/_archive/ by the render sweep, taking
         // this run's directory with it (backlog 51). Reading a merged task's transcript is
         // exactly when that recorded path is stale, so resolve where it actually is first.
-        string streamFile = RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory));
+        //
+        // RunDetails is loaded unconditionally here (not only on a run-level miss, the way it
+        // used to be) because h9k task delegate spawns each contractor into its own
+        // session-scoped stream file (RunPaths.SessionStreamFile), never the run-level one — a
+        // delegation is always the newest activity on a run when it happens at all (delivering,
+        // handing back, releasing, retrying, or abandoning a claim all end the run outright, so
+        // nothing can delegate again afterward), so the latest recorded PhaseDelegation's own
+        // file is preferred outright rather than only as a fallback when the run-level file is
+        // absent (independent pre-PR review, cycle 1, on h9k task delegate).
+        string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        RunDetails? runDetails = await session.LoadAsync<RunDetails>(run.Id, cancellationToken);
+        string streamFile = runDetails?.PhaseDelegations is { Count: > 0 } delegations
+            ? RunPaths.SessionStreamFile(resolvedRunDirectory, delegations[^1].SessionName)
+            : RunPaths.StreamFile(resolvedRunDirectory);
         if (!File.Exists(streamFile))
         {
             // An attached interactive session (h9k task work) never writes stream.jsonl on any
@@ -59,11 +72,8 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
             // and never cleared, unlike NodeId, which delivery can reassign) is what actually
             // distinguishes that from a headless run whose transcript merely lives on a node this
             // one cannot read (conformance review, cycle 4: the other-node hypothesis is false by
-            // construction for a run that was, or still is, an interactive claim). Loaded only
-            // here, on the single selected run, rather than eagerly on every run on the task —
-            // RunDetails is the heavyweight projection and this command otherwise never needs it.
-            int interactiveSessionCount = (await session.LoadAsync<RunDetails>(run.Id, cancellationToken))
-                ?.InteractiveSessionCount ?? 0;
+            // construction for a run that was, or still is, an interactive claim).
+            int interactiveSessionCount = runDetails?.InteractiveSessionCount ?? 0;
             throw new DomainNotFoundException(interactiveSessionCount > 0
                 ? $"No stream file for run {run.Id} ({streamFile}). It was worked interactively " +
                   "(h9k task work) — an attached session runs in the operator's own terminal and is " +
