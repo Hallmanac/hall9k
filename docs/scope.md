@@ -223,6 +223,31 @@ agent-initiated entry with no human direction is audit trail only: it lands on t
 never reaches a review prompt, but nothing renders it on `h9k task show` yet (designed but not
 built by this task) — reading the raw stream is the only way to see one today.
 
+### Pre-approved merge
+
+A task published or later set `h9k task publish --pre-approved` / `h9k task set-pre-approved <id>
+on|off` removes the owner as a synchronous gate at its own pull request. `h9k task set-pre-approved`
+is settable without the unassign/draft/revise/publish ceremony, on any live task whose pull request
+has not actually merged yet — `TaskState.Done` alone does not refuse it, since Done is also the
+entire window a pull request is open and closeout is watching it.
+
+Once every ordinary obstruction the closeout monitor already checks has had its say — no conflict,
+no pending or failing check, no unresolved thread, no errored review, and no countersign
+re-request just issued this same sweep — the daemon reads GitHub's own review decision
+(branch-protection-aware), outstanding requested reviewers (a requested team recorded distinctly
+from a person, since GitHub exposes no login for one), and Copilot's own bounded settle window,
+and rebase-merges the moment every one of them reads satisfied: `gh pr merge --rebase`, called
+deterministically with the exact head commit the sweep observed, no agent session involved. A
+required human approval or an outstanding reviewer is a visible, self-resuming wait on `h9k
+status`, never a park — the owner can nudge a reviewer on their own initiative, but the platform
+itself never does. A mechanical merge failure retries on the same bounded budget an ordinary
+`h9k pr resolve` follow-up spends, and exhausting it parks like any other obstruction. Every other
+human waypoint (Failed, a review park, a cap trip) still stops a pre-approved task exactly as it
+would an unflagged one, and the merge itself is unchanged as the platform's one true-closeout
+moment.
+
+Depth: PLAN.md Decisions Log #135.
+
 ### Recovery
 
 `h9k task retry`, `h9k task resolve`, `h9k task abandon`, `h9k pr resolve`, and
@@ -473,9 +498,12 @@ shared Postgres, which the lease model already makes safe.
 
 These are decisions, not gaps. Proposing them is fine; assuming they were overlooked is not.
 
-**The platform never merges your pull request.** That is the last human checkpoint and it stays
-one. `Delivered` means the work is on a pull request and every automated thing that could be said
-about it has been said; `Done` waits for you to merge it.
+**The platform never merges your pull request by default.** That is the last human checkpoint and
+it stays one for any task that has not deliberately opted out of it. `Delivered` means the work is
+on a pull request and every automated thing that could be said about it has been said; `Done`
+waits for you to merge it — unless the task was published, or later set, pre-approved (see
+"Pre-approved merge" above), in which case the daemon is the one waiting on GitHub's own gates
+instead, and merges the moment they read satisfied.
 
 **No bot identity.** Agents act as the node owner's git and `gh` identity, and the work is
 authored by the human. No `hall9k-agent[bot]`, no `Co-Authored-By` trailers, no

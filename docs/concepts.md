@@ -430,9 +430,19 @@ progress-cap park) or the full lap history (a lifetime-ceiling park) so the huma
 machine already tried. A manual resolve resets both counters, because a human asking for another
 attempt is a fresh grant.
 
-**The platform never merges.** That is the last human checkpoint and it stays one.
+**The platform never merges — unless a task opts in.** That is the last human checkpoint by
+default, and it stays one, with one deliberate exception: a task published or later set
+`h9k task publish --pre-approved` / `h9k task set-pre-approved <id> on` removes the owner as a
+synchronous gate at its own pull request. For that task alone, once every obstruction above has
+already had its say — no conflict, no pending or failing check, no unresolved thread, no errored
+review — the daemon reads GitHub's own review decision, outstanding requested reviewers (Copilot
+handled on its own bounded settle window), and thread resolution, and rebase-merges the moment
+every one of them reads satisfied, with no agent session in the loop. A required human approval or
+an outstanding reviewer is a visible, self-resuming wait, never a park; every other human waypoint
+(Failed, a review park, a cap trip) still stops it exactly as it would an unflagged task. Nothing
+about this changes the merge's own meaning: it is still the platform's one true-closeout moment.
 
-Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62, #80, #81.
+Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62, #80, #81, #135.
 
 ## Owners, nodes, and connections
 
