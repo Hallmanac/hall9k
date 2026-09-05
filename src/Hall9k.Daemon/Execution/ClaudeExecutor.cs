@@ -130,6 +130,11 @@ public sealed class ClaudeExecutor(
 
         yield return $"--settings \"{SettingsFile(request, runDirectory)}\"";
 
+        if (request.MaxTurns is { } maxTurns)
+        {
+            yield return $"--max-turns {maxTurns}";
+        }
+
         if (request.Mode.UsesBareFlag)
         {
             yield return "--bare";

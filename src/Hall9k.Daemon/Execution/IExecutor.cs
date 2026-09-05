@@ -26,6 +26,13 @@ namespace Hall9k.Daemon.Execution;
 /// checkout would otherwise run or load under the owner's credentials the moment the run
 /// spawns, before the prompt's own read-only instructions are ever read.
 /// <see cref="ClaudeExecutor"/> reads this to keep the child from loading any of them.
+/// MaxTurns, when set, passes <c>claude -p</c>'s own <c>--max-turns</c> bound (task: when a
+/// session ends with finished work uncommitted, the daemon recovers on its own) — a hard,
+/// mechanically-enforced cap for a session that must stay cheap and narrow BY CONSTRUCTION, not
+/// by a prompt's own promise to be quick. Null for every ordinary dispatch, which keeps the
+/// platform's usual unbounded-turns session exactly as it always was; the one caller that sets
+/// it (the uncommitted-files pre-gate recovery) is the one session on this whole seam whose job
+/// is narrow enough that a small, fixed turn count is actually the right shape for it.
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
@@ -38,7 +45,8 @@ public sealed record AgentSpawnRequest(
     bool SkipPermissions,
     string? SessionArtifactName = null,
     Guid? ResumeSessionId = null,
-    bool UntrustedWorkingDirectory = false)
+    bool UntrustedWorkingDirectory = false,
+    int? MaxTurns = null)
 {
     /// <summary>
     /// Environment variables layered onto the owner's environment for this session only.
