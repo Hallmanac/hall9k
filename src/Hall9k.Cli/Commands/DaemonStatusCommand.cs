@@ -16,16 +16,25 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
-        DaemonProcessDescriptor? running = DaemonProcess.Probe();
-        if (running is null)
+        DaemonBootStatus bootStatus = DaemonProcess.ProbeBootStatus();
+        switch (bootStatus)
         {
-            AnsiConsole.MarkupLine(
-                "[red]h9kd: not running[/] — tasks queue but do not dispatch; start it with [bold]h9k daemon start[/]");
-        }
-        else
-        {
-            AnsiConsole.MarkupLineInterpolated(
-                $"[green]h9kd: running[/] (pid {running.ProcessId}) — up {Uptime(DateTimeOffset.UtcNow - running.StartedAt)}, started {running.StartedAt:u}");
+            case { State: DaemonBootState.Running, Running: { } running }:
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[green]h9kd: running[/] (pid {running.ProcessId}) — up {Uptime(DateTimeOffset.UtcNow - running.StartedAt)}, started {running.StartedAt:u}");
+                break;
+            case { State: DaemonBootState.Starting }:
+                AnsiConsole.MarkupLine(
+                    "[yellow]h9kd: starting[/] — a launch from moments ago is still booting (assembly "
+                    + "resolution and JIT for the entry point, before it ever reaches its own "
+                    + "single-instance guard, has taken up to ~15s on at least one real machine) and has "
+                    + "not yet been observed to reach that guard; a second h9k daemon start here is refused "
+                    + "rather than risked against it. Check again shortly.");
+                break;
+            default:
+                AnsiConsole.MarkupLine(
+                    "[red]h9kd: not running[/] — tasks queue but do not dispatch; start it with [bold]h9k daemon start[/]");
+                break;
         }
 
         IDaemonAutostart autostart = DaemonAutostart.ForCurrentPlatform();
@@ -42,14 +51,21 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
             AnsiConsole.MarkupLineInterpolated($"[red]{line}[/]");
         }
 
-        string settingsHeader = running is null
-            ? "settings a daemon started now would resolve (h9k config show for the full picture, h9k config set to change one):"
-            : $"settings a daemon started now would resolve, not observed from pid {running.ProcessId} itself — a "
-              + "running daemon binds configuration once, at startup, so none of these origins are guaranteed to "
-              + "match what it actually started with: an (env: …) origin may not match because an autostarted "
-              + "daemon never receives Hall9k__ variables at all, and a (config: …) origin or built-in default may "
-              + "not match either if the file was created, edited, or removed after this daemon started (h9k "
-              + "config show for the full picture, h9k config set to change one):";
+        string settingsHeader = bootStatus switch
+        {
+            { State: DaemonBootState.Running, Running: { } running } =>
+                $"settings a daemon started now would resolve, not observed from pid {running.ProcessId} itself — a "
+                + "running daemon binds configuration once, at startup, so none of these origins are guaranteed to "
+                + "match what it actually started with: an (env: …) origin may not match because an autostarted "
+                + "daemon never receives Hall9k__ variables at all, and a (config: …) origin or built-in default may "
+                + "not match either if the file was created, edited, or removed after this daemon started (h9k "
+                + "config show for the full picture, h9k config set to change one):",
+            { State: DaemonBootState.Starting } =>
+                "settings a daemon started now would resolve — the daemon still booting above will bind its own "
+                + "configuration once, at startup, once it is up (h9k config show for the full picture, h9k config "
+                + "set to change one):",
+            _ => "settings a daemon started now would resolve (h9k config show for the full picture, h9k config set to change one):",
+        };
         AnsiConsole.MarkupLineInterpolated($"[dim]{settingsHeader}[/]");
         foreach ((string label, string value) in OperatingSettingsRendering.Rows(report))
         {
