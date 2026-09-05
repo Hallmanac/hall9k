@@ -505,7 +505,6 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("- You are in this run's own git worktree, checked out on its own in-progress");
         prompt.AppendLine($"  branch `{branch}` — not yet pushed anywhere. Work only here.");
-        AppendRetainedWorktreeNote(prompt);
         prompt.AppendLine("- The worktree is already back at this branch's own tip (an earlier plain rebase");
         prompt.AppendLine("  attempt that conflicted was aborted before you were spawned) — there is no rebase");
         prompt.AppendLine("  already in progress here. If the repo ships a rebase-onto-main skill (or an");
