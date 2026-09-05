@@ -1878,8 +1878,33 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         IDaemonAutostart autostart = DaemonAutostart.ForCurrentPlatform();
         int stopped = await DaemonLifecycle.StopAsync(autostart, cancellationToken);
-        return stopped != ExitCodes.Ok
-            ? stopped
-            : await DaemonLifecycle.StartAsync(autostart, binaryOverride: null, cancellationToken);
+        if (stopped != ExitCodes.Ok)
+        {
+            return stopped;
+        }
+
+        int started = await DaemonLifecycle.StartAsync(autostart, binaryOverride: null, cancellationToken);
+        if (started != ExitCodes.Ok)
+        {
+            return started;
+        }
+
+        // h9k daemon start itself returns 0 both when it confirms the new pid and when
+        // the 20s wait ends with the launch still starting (deliberately: a still-booting
+        // daemon is not a failed one, docs/operations.md's own starting-state paragraph).
+        // That is the right answer for a human running the plain command, but --restart's
+        // own promise is narrower — the daemon is back up on the fresh binaries — so a
+        // caller gating on this command's exit code (h9k install --restart in a script or
+        // CI step) needs the two told apart: an unconfirmed restart is not the success this
+        // command is claiming otherwise.
+        if (DaemonProcess.ProbeBootStatus().State != DaemonBootState.Running)
+        {
+            await Console.Error.WriteLineAsync(
+                "The restart could not be confirmed — h9kd is still starting rather than "
+                + "reporting a live pid. Check h9k daemon status once it settles.");
+            return ExitCodes.Error;
+        }
+
+        return ExitCodes.Ok;
     }
 }
