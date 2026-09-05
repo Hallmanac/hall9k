@@ -88,4 +88,13 @@ public sealed record ProjectSettingsChanged(
     /// idiom. Trailing and optional so every stream written before this feature existed replays
     /// byte-for-byte unchanged.
     /// </summary>
-    Optional<AutoPrReviewSpeed> AutoPrReview = default);
+    Optional<AutoPrReviewSpeed> AutoPrReview = default,
+    /// <summary>
+    /// Whether this change recorded a <c>--verify</c> gate that fails when run once against a
+    /// clean checkout of the base branch anyway (<c>--accept-broken-gate</c>), the same
+    /// acknowledged-override idiom <see cref="ReviewStageCompositionAcknowledged"/> already uses —
+    /// clamped to false by the caller on any change that recorded no such gate, so the stream
+    /// never asserts an unobserved acceptance (independent pre-PR review, cycle 1, conformance
+    /// lens: this override used to leave no durable record at all).
+    /// </summary>
+    bool AcceptedBrokenGate = false);

@@ -149,7 +149,7 @@ public sealed class ProjectSetCommandTests
     {
         (VerifyCommand, GateCheckResult)[] failures =
         [
-            (new VerifyCommand("test", "dotnet test"), new GateCheckResult(false, "2 Failed, 0 Passed")),
+            (new VerifyCommand("test", "dotnet test"), new GateCheckResult(GateCheckOutcome.Failed, "2 Failed, 0 Passed")),
         ];
 
         string message = ProjectSetCommand.BuildCleanBaseRefusal("main", failures);
@@ -166,8 +166,8 @@ public sealed class ProjectSetCommandTests
     {
         (VerifyCommand, GateCheckResult)[] failures =
         [
-            (new VerifyCommand("build", "dotnet build"), new GateCheckResult(false, "error CS0000")),
-            (new VerifyCommand("test", "dotnet test"), new GateCheckResult(false, "MSB4019")),
+            (new VerifyCommand("build", "dotnet build"), new GateCheckResult(GateCheckOutcome.Failed, "error CS0000")),
+            (new VerifyCommand("test", "dotnet test"), new GateCheckResult(GateCheckOutcome.Failed, "MSB4019")),
         ];
 
         string message = ProjectSetCommand.DescribeCleanBaseFailures("main", failures);

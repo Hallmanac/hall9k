@@ -226,6 +226,13 @@ configures with `h9k project set --verify "name=command"`. For this repository t
 output recorded, fails the task with it, and releases the lease. Nothing automatic follows: the
 task is `Failed` and waiting on one of the three human exits.
 
+Each gate is also validated once, at `h9k project set --verify` time, against a clean checkout of
+the project's own base branch — a gate that cannot pass there refuses the whole `project set`
+outright (`--accept-broken-gate` records it anyway, with a loud warning). A run that later fails a
+gate which also fails on clean base says so in the recorded failure reason, rather than reporting
+that same bare failure a second time — the distinction that tells "this gate was never going to
+pass" apart from a real regression in the run's own branch.
+
 Gates are deterministic and cheap to trust, which is why they come first. Everything after them
 is judgment.
 

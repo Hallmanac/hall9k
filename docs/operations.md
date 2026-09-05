@@ -579,6 +579,19 @@ h9k owner set --rerequest-review on
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.
 
+`--verify` does more than record the gates: each one is run once, right there, against a clean
+checkout of the project's own base branch, before it is ever attached to the project. A gate that
+cannot pass there refuses the whole `project set` command, naming the gate, its command, and its
+output — a gate that was never going to pass would otherwise fail every future run the same way a
+real regression does, costing a full agent session and a human diagnosis before anyone notices the
+gate itself, not the agent's work, is what is broken. `--accept-broken-gate` records it anyway,
+with a loud warning printed at the moment: a run that later fails that same gate then says it also
+fails on clean base, rather than reporting a bare gate failure a second time.
+
+```bash
+h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet test" --accept-broken-gate
+```
+
 ## What "needs you" means
 
 The **needs-you** section of `h9k status` is the whole point of the pane. What identifies a row

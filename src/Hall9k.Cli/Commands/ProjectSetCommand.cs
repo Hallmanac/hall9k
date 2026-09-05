@@ -229,6 +229,14 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 "--accept-reduced-review has nothing to acknowledge without --review-stage-composition.");
         }
 
+        // The --accept-reduced-review idiom exactly: an acknowledgment option is refused when
+        // there is nothing for it to acknowledge, rather than silently doing nothing (independent
+        // pre-PR review, cycle 1, both lenses).
+        if (settings.AcceptBrokenGate && settings.Verify.Length == 0)
+        {
+            throw new DomainValidationException("--accept-broken-gate has nothing to acknowledge without --verify.");
+        }
+
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
@@ -277,12 +285,29 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // Each gate is run once against a clean checkout of the base branch here, before it is
         // ever attached to the project, rather than discovered the first time a dispatched run
         // pays for it with a whole agent session (task: a verify gate that cannot pass on clean
-        // main is caught before it costs a run). Validated against `details` — the project's
-        // recorded state before this same command's own --home/--repo changes, if any, land —
-        // since that is the checkout this node can actually reach right now.
+        // main is caught before it costs a run). Validated against the checkout this same
+        // invocation's own --home/--repo change is about to land, when it passes one — not
+        // `details`' own pre-change value, which this invocation may be in the very act of
+        // replacing (independent pre-PR review, cycle 1, adversarial finding: combining --repo
+        // with --verify in one call used to validate against the repository being abandoned,
+        // and could refuse the whole command over a checkout the operator was already leaving).
+        // A narrow stand-in built for exactly the four fields this validation reads — never a
+        // general-purpose clone of `details` — so it carries no staleness risk from a property
+        // this method does not look at.
+        ProjectDetails validationTarget = new()
+        {
+            Id = details.Id,
+            Name = details.Name,
+            BaseBranch = details.BaseBranch,
+            HomeDirectory = homeDirectory is { HasValue: true, Value: { } newHome } ? newHome : details.HomeDirectory,
+            RepositoryPath = repositoryPath is { HasValue: true, Value: { } newRepositoryPath } ? newRepositoryPath : details.RepositoryPath,
+        };
+
+        bool acceptedBrokenGate = false;
         if (verifyCommands is { HasValue: true, Value: { } gatesToValidate })
         {
-            await ValidateGatesAgainstCleanBaseAsync(details, gatesToValidate, settings.AcceptBrokenGate, cancellationToken);
+            acceptedBrokenGate = await ValidateGatesAgainstCleanBaseAsync(
+                validationTarget, gatesToValidate, settings.AcceptBrokenGate, cancellationToken);
         }
 
         ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
@@ -349,7 +374,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             reviewStageCompositionAcknowledged: settings.AcceptReducedReview,
             autoPrReview: settings.AutoPrReview is { } autoPrReview
                 ? Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Parse(autoPrReview))
-                : Optional<AutoPrReviewSpeed>.None);
+                : Optional<AutoPrReviewSpeed>.None,
+            acceptedBrokenGate: acceptedBrokenGate);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);
@@ -465,17 +491,32 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     /// <summary>
     /// Runs every gate about to be recorded once against a clean checkout of the project's own
     /// base branch, and refuses (or, with <paramref name="acceptBrokenGate"/>, warns loudly and
-    /// proceeds) when one of them cannot pass there — the whole point being that the discovery
-    /// happens here, once, rather than on the first dispatched run that pays for it with a full
-    /// agent session (Windows field report item 11b's own origin incident).
+    /// proceeds) when one of them is actually observed to fail there — the whole point being that
+    /// the discovery happens here, once, rather than on the first dispatched run that pays for it
+    /// with a full agent session (Windows field report item 11b's own origin incident). Returns
+    /// whether a broken gate was in fact recorded under <paramref name="acceptBrokenGate"/>, so the
+    /// caller can record that acceptance as an observed fact rather than the bare flag the operator
+    /// passed (independent pre-PR review, cycle 1, conformance lens: <c>--accept-broken-gate</c>
+    /// used to leave no durable record of what it actually accepted).
     /// <para>
     /// A project with no reachable working checkout yet (no home, or a home whose repo/dev has
     /// never been materialised) cannot be validated at all — that is an honest gap, not a guess,
     /// so it is reported and the gate is still recorded rather than refused for a reason that has
-    /// nothing to do with the gate itself.
+    /// nothing to do with the gate itself. A checkout that IS reachable but cannot be confirmed
+    /// clean and on the base branch (an ordinary clone nobody is fast-forwarding, or a shared
+    /// repo/dev the operator is mid-edit in) is validated anyway, with the same loud warning —
+    /// never silently, and never refused for a reason that may just be the checkout's own local
+    /// state rather than the gate (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
+    /// <para>
+    /// A gate whose own attempt is <see cref="GateCheckOutcome.Inconclusive"/> — it could not even
+    /// start, or overran its timeout — never counts as a failure: that would be recording an
+    /// unobserved verdict as an observed one, the identical mistake this whole check exists to
+    /// stop the platform from making about a run's own gate (independent pre-PR review, cycle 1,
+    /// adversarial lens, high).
     /// </para>
     /// </summary>
-    private static async Task ValidateGatesAgainstCleanBaseAsync(
+    private static async Task<bool> ValidateGatesAgainstCleanBaseAsync(
         ProjectDetails project, IReadOnlyList<VerifyCommand> gates, bool acceptBrokenGate, CancellationToken cancellationToken)
     {
         string checkout = ProjectCheckout.ForReading(project);
@@ -487,8 +528,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + $"'{project.BaseBranch.EscapeMarkup()}' is unobserved rather than confirmed — recorded "
                 + $"anyway. h9k project init {project.Name.EscapeMarkup()} creates the checkout this "
                 + "validates against next time.[/]");
-            return;
+            return false;
         }
+
+        GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
 
         // Only repo/dev is the platform's own to move (ProjectCheckout.IsHomeDevWorktree's own doc
         // comment): a project registered before homes existed points at somebody's ordinary clone,
@@ -496,7 +539,6 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // they never asked for. That clone is validated against whatever it currently holds instead.
         if (ProjectCheckout.IsHomeDevWorktree(project, checkout))
         {
-            GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
             CheckoutRefresh refresh = await worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken);
             if (!refresh.UpToDate)
             {
@@ -506,22 +548,65 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             }
         }
 
+        // UpToDate only says the checkout's commits match origin/<branch> — it says nothing about
+        // uncommitted modifications, untracked files, or (for an ordinary clone, which the branch
+        // above never even asks) a checkout sitting on some other branch entirely. Checked
+        // regardless of whether this is the home's own repo/dev, since an ordinary clone got no
+        // confirmation at all before this (independent pre-PR review, cycle 1, both lenses).
+        string? uncleanNote = await CheckoutCleanliness.DescribeNotConfirmedCleanAsync(checkout, project.BaseBranch, cancellationToken);
+        if (uncleanNote is not null)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]{checkout.EscapeMarkup()} {uncleanNote.EscapeMarkup()} — validating against whatever "
+                + $"it currently holds, so a failure below may reflect the checkout's own local state rather "
+                + $"than a clean '{project.BaseBranch.EscapeMarkup()}'.[/]");
+        }
+
+        // Never asserted unconditionally: the warning just above already said plainly when this
+        // checkout could not be confirmed clean, and restating "a clean checkout" here regardless
+        // would contradict it (independent pre-PR review, cycle 2, adversarial lens — Copilot).
+        string checkoutDescription = uncleanNote is null
+            ? $"a clean checkout of '{project.BaseBranch.EscapeMarkup()}'"
+            : $"'{checkout.EscapeMarkup()}', not confirmed clean";
+
         List<(VerifyCommand Gate, GateCheckResult Result)> failures = [];
+
+        // Serializes this checkout's gate spawn against every other caller that can run a command
+        // in the very same directory at the same time — the daemon's own post-failure comparison
+        // (VerificationRunner.DescribeCleanBaseComparisonAsync) and h9k task verify's, both of
+        // which can share this exact repo/dev checkout, plus a second concurrent `project set
+        // --verify` (independent pre-PR review, cycle 1, both lenses: two dotnet build/test
+        // invocations sharing one obj/bin used to fail each other, and the loser's exit code was
+        // then recorded as the gate itself being broken). Acquired only around the gate spawns
+        // below, never around the refresh above — RefreshReadingCheckoutAsync takes this exact
+        // lock internally and releases it before returning, so holding it here too would either
+        // deadlock (same in-process semaphore) or hang (the cross-process file lock is not
+        // reentrant within one process).
+        await using IAsyncDisposable gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, cancellationToken);
         foreach (VerifyCommand gate in gates)
         {
-            AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Validating gate '{gate.Name}' against a clean checkout of '{project.BaseBranch}'...[/]");
+            AnsiConsole.MarkupLine($"[dim]Validating gate '{gate.Name.EscapeMarkup()}' against {checkoutDescription}...[/]");
             GateCheckResult result = await AdHocGateRunner.RunAsync(
                 checkout, gate.Command, AdHocGateRunner.DefaultTimeout, cancellationToken);
-            if (!result.Passed)
+            switch (result.Outcome)
             {
-                failures.Add((gate, result));
+                case GateCheckOutcome.Failed:
+                    failures.Add((gate, result));
+                    break;
+                case GateCheckOutcome.Inconclusive:
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Could not confirm whether gate '{gate.Name.EscapeMarkup()}' passes against a "
+                        + $"clean checkout of '{project.BaseBranch.EscapeMarkup()}': {result.OutputTail.EscapeMarkup()} "
+                        + "— recording it without this validation.[/]");
+                    break;
+                case GateCheckOutcome.Passed:
+                    break;
             }
         }
 
         if (failures.Count == 0)
         {
-            return;
+            return false;
         }
 
         if (!acceptBrokenGate)
@@ -534,6 +619,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + $"'{project.BaseBranch.EscapeMarkup()}' anyway — a run that later fails one of these will "
             + "say it also fails on clean base, rather than reporting a bare gate failure:[/]");
         AnsiConsole.MarkupLine($"[yellow]{DescribeCleanBaseFailures(project.BaseBranch, failures).EscapeMarkup()}[/]");
+        return true;
     }
 
     /// <summary>
