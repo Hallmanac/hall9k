@@ -128,6 +128,25 @@ public sealed class TaskAggregate
     /// </summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
 
+    /// <summary>
+    /// A recorded, task-level fact (task: interactive mode becomes a recorded property of the
+    /// task, design ruling R2 — "interactive mode is a property of the task, not of the claim")
+    /// distinct from <see cref="IsInteractiveClaim"/>: that reads true only while the CURRENT
+    /// claim carries the sentinel node id, and reverts on any give-back including
+    /// <see cref="Apply(TaskRequeued)"/>/<see cref="Apply(TaskRetried)"/>/<see cref="Apply(TaskReopened)"/>;
+    /// this stays true across every one of those, surviving exactly as long as the human who
+    /// turned it on has not explicitly turned it off. Set true by <see cref="Apply(TaskClaimed)"/>
+    /// whenever <see cref="TaskClaimed.InteractiveMode"/> says so (h9k task work's claim always
+    /// does; h9k task start's does only when the human asked for it) and never unset by any other
+    /// claim — a plain node claim or an ordinary reclaim carries the flag false and leaves this
+    /// alone rather than clearing it. The one clearing act is <see cref="Apply(TaskHandedBack)"/>
+    /// (h9k task handback): the genuine exit door back to the fire-and-forget pipeline. Delivering
+    /// (h9k task deliver) never touches this field at all — that command appends no
+    /// <see cref="TaskAggregate"/> event of its own — which is exactly what lets a delivered run's
+    /// review/fix/re-review/pull-request boundaries keep parking for the human under this flag.
+    /// </summary>
+    public bool InteractiveModeEnabled { get; private set; }
+
     public Guid? CurrentRunId { get; private set; }
     public Guid? PendingQuestionId { get; private set; }
     public string? PullRequestUrl { get; private set; }
@@ -553,6 +572,11 @@ public sealed class TaskAggregate
             _acknowledgedUnmetDependencyIds.Clear();
             _acknowledgedUnmetDependencyIds.AddRange(_unmetDependencies);
         }
+
+        if (@event.InteractiveMode)
+        {
+            InteractiveModeEnabled = true;
+        }
     }
 
     public void Apply(TaskRequeued @event)
@@ -684,6 +708,10 @@ public sealed class TaskAggregate
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
+        // The one explicit human act that clears interactive mode (design ruling R9): the task
+        // goes back to the machine, headless from here, and every later boundary this run's
+        // engines own goes back to advancing on its own.
+        InteractiveModeEnabled = false;
         // Same invariant Apply(TaskRequeued) restores: a handback out of a deliberately-claimed
         // Blocked task must not resurface as Queued while a dependency is still on record unmet.
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;

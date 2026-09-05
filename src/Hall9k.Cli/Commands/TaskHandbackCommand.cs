@@ -272,8 +272,12 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
 
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Task {taskId} handed back — dispatching immediately (--now).[/]");
+            // interactiveMode: false — this handback just cleared interactive mode
+            // (TaskDecider.HandBack, design ruling R9); --now redispatches the task straight back
+            // to the machine, not straight back into the human's own arbitration.
             return await TaskStartCommand.RunDeliberateStartAsync(
-                store, session, nowTask, nowFence, context, acknowledgeUnmetDependencies: false, cancellationToken);
+                store, session, nowTask, nowFence, context, acknowledgeUnmetDependencies: false,
+                interactiveMode: false, cancellationToken);
         }
 
         // TaskAggregate.Apply(TaskHandedBack) clears the claim but never touches

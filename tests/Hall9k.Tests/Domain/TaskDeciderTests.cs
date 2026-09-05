@@ -644,6 +644,23 @@ public sealed class TaskDeciderTests
         task.ClaimedByNodeId.Should().Be(Guid.Empty);
     }
 
+    /// <summary>
+    /// Task: interactive mode becomes a recorded property of the task, design ruling R2 — every
+    /// h9k task work claim is the human's own hands-on-the-wheel act, so ClaimInteractively always
+    /// turns TaskAggregate.InteractiveModeEnabled on, with no parameter to opt out.
+    /// </summary>
+    [Fact]
+    public void ClaimInteractively_always_enables_interactive_mode()
+    {
+        TaskAggregate task = QueuedTask();
+
+        TaskClaimed claimed = TaskDecider.ClaimInteractively(task, Owner, DomainId.New(), Now);
+
+        claimed.InteractiveMode.Should().BeTrue();
+        task.Apply(claimed);
+        task.InteractiveModeEnabled.Should().BeTrue();
+    }
+
     [Fact]
     public void ClaimInteractively_of_a_task_assigned_to_a_different_owner_conflicts()
     {
@@ -681,6 +698,27 @@ public sealed class TaskDeciderTests
         task.Apply(claimed);
         task.State.Should().Be(TaskState.Claimed);
         task.IsInteractiveClaim.Should().BeTrue("the same ceiling-exempt sentinel an operator's own claim uses");
+        task.InteractiveModeEnabled.Should().BeFalse(
+            "interactiveMode defaults false — AutoPrReviewEngine's own automated claim on this method never asked for it");
+    }
+
+    /// <summary>
+    /// Unlike ClaimInteractively, ClaimDeliberately has two callers with opposite answers to "is
+    /// this the human's own act": h9k task start (interactiveMode: true) and AutoPrReviewEngine's
+    /// automated "now"-speed claim (the default, false). Both remain the sentinel Guid.Empty
+    /// ceiling-exempt claim either way — only InteractiveModeEnabled differs.
+    /// </summary>
+    [Fact]
+    public void ClaimDeliberately_enables_interactive_mode_only_when_the_caller_asks_for_it()
+    {
+        TaskAggregate task = QueuedTask();
+
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, Owner, DomainId.New(), Now, dependencyOverrideAcknowledged: false, interactiveMode: true);
+
+        claimed.InteractiveMode.Should().BeTrue();
+        task.Apply(claimed);
+        task.InteractiveModeEnabled.Should().BeTrue();
     }
 
     [Fact]
@@ -796,6 +834,42 @@ public sealed class TaskDeciderTests
 
         task.State.Should().Be(TaskState.Blocked, "the open dependency is still on record unmet");
         task.UnmetDependencies.Should().ContainSingle().Which.Should().Be(blockerId);
+    }
+
+    /// <summary>
+    /// Task: interactive mode becomes a recorded property of the task, design ruling R9 —
+    /// handback is the one explicit human act that clears interactive mode: the task goes back to
+    /// the machine, headless from here.
+    /// </summary>
+    [Fact]
+    public void HandBack_clears_interactive_mode()
+    {
+        TaskAggregate task = QueuedTask();
+        Guid runId = DomainId.New();
+        task.Apply(TaskDecider.ClaimInteractively(task, Owner, runId, Now));
+        task.InteractiveModeEnabled.Should().BeTrue();
+
+        task.Apply(TaskDecider.HandBack(task, runId, "task/x", null, Now, Owner));
+
+        task.InteractiveModeEnabled.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The AC's own wording ("clearable only by an explicit human act — handback clears it")
+    /// implies every OTHER give-back leaves it alone: an ordinary requeue (h9k task release) is
+    /// not a handback and must not silently end interactive mode out from under the human who
+    /// turned it on.
+    /// </summary>
+    [Fact]
+    public void Requeue_does_not_clear_interactive_mode()
+    {
+        TaskAggregate task = QueuedTask();
+        Guid runId = DomainId.New();
+        task.Apply(TaskDecider.ClaimInteractively(task, Owner, runId, Now));
+
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.HumanRequested, Now));
+
+        task.InteractiveModeEnabled.Should().BeTrue();
     }
 
     /// <summary>Same invariant as the requeue case above, reached through h9k task handback instead.</summary>
