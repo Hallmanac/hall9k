@@ -149,8 +149,15 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
             return await ResolvePrReviewAsync(session, runId, taskId, fence, settings, cancellationToken);
         }
 
+        // !run.ParkedIsInteractiveGate excludes interactive mode's own routine boundary park
+        // (task: interactive mode becomes a recorded property of the task): a rebase follow-up
+        // that rebased cleanly, passed its gates, and parked at the "build done to review"
+        // boundary also carries FollowUpKind.Rebase with ReviewCycle == 0, but nothing there is
+        // disputed — without the exclusion this refused a --merge-ready that should have proceeded
+        // straight to the pull request, with a message describing a conflict that does not exist
+        // (independent pre-PR review, cycle 1, both lenses).
         if (settings.MergeReady && task.FollowUpKind == FollowUpKind.Rebase
-            && run.ReviewCycle == 0)
+            && run.ReviewCycle == 0 && !run.ParkedIsInteractiveGate)
         {
             throw new DomainConflictException(
                 $"Task {taskId} is parked on a disputed rebase conflict — merge-ready has no meaning " +
@@ -211,8 +218,15 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         // dispute that the aggregate actually settles straight to the pull request. That
         // mismatch between the aggregate's two conditions is a real, recorded gap (backlog 64);
         // until it's fixed, the honest message is the one that matches what
-        // Apply(ReviewParkResolved) will actually do.
-        FormattableString outcome = (settings.MergeReady, run.ParkedFromState == RunState.Verifying) switch
+        // Apply(ReviewParkResolved) will actually do. !run.ParkedIsInteractiveGate is the same
+        // exclusion Apply(ReviewParkResolved) itself now applies (task: interactive mode becomes
+        // a recorded property of the task): an interactive-gate park also carries ParkedFromState
+        // == Verifying, but nothing is disputed there, so the aggregate settles it straight to the
+        // pull request rather than re-entering at the gates — this message has to agree, or it
+        // would describe an extra gate-and-review round that never actually runs (independent
+        // pre-PR review, cycle 1, class sweep of the ParkedFromState-without-ParkedIsInteractiveGate
+        // shape both lenses found at RunAggregate.Apply(ReviewParkResolved)).
+        FormattableString outcome = (settings.MergeReady, run.ParkedFromState == RunState.Verifying && !run.ParkedIsInteractiveGate) switch
         {
             (true, true) =>
                 $"[dim]Run {runId} resolved merge-ready — the daemon re-enters the pipeline at the gates, then review; the pull request opens if both pass.[/]",

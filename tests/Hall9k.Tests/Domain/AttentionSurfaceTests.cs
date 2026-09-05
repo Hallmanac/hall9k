@@ -75,6 +75,32 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void An_interactive_gate_park_on_a_rebase_follow_up_still_advises_merge_ready()
+    {
+        // The interactive-gate discriminator (ParkedIsInteractiveGate) is set only by interactive
+        // mode's own routine boundary park, never by a genuine thread/rebase dispute (task:
+        // interactive mode becomes a recorded property of the task) — so it is never really the
+        // rebase-dispute park the FollowUpKind.Rebase && ReviewCycle == 0 shape otherwise matches.
+        // ReviewResolveCommand now excludes an interactive-gate park from that refusal, so the pane
+        // must not withhold --merge-ready here the way it rightly does for a genuine dispute above
+        // (independent pre-PR review, cycle 1, both lenses).
+        Guid runId = DomainId.New();
+        RunDetails parked = StatusFixtures.Run(runId, RunState.ReviewParked, sessionProcessId: null);
+        parked.ParkedReason = "Interactive mode is on for this task: the verification gates just " +
+            "passed and cycle 1's review is ready to dispatch.";
+        parked.ReviewCycle = 0;
+        parked.ParkedIsInteractiveGate = true;
+
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, runId);
+        task.FollowUpKind = FollowUpKind.Rebase;
+
+        TaskStatusRow row = StatusFixtures.Compose(task, parked);
+
+        row.Attention.Lever.Should().StartWith("h9k review proceed");
+        row.Attention.Lever.Should().Contain("--merge-ready");
+    }
+
+    [Fact]
     public void A_pr_review_tasks_park_never_advises_the_needs_fixes_form_the_platform_refuses()
     {
         // Mirrors ReviewResolveCommand's own refusal guard for a pr-review task: it reviews

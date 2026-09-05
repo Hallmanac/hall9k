@@ -919,7 +919,14 @@ public sealed class RunAggregate
     public void Apply(ReviewBoundaryApproved @event)
     {
         ReviewPhase = ParkedFromReviewPhase;
-        State = ParkedFromState;
+        // UnderReview, not ParkedFromState, matching RunDetailsProjection.Apply(ReviewBoundaryApproved)
+        // and every other resume-the-loop transition below (ReviewParkResolved, ReviewFixDispatched):
+        // the resume sweep's own discriminator (RunSupervisor.ResumePipeline) reads UnderReview as
+        // "just review, the gates already ran" versus Verifying's "verify then review" — the "build
+        // done to review" boundary parks at ParkedFromState == Verifying with its gates already
+        // passed, so restoring that literal state here would wrongly re-verify on resume (independent
+        // pre-PR review, cycle 1, conformance lens).
+        State = RunState.UnderReview;
         InteractiveGateCleared = true;
         ParkedIsInteractiveGate = false;
         ParkedNeedsFixesOffersNoProgress = false;
@@ -927,7 +934,7 @@ public sealed class RunAggregate
 
     public void Apply(ReviewParkResolved @event)
     {
-        if (@event.Verdict == ReviewVerdict.MergeReady && ParkedFromState == RunState.Verifying)
+        if (@event.Verdict == ReviewVerdict.MergeReady && ParkedFromState == RunState.Verifying && !ParkedIsInteractiveGate)
         {
             // A thread-dispute park caught this run before the gates (log #62). The human
             // decided the disputed thread, not the diff: no gate has run over these commits
@@ -935,6 +942,13 @@ public sealed class RunAggregate
             // interrupted it — Reverify runs the gates, then a review cycle — instead of
             // reporting merge-ready to PullRequestOpener on a verdict nobody gave.
             // LastReviewVerdict stays untouched for the same reason: nothing reviewed this.
+            // !ParkedIsInteractiveGate excludes interactive mode's own "build done to review"
+            // boundary (task: interactive mode becomes a recorded property of the task), which
+            // parks at this identical ParkedFromState — Verifying, its gates already having
+            // passed — for an unrelated reason (a routine boundary, not a dispute): without the
+            // exclusion, a --merge-ready resolve there was misread as settling a dispute nobody
+            // raised, re-running the gates and a whole review cycle instead of proceeding straight
+            // to the pull request (independent pre-PR review, cycle 1, both lenses).
             ReviewPhase = ReviewPhase.Reverify;
         }
         else if (@event.Verdict == ReviewVerdict.MergeReady)

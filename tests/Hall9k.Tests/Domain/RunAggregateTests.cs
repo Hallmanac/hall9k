@@ -966,6 +966,75 @@ public sealed class RunAggregateTests
             ReviewVerdict.Unknown, "no reviewer read this diff — recording a verdict would invent one");
     }
 
+    /// <summary>
+    /// Interactive mode's own "build done to review" boundary (task: interactive mode becomes a
+    /// recorded property of the task) parks with <c>ParkedFromState</c> also <c>Verifying</c> —
+    /// its gates already passed, unlike the thread-dispute park above, which is caught BEFORE the
+    /// gates. The two parks are otherwise indistinguishable by <c>ParkedFromState</c> alone, so a
+    /// merge-ready resolve here must not be misread as settling a dispute nobody raised
+    /// (independent pre-PR review, cycle 1, both lenses): it should settle straight through to the
+    /// pull request, the same as every other interactive boundary's merge-ready resolve does.
+    /// </summary>
+    [Fact]
+    public void Merge_ready_on_an_interactive_gate_park_from_verifying_settles_rather_than_reverifying()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 5001, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new ReviewParked(
+            id, "Interactive mode is on for this task: the verification gates just passed and cycle 1's " +
+                "review is ready to dispatch.",
+            Now, IsInteractiveGate: true));
+        run.ParkedFromState.Should().Be(
+            RunState.Verifying, "the gates already passed before this boundary parks — same ParkedFromState " +
+            "value a genuine thread-dispute park also carries");
+
+        run.Apply(new ReviewParkResolved(id, ReviewVerdict.MergeReady, "Looks fine, skip review.", Now, DomainId.New()));
+
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.Settling, "an interactive-gate park is never a dispute — nothing to re-gate or re-review");
+        run.State.Should().Be(RunState.UnderReview);
+        run.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady);
+        run.HumanEndedTheLoop.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Complements <see cref="Review_boundary_approved_restores_the_exact_phase_and_state_the_park_interrupted"/>,
+    /// which exercises the FixNeeded boundary where <c>ParkedFromState</c> and the restored state
+    /// happen to agree (both UnderReview). The "build done to review" boundary parks from
+    /// <c>Verifying</c> with its gates already run, so restoring that literal state on approval
+    /// would tell the daemon's resume sweep (<c>RunSupervisor.ResumePipeline</c>, keyed on
+    /// <c>RunState.Verifying</c> vs <c>UnderReview</c>) to re-verify a tip already proven green
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public void Review_boundary_approved_from_a_verifying_park_resumes_at_under_review_not_verifying()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 5001, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new ReviewParked(
+            id, "Interactive mode is on for this task: the verification gates just passed and cycle 1's " +
+                "review is ready to dispatch.",
+            Now, IsInteractiveGate: true));
+        run.ParkedFromState.Should().Be(RunState.Verifying);
+
+        run.Apply(new ReviewBoundaryApproved(id, Now, DomainId.New()));
+
+        run.ReviewPhase.Should().Be(ReviewPhase.None, "restored exactly where the park interrupted the loop");
+        run.State.Should().Be(
+            RunState.UnderReview, "not ParkedFromState's Verifying — the gates already ran; re-verifying would " +
+            "duplicate a gate that already passed");
+    }
+
     [Fact]
     public void Review_park_resolved_needs_fixes_regrants_the_cycle_caps_and_carries_the_human_findings()
     {
