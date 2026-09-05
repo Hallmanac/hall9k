@@ -283,6 +283,25 @@ public static class DaemonLifecycle
         DaemonProcessDescriptor? running = DaemonProcess.Probe();
         if (running is null)
         {
+            if (File.Exists(DaemonRuntime.StartingMarkerFile))
+            {
+                // A human explicitly asking to stop has already made the call this
+                // command cannot make on its own — whether the spawn the marker
+                // describes is still genuinely booting or already died before ever
+                // writing a pid file — so the marker is cleared here rather than left
+                // to lock h9k daemon start out as "already starting" for the rest of
+                // its 60s grace period (pre-PR review, cycle 1; Brian's ruling
+                // 2026-09-05: the operator-lockout slice of the disputed finding is
+                // real and gets this narrow fix; the boot-vs-dead detection and the
+                // age-out themselves are unchanged — this is an escape hatch only).
+                DaemonStartingMarker.Delete(DaemonRuntime.StartingMarkerFile);
+                AnsiConsole.MarkupLine(
+                    "[dim]h9kd is not running — cleared a starting marker with no pid file behind it "
+                    + "(the spawn it recorded never confirmed, whether still booting or already dead). "
+                    + "h9k daemon start will no longer refuse it as still starting.[/]");
+                return ExitCodes.Ok;
+            }
+
             AnsiConsole.MarkupLine("[dim]h9kd is not running — nothing to stop.[/]");
             return ExitCodes.Ok;
         }
