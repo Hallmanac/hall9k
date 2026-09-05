@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Microsoft.Extensions.Logging;
@@ -721,6 +722,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        NonInteractiveGit.Apply(process.StartInfo);
         process.Start();
 
         Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);

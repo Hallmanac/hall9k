@@ -1,5 +1,6 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
+using Hall9k.Connectors.Processes;
 using System.Text.RegularExpressions;
 using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.Worktrees;
@@ -453,6 +454,7 @@ public sealed partial class VerificationRunner(
             WorkingDirectory = worktreePath,
             UseShellExecute = false,
         };
+        NonInteractiveGit.Apply(process.StartInfo);
         // Harmless for a gate that never touches CrossProcessContainerGate: nothing reads this
         // variable unless a dotnet-test-shaped gate's own PostgresFixture instances call
         // CrossProcessContainerGate.AcquireAsync, so it costs nothing to set it unconditionally
@@ -672,6 +674,7 @@ public sealed partial class VerificationRunner(
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
+        NonInteractiveGit.Apply(process.StartInfo);
         foreach (string argument in arguments)
         {
             process.StartInfo.ArgumentList.Add(argument);

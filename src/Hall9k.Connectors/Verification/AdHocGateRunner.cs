@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Storage;
 
 namespace Hall9k.Connectors.Verification;
@@ -79,6 +80,7 @@ public static class AdHocGateRunner
             WorkingDirectory = workingDirectory,
             UseShellExecute = false,
         };
+        NonInteractiveGit.Apply(process.StartInfo);
 
         if (OperatingSystem.IsWindows())
         {

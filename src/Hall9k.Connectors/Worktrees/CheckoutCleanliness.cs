@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using Hall9k.Connectors.Processes;
 
 namespace Hall9k.Connectors.Worktrees;
 
@@ -94,6 +95,7 @@ public static class CheckoutCleanliness
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
+        NonInteractiveGit.Apply(process.StartInfo);
         foreach (string argument in arguments)
         {
             process.StartInfo.ArgumentList.Add(argument);

@@ -113,6 +113,7 @@ public static class ExternalProcess
             startInfo.ArgumentList.Add(argument);
         }
 
+        NonInteractiveGit.Apply(startInfo);
         return startInfo;
     }
 

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using Hall9k.Connectors.Processes;
 using System.Text;
 using System.Text.RegularExpressions;
 using Hall9k.Cli.Infrastructure;
@@ -400,6 +401,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+        NonInteractiveGit.Apply(process.StartInfo);
 
         // Where CrossProcessContainerGate.AcquireAsync leaves durable evidence that a
         // dotnet-test-shaped gate was still queued on the machine-wide container gate at the
