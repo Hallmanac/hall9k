@@ -34,7 +34,9 @@ public static class WorkPromptBuilder
         bool isHandback = false,
         bool isDeliberateHeadlessStart = false,
         bool requiresSelfRegistration = false,
-        string? interactiveMilestoneAddress = null)
+        string? interactiveMilestoneAddress = null,
+        bool isDelegatedContractor = false,
+        string? delegationNote = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -42,7 +44,11 @@ public static class WorkPromptBuilder
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
-        if (resumesPreviousWork && isHandback)
+        if (isDelegatedContractor)
+        {
+            AppendDelegatedContractorSection(prompt, resumesPreviousWork, delegationNote);
+        }
+        else if (resumesPreviousWork && isHandback)
         {
             // Unlike the causeless branch below, this one is not a guess: TaskDetails.ResumesFromHandback
             // is set only from TaskHandedBack, so this run is dispatching because a human's own
@@ -253,6 +259,63 @@ public static class WorkPromptBuilder
         }
 
         return prompt.ToString();
+    }
+
+    /// <summary>
+    /// <c>h9k task delegate</c>'s own framing (design ruling R6, idea fcaded0b's design rulings,
+    /// Take the Wheel epic 9272e514's slice 10): distinct from both branches above on purpose.
+    /// Unlike a handback, this is not a permanent hand-off — the operator stays the arbiter and
+    /// reads the contractor's report before deciding anything, including re-entering this very
+    /// worktree with <c>h9k task work</c> to finish by hand. Unlike the causeless "a previous
+    /// attempt worked here first" branch, this always has a real, current author to name: the
+    /// operator holding this task interactively right now. <paramref name="delegationNote"/> is
+    /// their own handoff in the blocker-handoff mold (what was attempted, what is deliberate
+    /// versus abandoned, what latitude is granted) — trusted instruction from the task's own
+    /// arbiter, not foreign text needing the data-only boundary <see cref="AppendBlockerContextRule"/>
+    /// gives an adopted issue's own words, so it is quoted verbatim with nothing hedging it.
+    /// <para>
+    /// The conservative default (design ruling R6's own closing line: "the prompt's default for
+    /// inherited work stays conservative") is stated unconditionally, whether or not the branch is
+    /// virgin: a contractor dispatched onto a clean worktree still needs to hear it, since a
+    /// second delegation on the same claim can follow the first one's own commits.
+    /// </para>
+    /// </summary>
+    private static void AppendDelegatedContractorSection(StringBuilder prompt, bool resumesPreviousWork, string? delegationNote)
+    {
+        prompt.AppendLine("## A human delegated this phase to you");
+        prompt.AppendLine();
+        prompt.AppendLine("An operator holds this task interactively (`h9k task work`) and dispatched you as a");
+        prompt.AppendLine("contractor to build this one phase while they stay the arbiter — `h9k task delegate`,");
+        prompt.AppendLine("not a handback. The task remains theirs, still in interactive mode: once you finish");
+        prompt.AppendLine("and report back, they decide what happens next, including re-entering this very");
+        prompt.AppendLine("worktree themselves with `h9k task work` to continue by hand.");
+        prompt.AppendLine();
+        if (resumesPreviousWork)
+        {
+            prompt.AppendLine("This worktree already holds work on this branch — committed, uncommitted, or");
+            prompt.AppendLine("both, and some of it may be the operator's own rather than an earlier contractor's.");
+            prompt.AppendLine("Before writing anything, review what is there (`git status`, `git log`, `git diff`).");
+        }
+        else
+        {
+            prompt.AppendLine("Nothing has been committed on this branch yet — you are starting from a clean");
+            prompt.AppendLine("worktree.");
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine("**Respect what is already here by default.** Treat existing work as deliberate, not");
+        prompt.AppendLine("a mistake to clean up, unless the note below says so explicitly. Discarding or");
+        prompt.AppendLine("rewriting inherited work is latitude the operator grants in their own words below —");
+        prompt.AppendLine("never something you infer on your own because starting over looked simpler.");
+        prompt.AppendLine();
+        prompt.AppendLine("Their handoff note, verbatim:");
+        prompt.AppendLine();
+        foreach (string line in (delegationNote ?? string.Empty).Split('\n'))
+        {
+            prompt.AppendLine($"> {line.TrimEnd('\r')}");
+        }
+
+        prompt.AppendLine();
     }
 
     /// <summary>

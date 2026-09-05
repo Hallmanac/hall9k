@@ -232,6 +232,96 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().NotContain("dotnet test");
     }
 
+    /// <summary>
+    /// h9k task delegate's own framing (design ruling R6, idea fcaded0b's design rulings, Take the
+    /// Wheel epic 9272e514's slice 10): distinct from both the handback branch and the causeless
+    /// "a previous attempt worked here first" branch, since a delegated contractor always has a
+    /// real, current author to name.
+    /// </summary>
+    [Fact]
+    public void A_delegated_contractor_is_told_a_human_dispatched_it_while_staying_the_arbiter()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Drafted the migration.");
+
+        prompt.Should().Contain("A human delegated this phase to you");
+        prompt.Should().Contain("h9k task delegate");
+        prompt.Should().Contain("still in interactive mode");
+        prompt.Should().Contain("h9k task work` to continue by hand");
+        prompt.Should().NotContain("A previous attempt worked here first");
+        prompt.Should().NotContain("A human began this work interactively");
+    }
+
+    [Fact]
+    public void A_delegated_contractors_note_is_quoted_verbatim_in_its_starting_prompt()
+    {
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: false,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true,
+            delegationNote: "Attempted: the retry loop. Deliberate: left the timeout at 30s. Latitude: rewrite tests freely.");
+
+        prompt.Should().Contain("Their handoff note, verbatim:");
+        prompt.Should().Contain("> Attempted: the retry loop. Deliberate: left the timeout at 30s. Latitude: rewrite tests freely.");
+    }
+
+    /// <summary>
+    /// Design ruling R6's own closing line: "the prompt's default for inherited work stays
+    /// conservative" — stated unconditionally so a contractor never infers discard latitude on its
+    /// own, regardless of whether this delegation is the claim's first or a later one.
+    /// </summary>
+    [Fact]
+    public void A_delegated_contractor_is_told_to_respect_inherited_work_by_default()
+    {
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Just started.");
+
+        prompt.Should().Contain("Respect what is already here by default");
+        prompt.Should().Contain("latitude the operator grants");
+    }
+
+    [Fact]
+    public void A_delegated_contractor_onto_a_virgin_branch_is_told_the_worktree_is_clean()
+    {
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: false,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Nothing yet.");
+
+        prompt.Should().Contain("Nothing has been committed on this branch yet");
+        prompt.Should().NotContain("This worktree already holds work");
+    }
+
+    [Fact]
+    public void A_delegated_contractor_onto_a_non_virgin_branch_is_told_to_review_what_is_there()
+    {
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Picking up midway.");
+
+        prompt.Should().Contain("This worktree already holds work");
+        prompt.Should().Contain("git status");
+        prompt.Should().NotContain("Nothing has been committed on this branch yet");
+    }
+
+    /// <summary>
+    /// A delegated contractor still runs unsupervised and unattended exactly like a start-it-mine
+    /// session — nothing about the delegated framing changes how delivery, checkpoints, or the
+    /// self-review phase are described.
+    /// </summary>
+    [Fact]
+    public void A_delegated_contractor_still_gets_the_deliberate_headless_start_working_rules()
+    {
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: false,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Nothing yet.");
+
+        prompt.Should().Contain("nothing supervises this run");
+        prompt.Should().Contain("a human's to trigger by hand");
+    }
+
     private string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
         WorkPromptBuilder.Build(
             SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing",
