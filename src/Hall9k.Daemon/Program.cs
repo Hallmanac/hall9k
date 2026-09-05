@@ -197,5 +197,13 @@ if (OperatingSystem.IsWindows())
 builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = TimeSpan.FromSeconds(30));
 
 IHost host = builder.Build();
+
+// The one place h9kd states its own build identity (2026-09-04: a locally built install
+// had no way to tell which commit it ran from, only the framework's own assembly-version
+// noise) — logged through the host's own logger rather than Console.WriteLine so it lands
+// in the same DaemonLogging-formatted, timestamped line every other startup diagnostic does.
+host.Services.GetRequiredService<ILogger<Program>>()
+    .LogInformation("Hall9k daemon starting: version {Version}", DaemonVersion.Current);
+
 host.Run();
 return 0;
