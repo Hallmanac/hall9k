@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Connectors.Verification;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
@@ -135,5 +136,43 @@ public sealed class ProjectSetCommandTests
 
         act.Should().Throw<DomainValidationException>()
             .WithMessage("*name=command*");
+    }
+
+    /// <summary>
+    /// The Windows field report's own origin incident (item 11b): a verify gate that cannot pass
+    /// on clean base is caught before it costs a run. This is the pure half of that check —
+    /// composing the refusal's own words from a precomputed failure list, without spawning the
+    /// process <c>ValidateGatesAgainstCleanBaseAsync</c> itself needs to produce one.
+    /// </summary>
+    [Fact]
+    public void The_clean_base_refusal_names_every_failing_gate_its_command_and_its_output()
+    {
+        (VerifyCommand, GateCheckResult)[] failures =
+        [
+            (new VerifyCommand("test", "dotnet test"), new GateCheckResult(false, "2 Failed, 0 Passed")),
+        ];
+
+        string message = ProjectSetCommand.BuildCleanBaseRefusal("main", failures);
+
+        message.Should().Contain("'test'")
+            .And.Contain("dotnet test")
+            .And.Contain("clean main")
+            .And.Contain("2 Failed, 0 Passed")
+            .And.Contain("--accept-broken-gate", "the refusal must teach its own way past itself");
+    }
+
+    [Fact]
+    public void The_clean_base_refusal_names_every_gate_when_more_than_one_fails()
+    {
+        (VerifyCommand, GateCheckResult)[] failures =
+        [
+            (new VerifyCommand("build", "dotnet build"), new GateCheckResult(false, "error CS0000")),
+            (new VerifyCommand("test", "dotnet test"), new GateCheckResult(false, "MSB4019")),
+        ];
+
+        string message = ProjectSetCommand.DescribeCleanBaseFailures("main", failures);
+
+        message.Should().Contain("'build'").And.Contain("error CS0000");
+        message.Should().Contain("'test'").And.Contain("MSB4019");
     }
 }
