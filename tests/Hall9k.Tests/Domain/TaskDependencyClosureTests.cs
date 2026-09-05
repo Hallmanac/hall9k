@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Ids;
 using Xunit;
@@ -156,9 +157,64 @@ public sealed class TaskDependencyClosureTests
         death.Should().Contain("revise this task's dependencies");
     }
 
+    /// <summary>
+    /// Origin: independent pre-PR review, cycle 3. <c>h9k task resolve A --pr &lt;url&gt;</c>
+    /// records a pull-request number onto A's own Failed run document
+    /// (<c>PullRequestRecordedOnFailedRun</c>), which puts A's pull request back in
+    /// <c>CloseoutEngine</c>'s orphan-sweep candidate set — the sweep is going to complete A's
+    /// closeout unaided. A dependent waiting on A must not be told A is dead while that is true:
+    /// the old rule declared every Failed run unreachable regardless, which stranded the
+    /// dependent in Blocked reading "recover the blocker" while the sweep was already handling it.
+    /// </summary>
+    [Theory]
+    [InlineData("Failed")]
+    [InlineData("Killed")]
+    public void A_done_dependency_the_orphan_sweep_is_still_watching_is_not_dead(string runState)
+    {
+        TaskDependency dependency = Dependency(
+            TaskState.Done, runState, closedOut: false, PullRequest,
+            runPullRequestNumber: 7);
+
+        dependency.Blocks.Should().BeTrue("the merge has not been observed yet");
+        dependency.IsDead.Should().BeFalse(
+            "the orphan sweep still watches this pull request and will complete closeout unaided");
+    }
+
+    /// <summary>
+    /// The orphan sweep itself excludes a run whose recorded failure is
+    /// <c>RunDetails.PullRequestClosedWithoutMerge</c> — that run already told a prior inspection
+    /// everything it could, and a repeat would only relearn it. A dependency carrying that same
+    /// reason must read dead exactly as before, not newly "still watched".
+    /// </summary>
+    [Fact]
+    public void A_done_dependency_whose_pull_request_closed_without_merging_is_still_dead()
+    {
+        TaskDependency dependency = Dependency(
+            TaskState.Done, RunState.Failed, closedOut: false, PullRequest,
+            runPullRequestNumber: 7, runFailureReason: RunDetails.PullRequestClosedWithoutMerge);
+
+        dependency.IsDead.Should().BeTrue(
+            "the sweep already excludes this run — nothing is left to watch it any more");
+    }
+
+    /// <summary>
+    /// The sweep never watches Superseded (<c>CloseoutEngine.PollOnceAsync</c>'s own orphan
+    /// query names only Failed and Killed), so a superseded run stays dead even with a recorded
+    /// pull-request number — the orphan-sweep exception must not widen past the sweep's own reach.
+    /// </summary>
+    [Fact]
+    public void A_superseded_dependency_with_a_recorded_pull_request_is_still_dead()
+    {
+        TaskDependency dependency = Dependency(
+            TaskState.Done, RunState.Superseded, closedOut: false, PullRequest,
+            runPullRequestNumber: 7);
+
+        dependency.IsDead.Should().BeTrue("the orphan sweep only ever watches Failed or Killed runs");
+    }
+
     private static TaskDependency Dependency(
         TaskState state, RunState? currentRunState, bool closedOut, string? pullRequestUrl = null,
-        TaskType? type = null) =>
+        TaskType? type = null, int? runPullRequestNumber = null, string? runFailureReason = null) =>
         new(DomainId.New(), "A blocker", state, closedOut, currentRunState, pullRequestUrl,
-            type ?? TaskType.Chore, []);
+            type ?? TaskType.Chore, [], runPullRequestNumber, runFailureReason);
 }
