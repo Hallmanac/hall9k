@@ -82,6 +82,15 @@ public static class AdHocGateRunner
 
         if (OperatingSystem.IsWindows())
         {
+            // Windows field report item 3 (ruled 2026-09-01): two concurrent dotnet-test-shaped
+            // gates on one Windows machine crashed each other's shared MSBuild child nodes with
+            // MSB4166. VerificationRunner.RunGateAsync and TaskVerifyCommand.RunGateAsync both set
+            // this at their own spawn; this is the platform's third Windows verify-gate spawner,
+            // missed when that fix first landed (cycle 1 review, both lenses) — and the one with
+            // no infrastructure classification or retry of its own, so an MSB4166 crash here would
+            // otherwise be reported as an observed gate outcome rather than recognized as unread.
+            process.StartInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+
             // Raw Arguments, never ArgumentList — a project's own gate command is entirely free
             // to carry embedded quotes (VerificationRunner.RunGateAsync's own comment gives this
             // repo's own CI filter as the example), which ArgumentList would escape in a way

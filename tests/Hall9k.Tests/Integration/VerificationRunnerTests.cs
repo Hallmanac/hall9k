@@ -966,20 +966,30 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// expected content genuinely differs by platform rather than this test special-casing one.
     /// <para>
     /// The ambient value on the machine running this test is cleared for the duration and
-    /// restored after, on both branches: <see cref="ProcessStartInfo.Environment"/> starts as a
-    /// copy of this test host's own environment, so a machine that already exports
+    /// restored after, on the non-Windows branch only: <see cref="ProcessStartInfo.Environment"/>
+    /// starts as a copy of this test host's own environment, so a machine that already exports
     /// MSBUILDDISABLENODEREUSE globally (a cross-platform variable some teams do set, to stop
-    /// stray MSBuild node processes) would otherwise decide either branch's assertion by ambient
-    /// state rather than by what the gate spawn under test actually did (conformance review,
-    /// cycle 1).
+    /// stray MSBuild node processes) would otherwise decide that branch's <c>BeEmpty()</c>
+    /// assertion by ambient state rather than by what the gate spawn under test actually did
+    /// (conformance review, cycle 1). The Windows branch needs no such clearing —
+    /// <c>VerificationRunner</c> sets the variable to <c>"1"</c> explicitly regardless of what it
+    /// inherited, so <c>log.Should().Be("1")</c> is already decided by the spawn under test, not
+    /// ambient state — and clearing it there would mutate the whole test-host process for the
+    /// duration despite xUnit parallelizing across collections in this assembly, letting a
+    /// concurrent MSBuild-spawning test (this repo's own publish tests among them) run with node
+    /// reuse re-enabled for that window (adversarial review, cycle 1, low).
     /// </para>
     /// </summary>
     [Fact]
     public async Task A_gate_spawned_on_windows_carries_MSBUILDDISABLENODEREUSE_and_other_platforms_do_not()
     {
         const string VariableName = "MSBUILDDISABLENODEREUSE";
-        string? previousValue = Environment.GetEnvironmentVariable(VariableName);
-        Environment.SetEnvironmentVariable(VariableName, null);
+        string? previousValue = OperatingSystem.IsWindows() ? null : Environment.GetEnvironmentVariable(VariableName);
+        if (!OperatingSystem.IsWindows())
+        {
+            Environment.SetEnvironmentVariable(VariableName, null);
+        }
+
         try
         {
             using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -1002,7 +1012,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
         finally
         {
-            Environment.SetEnvironmentVariable(VariableName, previousValue);
+            if (!OperatingSystem.IsWindows())
+            {
+                Environment.SetEnvironmentVariable(VariableName, previousValue);
+            }
         }
     }
 
