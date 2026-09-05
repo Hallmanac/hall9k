@@ -229,7 +229,10 @@ A task published or later set `h9k task publish --pre-approved` / `h9k task set-
 on|off` removes the owner as a synchronous gate at its own pull request. `h9k task set-pre-approved`
 is settable without the unassign/draft/revise/publish ceremony, on any live task whose pull request
 has not actually merged yet — `TaskState.Done` alone does not refuse it, since Done is also the
-entire window a pull request is open and closeout is watching it.
+entire window a pull request is open and closeout is watching it. A Draft refuses too, for a
+different reason: the flag is part of the readiness contract set at publish, and a value set here
+first would be silently clobbered back to false by an ordinary `h9k task publish` that omitted
+`--pre-approved`.
 
 Once every ordinary obstruction the closeout monitor already checks has had its say — no conflict,
 no pending or failing check, no unresolved thread, no errored review, and no countersign

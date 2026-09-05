@@ -15,8 +15,11 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Flips a task's standing pre-approval after publish (task: a task can be published
-/// pre-approved) — settable on any live non-terminal task, without the unassign/draft/revise/
-/// publish ceremony a readiness-contract change would otherwise need.
+/// pre-approved) — settable on any live task whose pull request has not yet merged, without the
+/// unassign/draft/revise/publish ceremony a readiness-contract change would otherwise need. A
+/// Draft refuses too: <see cref="TaskDecider.SetPreApproved"/>'s own doc explains why (the flag
+/// is part of the readiness contract set at publish, and an ordinary publish that omits
+/// --pre-approved would silently clobber a value set here first).
 /// </summary>
 public sealed class TaskSetPreApprovedCommand : Hall9kAsyncCommand<TaskSetPreApprovedCommand.Settings>
 {
@@ -26,7 +29,7 @@ public sealed class TaskSetPreApprovedCommand : Hall9kAsyncCommand<TaskSetPreApp
         [Description("Task id (full, or an unambiguous fragment)")]
         public string Id { get; init; } = string.Empty;
 
-        [CommandArgument(1, "<true|false>")]
+        [CommandArgument(1, "<on|off>")]
         [Description(
             "on/true to give standing pre-approval, off/false to withdraw it — the owner becomes a "
             + "synchronous gate at the pull request again the moment this lands")]
