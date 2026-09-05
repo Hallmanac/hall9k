@@ -224,7 +224,17 @@ review, review verdict to fix, fix to re-review, gates to pull request) for a re
 back off; `h9k task revise <id> --clear-interactive-mode` is the one that still reaches it once
 neither of those has an active interactive claim left to act on (a headless follow-up dispatched
 under a real node claim while the flag is still on, or the task has already reached Done with its
-pull request open).
+pull request open). The same flag turns outbound reporting on too (design ruling R8, idea
+fcaded0b): a dispatched build, review, or fix session reports judiciously, never a running
+commentary, to the human's own registered session (`h9k task register-session`) through the
+cross-session mesh's SendMessage tool — a small, fixed per-role vocabulary of milestones, ending
+with each role's own end-of-phase report (a build's handoff, a review's verdict and findings, a
+fix session's summary) as its last act before it ends normally. Every send, landed or not, is
+logged through `h9k task log-interaction` so what the human was told lives on the run stream
+rather than only in a transcript; with no registered session it skips sending and logs that once
+for the phase, and with a registered session SendMessage cannot reach it still attempts and logs
+each send individually — neither degradation holds up the boundary park above, which parks exactly
+the same either way.
 
 By default `h9k task work` claims and cuts as above, then prints the worktree path, the branch,
 and a starting prompt (assembled through `WorkPromptBuilder`, the same code every path already
