@@ -234,7 +234,15 @@ logged through `h9k task log-interaction` so what the human was told lives on th
 rather than only in a transcript; with no registered session it skips sending and logs that once
 for the phase, and with a registered session SendMessage cannot reach it still attempts and logs
 each send individually — neither degradation holds up the boundary park above, which parks exactly
-the same either way.
+the same either way. No registered session is the ordinary case for a fresh headless dispatch under
+interactive mode (`h9k task start`, an ordinary dispatch carrying the flag forward from an earlier
+`h9k task release --keep-interactive`, or a retry, reopen, or follow-up redispatch — each starts a
+new run, and no registration carries forward from an earlier one yet), so today the build role's
+own milestones always take this skip-and-log path; only the review and fix roles, dispatched later
+on the same run once a human's own `h9k task work` claim has registered against it, can actually
+reach a live address. A handback is never one of these no-registration cases either way: it clears
+the interactive-mode flag unconditionally, so a handback-dispatched run never reaches these rules
+at all.
 
 By default `h9k task work` claims and cuts as above, then prints the worktree path, the branch,
 and a starting prompt (assembled through `WorkPromptBuilder`, the same code every path already
