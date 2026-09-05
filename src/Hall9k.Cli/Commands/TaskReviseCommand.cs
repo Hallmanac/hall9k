@@ -117,6 +117,16 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "adversarial-only, or conformance-only; passed alongside any other value it is silently "
             + "dropped rather than refused, since there is no consequence to acknowledge there")]
         public bool AcceptReducedReview { get; init; }
+
+        [CommandOption("--clear-interactive-mode")]
+        [Description(
+            "Clear the task's interactive-mode flag directly. h9k task handback and a default h9k task "
+            + "release are the ordinary exit doors, but both need an active interactive claim to act on — "
+            + "a headless follow-up CloseoutEngine dispatches under a real node claim while the flag is "
+            + "still on, or a task that has already reached Done with its pull request open, leaves "
+            + "neither door reachable. The one other field this command still accepts once a task has "
+            + "left Draft (alongside --queue-first), as long as nothing else is revised in the same call")]
+        public bool ClearInteractiveMode { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -202,7 +212,8 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         if (namesCurrentEpic && task.EpicId is { } currentEpic && objective.IsBlank() && criteria.Count == 0
             && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank()
-            && !queuePriority.HasValue && settings.ReviewStageComposition is null)
+            && !queuePriority.HasValue && settings.ReviewStageComposition is null
+            && !settings.ClearInteractiveMode)
         {
             AnsiConsole.MarkupLine(
                 $"[green]Already in epic[/] {TaskListCommand.ShortId(currentEpic)}. [dim]Nothing to do.[/]");
@@ -225,25 +236,38 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             settings.ReviewStageComposition is { } composition
                 ? Optional<string?>.Of(composition)
                 : Optional<string?>.None,
-            settings.AcceptReducedReview);
+            settings.AcceptReducedReview,
+            settings.ClearInteractiveMode);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
 
-        // The one revision TaskDecider.Revise lets through past Draft (task 45136b29): a call
-        // that touched only the marker gets its own confirmation, since "Draft X revised" and
-        // "Next: h9k task publish" are both wrong for a task that already left Draft.
-        bool queuePriorityOnly = revised.QueuePriority.HasValue && !revised.Objective.HasValue
-            && !revised.AcceptanceCriteria.HasValue && !revised.AgentContext.HasValue
-            && !revised.BlockedBy.HasValue && !revised.Type.HasValue && !revised.Model.HasValue
-            && !revised.EpicId.HasValue;
-        if (queuePriorityOnly && task.State != TaskState.Draft)
+        // The two revisions TaskDecider.Revise lets through past Draft (task 45136b29 for
+        // queue-first; the interactive-mode gap independent pre-PR review, cycle 1, found in
+        // h9k task start): a call that touched only a marker gets its own confirmation, since
+        // "Draft X revised" and "Next: h9k task publish" are both wrong for a task that already
+        // left Draft.
+        bool markerFieldsOnly = (revised.QueuePriority.HasValue || revised.ClearInteractiveMode)
+            && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
+            && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
+            && !revised.Model.HasValue && !revised.EpicId.HasValue;
+        if (markerFieldsOnly && task.State != TaskState.Draft)
         {
-            AnsiConsole.MarkupLine(revised.QueuePriority.Value
-                ? $"[blue]Task {shortId} marked queue-first[/] — it takes the next free dispatch slot regardless of assignment age."
-                : $"[blue]Task {shortId}'s queue-first marker cleared[/].");
+            if (revised.QueuePriority.HasValue)
+            {
+                AnsiConsole.MarkupLine(revised.QueuePriority.Value
+                    ? $"[blue]Task {shortId} marked queue-first[/] — it takes the next free dispatch slot regardless of assignment age."
+                    : $"[blue]Task {shortId}'s queue-first marker cleared[/].");
+            }
+
+            if (revised.ClearInteractiveMode)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[blue]Task {shortId}'s interactive-mode flag cleared[/] — its run stops parking at phase boundaries from here on.");
+            }
+
             return ExitCodes.Ok;
         }
 
@@ -322,6 +346,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             yield return revised.ReviewStageComposition.Value is { } composition
                 ? $"review stage composition {composition}"
                 : "review stage composition override cleared";
+        }
+
+        if (revised.ClearInteractiveMode)
+        {
+            yield return "interactive-mode flag cleared";
         }
     }
 

@@ -907,6 +907,52 @@ public sealed class TaskDeciderTests
         task.InteractiveModeEnabled.Should().BeTrue();
     }
 
+    /// <summary>
+    /// The fallback lever for the gap independent pre-PR review, cycle 1 of this task's own
+    /// review-fix pass found in h9k task start: once a run leaves Dispatched/Running — a headless
+    /// follow-up dispatched under a real node claim while the flag is still on, or the task has
+    /// already reached Done with its pull request open — neither <c>HandBack</c> nor
+    /// <c>ReleaseInteractiveClaim</c> has an active interactive claim left to act on. Exercised
+    /// here on a task claimed by a plain node (never interactive at all), the sharpest version of
+    /// that gap: <c>IsInteractiveClaim</c> is false throughout, so this is the only lever that
+    /// still reaches the flag.
+    /// </summary>
+    [Fact]
+    public void Revise_with_clearInteractiveMode_clears_the_flag_with_no_active_interactive_claim_required()
+    {
+        TaskAggregate task = QueuedTask();
+        task.Apply(TaskDecider.ClaimInteractively(task, Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
+        task.InteractiveModeEnabled.Should().BeTrue("a lease expiring must never clear the flag out from under the human who set it");
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.IsInteractiveClaim.Should().BeFalse("a plain node claim — no active interactive claim left for HandBack or ReleaseInteractiveClaim to act on");
+
+        TaskRevised revised = TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, clearInteractiveMode: true);
+        task.Apply(revised);
+
+        task.InteractiveModeEnabled.Should().BeFalse();
+    }
+
+    /// <summary>Nothing to clear, nothing recorded false-positive: a plain revision leaves the flag alone.</summary>
+    [Fact]
+    public void Revise_without_clearInteractiveMode_leaves_the_flag_alone()
+    {
+        TaskAggregate task = QueuedTask();
+        task.Apply(TaskDecider.ClaimInteractively(task, Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
+
+        TaskRevised revised = TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true));
+        task.Apply(revised);
+
+        task.InteractiveModeEnabled.Should().BeTrue();
+    }
+
     /// <summary>Same invariant as the requeue case above, reached through h9k task handback instead.</summary>
     [Fact]
     public void HandBack_of_a_deliberately_claimed_blocked_task_returns_to_blocked_not_queued()

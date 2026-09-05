@@ -172,6 +172,23 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 $"[dim]Task {taskId} released back, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — it will not dispatch until those close out.[/]");
         }
 
+        // The one fact that separates this invocation from --keep-interactive (adversarial
+        // review, cycle 1): a default release also clears the task's interactive-mode flag, so
+        // the next headless run no longer parks at the review engine's four phase boundaries —
+        // silent otherwise, an operator only discovered it when the run reached its pull request
+        // unannounced. task.InteractiveModeEnabled still reads the pre-release value here: the
+        // aggregate in hand was loaded before ReleaseInteractiveClaim's event was appended above.
+        if (task.InteractiveModeEnabled && settings.KeepInteractive)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId}'s interactive-mode flag survives this release (--keep-interactive) — a later headless run still parks at each phase boundary for a recorded h9k review proceed.[/]");
+        }
+        else if (task.InteractiveModeEnabled)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId}'s interactive-mode flag is cleared — a later headless run no longer parks at each phase boundary.[/]");
+        }
+
         return ExitCodes.Ok;
     }
 

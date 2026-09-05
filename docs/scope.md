@@ -99,7 +99,11 @@ on, it stays on across every later run and follow-up until `h9k task handback`, 
 `h9k task release`, clears it — both are the human's own explicit act of returning the task to the
 machine, so headless dispatch stops gating boundaries for a human who walked away.
 `h9k task release --keep-interactive` is the stated exception, for an operator who wants the next
-headless run to keep parking at each boundary. Under the flag, the pre-PR review engine's own four
+headless run to keep parking at each boundary. Both ordinary doors need an active interactive
+claim to act on, though, and a task can outlive one: a headless follow-up `CloseoutEngine`
+dispatches under a real node claim while the flag is still on, or the task has already reached
+Done with its pull request open. `h9k task revise <id> --clear-interactive-mode` is the fallback
+that reaches the flag directly in either case, with no active claim required. Under the flag, the pre-PR review engine's own four
 phase boundaries — build done to review,
 review verdict to fix, fix to re-review, and gates to pull request — each hold as a park-shaped
 needs-you row until `h9k review proceed <id>` records the human's go; `h9k review resolve

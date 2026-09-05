@@ -325,6 +325,13 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
             view.ReviewStageComposition = @event.Data.ReviewStageComposition.Value;
         }
 
+        // Mirrors TaskAggregate.Apply(TaskRevised): the third clearing act alongside
+        // Apply(IEvent<TaskHandedBack>) and a default Apply(IEvent<TaskRequeued>) above.
+        if (@event.Data.ClearInteractiveMode)
+        {
+            view.InteractiveModeEnabled = false;
+        }
+
         view.Revisions++;
     }
 

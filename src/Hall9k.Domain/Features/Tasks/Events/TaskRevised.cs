@@ -43,4 +43,15 @@ public sealed record TaskRevised(
     /// </summary>
     Optional<ReviewStageComposition?> ReviewStageComposition = default,
     /// <summary>Whether removing a load-bearing review guarantee was acknowledged at set time; clamped false when never actually needed.</summary>
-    bool ReviewStageCompositionAcknowledged = false);
+    bool ReviewStageCompositionAcknowledged = false,
+    /// <summary>
+    /// True clears <see cref="TaskAggregate.InteractiveModeEnabled"/> directly (task: interactive
+    /// mode becomes a recorded property of the task). The one other exception
+    /// <see cref="Handlers.TaskDecider.Revise"/>'s own gate carves out of Draft-only, alongside
+    /// <see cref="QueuePriority"/>: the two ordinary exit doors, <c>h9k task handback</c> and
+    /// <c>h9k task release</c>, both need an active interactive claim to act on, and a headless
+    /// follow-up dispatched under a real node claim while the flag is still on — or a task that
+    /// has already reached Done with its pull request open — leaves neither door reachable.
+    /// False never turns the flag on; only a claim carrying <c>TaskClaimed.InteractiveMode</c> does that.
+    /// </summary>
+    bool ClearInteractiveMode = false);

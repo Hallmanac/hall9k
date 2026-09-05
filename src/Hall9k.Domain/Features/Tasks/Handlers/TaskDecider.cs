@@ -396,14 +396,23 @@ public static class TaskDecider
         Optional<Guid?> epicId = default,
         Optional<bool> queuePriority = default,
         Optional<string?> reviewStageComposition = default,
-        bool reviewStageCompositionAcknowledged = false)
+        bool reviewStageCompositionAcknowledged = false,
+        bool clearInteractiveMode = false)
     {
-        bool onlyQueuePriorityChanging = queuePriority.HasValue
+        // Both markers are scheduling/mode facts, not part of the readiness contract, so they
+        // are the two exceptions Revise's own Draft-only gate carves out (task 45136b29 for
+        // queue-first; the interactive-mode gap independent pre-PR review, cycle 1, both lenses,
+        // found in h9k task start/handback/release: once a run leaves Dispatched/Running — a
+        // headless follow-up CloseoutEngine dispatches under a real node claim while the flag is
+        // still on, or the task has already reached Done with its pull request open — neither
+        // ordinary exit door has an active interactive claim left to hand back or release, and
+        // nothing else can turn the flag off).
+        bool onlyMarkerFieldsChanging = (queuePriority.HasValue || clearInteractiveMode)
             && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !reviewStageComposition.HasValue;
 
-        if (task.State != TaskState.Draft && !onlyQueuePriorityChanging)
+        if (task.State != TaskState.Draft && !onlyMarkerFieldsChanging)
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — only a draft can be revised. " + task.State switch
@@ -413,8 +422,8 @@ public static class TaskDecider
                     var state when state.IsAssigned =>
                         $"Unassign it, then return it to Draft: h9k task unassign {task.Id} && h9k task draft {task.Id}.",
                     _ => "A task that has already run gets a new task, not a rewritten contract. "
-                        + "h9k task revise --queue-first is the one exception, and it still needs "
-                        + "something left to queue.",
+                        + "h9k task revise --queue-first and --clear-interactive-mode are the two "
+                        + "exceptions, and each still needs something left to change.",
                 });
         }
 
@@ -423,11 +432,22 @@ public static class TaskDecider
         // Revise itself lets through — must stay settable and clearable on it, for the follow-up
         // run reopening might dispatch. Only Abandoned is a genuine dead end nothing ever
         // requeues from (independent pre-PR review, cycle 1, conformance lens).
-        if (onlyQueuePriorityChanging && task.State == TaskState.Abandoned)
+        if (onlyMarkerFieldsChanging && task.State == TaskState.Abandoned)
         {
+            // Named per marker actually requested (independent pre-PR review round 2, PR #224):
+            // --queue-first/--clear-queue-first and --clear-interactive-mode are independent
+            // marker-only revisions and both can be passed in the same call, so the refusal names
+            // whichever combination is actually in play rather than assuming queuePriority is the
+            // only one present whenever it is set at all.
+            string doNothingDescription = (queuePriority.HasValue, clearInteractiveMode) switch
+            {
+                (true, true) => "a priority marker and the interactive-mode flag would both do nothing.",
+                (true, false) => "a priority marker would do nothing.",
+                _ => "the interactive-mode flag would do nothing.",
+            };
             throw new DomainConflictException(
-                $"Task {task.Id} is {task.State.Value} — nothing here will ever be queued again, so a "
-                + "priority marker would do nothing.");
+                $"Task {task.Id} is {task.State.Value} — nothing here will ever run again, so "
+                + doNothingDescription);
         }
 
         if (objective.HasValue && objective.Value.IsBlank())
@@ -495,12 +515,13 @@ public static class TaskDecider
 
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue
-            && !queuePriority.HasValue && !normalizedComposition.HasValue)
+            && !queuePriority.HasValue && !normalizedComposition.HasValue && !clearInteractiveMode)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
                 "--type, --model, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
-                "--queue-first, --clear-queue-first, or --review-stage-composition.");
+                "--queue-first, --clear-queue-first, --review-stage-composition, or " +
+                "--clear-interactive-mode.");
         }
 
         Optional<Run.ReviewStageComposition?> compositionForEvent = normalizedComposition.HasValue
@@ -513,7 +534,8 @@ public static class TaskDecider
             task.Id, objective, criteria, agentContext, dependencies, type, chosenModel,
             revisedAt, revisedByOwnerId, epicId, queuePriority, compositionForEvent,
             ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(
-                normalizedComposition.Value, reviewStageCompositionAcknowledged));
+                normalizedComposition.Value, reviewStageCompositionAcknowledged),
+            clearInteractiveMode);
     }
 
     /// <summary>

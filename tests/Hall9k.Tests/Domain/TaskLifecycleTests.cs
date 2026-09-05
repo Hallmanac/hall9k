@@ -155,7 +155,48 @@ public sealed class TaskLifecycleTests
             Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
             epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true));
 
-        act.Should().Throw<DomainConflictException>().WithMessage("*nothing here will ever be queued again*");
+        act.Should().Throw<DomainConflictException>().WithMessage("*nothing here will ever run again*a priority marker would do nothing*");
+    }
+
+    /// <summary>
+    /// The interactive-mode-clearing mirror of the test above: Abandoned is also the one state
+    /// nothing ever requeues from, so clearing a flag that only matters to a future run is
+    /// refused the same way marking queue-first is (independent pre-PR review, cycle 1 of this
+    /// task's own review-fix pass — the interactive-mode gap found in h9k task start).
+    /// </summary>
+    [Fact]
+    public void Revise_of_an_abandoned_task_clearing_only_interactive_mode_refuses()
+    {
+        TaskAggregate task = Queued();
+        task.Apply(TaskDecider.Abandon(task, "Stopped believing in it", Now, Owner));
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, clearInteractiveMode: true);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*nothing here will ever run again*the interactive-mode flag would do nothing*");
+    }
+
+    /// <summary>
+    /// Both marker-only revisions requested in the same call name both markers in the refusal
+    /// rather than the queue-priority one alone (independent pre-PR review round 2, PR #224,
+    /// Copilot): a message that only ever named the priority marker misdescribed the request the
+    /// moment both were present at once.
+    /// </summary>
+    [Fact]
+    public void Revise_of_an_abandoned_task_setting_both_markers_names_both_in_the_refusal()
+    {
+        TaskAggregate task = Queued();
+        task.Apply(TaskDecider.Abandon(task, "Stopped believing in it", Now, Owner));
+
+        Action act = () => TaskDecider.Revise(
+            task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None, Now, Owner,
+            epicId: Optional<Guid?>.None, queuePriority: Optional<bool>.Of(true), clearInteractiveMode: true);
+
+        act.Should().Throw<DomainConflictException>().WithMessage(
+            "*nothing here will ever run again*a priority marker and the interactive-mode flag would both do nothing*");
     }
 
     /// <summary>
