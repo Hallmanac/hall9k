@@ -119,11 +119,14 @@ build, findings drafted and verdict recorded for a review pass, and a report-rea
 role's own end-of-phase report (a build's handoff, a review's verdict and findings, a fix
 session's summary) as its last act before it ends normally. The address is the human's own
 registered session (`h9k task register-session`, the same record the double-booking guards read),
-reached through the cross-session mesh's SendMessage tool; every send, landed or not, is logged
-through `h9k task log-interaction` so what the human was told lives on the run stream rather than
-only in a transcript. With no registered session, or one SendMessage cannot reach, the agent
-degrades honestly: it skips sending, logs that once per phase instead of once per milestone, and
-the boundary still parks exactly as it would anyway — nothing about slice 8's own park changes.
+reached through the cross-session mesh's SendMessage tool. With no registered session at all (a run
+dispatched headless from the start, or a handback nobody re-attached to), the agent degrades
+honestly: it skips sending every milestone, logs that once for the whole phase rather than once per
+milestone, and the boundary still parks exactly as it would anyway. With a registered session
+SendMessage cannot reach (the session has since ended), the agent still attempts every send and
+logs each attempt individually through `h9k task log-interaction` — landed or not — rather than
+dropping it silently, and a failed send never blocks the agent from continuing its own work either
+way; nothing about slice 8's own park changes in either case.
 
 ### A deliberate human kick-off
 
