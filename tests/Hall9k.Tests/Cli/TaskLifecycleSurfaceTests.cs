@@ -181,6 +181,112 @@ public sealed class TaskLifecycleSurfaceTests
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done)).State.Should().Be(LifecycleState.Done);
     }
 
+    /// <summary>
+    /// A pr-review task's Done never watched a merge (Decisions Log #99): its own park resolves
+    /// with <c>h9k review resolve --merge-ready</c> directly, with no pull request of its own to
+    /// open. The ledger's closeout-reason prose has to say that rather than the merge-observed
+    /// wording every merge-watching task type earns, or it asserts an observation nobody made —
+    /// exactly the Windows field report item 12 defect (2026-09-03): pr-review task 7f1812db
+    /// reported "the merge was observed" while the pull request it reviewed still sat open.
+    /// </summary>
+    [Theory]
+    [InlineData("Feature")]
+    [InlineData("Bugfix")]
+    [InlineData("Refactor")]
+    [InlineData("Chore")]
+    [InlineData("Research")]
+    public void A_merge_watching_task_types_done_reason_names_the_observed_merge(string taskType)
+    {
+        TaskShowCommand.DoneReason(taskType, "https://github.com/x/y/pull/1")
+            .Should().Be("the merge was observed");
+    }
+
+    /// <summary>
+    /// A merge-watching task closed by hand with no pull request ever opened never had a merge
+    /// to watch (self-review, task bc1ea50d): the same never-guess-at-unobserved-facts rule this
+    /// branch fixes for a pr-review task applies here too, since asserting "the merge was
+    /// observed" for a task that never pushed is the identical unobserved-fact claim under a
+    /// different task type.
+    /// </summary>
+    [Theory]
+    [InlineData("Feature")]
+    [InlineData("Bugfix")]
+    [InlineData("Refactor")]
+    [InlineData("Chore")]
+    [InlineData("Research")]
+    public void A_merge_watching_task_type_closed_with_no_pull_request_names_nothing_to_watch(string taskType)
+    {
+        TaskShowCommand.DoneReason(taskType, "")
+            .Should().Be("the task was closed with no pull request to watch");
+    }
+
+    [Fact]
+    public void A_pr_review_tasks_done_reason_names_the_delivered_review_never_a_merge()
+    {
+        // A pr-review task's own PullRequestUrl names the pull request it reviewed, not one of
+        // its own (PrReviewEngine.FinalizeAsync) — a non-blank URL here must not flip the answer
+        // to the merge-observed wording the way it would for a merge-watching task type.
+        string reason = TaskShowCommand.DoneReason(
+            TaskType.PrReview, "https://github.com/AgelessRx/arx-platform/pull/1976");
+
+        reason.Should().Be("the review was delivered");
+        reason.Should().NotContain("merge", "no merge was ever watched for a pr-review task's own closeout");
+    }
+
+    [Fact]
+    public void A_done_pr_review_row_never_renders_the_merge_was_observed()
+    {
+        // Windows field report item 12 (2026-09-03): PrReviewEngine.FinalizeAsync records the
+        // reviewed pull request's own URL on TaskCompleted and completes the run alongside it —
+        // reaching lifecycle Done exactly as an ordinary merged task does — even though that
+        // pull request (AgelessRx/arx-platform#1976) sat open the whole time. Nothing here ever
+        // watched it merge, so the reason must not claim otherwise.
+        Guid runId = DomainId.New();
+        TaskListItem task = StatusFixtures.Task(
+            TaskState.Done, runId, "https://github.com/AgelessRx/arx-platform/pull/1976", type: TaskType.PrReview);
+        RunDetails run = StatusFixtures.Run(runId, RunState.Completed, sessionProcessId: null);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, run);
+
+        row.State.Should().Be(LifecycleState.Done, "PrReviewEngine.FinalizeAsync completes the run the same way a merge would");
+
+        string gloss = TaskShowCommand.StateGloss(row);
+
+        gloss.Should().Contain("the review was delivered")
+            .And.NotContain("the merge was observed");
+    }
+
+    [Fact]
+    public void A_done_feature_row_that_pushed_and_merged_still_asserts_the_observed_merge()
+    {
+        Guid runId = DomainId.New();
+        TaskListItem task = StatusFixtures.Task(
+            TaskState.Done, runId, "https://github.com/x/y/pull/1", type: TaskType.Feature);
+        RunDetails run = StatusFixtures.Run(runId, RunState.Completed, sessionProcessId: null);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, run);
+
+        TaskShowCommand.StateGloss(row).Should().Contain("the merge was observed");
+    }
+
+    /// <summary>
+    /// A Feature task closed by hand with no pull request ever opened (<c>h9k task resolve</c>
+    /// with no <c>--pr</c>) never had a merge to watch: <see cref="TaskStatusComposer.Closed"/>
+    /// still reads it as true closeout for display purposes (there was nothing to observe), but
+    /// the reason has to say so honestly rather than claiming a merge nobody watched.
+    /// </summary>
+    [Fact]
+    public void A_done_feature_row_with_no_pull_request_names_nothing_to_watch()
+    {
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, type: TaskType.Feature));
+
+        row.State.Should().Be(LifecycleState.Done, "nothing was ever pushed, so there is no merge to wait for");
+
+        TaskShowCommand.StateGloss(row).Should()
+            .Contain("the task was closed with no pull request to watch")
+            .And.NotContain("the merge was observed");
+    }
+
     [Fact]
     public void A_claimed_task_is_working_until_it_pushes_and_delivered_afterwards()
     {
