@@ -703,7 +703,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     private static RunSupervisor NewSupervisor(
-        DocumentStore store, NodeContext node, IProcessManager? processManager = null, ILogger<RunSupervisor>? logger = null)
+        DocumentStore store, NodeContext node, IProcessManager? processManager = null, ILogger<RunSupervisor>? logger = null,
+        IExecutor? executor = null)
     {
         processManager ??= ProcessManagers.ForCurrentPlatform();
         VerificationRunner verification = new(
@@ -715,9 +716,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())), processManager,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
+        PrimarySessionResumer primarySessionResumer = new(
+            executor ?? new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())));
         return new RunSupervisor(store, node, processManager, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
-            logger ?? NullLogger<RunSupervisor>.Instance);
+            primarySessionResumer, Options.Create(new DaemonOptions()), logger ?? NullLogger<RunSupervisor>.Instance);
     }
 
     public void Dispose()

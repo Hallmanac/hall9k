@@ -96,7 +96,8 @@ public sealed class TokenBudgetRetryEngineTests(PostgresFixture postgres) : ICla
         }
 
         CapturingExecutor executor = new();
-        TokenBudgetRetryEngine engine = new(store, node, executor, NewSupervisor(store, node), NullLogger<TokenBudgetRetryEngine>.Instance);
+        TokenBudgetRetryEngine engine = new(
+            store, node, new PrimarySessionResumer(executor), NewSupervisor(store, node), NullLogger<TokenBudgetRetryEngine>.Instance);
 
         int retried = await engine.RetryParkedRunsAsync(cts.Token);
 
@@ -163,7 +164,8 @@ public sealed class TokenBudgetRetryEngineTests(PostgresFixture postgres) : ICla
         }
 
         CapturingExecutor executor = new();
-        TokenBudgetRetryEngine engine = new(store, node, executor, NewSupervisor(store, node), NullLogger<TokenBudgetRetryEngine>.Instance);
+        TokenBudgetRetryEngine engine = new(
+            store, node, new PrimarySessionResumer(executor), NewSupervisor(store, node), NullLogger<TokenBudgetRetryEngine>.Instance);
 
         int retried = await engine.RetryParkedRunsAsync(cts.Token);
 
@@ -185,8 +187,10 @@ public sealed class TokenBudgetRetryEngineTests(PostgresFixture postgres) : ICla
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
+        PrimarySessionResumer primarySessionResumer = new(
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())));
         return new RunSupervisor(store, node, processes, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
-            NullLogger<RunSupervisor>.Instance);
+            primarySessionResumer, Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
     }
 }
