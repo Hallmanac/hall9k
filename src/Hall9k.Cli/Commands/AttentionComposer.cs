@@ -637,13 +637,19 @@ internal static class AttentionComposer
     /// wherever a fix session genuinely dispatches before the identical re-park).
     /// </summary>
     private static string ReviewParkLever(TaskListItem task, RunDetails run, string id) =>
-        task.Type == TaskType.PrReview
-            ? $"h9k review resolve {id} --merge-ready (a pr-review task has no diff of its own for a fix session; direct the findings report by hand first)"
-            : task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
-                ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
-                : run.ParkedNeedsFixesOffersNoProgress
-                    ? $"h9k review resolve {id} --merge-ready (--needs-fixes will not clear this park — raise the cap or budget first, per the reason above)"
-                    : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
+        // Interactive mode's own routine boundary gate (task: interactive mode becomes a recorded
+        // property of the task) checked first: it is never a dispute or a cap/budget park, so none
+        // of the refinements below apply — h9k review proceed is the lever, with h9k review resolve
+        // named alongside it for whenever the human wants to redirect the boundary instead.
+        run.ParkedIsInteractiveGate
+            ? $"h9k review proceed {id} (or h9k review resolve {id} --merge-ready / --needs-fixes \"…\" to redirect it)"
+            : task.Type == TaskType.PrReview
+                ? $"h9k review resolve {id} --merge-ready (a pr-review task has no diff of its own for a fix session; direct the findings report by hand first)"
+                : task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
+                    ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
+                    : run.ParkedNeedsFixesOffersNoProgress
+                        ? $"h9k review resolve {id} --merge-ready (--needs-fixes will not clear this park — raise the cap or budget first, per the reason above)"
+                        : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
 
     private static string Reason(string? recorded, string absent) =>
         recorded.IsNotBlank() ? recorded : absent;
