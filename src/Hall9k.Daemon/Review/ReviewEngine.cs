@@ -1293,10 +1293,24 @@ public sealed class ReviewEngine(
 
         Guid sessionId = DomainId.New();
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
+        // !run.PendingHumanFindingsFromInteractiveGate excludes interactive mode's own routine
+        // boundary park (independent pre-PR review, cycle 1, adversarial lens): a rebase
+        // follow-up that rebased cleanly, passed its gates, and parked at the "build done to
+        // review" boundary also carries FollowUpKind.Rebase with ReviewCycle == 0 and human
+        // findings once resolved with --needs-fixes, but nothing there is disputed —
+        // ReviewResolveCommand.cs's own refusal excludes the identical case with the same
+        // reasoning. run.ParkedIsInteractiveGate itself is already false here (Apply(ReviewParkResolved)
+        // reset it before this method ever runs), so this discriminator has to be
+        // PendingHumanFindingsFromInteractiveGate, captured once alongside humanFindings itself
+        // rather than read fresh off whatever ReviewParked happened most recently (independent
+        // pre-PR review, cycle 3, adversarial lens: a budget-exhausted fix session redispatches
+        // through an intervening, unrelated routine boundary park without ever clearing
+        // PendingHumanFindings, and a shared unpaired flag was overwritten by that park too).
         bool resumesRebaseDispute =
             context.Task.FollowUpKind == FollowUpKind.Rebase
             && cycle == 0
-            && humanFindings.IsNotBlank();
+            && humanFindings.IsNotBlank()
+            && !run.PendingHumanFindingsFromInteractiveGate;
         string prompt = resumesRebaseDispute
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings)
