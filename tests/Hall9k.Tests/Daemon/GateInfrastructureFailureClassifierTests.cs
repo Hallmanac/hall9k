@@ -55,7 +55,7 @@ public sealed class GateInfrastructureFailureClassifierTests
     // directory VerificationRunner names via GateWaitEvidenceDirectoryEnvironmentVariable, and
     // that file's presence at kill time, not any text scan, is what these two methods check.
     [Fact]
-    public void A_leftover_wait_evidence_file_classifies_as_a_timeout_infrastructure_failure()
+    public void A_wait_that_consumed_most_of_the_gate_timeout_classifies_as_a_timeout_infrastructure_failure()
     {
         string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
         try
@@ -66,7 +66,38 @@ public sealed class GateInfrastructureFailureClassifierTests
                 "(842s elapsed, 4 max concurrent) — every permit is currently held " +
                 "(by this process's own other classes, or by another process on this machine)");
 
-            GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(directory).Should().BeTrue();
+            // 842s clears 80% of a 15-minute (900s) budget.
+            GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(directory, TimeSpan.FromMinutes(15))
+                .Should().BeTrue();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The false positive this narrower check exists to close (independent pre-PR review, cycle
+    /// 1): during a busy tier, several classes are queued behind the gate's fixed permit count at
+    /// nearly every instant, entirely ordinarily. Evidence that <em>a</em> class was queued at the
+    /// moment of the kill is not evidence that the killed gate's own overall run never made
+    /// progress — only a wait that consumed most of the run's own budget is that signal.
+    /// </summary>
+    [Fact]
+    public void A_brief_recent_wait_relative_to_a_much_larger_gate_timeout_does_not_classify_as_infrastructure()
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(directory, "waiting-123-abc.txt"),
+                "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
+                "(12s elapsed, 4 max concurrent) — every permit is currently held " +
+                "(by this process's own other classes, or by another process on this machine)");
+
+            GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(directory, TimeSpan.FromMinutes(30))
+                .Should().BeFalse("12 seconds of ordinary queuing is not proof this gate's own run spent " +
+                    "nearly its whole 30-minute budget stuck");
         }
         finally
         {
@@ -84,7 +115,7 @@ public sealed class GateInfrastructureFailureClassifierTests
             // moment it acquires a permit, exactly as it would here once the wait resolved —
             // an ordinary hang or a real test failure after that point must not be misread as
             // still-queued-on-the-gate just because the directory once held evidence.
-            GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(directory)
+            GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(directory, TimeSpan.FromMinutes(15))
                 .Should().BeFalse("the wait already resolved; nothing is queued on the gate anymore");
         }
         finally
@@ -97,7 +128,8 @@ public sealed class GateInfrastructureFailureClassifierTests
     [InlineData(null)]
     [InlineData("")]
     public void An_absent_or_nonexistent_evidence_directory_is_never_guessed_as_an_unresolved_gate_wait(string? gateWaitEvidenceDirectory) =>
-        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(gateWaitEvidenceDirectory).Should().BeFalse();
+        GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(gateWaitEvidenceDirectory, TimeSpan.FromMinutes(15))
+            .Should().BeFalse();
 
     [Fact]
     public void UnresolvedGateWaitExcerpt_carries_the_evidence_file_content()
@@ -111,8 +143,51 @@ public sealed class GateInfrastructureFailureClassifierTests
                 "(842s elapsed, 4 max concurrent) — every permit is currently held " +
                 "(by this process's own other classes, or by another process on this machine)");
 
-            GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(directory)
+            GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(directory, TimeSpan.FromMinutes(15))
                 .Should().Contain("Waiting on cross-process container gate");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void UnresolvedGateWaitExcerpt_is_null_for_a_wait_that_never_cleared_the_gate_timeout_bar()
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(directory, "waiting-123-abc.txt"),
+                "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
+                "(12s elapsed, 4 max concurrent) — every permit is currently held " +
+                "(by this process's own other classes, or by another process on this machine)");
+
+            GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(directory, TimeSpan.FromMinutes(30))
+                .Should().BeNull();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void UnresolvedGateWaitExcerpt_skips_a_file_larger_than_the_bounded_read()
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
+        try
+        {
+            // Well past the 4096-byte bound: even though the elapsed figure embedded in it would
+            // otherwise clear the gate-timeout bar, the file itself is never read
+            // (adversarial review, this cycle — HALL9K_VERIFY_GATE_WAIT_DIR is exported to the
+            // agent's own test code too, so this is not a purely hypothetical size).
+            string oversized = new string('x', 8192) + " (842s elapsed, 4 max concurrent)";
+            File.WriteAllText(Path.Combine(directory, "waiting-123-abc.txt"), oversized);
+
+            GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(directory, TimeSpan.FromMinutes(15))
+                .Should().BeNull();
         }
         finally
         {
@@ -126,7 +201,8 @@ public sealed class GateInfrastructureFailureClassifierTests
         string directory = Directory.CreateTempSubdirectory("h9k-gate-wait-test-").FullName;
         try
         {
-            GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(directory).Should().BeNull();
+            GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(directory, TimeSpan.FromMinutes(15))
+                .Should().BeNull();
         }
         finally
         {
@@ -136,5 +212,5 @@ public sealed class GateInfrastructureFailureClassifierTests
 
     [Fact]
     public void UnresolvedGateWaitExcerpt_is_null_for_a_nonexistent_directory() =>
-        GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(null).Should().BeNull();
+        GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(null, TimeSpan.FromMinutes(15)).Should().BeNull();
 }
