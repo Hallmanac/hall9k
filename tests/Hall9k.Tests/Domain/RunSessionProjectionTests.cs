@@ -281,4 +281,93 @@ public sealed class RunSessionProjectionTests
         projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
             id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
             "/wt/x", "task/x", ExecutorMode.Subscription, Now, SessionName: sessionName)));
+
+    /// <summary>
+    /// Task: agents on an interactive-mode task report outbound. A freshly dispatched build
+    /// session's own name is not a human's — nobody has self-registered yet, so there is no
+    /// address for a dispatched agent's outbound milestone messages to reach.
+    /// </summary>
+    [Fact]
+    public void No_registered_interactive_session_name_before_anyone_self_registers()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = Dispatched(projection, id, sessionName: "abc12345-build");
+
+        view.RegisteredInteractiveSessionName.Should().BeNull(
+            "RunDispatched's own SessionName is the build agent's, not a human's — nobody has registered a session yet");
+    }
+
+    /// <summary>
+    /// Once <c>h9k task register-session</c> lands, the human's own session name becomes the
+    /// address a dispatched agent's outbound milestones reach — and it survives a later, unrelated
+    /// dispatch (a fix or review session starting) rather than being clobbered the way
+    /// <see cref="RunDetails.ActiveSessions"/> is, because nothing but another
+    /// <see cref="InteractiveSessionStarted"/> ever touches <see cref="RunDetails.SessionName"/>
+    /// again for the rest of this run's life.
+    /// </summary>
+    [Fact]
+    public void Registered_interactive_session_name_is_the_humans_own_and_survives_later_dispatches()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = Dispatched(projection, id, sessionName: "abc12345-build");
+
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", "brians-terminal")), view);
+
+        view.RegisteredInteractiveSessionName.Should().Be("brians-terminal");
+
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now, Lens: ReviewLens.Conformance)), view);
+
+        view.RegisteredInteractiveSessionName.Should().Be(
+            "brians-terminal", "a later review dispatch clears ActiveSessions but never touches SessionName");
+    }
+
+    /// <summary>
+    /// A human did register, but their own Claude Code session carried no display name to send to
+    /// (<c>TaskRegisterSessionCommand.ReadClaudeSessionName</c> returning null) — an honestly blank
+    /// address, told apart from "nobody ever registered" only by <see cref="RunDetails.InteractiveClaudeSessionId"/>
+    /// being set, but equally "nothing to send to" for a dispatched agent's outbound milestones.
+    /// </summary>
+    [Fact]
+    public void Registered_interactive_session_name_is_blank_when_the_registered_session_has_no_display_name()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = Dispatched(projection, id, sessionName: "abc12345-build");
+
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", SessionName: "")), view);
+
+        view.RegisteredInteractiveSessionName.Should().Be(
+            string.Empty, "a human registered, but their own session carries no name to send to");
+        view.RegisteredInteractiveSessionName.Should().NotBeNull(
+            "distinct from nobody ever registering at all — InteractiveClaudeSessionId is set here");
+    }
+
+    /// <summary>
+    /// <c>h9k task start</c> appends this identical event for its own headless build agent, never a
+    /// human, and it always turns interactive mode on — so without a discriminator this write would
+    /// tell every later review/fix prompt that agent's own exited session is "the human's own
+    /// registered session" (independent pre-PR review, cycle 1, both lenses). The build-role suffix
+    /// (<see cref="SessionRoleName.Build"/>) is what tells it apart from an operator's own
+    /// registration, the same discriminator <c>TaskPhaseComposer</c> already relies on.
+    /// </summary>
+    [Fact]
+    public void Registered_interactive_session_name_stays_null_for_h9k_task_starts_own_headless_build_agent()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = Dispatched(projection, id, sessionName: "abc12345-build");
+
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", SessionName: "abc12345-build")),
+            view);
+
+        view.RegisteredInteractiveSessionName.Should().BeNull(
+            "the build agent's own session name is not a human's — h9k task start dispatched this run headless "
+            + "and nobody has run h9k task register-session against it");
+    }
 }

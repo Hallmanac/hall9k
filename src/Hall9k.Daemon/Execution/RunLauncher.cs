@@ -300,6 +300,17 @@ public sealed class RunLauncher(
                 // spawned yet — the whole point is that the dependent starts already knowing.
                 string? handoffs = await blockerContext.AssembleAsync(
                     runId, runDirectory, task, project, worktree.Path, mode, cancellationToken);
+                // interactiveMilestoneAddress stays null: this is a brand-new RunDispatched, so no
+                // h9k task register-session call could possibly have landed on it yet (task:
+                // agents on an interactive-mode task report outbound) — a genuinely fresh headless
+                // build under interactive mode always starts with nobody registered to address.
+                // TaskStartCommand's own headless-start dispatch is the only other build-role
+                // caller, and it is in the identical position, so a build session's own outbound
+                // milestones (OutboundMilestone.Build) log a skip on every production path today;
+                // only the review and fix roles dispatched later on this same run, once a human's
+                // own h9k task work claim has registered against it, can actually address one
+                // (independent pre-PR review, cycle 1, adversarial lens; AGENTS.md and
+                // docs/scope.md say so plainly).
                 prompt = AgentPromptBuilder.Build(
                     task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs);
             }

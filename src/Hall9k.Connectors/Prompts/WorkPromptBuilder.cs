@@ -3,6 +3,7 @@ using System.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -32,7 +33,8 @@ public static class WorkPromptBuilder
         bool isInteractive = false,
         bool isHandback = false,
         bool isDeliberateHeadlessStart = false,
-        bool requiresSelfRegistration = false)
+        bool requiresSelfRegistration = false,
+        string? interactiveMilestoneAddress = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -229,6 +231,21 @@ public static class WorkPromptBuilder
         }
 
         prompt.AppendLine("- End with a short summary: what you did, decisions made, assumptions, open questions.");
+
+        // Last, not immediately after AppendExternalInteractionLoggingRule (independent pre-PR
+        // review, cycle 1, both lenses): this method opens its own "##" heading, so calling it
+        // mid-list nested every rule appended after it under "Reporting to the human" instead of
+        // under "## Working rules". The live-attended build (isInteractive) is the human's own
+        // session — there is nobody else here for it to report to, so R8's outbound milestones
+        // apply only to a headless build dispatched under interactive mode (h9k task start, or a
+        // handback that kept it).
+        if (task.InteractiveModeEnabled && !isInteractive)
+        {
+            AppendOutboundMilestoneRules(
+                prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress,
+                parksAtBoundaryAfterward: !isDeliberateHeadlessStart);
+        }
+
         if (!isInteractive)
         {
             AppendHandoffRules(prompt);
@@ -884,6 +901,126 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  and never report their call as your own independent decision, whatever they asked.");
         prompt.AppendLine("  This is best-effort, not enforcement: nothing forces the call, and the platform");
         prompt.AppendLine("  records only what this and its other channels actually see.");
+    }
+
+    /// <summary>
+    /// R8's outbound half of interactive mode (task: agents on an interactive-mode task report
+    /// outbound, idea fcaded0b's design rulings): a small, fixed vocabulary of milestones
+    /// (<see cref="Hall9k.Domain.Features.Run.OutboundMilestone"/>) this dispatched agent sends to
+    /// the human's own registered session — not a running commentary, and not a substitute for
+    /// slice 8's own park, which holds at the phase boundary regardless of whether any message
+    /// ever lands. This method opens its own "##" heading, so every caller places it AFTER the
+    /// rest of its own bullet list — never in the middle of one — so the heading closes that list
+    /// out instead of nesting whatever came after it underneath "Reporting to the human"
+    /// (independent pre-PR review, cycle 1, both lenses: the two callers that continue a bullet
+    /// list past this call had exactly that bug). A milestone send is exactly the outside-
+    /// interaction case <see cref="AppendExternalInteractionLoggingRule"/> already commits this
+    /// session to logging — called earlier in every caller's own prompt, not necessarily
+    /// immediately above — restated here only for the parts that rule cannot know on its own —
+    /// when to send, and who to address.
+    /// <para>
+    /// The build role's own address is null on every production path today (independent pre-PR
+    /// review, cycle 1, adversarial lens): every headless build dispatch under interactive mode
+    /// starts a fresh <c>RunAggregate</c> stream, and nothing yet carries a registration forward
+    /// from an earlier run of the same task, so a build session's milestones always take the
+    /// no-registered-session branch below and log a skip. The review and fix roles, dispatched
+    /// later on that same run once a human's own <c>h9k task work</c> claim registered against it,
+    /// are the roles this can actually reach.
+    /// </para>
+    /// </summary>
+    /// <param name="phaseLabel">Names the phase in the bound sentence ("build", "review", "fix") — cosmetic only.</param>
+    /// <param name="milestones">
+    /// This role's own fixed list (<see cref="Hall9k.Domain.Features.Run.OutboundMilestone"/>);
+    /// its length IS the bound this method states, not a separately-tracked number.
+    /// </param>
+    /// <param name="address">
+    /// The human's registered interactive session name for this run
+    /// (<c>RunDetails.RegisteredInteractiveSessionName</c>), resolved by the caller at
+    /// prompt-build time. Null when nobody has ever run <c>h9k task register-session</c> against
+    /// this run — every fresh headless dispatch under interactive mode starts this way
+    /// (<c>h9k task start</c>, an ordinary dispatch carrying the flag forward from an earlier
+    /// <c>h9k task release --keep-interactive</c>, or a retry, reopen, or follow-up redispatch:
+    /// each one starts a new <c>RunAggregate</c> stream, and no registration carries forward from
+    /// an earlier one yet). A handback is never one of these cases: <c>TaskDecider.HandBack</c>
+    /// clears the interactive-mode flag unconditionally, so a handback-dispatched run never calls
+    /// this method at all. Blank when someone did register but their own session carries no
+    /// display name to send to. Both null and blank are the honest "nothing to address" AGENTS.md's
+    /// own "never guess at unobserved facts" rule asks this method to degrade against rather than
+    /// invent a name for.
+    /// </param>
+    /// <param name="parksAtBoundaryAfterward">
+    /// True (the default, and the only case for the review and fix roles, which the review engine
+    /// itself always dispatched) when slice 8's own phase-boundary park actually holds the instant
+    /// this session ends. False only for a build session dispatched by <c>h9k task start</c>
+    /// (<c>isDeliberateHeadlessStart</c>): nothing supervises that run once it starts, and
+    /// verification, delivery, and the review loop's own first boundary are a human's to trigger by
+    /// hand with <c>h9k task deliver</c> — asserting a park already holds there would contradict the
+    /// rule this same prompt gives the session for that path (independent pre-PR review, cycle 1,
+    /// both lenses).
+    /// </param>
+    public static void AppendOutboundMilestoneRules(
+        StringBuilder prompt, string phaseLabel, IReadOnlyList<string> milestones, string? address,
+        bool parksAtBoundaryAfterward = true)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine("## Reporting to the human (interactive mode)");
+        prompt.AppendLine();
+        prompt.AppendLine("This task is worked under interactive mode: a human is the arbiter at each phase");
+        prompt.AppendLine("boundary, and staying present means being told rather than polling. Your part is");
+        prompt.AppendLine("judicious, not a running commentary — at most " + milestones.Count
+            + (milestones.Count == 1 ? " message" : " messages") + $" for this {phaseLabel} phase, one per");
+        prompt.AppendLine("moment below, in order:");
+        prompt.AppendLine();
+        for (int i = 0; i < milestones.Count; i++)
+        {
+            bool isFinal = i == milestones.Count - 1;
+            prompt.AppendLine(isFinal
+                ? $"- **{milestones[i]}** — your last act before you end normally. Send the actual report"
+                : $"- **{milestones[i]}** — a one-line note, the moment it becomes true.");
+            if (isFinal)
+            {
+                prompt.AppendLine("  (your closing summary, handoff, or verdict and findings — not just this");
+                prompt.AppendLine("  label), then end.");
+                if (parksAtBoundaryAfterward)
+                {
+                    prompt.AppendLine("  This task's interactive-mode phase-boundary park holds from there until");
+                    prompt.AppendLine("  the human's `h9k review proceed` or `h9k review resolve`, whether or not");
+                    prompt.AppendLine("  the send below actually lands.");
+                }
+                else
+                {
+                    prompt.AppendLine("  Nothing supervises this run once you end: verification, delivery, and");
+                    prompt.AppendLine("  the review loop's own first boundary are a human's to trigger by hand");
+                    prompt.AppendLine("  with `h9k task deliver`, not something that starts on its own the moment");
+                    prompt.AppendLine("  you finish, whether or not the send below actually lands.");
+                }
+            }
+        }
+
+        prompt.AppendLine();
+        if (address.IsNotBlank())
+        {
+            prompt.AppendLine($"Address: `{address}` — the human's own registered session, reached through the");
+            prompt.AppendLine("cross-session mesh's SendMessage tool. Every milestone you send — whether it lands");
+            prompt.AppendLine("or the session cannot be reached — is exactly the outside-interaction case the rule");
+            prompt.AppendLine("above already commits you to logging: log each one there, so the record of what the");
+            prompt.AppendLine("human was told lives on the run stream, not only in a transcript. A send that fails");
+            prompt.AppendLine("(the session has ended, or SendMessage otherwise cannot reach it) is logged the same");
+            prompt.AppendLine("way, rather than dropped silently, and never blocks you — keep working either way.");
+        }
+        else
+        {
+            prompt.AppendLine("No registered human session is on record for this run right now — nobody has run");
+            prompt.AppendLine("`h9k task register-session` against it. That is the ordinary case for a fresh");
+            prompt.AppendLine("headless dispatch under interactive mode (`h9k task start`, an ordinary dispatch");
+            prompt.AppendLine("carrying the flag forward from an earlier `h9k task release --keep-interactive`,");
+            prompt.AppendLine("or a retry, reopen, or follow-up redispatch) — each starts a new run, and no");
+            prompt.AppendLine("registration carries forward from an earlier one yet. Skip sending these");
+            prompt.AppendLine(parksAtBoundaryAfterward
+                ? "milestones; the phase boundary still parks for the human's own proceed regardless."
+                : "milestones; nothing parks here either — h9k task deliver is still a human's to trigger by hand.");
+            prompt.AppendLine("Log this once for the phase, not once per milestone, through the rule above.");
+        }
     }
 
     /// <summary>

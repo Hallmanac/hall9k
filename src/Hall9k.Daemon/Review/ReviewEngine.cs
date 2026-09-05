@@ -1158,7 +1158,8 @@ public sealed class ReviewEngine(
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
             priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions, sinceSha: sinceSha,
-            priorBoundaryApprovals: context.PriorBoundaryApprovals);
+            priorBoundaryApprovals: context.PriorBoundaryApprovals,
+            interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) — except
         // the mandatory FinalFullPass, which resolves its own knob (task: completing the per-stage
@@ -1224,7 +1225,8 @@ public sealed class ReviewEngine(
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
             sinceSha, priorCycleMode, priorCycleSinceSha, context.PriorRulings,
-            context.PriorHumanDirectedInteractions, context.PriorBoundaryApprovals);
+            context.PriorHumanDirectedInteractions, context.PriorBoundaryApprovals,
+            interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -1414,7 +1416,9 @@ public sealed class ReviewEngine(
         string prompt = resumesRebaseDispute
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings)
-            : AgentPromptBuilder.BuildReviewFix(context.Task, context.Project, context.Run.Branch, findings, cycle);
+            : AgentPromptBuilder.BuildReviewFix(
+                context.Task, context.Project, context.Run.Branch, findings, cycle,
+                context.Run.RegisteredInteractiveSessionName);
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
