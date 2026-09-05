@@ -50,8 +50,19 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
         // claim still sitting exactly where h9k task work left it (Dispatched or Running): once
         // h9k task deliver (or handback) has handed the run into the standard pipeline, that
         // pipeline owns the run's lifecycle and this command has no business retiring it out
-        // from under it.
-        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && task.CurrentRunId is { } currentRunId)
+        // from under it. Excludes a pr-review task outright, unlike the state check above:
+        // PrReviewSentinelClaim's own IsLive branch names "h9k task abandon" as the honest way
+        // out of a live sentinel run, so abandon must keep working there, but that run is
+        // launched through RunLauncher and monitored by RunSupervisor exactly like an ordinary
+        // headless dispatch — RunSupervisor.CompleteRunAsync appends its own TokensRecorded from
+        // the identical stream.jsonl the moment the agent's result line lands, and its own
+        // AgentSessionCompleted append later resurrects a run this command marked Superseded
+        // (RunDetails.Apply unconditionally sets RunState.Verifying), the exact hazard
+        // TaskDeliverCommand's own re-check exists to catch. Recovering tokens or superseding the
+        // run here would double-book the former and race the latter against the daemon's own
+        // supervisor (independent pre-PR review, cycle 1, both lenses).
+        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && task.Type != TaskType.PrReview
+            && task.CurrentRunId is { } currentRunId)
         {
             RunDetails? run = await session.LoadAsync<RunDetails>(currentRunId, cancellationToken);
             if (run is not null && (run.State == RunState.Dispatched || run.State == RunState.Running))
