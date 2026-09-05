@@ -623,11 +623,22 @@ public sealed class ReviewEngine(
                     // ran" actually means without moving HEAD at all — exactly the gap
                     // VerifyCommandsFingerprintMatchesAsync's own doc names and the Settling branch's
                     // gateAlreadyRanFullOverCurrentHead already closes for its own resume shape.
-                    string? reverifyCurrentHeadSha =
-                        await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
+                    // Scoped to interactive mode (independent pre-PR review, cycle 1, conformance
+                    // lens): the resume shape this guard exists for — re-entering this case on
+                    // `h9k review proceed` with the worktree untouched — only this task's own flag
+                    // can produce; without the scope, a non-interactive run whose fix session
+                    // completed with no commit landed (the finding needed no change, or its only
+                    // edits stayed uncommitted) would also skip a gate the byte-for-byte
+                    // fire-and-forget pipeline has always re-run, against the sixth acceptance
+                    // criterion's own promise for a task without the flag. The `&&` short-circuit
+                    // also keeps the head-sha git shell-out (and the fingerprint read behind it) off
+                    // the non-interactive pipeline's own hot path entirely: neither runs unless
+                    // interactive mode is on and a prior gate head is already on record (independent
+                    // pre-PR review round 2, PR #224, conformance lens).
                     bool reverifyGateAlreadyRan =
-                        run.LastGateHeadSha is not null
-                        && run.LastGateHeadSha == reverifyCurrentHeadSha
+                        context.Task.InteractiveModeEnabled
+                        && run.LastGateHeadSha is not null
+                        && run.LastGateHeadSha == await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken)
                         && await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
                     if (!reverifyGateAlreadyRan && !await verification.VerifyAsync(
                         context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, cancellationToken))
