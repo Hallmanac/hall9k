@@ -36,31 +36,51 @@ Organize the current changes in this repository into cohesive, buildable commits
 
 ## Verifying a recompose (when this skill is the recompose step)
 
-AGENTS.md's checkpoint-commit workflow invokes this skill to recompose a tree that was just
-`git reset --mixed` to a recorded pre-reset tip (the fork point), turning checkpoint commits
-into real history. That caller, or any other reset-and-recompose caller, is not finished once
-the commits above are made. It is finished only once **both** of these pass:
+AGENTS.md's checkpoint-commit workflow records a pre-reset tip (`git rev-parse HEAD`), then
+resets to the branch's own fork point (`git merge-base origin/<base> HEAD` — an earlier,
+separate commit from the pre-reset tip, never the same one) before invoking this skill to
+recompose the checkpoint commits into real history. That caller, or any other
+reset-and-recompose caller, is not finished once the commits above are made. It is finished
+only once **both** of these pass:
 
 1. `git diff <pre-reset-tip> HEAD` — must print nothing.
 2. `git status --porcelain` — must print nothing.
 
 **Check 1 alone is not enough, and treating it as the whole verification is the exact defect
-this section exists to close.** The diff compares committed trees only. A composed commit
-that forgets to `git add` a file leaves that file sitting untracked in the working tree
-rather than reverted — an untracked file never appears in a diff between two commits, so the
-diff reads empty whether or not the file actually got committed. Check 2 is the one that
-actually catches a forgotten file: it inspects the working tree itself, not the commit graph,
-so an omitted file shows up there even when the diff is silent about it.
+this section exists to close.** Check 1 does catch a composed commit that forgot to stage a
+file the pre-reset tip already held committed — that file reappears in the diff as a
+deletion, not silence. The actual blind spot is narrower: a file that was never
+checkpoint-committed before the pre-reset tip was recorded (created afterward, or left
+staged or unstaged and never committed at all). Such a file was never part of the pre-reset
+tip's tree to begin with, so it cannot appear in a diff against that tree either way — a
+mixed reset never touches the working tree, so the file just sits there, untracked, through
+the reset and the recompose alike, with the diff silent about it the whole time. Check 2 is
+the one that actually catches this: it inspects the working tree itself, not the commit
+graph, so the file shows up there even when the diff is silent about it.
 
-If check 2 finds anything, a file did not make it into any composed commit: stage it and fold
-it into whichever commit should own it, or, if it is a file the plan deliberately excludes,
-roll it back (`git checkout -- <path>` / `git clean`) rather than leaving it loose — then
-re-run **both** checks again. A clean diff plus a dirty `git status` is still a failed
+If check 2 finds anything, decide which of two things it is before touching it:
+
+- **It belongs in this branch, and was never checkpointed before the pre-reset tip was
+  recorded.** Do not fold it into an already-composed commit — the pre-reset tip never held
+  it, so doing so makes check 1 permanently non-empty over content that legitimately
+  belongs. Instead, checkpoint-commit it now (an ordinary checkpoint commit), record a *new*
+  pre-reset tip (`git rev-parse HEAD`), and redo the reset-and-recompose from there: this
+  content only becomes eligible for the diff check once it has been through a pre-reset tip
+  of its own.
+- **It was never meant to land** (a scratch file, a plan-excluded leftover). Roll it back
+  without touching anything else it did not create: `git checkout -- <path>` for a tracked
+  file carrying unwanted modifications, `git clean -f -- <path>` for an untracked file
+  (always with an explicit pathspec — a bare `git clean` refuses to run under
+  `clean.requireForce`, and `git clean -fd` with no pathspec deletes every other untracked
+  file in the tree too, including ones still meant to be folded in).
+
+Then re-run **both** checks again. A clean diff plus a dirty `git status` is still a failed
 recompose; never conclude with either check failing.
 
 Origin incident (2026-09-05, GitHub issue #218): five fix-lap sessions in one night recomposed
 a tree, ran only the diff check, found it empty, and concluded with up to seven files sitting
-uncommitted — the diff check was structurally blind to the omission, so it could not have
-caught it no matter how carefully it was read. `VerificationRunner`'s dirty-worktree guard
-caught each one after the session had already exited, and `h9k task retry` recovered them,
-but the session itself should never have believed its work was committed.
+uncommitted — those files were never checkpointed before the pre-reset tip was recorded, so
+the diff check was structurally blind to them no matter how carefully it was read.
+`VerificationRunner`'s dirty-worktree guard caught each one after the session had already
+exited, and `h9k task retry` recovered them, but the session itself should never have
+believed its work was committed.

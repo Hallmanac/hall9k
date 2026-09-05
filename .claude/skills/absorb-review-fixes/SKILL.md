@@ -57,9 +57,18 @@ style, do not use this skill; commit normally on top.
    and `HEAD` — it was never in either tree to begin with — so the diff can read empty while
    a review fix is sitting loose in the working tree, unabsorbed and about to be lost the
    moment the branch is pushed. `git status --porcelain` is what actually catches this: it
-   inspects the working tree, not the commit graph. If it shows anything, stage the leftover
-   change and fold it into its owning commit the same way step 1 does, or discard it if it
-   was never meant to land, then re-run **both** checks again before moving on.
+   inspects the working tree, not the commit graph.
+
+   If it shows a leftover that was never meant to land, discard it and re-run both checks.
+   If it shows a genuine fix that missed step 1, do not just fold it into its owning commit
+   and re-diff against the original `$old_tip` — that tip never held this fix either, so the
+   diff would stay non-empty forever over content that legitimately belongs. Instead: stage
+   it, `git commit --fixup=<owning-commit>` the same way step 1 does, fold it in with the same
+   autosquash rebase as step 2, then treat the result as an untested tree — re-run the
+   project's verification gates against it (this fix was never part of what the gates last
+   passed, so nothing has proven this tree green until they run again), and only once they
+   pass re-record `old_tip=$(git rev-parse HEAD)` as the new baseline. Re-run both checks
+   again against that new baseline before moving on.
 
 4. Pushing the rewritten branch requires `--force-with-lease` (never plain `--force`; a
    failed lease means the branch moved on origin — stop and re-inspect, don't retry
