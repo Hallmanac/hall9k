@@ -167,6 +167,20 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 "follow-up applies your decision and retries the rebase.");
         }
 
+        // The mandatory final pass's own pre-flight rebase (task: a run rebases its branch onto
+        // the current base branch) refuses merge-ready for the identical reason the post-PR
+        // rebase dispute above does — nothing has been rebased, so there is no diff to sign off —
+        // but keyed on ParkedFromReviewPhase rather than FollowUpKind/ReviewCycle: this dispute
+        // can land mid-run, at any review cycle, with no follow-up and no pull request open yet.
+        if (settings.MergeReady && run.ParkedFromReviewPhase == ReviewPhase.RebaseRecoveryDisputed)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is parked on a disputed pre-final-pass rebase conflict — merge-ready " +
+                "has no meaning here, because nothing has been rebased yet and the branch still " +
+                "conflicts with its base. Resolve with --needs-fixes \"<how to resolve the conflict>\" " +
+                "instead; a fresh recovery session applies your decision and retries the rebase.");
+        }
+
         // Read before the append below, because SaveChangesAsync drives the inline
         // RunDetailsProjection (ProjectionLifecycle.Inline, MartenConfiguration.cs), whose own
         // Apply(ReviewParkResolved) clears ParkedReason to null the moment this resolve commits.
@@ -225,6 +239,7 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         // ParkedFromState == Verifying, with cycle 1's review not yet dispatched either, so the
         // aggregate re-enters at the gates there too rather than settling unreviewed — this
         // message now agrees, without needing run.ParkedIsInteractiveGate as a second condition.
+        bool rebaseRecoveryDispute = run.ParkedFromReviewPhase == ReviewPhase.RebaseRecoveryDisputed;
         FormattableString outcome = (settings.MergeReady, run.ParkedFromState == RunState.Verifying) switch
         {
             (true, true) =>
@@ -233,6 +248,8 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 $"[dim]Run {runId} resolved merge-ready — the daemon runs one mandatory full-scope verification gate over the fix, unless this tip was already gated at full scope, then opens the pull request if it passes.[/]",
             (false, _) when run.ParkedNeedsFixesOffersNoProgress =>
                 $"[dim]Run {runId} resolved needs-fixes — but this park's review-cycle cap or lifetime budget won't clear from a plain grant. The park itself already named the cap, its level, and the one lever that actually raises it: {parkedReasonBeforeResolve} Unless you raised it before running this command, the run re-parks behind this grant rather than settling — sometimes after one more fix session lands real work, sometimes before one ever dispatches.[/]",
+            (false, _) when rebaseRecoveryDispute =>
+                $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fresh rebase-recovery session carrying your resolution.[/]",
             _ =>
                 $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fix session with your reason as its findings.[/]",
         };

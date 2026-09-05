@@ -216,6 +216,19 @@ internal static class TaskPhaseComposer
             : run.ReviewCycleMode == ReviewMode.FinalFullPass ? " (final full pass)"
             : string.Empty;
         string cycle = run.ReviewCycle > 0 ? $"review cycle {run.ReviewCycle}{mode}" : "review";
+        // AgentRole.Fix alone cannot tell an ordinary review-fix session apart from the
+        // pre-final-pass rebase-recovery session (task: a run rebases its branch onto the current
+        // base branch) — both resolve the Fix role's model and share the role, the same reason
+        // ActiveSession.Name is recorded rather than reconstructed from Role/Lens alone (see that
+        // record's own doc). Named sessions only: a stream written before session naming existed
+        // reads as an ordinary fix, the honest default this line already gave before this
+        // distinction existed.
+        if (ActiveRole(run) == AgentRole.Fix && run.ActiveSessions is [{ Name: { } name }, ..]
+            && name.Contains(SessionRoleName.PreFinalPassRebasePrefix, StringComparison.Ordinal))
+        {
+            return new TaskPhase(cycle, session, "rebasing onto the base branch before the final pass");
+        }
+
         return ActiveRole(run).Value switch
         {
             "Fix" => new TaskPhase(cycle, session, "fix session running"),
