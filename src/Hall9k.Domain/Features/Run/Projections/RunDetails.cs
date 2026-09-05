@@ -304,7 +304,24 @@ public sealed class RunDetails
     /// </para>
     /// </summary>
     public DateTimeOffset? LastInteractiveActivityAt { get; set; }
+
+    /// <summary>
+    /// Every session-error retry this run has recorded (task: a session that reports an error
+    /// result is retried once in place), in the order it happened. Whether a given retry
+    /// succeeded or failed a second consecutive time is not tracked separately here — it is
+    /// queryable by correlating a record's own <see cref="SessionErrorRetryRecord.Leg"/>/
+    /// <see cref="SessionErrorRetryRecord.Cycle"/>/<see cref="SessionErrorRetryRecord.Lens"/>
+    /// against whatever the run's own <see cref="State"/> and <see cref="FailureReason"/>
+    /// eventually settled on, the same way the platform's own event-store measurements
+    /// (AGENTS.md's background section on this task) are taken directly from the stream rather
+    /// than a second, parallel counter that could disagree with it.
+    /// </summary>
+    public List<SessionErrorRetryRecord> SessionErrorRetries { get; set; } = [];
 }
+
+/// <summary>One retry <see cref="RunDetailsProjection.Apply(IEvent{RunSessionErrorRetried}, RunDetails)"/> recorded on <see cref="RunDetails.SessionErrorRetries"/>.</summary>
+public sealed record SessionErrorRetryRecord(
+    RunSessionLeg Leg, int? Cycle, ReviewLens? Lens, string ObservedMessage, DateTimeOffset RetriedAt);
 
 public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
 {
@@ -723,6 +740,10 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             "token budget exhausted - resumes when the subscription window resets";
         view.State = RunState.BudgetParked;
     }
+
+    public void Apply(IEvent<RunSessionErrorRetried> @event, RunDetails view) =>
+        view.SessionErrorRetries.Add(new SessionErrorRetryRecord(
+            @event.Data.Leg, @event.Data.Cycle, @event.Data.Lens, @event.Data.ObservedMessage, @event.Data.RetriedAt));
 
     public void Apply(IEvent<RunFailed> @event, RunDetails view)
     {
