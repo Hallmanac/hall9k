@@ -40,10 +40,11 @@ public static class AgentPromptBuilder
         string branch,
         string worktreePath,
         bool resumesPreviousWork = false,
-        string? blockerContext = null) =>
+        string? blockerContext = null,
+        string? interactiveMilestoneAddress = null) =>
         WorkPromptBuilder.Build(
             task, project, branch, worktreePath, resumesPreviousWork, blockerContext, task.RetryReason,
-            isHandback: task.ResumesFromHandback);
+            isHandback: task.ResumesFromHandback, interactiveMilestoneAddress: interactiveMilestoneAddress);
 
     /// <summary>
     /// The line a follow-up ends with when a review thread is a disagreement it cannot
@@ -607,14 +608,17 @@ public static class AgentPromptBuilder
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         ReviewMechanicsOverride? mechanicsOverride = null,
         string? sinceSha = null,
-        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null) =>
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
+        string? interactiveSessionAddress = null) =>
         lens == ReviewLens.Adversarial
             ? BuildAdversarialReview(
                 task.Id, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
-                priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals)
+                priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals,
+                task.InteractiveModeEnabled, interactiveSessionAddress)
             : BuildConformanceReview(
                 task, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
-                priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals);
+                priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals,
+                interactiveSessionAddress);
 
     /// <summary>
     /// A pr-review task's one-shot lens (PrReviewEngine): delegates to <see cref="BuildReview"/>
@@ -718,7 +722,8 @@ public static class AgentPromptBuilder
         string priorFindings, string priorFixPosition, string? sinceSha, ReviewMode priorCycleMode,
         string? priorCycleSinceSha, IReadOnlyList<ReviewParkResolution>? priorRulings = null,
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
-        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null)
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
+        string? interactiveSessionAddress = null)
     {
         bool priorCycleReadFullBranch =
             priorCycleMode != ReviewMode.FinalFullPass || priorCycleSinceSha is null;
@@ -826,6 +831,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.**");
         AppendReviewGateStatus(prompt, project);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
+        if (task.InteractiveModeEnabled)
+        {
+            AppendOutboundMilestoneRules(prompt, task.Id, "review", OutboundMilestone.Review, interactiveSessionAddress);
+        }
+
         AppendFindingContract(prompt, project, ReviewMode.Verify);
         AppendVerifyTrackTagContract(prompt, tracks);
         AppendVerdictContract(prompt, cycle, ReviewMode.Verify);
@@ -903,7 +913,8 @@ public static class AgentPromptBuilder
         IReadOnlyList<ReviewParkResolution>? priorRulings,
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         ReviewMechanicsOverride? mechanicsOverride = null, string? sinceSha = null,
-        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null)
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
+        string? interactiveSessionAddress = null)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1032,6 +1043,14 @@ public static class AgentPromptBuilder
 
         AppendReviewMechanics(prompt, project, branch, mode, sinceSha, includesAcceptanceCriteria: true, mechanicsOverride);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
+        // Not for a pr-review task's own lens (DiffIsForeignPullRequest): that engine parks on its
+        // own findings-report gate (§16 #99), never slice 8's boundaries, so there is no boundary
+        // for a milestone message to precede.
+        if (task.InteractiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
+        {
+            AppendOutboundMilestoneRules(prompt, task.Id, "review", OutboundMilestone.Review, interactiveSessionAddress);
+        }
+
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
         AppendVerdictContract(prompt, cycle, mode, mechanicsOverride);
         prompt.AppendLine();
@@ -1071,7 +1090,9 @@ public static class AgentPromptBuilder
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         ReviewMechanicsOverride? mechanicsOverride = null,
         string? sinceSha = null,
-        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null)
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
+        bool interactiveModeEnabled = false,
+        string? interactiveSessionAddress = null)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1136,6 +1157,13 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  the interaction between what changed and what did not.");
         AppendReviewMechanics(prompt, project, branch, mode, sinceSha, includesAcceptanceCriteria: false, mechanicsOverride);
         AppendExternalInteractionLoggingRule(prompt, taskId);
+        // Not for a pr-review task's own lens (DiffIsForeignPullRequest): see BuildConformanceReview's
+        // identical guard for why that engine's park never reaches slice 8's boundaries.
+        if (interactiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
+        {
+            AppendOutboundMilestoneRules(prompt, taskId, "review", OutboundMilestone.Review, interactiveSessionAddress);
+        }
+
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
         AppendVerdictContract(prompt, cycle, mode, mechanicsOverride);
         prompt.AppendLine();
@@ -1945,7 +1973,8 @@ public static class AgentPromptBuilder
     /// </para>
     /// </summary>
     public static string BuildReviewFix(
-        TaskDetails task, ProjectDetails project, string branch, string findings, int cycle)
+        TaskDetails task, ProjectDetails project, string branch, string findings, int cycle,
+        string? interactiveSessionAddress = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Fix the verified findings from an independent pre-PR review");
@@ -1972,6 +2001,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  the verification gates and a fresh review after you finish.");
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
+        if (task.InteractiveModeEnabled)
+        {
+            AppendOutboundMilestoneRules(prompt, task.Id, "fix", OutboundMilestone.Fix, interactiveSessionAddress);
+        }
+
         prompt.AppendLine("- **Follow the platform's disposition for each finding**, in the section headed");
         prompt.AppendLine($"  \"{ReviewFindingDispositions.Heading}\" if the findings above have one. It is");
         prompt.AppendLine("  machine bookkeeping over the reviewers' declared severity and scope, and it is not");
