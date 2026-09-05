@@ -391,6 +391,15 @@ public sealed class TaskAggregate
         {
             ReviewStageComposition = @event.ReviewStageComposition.Value;
         }
+
+        // The third clearing act alongside Apply(TaskHandedBack) and a default
+        // Apply(TaskRequeued) — the one that needs no active interactive claim at all (task:
+        // interactive mode becomes a recorded property of the task, the gap independent pre-PR
+        // review, cycle 1, found in h9k task start).
+        if (@event.ClearInteractiveMode)
+        {
+            InteractiveModeEnabled = false;
+        }
     }
 
     public void Apply(TaskSessionCapOverridden @event) => SessionCap = @event.SessionCap;

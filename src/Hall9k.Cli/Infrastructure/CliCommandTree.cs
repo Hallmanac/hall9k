@@ -499,12 +499,14 @@ public static class CliCommandTree
                     "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies. "
                     + "Draft-only for all of those — a published task promises it may be assigned at any moment "
                     + "and an assigned one promises a node may read it at any moment, and editing them would break "
-                    + "both. --queue-first/--clear-queue-first is the one exception (Decisions Log #127): a "
-                    + "scheduling fact, not part of the readiness contract, settable on a call that names nothing "
-                    + "else in any live state — Queued, Blocked, a currently Claimed task (for its next turn in "
-                    + "the queue), even a Done one (for the follow-up run a later reopen might dispatch); refused "
-                    + "only on Abandoned, which nothing ever requeues from. Each option passed replaces that part; "
-                    + "each one left off is left alone.")
+                    + "both. --queue-first/--clear-queue-first (Decisions Log #127) and --clear-interactive-mode "
+                    + "(task: interactive mode becomes a recorded property of the task) are the two exceptions: "
+                    + "scheduling/mode facts, not part of the readiness contract, each settable on a call that "
+                    + "names nothing else in any live state — Queued, Blocked, a currently Claimed task (for its "
+                    + "next turn in the queue, or its run's next phase boundary), even a Done one (for the "
+                    + "follow-up run a later reopen might dispatch); refused only on Abandoned, which nothing "
+                    + "ever requeues from. Each option passed replaces that part; each one left off is left "
+                    + "alone.")
                 .WithExample("task", "revise", "28b19893", "--criteria", "\"h9k status shows the blocked reason\"")
                 .WithExample("task", "revise", "28b19893", "--blocked-by", "3f2a91b2", "--blocked-by", "91bd44c0")
                 .WithExample("task", "revise", "28b19893", "--clear-dependencies")
@@ -512,7 +514,8 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--clear-epic")
                 .WithExample("task", "revise", "28b19893", "--queue-first")
                 .WithExample("task", "revise", "28b19893", "--clear-queue-first")
-                .WithExample("task", "revise", "28b19893", "--review-stage-composition", "default");
+                .WithExample("task", "revise", "28b19893", "--review-stage-composition", "default")
+                .WithExample("task", "revise", "28b19893", "--clear-interactive-mode");
             task.AddCommand<TaskSetReviewCapsCommand>("set-review-caps")
                 .WithDescription(
                     "Override one or more of this task's four review-cycle caps — the conformance and "

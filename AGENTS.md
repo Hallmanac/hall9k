@@ -131,6 +131,7 @@ h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or UR
 h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task revise <id> --queue-first                # the one revision Draft-only doesn't gate: marks the task-level queue-first fact (Decisions Log #127), settable in any live state; --clear-queue-first removes it
+h9k task revise <id> --clear-interactive-mode     # the other revision Draft-only doesn't gate: clears the interactive-mode flag (below) directly, settable in any live state, for when neither h9k task handback nor a default h9k task release has an active interactive claim left to act on
 h9k task revise <id> --review-stage-composition <VALUE|default>   # Draft-only, unlike the review caps below — a live change reaches only the task's next run (Decisions Log #129)
 h9k task set-review-caps <id> --max-compliance-review-cycles <N>   # a task-level review-cycle-cap override, settable at any time — even while the run is live (Decisions Log #112)
 h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
@@ -211,7 +212,17 @@ triggers; there is no `--interactive` flag on `assign` — edges still gate auto
 exactly as before, and only this deliberate human claim gets the warn-and-proceed path. Whichever
 state it entered from, the claim itself is held by the human, not a process, so there is no lease
 and no heartbeat reclaim; closing the terminal is a normal way to leave, and running
-`h9k task work` again re-enters the same worktree (Decisions Log #103).
+`h9k task work` again re-enters the same worktree (Decisions Log #103). This claim always turns on
+the task's own interactive-mode flag (task: interactive mode becomes a recorded property of the
+task, design ruling R2): from here on, this task's run — and any later follow-up, retry, or reopen
+of it — parks at each of the review engine's own four routine phase boundaries (build done to
+review, review verdict to fix, fix to re-review, gates to pull request) for a recorded
+`h9k review proceed` or `h9k review resolve`, whether or not a human is still building it (below).
+`h9k task handback` and a default `h9k task release` are the two ordinary exit doors that turn it
+back off; `h9k task revise <id> --clear-interactive-mode` is the one that still reaches it once
+neither of those has an active interactive claim left to act on (a headless follow-up dispatched
+under a real node claim while the flag is still on, or the task has already reached Done with its
+pull request open).
 
 By default `h9k task work` claims and cuts as above, then prints the worktree path, the branch,
 and a starting prompt (assembled through `WorkPromptBuilder`, the same code every path already
@@ -273,7 +284,14 @@ not in fact dispatch, and the acknowledgment itself stays on record for whicheve
 the task next. `h9k task deliver` recovers a start-it-mine session's own handoff and token
 usage from its `stream.jsonl` at delivery time — the only point anything on this node reads that
 file back, since a run dispatched under the sentinel node id above is never adopted to do it any
-other way.
+other way. A direct `h9k task start` invocation — unlike `h9k task handback --now`'s own call into
+this same mechanism, which passes false — always turns on the task's own interactive-mode flag too
+(task: interactive mode becomes a recorded property of the task, design ruling R2), the identical
+fact `h9k task work`'s claim above always sets: the build here is headless either way, but from
+this claim on, the run still parks at each of the review engine's own four routine phase boundaries
+for a recorded `h9k review proceed` or `h9k review resolve`, so a task started this way is no
+longer the fire-and-forget dispatch it was before this flag existed. The same two ordinary exit
+doors, and the same `h9k task revise --clear-interactive-mode` fallback, turn it back off.
 
 ```bash
 h9k task start <id>                              # dispatch a Published, Queued, or already-Blocked task headless, on the spot, ceiling-exempt
