@@ -342,7 +342,7 @@ public sealed partial class VerificationRunner(
             // that, unclassified — the retry earned it a second look, not a second pass.
             string reason = retryIsInfrastructureFailure
                 ? $"Gate '{gate.Name}' failed twice in a row with an infrastructure-classified " +
-                  $"signature (connection-class failure, not the agent's work). First attempt: " +
+                  $"signature (an environment failure, not the agent's work). First attempt: " +
                   $"{summary} Retry attempt: {retrySummary}"
                 : retrySummary;
 
