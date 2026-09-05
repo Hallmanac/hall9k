@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Infrastructure.Bootstrap;
@@ -158,6 +159,20 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 "follow-up applies your decision and retries the rebase.");
         }
 
+        // Read before the append below, because SaveChangesAsync drives the inline
+        // RunDetailsProjection (ProjectionLifecycle.Inline, MartenConfiguration.cs), whose own
+        // Apply(ReviewParkResolved) clears ParkedReason to null the moment this resolve commits.
+        // The outcome message's no-progress arm below quotes this text directly rather than
+        // pointing the operator at h9k task show, which by the time they run it has nothing left
+        // to name (independent pre-PR review, cycle 1) — the park reason itself already names the
+        // exact cap or budget and the one correct lever for whichever level supplied it
+        // (ReviewEngine.TakeoverCapParkReason), so repeating that judgment here would only risk
+        // getting it wrong a second time (independent pre-PR review, cycle 1, conformance lens).
+        RunDetails? runDetailsBeforeResolve = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        string parkedReasonBeforeResolve = runDetailsBeforeResolve?.ParkedReason.IsNotBlank() == true
+            ? runDetailsBeforeResolve.ParkedReason!
+            : "no reason was recorded for this park";
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         ReviewVerdict verdict = settings.MergeReady ? ReviewVerdict.MergeReady : ReviewVerdict.NeedsFixes;
         // Normalized so the stored event agrees with how the rest of the pipeline reads it:
@@ -204,7 +219,7 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
             (true, false) =>
                 $"[dim]Run {runId} resolved merge-ready — the daemon runs one mandatory full-scope verification gate over the fix, unless this tip was already gated at full scope, then opens the pull request if it passes.[/]",
             (false, _) when run.ParkedNeedsFixesOffersNoProgress =>
-                $"[dim]Run {runId} resolved needs-fixes — but this park's review-cycle cap or lifetime budget is already spent, so it will not clear: the run re-parks with the identical reason instead of a fix session's progress clearing it. Raise the cap first (h9k task set-review-caps, or the project/node default) if you want the fix session to actually land.[/]",
+                $"[dim]Run {runId} resolved needs-fixes — but this park's review-cycle cap or lifetime budget won't clear from a plain grant. The park itself already named the cap, its level, and the one lever that actually raises it: {parkedReasonBeforeResolve} Unless you raised it before running this command, the run re-parks behind this grant rather than settling — sometimes after one more fix session lands real work, sometimes before one ever dispatches.[/]",
             _ =>
                 $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fix session with your reason as its findings.[/]",
         };
