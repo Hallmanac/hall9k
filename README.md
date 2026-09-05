@@ -267,11 +267,10 @@ them rather than through an MCP server. That is also the direction of travel, si
 sessions are moving to a slim profile where MCP servers are declared per task rather than
 inherited wholesale ([`backlog/29-slim-agent-profile.md`](backlog/29-slim-agent-profile.md)).
 
-Beyond `gh`, Docker, `git`, and the Claude Code CLI already covered above, the ones that have
-earned their place are Atlassian's Teamwork Graph CLI (`twg`) for Jira and Confluence work, and
-whatever your own projects' workflows lean on. The rule of thumb: if you would reach for a tool
-at the terminal to answer a question, an agent will too, and a well-stocked PATH is what makes a
-lean agent a capable one.
+Beyond `gh`, Docker, `git`, and the Claude Code CLI already covered above, stock whatever your own
+projects' workflows lean on. The rule of thumb: if you would reach for a tool at the terminal to
+answer a question, an agent will too, and a well-stocked PATH is what makes a lean agent a capable
+one.
 
 ### Install a release
 

@@ -253,7 +253,7 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ```
 ~/.hall9k/
 ├── bin/                        h9k and h9kd release binaries (h9k install)
-├── config.json                 the platform config file: connectionString (h9k doctor, §Postgres)
+├── config.json                 the platform config file: connectionString (h9k doctor or h9k install, §Postgres)
 │                               and the "hall9k" section (h9k config set/show, §Configuration)
 ├── credentials/                file-kind secrets, one file per credential
 ├── h9kd.log                    the daemon log; h9k daemon status tails it
