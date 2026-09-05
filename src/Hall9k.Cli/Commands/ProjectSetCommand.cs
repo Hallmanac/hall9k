@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.ProjectHomes;
+using Hall9k.Connectors.Verification;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -41,6 +43,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [CommandOption("--verify <NAME=COMMAND>")]
         [Description("Verification gate, e.g. --verify \"test=dotnet test\"; repeat for more. Replaces the whole list.")]
         public string[] Verify { get; init; } = [];
+
+        [CommandOption("--accept-broken-gate")]
+        [Description(
+            "Records a --verify gate that fails when run once against a clean checkout of this "
+            + "project's own base branch anyway, printing the failing gate's output as a loud warning "
+            + "instead of refusing. Without it, a gate that cannot pass on clean base refuses the whole "
+            + "project set outright (Windows field report item 11b: a legacy csproj that always failed "
+            + "under the dotnet SDK's MSBuild parked every run Failed with a misleading 'gate failure "
+            + "(test)', costing a full agent run and a human diagnosis session before anyone noticed the "
+            + "gate itself, not the agent's work, was broken).")]
+        public bool AcceptBrokenGate { get; init; }
 
         [CommandOption("--link <NAME=URL>")]
         [Description("Context link injected into agent prompts; repeat for more. Replaces the whole list.")]
@@ -257,11 +270,24 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             repositoryPath is { HasValue: true, Value: { } claimedRepository } ? claimedRepository : string.Empty,
             cancellationToken);
 
+        Optional<IReadOnlyList<VerifyCommand>> verifyCommands = settings.Verify.Length > 0
+            ? Optional<IReadOnlyList<VerifyCommand>>.Of([.. settings.Verify.Select(ParseVerify)])
+            : Optional<IReadOnlyList<VerifyCommand>>.None;
+
+        // Each gate is run once against a clean checkout of the base branch here, before it is
+        // ever attached to the project, rather than discovered the first time a dispatched run
+        // pays for it with a whole agent session (task: a verify gate that cannot pass on clean
+        // main is caught before it costs a run). Validated against `details` — the project's
+        // recorded state before this same command's own --home/--repo changes, if any, land —
+        // since that is the checkout this node can actually reach right now.
+        if (verifyCommands is { HasValue: true, Value: { } gatesToValidate })
+        {
+            await ValidateGatesAgainstCleanBaseAsync(details, gatesToValidate, settings.AcceptBrokenGate, cancellationToken);
+        }
+
         ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
             project,
-            verifyCommands: settings.Verify.Length > 0
-                ? Optional<IReadOnlyList<VerifyCommand>>.Of([.. settings.Verify.Select(ParseVerify)])
-                : Optional<IReadOnlyList<VerifyCommand>>.None,
+            verifyCommands: verifyCommands,
             skipPermissions: settings.SkipPermissions is { } skip ? skip : Optional<bool>.None,
             maxParallelAgents: settings.MaxParallelAgents is { } max ? max : Optional<int>.None,
             contextLinks: settings.Links.Length > 0
@@ -435,6 +461,98 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     /// </summary>
     private static bool ClearingWord(string value) =>
         value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Runs every gate about to be recorded once against a clean checkout of the project's own
+    /// base branch, and refuses (or, with <paramref name="acceptBrokenGate"/>, warns loudly and
+    /// proceeds) when one of them cannot pass there — the whole point being that the discovery
+    /// happens here, once, rather than on the first dispatched run that pays for it with a full
+    /// agent session (Windows field report item 11b's own origin incident).
+    /// <para>
+    /// A project with no reachable working checkout yet (no home, or a home whose repo/dev has
+    /// never been materialised) cannot be validated at all — that is an honest gap, not a guess,
+    /// so it is reported and the gate is still recorded rather than refused for a reason that has
+    /// nothing to do with the gate itself.
+    /// </para>
+    /// </summary>
+    private static async Task ValidateGatesAgainstCleanBaseAsync(
+        ProjectDetails project, IReadOnlyList<VerifyCommand> gates, bool acceptBrokenGate, CancellationToken cancellationToken)
+    {
+        string checkout = ProjectCheckout.ForReading(project);
+        if (!Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout))
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]No working checkout of '{project.Name.EscapeMarkup()}' exists yet at "
+                + $"{checkout.EscapeMarkup()}, so whether these gate(s) can pass on a clean "
+                + $"'{project.BaseBranch.EscapeMarkup()}' is unobserved rather than confirmed — recorded "
+                + $"anyway. h9k project init {project.Name.EscapeMarkup()} creates the checkout this "
+                + "validates against next time.[/]");
+            return;
+        }
+
+        // Only repo/dev is the platform's own to move (ProjectCheckout.IsHomeDevWorktree's own doc
+        // comment): a project registered before homes existed points at somebody's ordinary clone,
+        // and fast-forwarding that would move a person's working directory under them for a reason
+        // they never asked for. That clone is validated against whatever it currently holds instead.
+        if (ProjectCheckout.IsHomeDevWorktree(project, checkout))
+        {
+            GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
+            CheckoutRefresh refresh = await worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken);
+            if (!refresh.UpToDate)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{checkout.EscapeMarkup()} {refresh.Detail.EscapeMarkup()} — validating "
+                    + "against whatever it currently holds.[/]");
+            }
+        }
+
+        List<(VerifyCommand Gate, GateCheckResult Result)> failures = [];
+        foreach (VerifyCommand gate in gates)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Validating gate '{gate.Name}' against a clean checkout of '{project.BaseBranch}'...[/]");
+            GateCheckResult result = await AdHocGateRunner.RunAsync(
+                checkout, gate.Command, AdHocGateRunner.DefaultTimeout, cancellationToken);
+            if (!result.Passed)
+            {
+                failures.Add((gate, result));
+            }
+        }
+
+        if (failures.Count == 0)
+        {
+            return;
+        }
+
+        if (!acceptBrokenGate)
+        {
+            throw new DomainValidationException(BuildCleanBaseRefusal(project.BaseBranch, failures));
+        }
+
+        AnsiConsole.MarkupLine(
+            $"[yellow]--accept-broken-gate: recording gate(s) that fail against a clean checkout of "
+            + $"'{project.BaseBranch.EscapeMarkup()}' anyway — a run that later fails one of these will "
+            + "say it also fails on clean base, rather than reporting a bare gate failure:[/]");
+        AnsiConsole.MarkupLine($"[yellow]{DescribeCleanBaseFailures(project.BaseBranch, failures).EscapeMarkup()}[/]");
+    }
+
+    /// <summary>
+    /// The refusal's own message, factored out so it is testable without spawning a process for
+    /// every case: given the gate(s) already found to fail, it only composes the words.
+    /// </summary>
+    internal static string BuildCleanBaseRefusal(
+        string baseBranch, IReadOnlyList<(VerifyCommand Gate, GateCheckResult Result)> failures) =>
+        $"Gate(s) fail when run once against a clean checkout of '{baseBranch}', before any task run "
+        + $"would ever pay for the discovery:{Environment.NewLine}{DescribeCleanBaseFailures(baseBranch, failures)}"
+        + $"{Environment.NewLine}Fix the gate's command, or pass --accept-broken-gate to record it anyway "
+        + "(a run that later fails this gate will say it also fails on clean base, rather than reporting "
+        + "a bare gate failure).";
+
+    internal static string DescribeCleanBaseFailures(
+        string baseBranch, IReadOnlyList<(VerifyCommand Gate, GateCheckResult Result)> failures) =>
+        string.Join(
+            Environment.NewLine,
+            failures.Select(f => $"  '{f.Gate.Name}' ({f.Gate.Command}) against clean {baseBranch}: {f.Result.OutputTail}"));
 
     internal static VerifyCommand ParseVerify(string value)
     {
