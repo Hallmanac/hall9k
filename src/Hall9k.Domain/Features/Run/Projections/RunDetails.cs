@@ -108,6 +108,42 @@ public sealed class RunDetails
     /// records this and returns before ever reaching those reads.
     /// </summary>
     public bool ExternalReviewChecksPending { get; set; }
+    /// <summary>
+    /// GitHub's own review-decision verdict as last observed (task: a task can be published
+    /// pre-approved) — display only, see <see cref="Events.ExternalReviewObserved.ReviewDecision"/>'s
+    /// own doc for why the merge gate itself never reads this copy.
+    /// </summary>
+    public string? ExternalReviewDecision { get; set; }
+    /// <summary>Every login with a review request outstanding as last observed, Copilot included — display only, same reasoning as <see cref="ExternalReviewDecision"/>.</summary>
+    public List<string> ExternalOutstandingReviewerLogins { get; set; } = [];
+    /// <summary>
+    /// The subset of <see cref="ExternalOutstandingReviewerLogins"/> that is not Copilot, as last
+    /// observed — the display-side twin of <c>PullRequestSnapshot.HasOutstandingHumanReviewer</c>
+    /// (task: a task can be published pre-approved), folded here because the Copilot-detection
+    /// table lives only in the daemon (<c>GitHubPullRequestInspector.IsCopilotLogin</c>) and the
+    /// CLI cannot reference it: filtering once, when the observation is recorded, keeps the CLI's
+    /// own "waiting on human approval" read consistent with the daemon's actual merge gate rather
+    /// than duplicating (and risking diverging from) the classification (independent pre-PR
+    /// review, cycle 1, both lenses).
+    /// </summary>
+    public List<string> ExternalOutstandingHumanReviewerLogins { get; set; } = [];
+    /// <summary>
+    /// When Copilot's review request was first observed still pending, null once it lands, goes
+    /// stale, or clears — the bounded settle-window anchor (task: a task can be published
+    /// pre-approved): a requested review that never arrives within
+    /// <see cref="Hall9k.Daemon.DaemonOptions.CopilotReviewSettleWindow"/> of this timestamp parks
+    /// the run instead of waiting forever. Set the moment <see cref="ExternalReviewState"/> first
+    /// transitions TO <see cref="ExternalReviewState.RequestedPending"/>, so a run whose Copilot
+    /// review has sat pending across many quiet sweeps still measures from the original ask, not
+    /// the most recent sweep that merely confirmed it.
+    /// </summary>
+    public DateTimeOffset? CopilotReviewRequestPendingSince { get; set; }
+    /// <summary>Whether the daemon's own last merge attempt (task: a task can be published pre-approved) succeeded; null until one is tried.</summary>
+    public bool? LastAutoMergeSucceeded { get; set; }
+    /// <summary>Why the last automatic merge attempt failed; null on a clean attempt or before one is tried.</summary>
+    public string? LastAutoMergeFailureReason { get; set; }
+    /// <summary>When the last automatic merge attempt was made; null until one is.</summary>
+    public DateTimeOffset? LastAutoMergeAttemptedAt { get; set; }
     /// <summary>Whether closeout's mechanical rebase-before-reopen fast path last applied cleanly and pushed; null until one is attempted.</summary>
     public bool? LastMechanicalRebaseSucceeded { get; set; }
     /// <summary>What the last mechanical rebase attempt actually did or why it fell back — see <see cref="Events.PullRequestMechanicalRebaseAttempted"/>.</summary>
@@ -636,9 +672,32 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     // Informational only — see RunAggregate.Apply(ExternalReviewObserved).
     public void Apply(IEvent<ExternalReviewObserved> @event, RunDetails view)
     {
+        // The settle-window anchor: set only on the transition INTO RequestedPending (read off
+        // the view's own prior value before it is overwritten below), never refreshed on every
+        // sweep that merely confirms the same still-pending request — otherwise a review that has
+        // sat pending for the whole settle window would never actually trip it.
+        if (@event.Data.State == ExternalReviewState.RequestedPending)
+        {
+            view.CopilotReviewRequestPendingSince ??= @event.Timestamp;
+        }
+        else
+        {
+            view.CopilotReviewRequestPendingSince = null;
+        }
+
         view.ExternalReviewState = @event.Data.State;
         view.ExternalReviewThreadCount = @event.Data.ThreadCount;
         view.ExternalReviewChecksPending = @event.Data.ChecksPending;
+        view.ExternalReviewDecision = @event.Data.ReviewDecision;
+        view.ExternalOutstandingReviewerLogins = [.. @event.Data.OutstandingReviewerLogins ?? []];
+        view.ExternalOutstandingHumanReviewerLogins = [.. @event.Data.OutstandingHumanReviewerLogins ?? []];
+    }
+
+    public void Apply(IEvent<PullRequestAutoMergeAttempted> @event, RunDetails view)
+    {
+        view.LastAutoMergeSucceeded = @event.Data.Succeeded;
+        view.LastAutoMergeFailureReason = @event.Data.FailureReason;
+        view.LastAutoMergeAttemptedAt = @event.Data.AttemptedAt;
     }
 
     public void Apply(IEvent<PullRequestConflictObserved> @event, RunDetails view)
