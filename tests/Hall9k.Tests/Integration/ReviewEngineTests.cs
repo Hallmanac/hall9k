@@ -407,6 +407,25 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         }
     }
 
+    /// <summary>Like <see cref="Git"/>, but never throws — for a call a test expects to fail (a conflicting rebase).</summary>
+    private static int TryGit(string workingDirectory, string arguments)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = $"-C \"{workingDirectory}\" {arguments}",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        process.Start();
+        process.StandardOutput.ReadToEnd();
+        process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        return process.ExitCode;
+    }
+
     /// <summary>
     /// The lens that finds something carries the cycle: one NeedsFixes verdict, one merged
     /// finding list, one fix session for all of it (Decisions Log #59).
@@ -1217,6 +1236,326 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await session.SaveChangesAsync(cancellationToken);
 
         return (taskId, runId, worktreePath, projectId);
+    }
+
+    /// <summary>
+    /// Like <see cref="SeedVerifiedRunAsync(DocumentStore, CancellationToken)"/>, but a real git
+    /// worktree cloned from a real bare "origin" repository, with the project's base branch set
+    /// to "main" (task: a run rebases its branch onto the current base branch) — for tests
+    /// exercising the pre-final-pass rebase check, which needs a genuine <c>origin/main</c> to
+    /// fetch and compare against. Real git, never a fake — the same convention
+    /// <c>CloseoutEngineTests</c>' own mechanical-rebase coverage already follows, so a genuinely
+    /// conflicting (or genuinely clean) history is what decides the outcome.
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId, string WorktreePath, string OriginPath)> SeedVerifiedRunWithOriginAsync(
+        DocumentStore store, CancellationToken cancellationToken)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid mainSessionId = DomainId.New();
+        string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
+        string originPath = Path.Combine(_home, $"origin-{runId:N}.git");
+        Directory.CreateDirectory(_home);
+        Git(_home, $"init -q --bare -b main \"{originPath}\"");
+        Git(_home, $"clone -q \"{originPath}\" \"{worktreePath}\"");
+        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
+        Git(worktreePath, "push -q origin main");
+        Git(worktreePath, "checkout -q -b task/review-me");
+        File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"review-{taskId:N}", worktreePath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Review me before the PR", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (taskId, runId, worktreePath, originPath);
+    }
+
+    /// <summary>Clones <paramref name="originPath"/> into a fresh temp directory and pushes one commit to <c>main</c> — "another engineer's work merging in" while this run's own worktree sits untouched.</summary>
+    private void PushToOrigin(string originPath, string fileName, string content, string message)
+    {
+        string otherClone = Path.Combine(_home, $"other-{Guid.NewGuid():N}");
+        Git(_home, $"clone -q \"{originPath}\" \"{otherClone}\"");
+        File.WriteAllText(Path.Combine(otherClone, fileName), content);
+        Git(otherClone, "add -A");
+        Git(otherClone, $"-c user.name=Other -c user.email=other@test commit -q -m \"{message}\"");
+        Git(otherClone, "push -q origin main");
+    }
+
+    /// <summary>
+    /// Task: a run rebases its branch onto the current base branch. When origin's base branch
+    /// has not moved past what the branch already contains, the pre-final-pass rebase is a
+    /// recorded no-op that costs nothing else — same cycle count, same spawn count as the
+    /// mandatory-final-pass shape without this feature.
+    /// </summary>
+    [Fact]
+    public async Task Pre_final_pass_rebase_is_a_recorded_no_op_when_the_base_has_not_moved()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
+            "Fixed it.\n\nRESOLUTION: fixed",
+            "The fix holds.\n\nVERDICT: merge-ready",
+            "FINDING: severity=low; scope=in-scope; at=Widget.cs:1\nDefect: minor.\n\nVERDICT: merge-ready",
+            "Still holds.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(6, "a no-op rebase check dispatches no session of its own");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().ContainSingle(
+            e => e.WasNoOp, "origin/main never moved past this branch's own merge base");
+    }
+
+    /// <summary>
+    /// Task: a run rebases its branch onto the current base branch. A clean rebase (no
+    /// conflict) is folded into the mandatory final pass with no extra Discovery cycle, lens,
+    /// or fix session — Brian's 2026-09-04 ruling: git applying every commit cleanly is itself
+    /// the evidence that no judgment was exercised.
+    /// </summary>
+    [Fact]
+    public async Task A_clean_pre_final_pass_rebase_reads_the_rebased_tree_and_costs_no_extra_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        PushToOrigin(originPath, "unrelated.txt", "merged while this run was building\n", "unrelated merge");
+
+        ScriptedExecutor executor = new(
+            "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
+            "Fixed it.\n\nRESOLUTION: fixed",
+            "The fix holds.\n\nVERDICT: merge-ready",
+            "FINDING: severity=low; scope=in-scope; at=Widget.cs:1\nDefect: minor.\n\nVERDICT: merge-ready",
+            "Still holds.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(6, "a clean rebase costs no review of its own");
+        File.Exists(Path.Combine(worktreePath, "unrelated.txt")).Should().BeTrue(
+            "the branch is now rebased onto the merge that landed while this run was building");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().ContainSingle(
+            e => !e.WasNoOp && !e.RecoveredByAgentSession, "git applied every commit without a conflict");
+    }
+
+    /// <summary>
+    /// Task: a run rebases its branch onto the current base branch. A conflicting rebase is
+    /// handed to a narrow recovery session, dispatched inside this same run — no new run, no
+    /// task reopen — and a resolved conflict lets the loop proceed to the mandatory final pass
+    /// exactly as a clean rebase would have.
+    /// </summary>
+    [Fact]
+    public async Task A_conflicting_pre_final_pass_rebase_is_resolved_by_a_narrow_recovery_session_inside_the_same_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        // Both sides add Widget.cs, with different content — a genuine add/add conflict when
+        // this branch's own commit replays onto the moved base.
+        PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main */ }\n", "add Widget from main");
+
+        ScriptedExecutor executor = new(
+            "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
+            "Fixed it.\n\nRESOLUTION: fixed",
+            "The fix holds.\n\nVERDICT: merge-ready",
+            "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
+            "FINDING: severity=low; scope=in-scope; at=Widget.cs:1\nDefect: minor.\n\nVERDICT: merge-ready",
+            "Still holds.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[4] = () =>
+        {
+            Git(worktreePath, "fetch -q origin");
+            TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
+            File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { /* resolved */ }\n");
+            Git(worktreePath, "add -A");
+            Git(
+                worktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            7, "the conflict earns exactly one narrow recovery session, not an extra review cycle");
+        File.ReadAllText(Path.Combine(worktreePath, "Widget.cs")).Should().Contain("resolved");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle();
+        events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().ContainSingle(
+            e => e.Outcome == ReviewFixOutcome.Fixed);
+        events.OfType<RunRebasedOntoBase>().Should().ContainSingle(
+            e => e.RecoveredByAgentSession && !e.WasNoOp);
+    }
+
+    /// <summary>
+    /// Task: a run rebases its branch onto the current base branch. When the recovery session
+    /// cannot honestly resolve the conflict, the run parks for a human — the same shape a
+    /// disputed rebase park takes today — rather than failing the run or reopening the task.
+    /// </summary>
+    [Fact]
+    public async Task A_disputed_pre_final_pass_rebase_conflict_parks_the_run_for_a_human()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main, disputed */ }\n", "add Widget from main");
+
+        ScriptedExecutor executor = new(
+            "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
+            "Fixed it.\n\nRESOLUTION: fixed",
+            "The fix holds.\n\nVERDICT: merge-ready",
+            "Both sides change Widget.cs's own behavior — I cannot honestly pick.\n\nRESOLUTION: disputed");
+        executor.OnSpawnByIndex[4] = () =>
+        {
+            Git(worktreePath, "fetch -q origin");
+            TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
+            Git(worktreePath, "rebase --abort");
+        };
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a disputed conflict parks the run rather than settling");
+        executor.Spawns.Should().HaveCount(5, "the loop stops at the recovery session's own dispute");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should().Contain("pre-flight rebase conflicted");
+        run.ParkedOnRebaseRecoveryDispute.Should().BeTrue(
+            "the attention pane's lever must offer --needs-fixes, never --merge-ready, for this park");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().ContainSingle(
+            e => e.Outcome == ReviewFixOutcome.Disputed);
+        events.OfType<RunRebasedOntoBase>().Should().BeEmpty("nothing was actually resolved");
+
+        File.ReadAllText(RunPaths.PreFinalPassRebaseDisputeFile(RunPaths.GlobalDirectory(runId)))
+            .Should().Contain("Both sides change Widget.cs");
+    }
+
+    /// <summary>
+    /// Task: a run rebases its branch onto the current base branch. A human's needs-fixes
+    /// resolution on a disputed pre-final-pass rebase conflict redispatches the recovery session
+    /// with their guidance folded into its prompt, and a clean resolution this time lets the run
+    /// proceed to the mandatory final pass exactly as an unparked conflict would have.
+    /// </summary>
+    [Fact]
+    public async Task A_human_resolving_a_disputed_pre_final_pass_rebase_conflict_redispatches_with_their_guidance()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main, disputed */ }\n", "add Widget from main");
+
+        ScriptedExecutor firstAttempt = new(
+            "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
+            "Fixed it.\n\nRESOLUTION: fixed",
+            "The fix holds.\n\nVERDICT: merge-ready",
+            "Both sides change Widget.cs's own behavior — I cannot honestly pick.\n\nRESOLUTION: disputed");
+        firstAttempt.OnSpawnByIndex[4] = () =>
+        {
+            Git(worktreePath, "fetch -q origin");
+            TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
+            Git(worktreePath, "rebase --abort");
+        };
+        bool firstMergeReady = await NewEngine(store, firstAttempt, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+        firstMergeReady.Should().BeFalse("the first attempt disputes and parks");
+
+        const string humanResolution = "Keep main's Widget — the task branch's own version is superseded.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanResolution, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor retry = new(
+            "Applied the human's decision and rebased cleanly.\n\nRESOLUTION: fixed",
+            "FINDING: severity=low; scope=in-scope; at=Widget.cs:1\nDefect: minor.\n\nVERDICT: merge-ready",
+            "Still holds.\n\nVERDICT: merge-ready");
+        retry.OnSpawnByIndex[0] = () =>
+        {
+            Git(worktreePath, "fetch -q origin");
+            TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "the conflict is still there for the retry to resolve");
+            File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { /* kept main's version */ }\n");
+            Git(worktreePath, "add -A");
+            Git(
+                worktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+
+        bool mergeReady = await NewEngine(store, retry, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        retry.Spawns.Should().HaveCount(3, "the redispatched recovery session plus the mandatory final pass");
+        retry.Spawns[0].Prompt.Should().Contain(humanResolution);
+        File.ReadAllText(Path.Combine(worktreePath, "Widget.cs")).Should().Contain("kept main's version");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.UnderReview);
+        run.ParkedOnRebaseRecoveryDispute.Should().BeFalse("the resolved park no longer applies");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().HaveCount(2);
+        events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().Contain(e => e.Outcome == ReviewFixOutcome.Disputed);
+        events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().Contain(e => e.Outcome == ReviewFixOutcome.Fixed);
+        events.OfType<RunRebasedOntoBase>().Should().ContainSingle(e => e.RecoveredByAgentSession);
     }
 
     private static string SettingsArgument(AgentSpawnRequest request) =>
@@ -2975,7 +3314,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             new VerificationRunner(
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
-            Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger);
+            Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -3040,7 +3380,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             new VerificationRunner(
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
-            Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger);
+            Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -5590,7 +5931,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             new VerificationRunner(
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
-            Options.Create(new DaemonOptions()), logger);
+            Options.Create(new DaemonOptions()), logger,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -5660,7 +6002,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             new VerificationRunner(
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
-            Options.Create(new DaemonOptions()), logger);
+            Options.Create(new DaemonOptions()), logger,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
 
         await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
 
@@ -5696,7 +6039,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(options),
-            NullLogger<ReviewEngine>.Instance);
+            NullLogger<ReviewEngine>.Instance,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
 
     /// <summary>Writes a terminal result for a session this test seeded rather than spawned.</summary>
     private static async Task WriteScriptedResultAsync(

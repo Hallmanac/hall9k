@@ -182,7 +182,8 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
-            Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);
+            Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
