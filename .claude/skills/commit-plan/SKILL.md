@@ -37,8 +37,10 @@ Organize the current changes in this repository into cohesive, buildable commits
 ## Verifying a recompose (when this skill is the recompose step)
 
 AGENTS.md's checkpoint-commit workflow records a pre-reset tip (`git rev-parse HEAD`), then
-resets to the branch's own fork point (`git merge-base origin/<base> HEAD` — an earlier,
-separate commit from the pre-reset tip, never the same one) before invoking this skill to
+resets to the branch's own fork point (`git merge-base origin/<base> HEAD` — ordinarily an
+earlier, separate commit from the pre-reset tip; if the branch carries no checkpoint commits
+of its own yet, the fork point and the pre-reset tip are the same commit and the reset is a
+no-op, worth noticing rather than assuming away) before invoking this skill to
 recompose the checkpoint commits into real history. That caller, or any other
 reset-and-recompose caller, is not finished once the commits above are made. It is finished
 only once **both** of these pass:
@@ -53,10 +55,30 @@ deletion, not silence. The actual blind spot is narrower: a file that was never
 checkpoint-committed before the pre-reset tip was recorded (created afterward, or left
 staged or unstaged and never committed at all). Such a file was never part of the pre-reset
 tip's tree to begin with, so it cannot appear in a diff against that tree either way — a
-mixed reset never touches the working tree, so the file just sits there, untracked, through
-the reset and the recompose alike, with the diff silent about it the whole time. Check 2 is
-the one that actually catches this: it inspects the working tree itself, not the commit
-graph, so the file shows up there even when the diff is silent about it.
+mixed reset never touches the working tree, so the file just sits there through the reset
+and the recompose alike (untracked if it is genuinely new, modified if it is an uncommitted
+edit to a file the fork point already tracked — `git status --porcelain` shows the first as
+`??` and the second as ` M`, not the same thing), with the diff silent about it the whole
+time either way. Check 2 is the one that actually catches this: it inspects the working
+tree itself, not the commit graph, so the file shows up there even when the diff is silent
+about it.
+
+**A non-empty check 1 with a clean check 2 is not automatically a pass, and it is not
+automatically a failure either — read what the diff shows before concluding.** The normal
+`Process` above (step 1: inspect `git status`) already picks up a file that was never
+checkpointed before the pre-reset tip was recorded, right alongside everything else, and
+step 3 commits it as part of the plan like any other file — there is nothing wrong with
+that commit. But the pre-reset tip predates that content, so `git diff <pre-reset-tip> HEAD`
+will show it as newly added forever, no matter how correctly it was composed; that tip
+cannot be satisfied by any recompose from here, because it never claimed to cover content
+it never held. If everything the diff shows is exactly that kind of legitimate addition —
+material `git status` surfaced during step 1 and the plan folded in on its own commit, not a
+deletion and not something you cannot account for from that inspection — record a new
+pre-reset tip right here (`git rev-parse HEAD`) and treat the recompose as finished; there is
+nothing further to prove against the old tip once a fresh one exists to measure from. If the
+diff instead shows a deletion, or content you cannot trace back to step 1's own inspection,
+treat it as a real failure the same as any other: something was dropped or mis-composed, and
+it needs fixing and re-verifying, not a fresh tip papering over it.
 
 If check 2 finds anything, decide which of two things it is before touching it:
 
@@ -68,9 +90,11 @@ If check 2 finds anything, decide which of two things it is before touching it:
   content only becomes eligible for the diff check once it has been through a pre-reset tip
   of its own.
 - **It was never meant to land** (a scratch file, a plan-excluded leftover). Roll it back
-  without touching anything else it did not create: `git checkout -- <path>` for a tracked
-  file carrying unwanted modifications, `git clean -f -- <path>` for an untracked file
-  (always with an explicit pathspec — a bare `git clean` refuses to run under
+  without touching anything else it did not create: `git checkout HEAD -- <path>` for a
+  tracked file carrying unwanted modifications — not `git checkout -- <path>`, which restores
+  the working tree from the index and leaves a *staged* unwanted change staged, exactly the
+  case this section names as one check 2 catches — `git clean -f -- <path>` for an untracked
+  file (always with an explicit pathspec — a bare `git clean` refuses to run under
   `clean.requireForce`, and `git clean -fd` with no pathspec deletes every other untracked
   file in the tree too, including ones still meant to be folded in).
 

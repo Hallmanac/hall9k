@@ -63,12 +63,27 @@ style, do not use this skill; commit normally on top.
    If it shows a genuine fix that missed step 1, do not just fold it into its owning commit
    and re-diff against the original `$old_tip` — that tip never held this fix either, so the
    diff would stay non-empty forever over content that legitimately belongs. Instead: stage
-   it, `git commit --fixup=<owning-commit>` the same way step 1 does, fold it in with the same
-   autosquash rebase as step 2, then treat the result as an untested tree — re-run the
-   project's verification gates against it (this fix was never part of what the gates last
-   passed, so nothing has proven this tree green until they run again), and only once they
-   pass re-record `old_tip=$(git rev-parse HEAD)` as the new baseline. Re-run both checks
-   again against that new baseline before moving on.
+   it and commit the fixup, and record the new baseline **immediately after that commit and
+   before the autosquash rebase** — recording it after the rebase instead makes the diff
+   compare `HEAD` against itself, which is empty no matter what the rebase did to the tree
+   and proves nothing:
+
+   ```bash
+   git commit --fixup=<owning-commit>
+   new_baseline=$(git rev-parse HEAD)
+   GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/<base>
+   ```
+
+   Treat the result as an untested tree and re-run the project's verification gates against
+   it: the working tree held this fix already (the precondition above), but only as an
+   uncommitted or partially-staged change, so nothing has yet proven the tree green *with
+   this fix committed* until the gates run again. Once they pass, re-run both checks against
+   `$new_baseline`, not `$old_tip`:
+
+   ```bash
+   git diff "$new_baseline" HEAD   # must print NOTHING
+   git status --porcelain          # must print NOTHING
+   ```
 
 4. Pushing the rewritten branch requires `--force-with-lease` (never plain `--force`; a
    failed lease means the branch moved on origin — stop and re-inspect, don't retry
