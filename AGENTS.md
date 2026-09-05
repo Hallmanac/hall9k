@@ -534,11 +534,12 @@ there.
 ### Questions and answers: the relay
 
 `h9k status` is where the platform asks for a human. Its **needs-you** section is the whole point
-of the pane, and today a row lands there for one of six reasons:
+of the pane, and today a row lands there for one of seven reasons:
 
 | Row says | What happened | The lever |
 |---|---|---|
 | `NeedsHuman`, review parked | The pre-PR review loop spent its automatic fixes, hit a disputed finding (#24, #63), or the task's lifetime review-cycle budget is spent (#112) — that last one can fire on a run that just converged cleanly, since the budget counts every run and follow-up the task has ever had and nothing resets it; a `--needs-fixes` grant there earns one more cycle but re-parks at the next settle point unless the budget itself is raised with `h9k task set-review-caps` | `h9k review resolve` |
+| `NeedsHuman`, an interactive-mode boundary park | The task's interactive-mode flag is on (task: interactive mode becomes a recorded property of the task), and the run reached one of the review engine's own four routine phase boundaries — build done to review, review verdict to fix, fix to re-review, gates to pull request — which now hold for the human's recorded go rather than advancing on their own | `h9k review proceed`, or `h9k review resolve` to redirect the boundary instead of merely approving it |
 | `NeedsHuman`, closeout parked | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent (#22, #80) | `h9k pr resolve` |
 | `NeedsHuman`, dependency failed | A blocker died, so the dependent stays Blocked rather than silently unblocking (#34, #61) | recover the blocker |
 | needs-you, Jira write pending, Status unchanged | A Jira write (an operator's own `write-jira`, or a daemon-dispatched one such as closeout's own merge comment) is stuck on a rejected credential (#102, #114) — the write carries no lifecycle state of its own, so the row's Status stays whatever it already was (Working, Delivered, or Done) | `h9k connection add jira` |
@@ -563,7 +564,7 @@ Do not tell a human they can answer a running agent; they cannot, yet.
 
 ### The recovery levers
 
-Five levers, and picking the wrong one loses work. The question that separates them is *what
+Six levers, and picking the wrong one loses work. The question that separates them is *what
 actually failed*.
 
 | Lever | Use it when | What it does |
@@ -573,6 +574,7 @@ actually failed*.
 | `h9k task abandon <id> --reason "…"` | You have stopped believing in the work. Reaches every non-terminal state, drafts and published tasks included. | Terminal. Releases any lease. Nothing is deleted: the reason is the record. |
 | `h9k pr resolve <id> [--checks \| --rebase]` | The task is **Done**, its pull request is open, and review feedback, failing CI, or a conflict with its base branch needs another pass, either because the monitor spent its budget or because you want one now (`--rebase` is for when you spot the conflict before the monitor's next inspection does, backlog 44). | Dispatches a follow-up run onto the existing PR branch and resets the monitor's automatic retry budget (#20, #22). |
 | `h9k review resolve <id> --merge-ready [--reason "…"]` / `--needs-fixes "<why>"` | A run parked **before** its PR, in the internal review loop, and is waiting on your verdict. | `--merge-ready` runs one mandatory full-scope verification gate over the fix unless this tip was already gated at full scope (#98: nothing merges on scoped green alone) and proceeds to the pull request if it passes; `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget (#24). `--merge-ready` is refused when the park is a disputed rebase conflict (nothing has been rebased yet, so there is nothing ready to merge) — only `--needs-fixes` applies there. Either verdict's reason is recorded on the task and carried into every later review pass as a settled ruling (#88) — except on a thread-dispute park (#62), which settles a disputed thread before any reviewer ever read the diff and so is not recorded as a review ruling — so pair `--merge-ready` with `--reason` when you dismiss a finding — e.g. the evidence that dismissed it — rather than leaving the next fresh-context reviewer to rediscover it. A **pr-review** task's own park (§16 #99) refuses `--needs-fixes` outright — it has no diff of its own for a fix session to apply — and takes only `--merge-ready`, once you have walked the findings report and directed each one by hand (`walk-pr-review-findings`); that verdict never opens a pull request, it closes the task Done directly. |
+| `h9k review proceed <id>` | An interactive-mode task's run parked at one of the review engine's own four routine phase boundaries (task: interactive mode becomes a recorded property of the task) — build done to review, review verdict to fix, fix to re-review, gates to pull request — with nothing disputed, just the human's recorded go to continue. Refused on a park that IS a dispute or a cap/budget reason; those still take only `review resolve`. | Appends the boundary approval and rings the daemon; the loop resumes exactly where it parked, with no verdict of its own to record. `review resolve --merge-ready`/`--needs-fixes` still applies at these boundaries too, when the human wants to redirect rather than merely approve. |
 
 Two distinctions worth keeping straight, because they are the ones that get confused:
 

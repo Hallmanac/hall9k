@@ -221,10 +221,12 @@ own channels can see, honestly — best-effort by construction, not enforcement.
 
 ### Recovery
 
-`h9k task retry | resolve | abandon` · `h9k pr resolve` · `h9k review resolve`
+`h9k task retry | resolve | abandon` · `h9k pr resolve` · `h9k review resolve` ·
+`h9k review proceed`
 
-Five levers, and picking the wrong one loses work. [operations.md](operations.md#the-recovery-levers)
-is the decision table.
+Six levers, and picking the wrong one loses work. [operations.md](operations.md#the-recovery-levers)
+is the decision table. `review proceed` is the newest one: the bare-approval lever for an
+interactive-mode task's routine phase-boundary parks, alongside `review resolve`'s redirect verbs.
 
 ### Projects, owners, connections
 

@@ -570,6 +570,7 @@ it:
 | The cause line says | What happened | The lever |
 |---|---|---|
 | the pre-PR review loop's own park reason | The loop spent its automatic fixes, a fix session disputed a finding, or the task's lifetime review-cycle budget is spent (a park that can fire on a run that converged cleanly, spending no fix budget at all) | `h9k review resolve` |
+| "Interactive mode is on for this task: …" | The task's interactive-mode flag is on, and the run reached one of the review loop's own four routine phase boundaries — build done to review, review verdict to fix, fix to re-review, gates to pull request — which hold for the human's recorded go rather than advancing on their own | `h9k review proceed`, or `h9k review resolve` to redirect the boundary instead of merely approving it |
 | closeout's own park reason | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent | `h9k pr resolve` |
 | the recorded dependency failure | A blocker died, so the dependent stays `Blocked` rather than silently unblocking | recover the blocker, as the recorded reason names |
 | the agent asked a question and stopped | A run recorded a question and exited. `h9k ask` and `h9k answer` are Slice 2, so no command answers it | `h9k task show`, then decide it by hand |
@@ -710,7 +711,7 @@ work` or `h9k task start` on the resulting Blocked task both honor it without as
 
 ## The recovery levers
 
-Five levers. Picking the wrong one loses work, and the question that separates them is *what
+Six levers. Picking the wrong one loses work, and the question that separates them is *what
 actually failed*.
 
 | Lever | Use it when | What it does |
@@ -720,6 +721,7 @@ actually failed*.
 | `h9k task abandon <id> --reason "…"` | You have stopped believing in the work. Reaches every non-terminal state, drafts and published tasks included. | Terminal. Releases any lease. Nothing is deleted: the reason is the record. |
 | `h9k pr resolve <id> [--checks \| --rebase]` | The row reads **Delivered**, which is a pull request open with the merge not yet observed, and review feedback, failing CI, or a conflict with its base branch needs another pass. | Dispatches a follow-up run onto the existing branch and resets the monitor's automatic retry budget. |
 | `h9k review resolve <id> --merge-ready [--reason "…"]` / `--needs-fixes "<why>"` | A run parked **before** its pull request, in the internal review loop, waiting on your verdict. | `--merge-ready` runs one mandatory full-scope verification gate over the fix unless this tip was already gated at full scope (nothing merges on scoped green alone), and proceeds to the pull request only if it passes. `--needs-fixes` dispatches a fix session with your reason as its findings and restores the fix budget. `--merge-ready` is refused when the park is a disputed rebase conflict (nothing has been rebased yet, so there is nothing ready to merge) — only `--needs-fixes` applies there. Either verdict's reason is recorded on the task and carried into every later review pass as a settled ruling — except on a thread-dispute park, which settles a disputed thread before any reviewer ever read the diff and so is not recorded as a review ruling — so pair `--merge-ready` with `--reason` when you dismiss a finding rather than leaving the next fresh-context reviewer to rediscover it. |
+| `h9k review proceed <id>` | An interactive-mode task's run parked at one of the review loop's own four routine phase boundaries — build done to review, review verdict to fix, fix to re-review, gates to pull request — with nothing disputed, just the human's recorded go to continue. Refused on a park that is a dispute or a cap/budget reason; those still take only `review resolve`. | Appends the boundary approval and rings the daemon; the loop resumes exactly where it parked, recording no verdict of its own. `review resolve --merge-ready`/`--needs-fixes` still applies at these boundaries too, when the human wants to redirect rather than merely approve. |
 
 A branch obstructed only by a conflict with its own base does not always reach `pr resolve`
 at all. Before dispatching the reopen-and-review follow-up, closeout tries a mechanical fix
