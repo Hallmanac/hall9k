@@ -182,6 +182,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // each time.
         string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim);
 
+        // Only a fresh claim (the else branch below) ever turns InteractiveModeEnabled on — a
+        // re-entry attaches to a claim this task already holds, whose flag (if any) was already
+        // set the first time. Captured here so the connectors below can announce the flag rather
+        // than leave it silent (independent pre-PR review, cycle 1, conformance lens): the same
+        // asymmetry TaskReleaseCommand already corrected on the clearing side.
+        bool isFreshInteractiveClaim = !(task.State == TaskState.Claimed && task.IsInteractiveClaim);
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, bool crossMachineNoticeShown, Guid? previousClaudeSessionId) = task.State == TaskState.Claimed && task.IsInteractiveClaim
             ? await ReenterAsync(session, task, settings.Force, cancellationToken)
             : await ClaimAndCutAsync(
@@ -254,8 +260,21 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         return settings.DirectLaunch
             ? await LaunchDirectlyAsync(
                 store, session, taskId, runId, worktreePath, branch, prompt, claudeSessionId, previousClaudeSessionId,
-                settingsFile, project.SkipPermissions, sessionName, cancellationToken)
-            : PrintPromptHandoff(worktreePath, branch, prompt, settingsFile);
+                settingsFile, project.SkipPermissions, sessionName, isFreshInteractiveClaim, cancellationToken)
+            : PrintPromptHandoff(taskId, worktreePath, branch, prompt, settingsFile, isFreshInteractiveClaim);
+    }
+
+    /// <summary>
+    /// Announced once, only on a fresh claim (independent pre-PR review, cycle 1, conformance
+    /// lens): this claim always turns the task's interactive-mode flag on, the identical fact
+    /// <c>h9k task release</c> already prints on the way back off, so an operator using this as a
+    /// fire-and-forget kick-off is told up front rather than discovering it only once the run
+    /// unexpectedly parks NeedsHuman.
+    /// </summary>
+    private static void AnnounceInteractiveModeIfFreshClaim(Guid taskId)
+    {
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]Task {taskId}'s interactive-mode flag is now on — this run, and any later follow-up, retry, or reopen of it, parks at each review-engine phase boundary for a recorded h9k review proceed. h9k task release {taskId} (default) or h9k task revise {taskId} --clear-interactive-mode turns it back off.[/]");
     }
 
     /// <summary>
@@ -265,10 +284,16 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// own pasted-in session records itself through <c>h9k task register-session</c> once it
     /// exists, which is the honest reason this prints rather than launches.
     /// </summary>
-    private static int PrintPromptHandoff(string worktreePath, string branch, string prompt, string settingsFile)
+    private static int PrintPromptHandoff(
+        Guid taskId, string worktreePath, string branch, string prompt, string settingsFile, bool isFreshInteractiveClaim)
     {
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
+        if (isFreshInteractiveClaim)
+        {
+            AnnounceInteractiveModeIfFreshClaim(taskId);
+        }
+
         // settingsFile can trace back to a user-set HALL9K_HOME, so it is escaped explicitly before
         // landing in a plain (non-Interpolated) MarkupLine call — the message is built with
         // ordinary string concatenation across lines, which an interpolated-string literal cannot
@@ -307,10 +332,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     private static async Task<int> LaunchDirectlyAsync(
         DocumentStore store, IDocumentSession session, Guid taskId, Guid runId, string worktreePath, string branch,
         string prompt, Guid claudeSessionId, Guid? previousClaudeSessionId, string settingsFile, bool skipPermissions,
-        string sessionName, CancellationToken cancellationToken)
+        string sessionName, bool isFreshInteractiveClaim, CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");
         AnsiConsole.MarkupLineInterpolated($"[dim]Branch: {branch}[/]");
+        if (isFreshInteractiveClaim)
+        {
+            AnnounceInteractiveModeIfFreshClaim(taskId);
+        }
+
         AnsiConsole.MarkupLine(previousClaudeSessionId is not null
             ? "[dim]Resuming the recorded interactive session — exit it normally (Ctrl+D or /exit) to return here.[/]"
             : "[dim]Launching an interactive Claude Code session — exit it normally (Ctrl+D or /exit) to return here.[/]");

@@ -239,6 +239,19 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         AnsiConsole.MarkupLineInterpolated(
             $"[dim]Task {taskId} is dispatched, headless, as {sessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). h9k task show {taskId} to watch it, or once it finishes: h9k task deliver, h9k task verify, h9k task work (to attach), h9k task handback, or h9k task release.[/]");
+        // Announced rather than silent (independent pre-PR review, cycle 1, conformance lens),
+        // but only when this claim actually turned the flag on: gated on interactiveMode itself
+        // (independent pre-PR review, cycle 3, conformance + adversarial lenses) because
+        // h9k task handback --now calls this same method with interactiveMode: false precisely to
+        // avoid reinstating a flag its own handback just cleared (design ruling R9) — printing the
+        // line unconditionally told that caller's operator the flag was on when it was in fact off,
+        // the identical isFreshInteractiveClaim gate h9k task work's own sibling announcement
+        // already applies.
+        if (interactiveMode)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId}'s interactive-mode flag is now on — this run, and any later follow-up, retry, or reopen of it, parks at each review-engine phase boundary for a recorded h9k review proceed. h9k task release {taskId} (default) or h9k task revise {taskId} --clear-interactive-mode turns it back off.[/]");
+        }
 
         return ExitCodes.Ok;
     }

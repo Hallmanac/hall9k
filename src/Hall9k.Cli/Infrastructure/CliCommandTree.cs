@@ -743,7 +743,12 @@ public static class CliCommandTree
                     + "h9k task release (give it "
                     + "back to the queue), or h9k task handback (let a headless agent finish from here). "
                     + "Re-entry is refused when the claim's session was recorded on another machine this one "
-                    + "cannot check — --force attests you confirmed by hand that it has exited.")
+                    + "cannot check — --force attests you confirmed by hand that it has exited. A fresh claim "
+                    + "(not a re-entry) always turns the task's own interactive-mode flag on: from here on, this "
+                    + "run — and any later follow-up, retry, or reopen of it — parks at each of the review "
+                    + "engine's own four phase boundaries for a recorded h9k review proceed, whether or not a "
+                    + "human is still attached. h9k task release (default) or h9k task revise "
+                    + "--clear-interactive-mode turns it back off.")
                 .WithExample("task", "work", "28b19893")
                 .WithExample("task", "work", "28b19893", "--direct-launch")
                 .WithExample("task", "work", "28b19893", "--acknowledge-unmet-dependencies");
@@ -782,7 +787,11 @@ public static class CliCommandTree
                     + "reachable on the session mesh (claude agents --json, ListAgents/SendMessage) — and this "
                     + "command returns as soon as the process is confirmed alive, without waiting for it to "
                     + "finish. Once it is done: h9k task deliver, h9k task verify, h9k task work (to attach), "
-                    + "h9k task handback, or h9k task release.")
+                    + "h9k task handback, or h9k task release. This claim always turns the task's own "
+                    + "interactive-mode flag on: from here on, this run — and any later follow-up, retry, or "
+                    + "reopen of it — parks at each of the review engine's own four phase boundaries for a "
+                    + "recorded h9k review proceed, even though the build itself is headless. h9k task release "
+                    + "(default) or h9k task revise --clear-interactive-mode turns it back off.")
                 .WithExample("task", "start", "28b19893")
                 .WithExample("task", "start", "28b19893", "--acknowledge-unmet-dependencies");
             task.AddCommand<TaskVerifyCommand>("verify")
