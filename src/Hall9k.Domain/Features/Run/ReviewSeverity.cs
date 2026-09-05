@@ -24,10 +24,20 @@ public sealed record ReviewSeverity
     /// <summary>A correctness, security, or data-integrity defect reachable in realistic use.</summary>
     public static readonly ReviewSeverity High = new("High");
 
-    /// <summary>A real defect with bounded or unlikely impact, or a doctrine violation that misleads without corrupting.</summary>
+    /// <summary>
+    /// A real defect with bounded or unlikely impact. No longer also covers a doctrine or prose
+    /// violation that merely misleads a reader (Decisions Log #134): that clause moved to
+    /// <see cref="Low"/> because, unlike a bug count, prose never drains as review cycles climb —
+    /// a flat 0.51/0.47/0.50 in-scope Medium arrival rate across cycles 1-2, 3-6, and 7+ was
+    /// spending a fix-and-re-review cycle on findings that were never going to converge.
+    /// </summary>
     public static readonly ReviewSeverity Medium = new("Medium");
 
-    /// <summary>Polish.</summary>
+    /// <summary>
+    /// Polish: phrasing, comment or doc-string wording, a doctrine or prose violation that
+    /// misleads a reader without corrupting anything, a stale reference whether or not it
+    /// misleads, or a style nit.
+    /// </summary>
     public static readonly ReviewSeverity Low = new("Low");
 
     /// <summary>

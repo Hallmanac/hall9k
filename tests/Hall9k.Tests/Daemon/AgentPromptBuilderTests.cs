@@ -1038,8 +1038,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain($"{ReviewResultParser.FindingMarker} severity=high; scope=in-scope; at=",
             "the header the platform parses is shown, not described");
         prompt.Should().Contain("correctness, security, or data-integrity defect reachable in realistic use");
-        prompt.Should().Contain("bounded or unlikely impact, or a doctrine violation");
+        prompt.Should().Contain("`medium` — a real defect with bounded or unlikely impact.",
+            "the doctrine/prose clause moved to low, so a real defect is all medium says now");
         prompt.Should().Contain("`low` — polish:");
+        prompt.Should().Contain("doctrine or prose violation",
+            "the case moved out of medium has to land explicitly on low, not fall between the two anchors");
+        prompt.Should().Contain("a stale reference whether or not",
+            "the existing stale-reference case stays on low and is widened to cover a misleading one too");
         prompt.Should().Contain("counts as no grade at all",
             "a reviewer that writes `critical` should learn the platform reads it as ungraded");
         prompt.Should().Contain("the defective line lives in code this branch added or changed");
