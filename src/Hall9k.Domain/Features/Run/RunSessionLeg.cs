@@ -22,6 +22,15 @@ public sealed record RunSessionLeg
     /// <summary>The session that applies review findings in the run's worktree.</summary>
     public static readonly RunSessionLeg Fix = new("Fix");
 
+    /// <summary>
+    /// The narrow recovery session dispatched when a plain rebase onto the base branch conflicts
+    /// immediately before the mandatory final full pass (task: a run rebases its branch onto the
+    /// current base branch). Its own leg, not <see cref="Fix"/>: an error-retry on this leg must
+    /// clear the rebase-recovery session's own active-session fields and redispatch through
+    /// <see cref="ReviewPhase.RebaseRecoveryNeeded"/>, never the ordinary fix session's.
+    /// </summary>
+    public static readonly RunSessionLeg RebaseRecovery = new("RebaseRecovery");
+
     /// <summary>Not recognized. Serializes as an empty string.</summary>
     public static readonly RunSessionLeg Unknown = new("");
 

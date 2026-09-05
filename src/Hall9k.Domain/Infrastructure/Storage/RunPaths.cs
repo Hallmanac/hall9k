@@ -291,6 +291,18 @@ public static class RunPaths
         Path.Combine(runDirectory, "rebase-conflict-dispute.md");
 
     /// <summary>
+    /// A pre-final-pass rebase recovery session's closing position when it disputed a conflict
+    /// rather than resolving it (task: a run rebases its branch onto the current base branch) —
+    /// the conflicting files and both positions, which is what a park points the human at. A
+    /// sibling of <see cref="RebaseConflictDisputeFile"/> rather than a reuse of it: that one is
+    /// keyed to the post-PR follow-up's own cycle-0 dispute machinery, and this one is dispatched
+    /// mid-run, pre-PR, with no follow-up and no cycle-0 assumption behind it. Appended the same
+    /// way across repeated disputes on the same run.
+    /// </summary>
+    public static string PreFinalPassRebaseDisputeFile(string runDirectory) =>
+        Path.Combine(runDirectory, "pre-final-pass-rebase-dispute.md");
+
+    /// <summary>
     /// Appends one dispute's closing position to the well-known path
     /// (<see cref="RebaseConflictDisputeFile"/> or <see cref="ReviewThreadDisputeFile"/>) rather
     /// than overwriting it. A resumed pre-gate dispute can dispute again on that same path
