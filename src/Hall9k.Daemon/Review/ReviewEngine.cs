@@ -634,9 +634,13 @@ public sealed class ReviewEngine(
                     // also keeps the head-sha git shell-out (and the fingerprint read behind it) off
                     // the non-interactive pipeline's own hot path entirely: neither runs unless
                     // interactive mode is on and a prior gate head is already on record (independent
-                    // pre-PR review round 2, PR #224, conformance lens).
+                    // pre-PR review round 2, PR #224, conformance lens). Read fresh via
+                    // IsInteractiveModeEnabledAsync rather than off context.Task, the same stale-
+                    // snapshot reasoning as EnsureInteractiveProceedAsync (independent pre-PR
+                    // review, cycle 1, adversarial lens): a stale true here would keep skipping
+                    // this gate for a task whose flag was cleared mid-run.
                     bool reverifyGateAlreadyRan =
-                        context.Task.InteractiveModeEnabled
+                        await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken)
                         && run.LastGateHeadSha is not null
                         && run.LastGateHeadSha == await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken)
                         && await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
@@ -3018,11 +3022,18 @@ public sealed class ReviewEngine(
     /// for is not asked twice. A task without the flag never reaches the park at all — byte-for-byte
     /// today's fire-and-forget pipeline (this task's own sixth acceptance criterion). Returns true
     /// when the caller may proceed with the dispatch it was about to make.
+    /// <see cref="RunAggregate.InteractiveGateCleared"/> is checked first, and cheaply, off the
+    /// aggregate already in hand; the flag itself is read fresh via
+    /// <see cref="IsInteractiveModeEnabledAsync"/> only when that check does not already settle it
+    /// (independent pre-PR review, cycle 1, adversarial lens) — <see cref="ReviewContext.Task"/>
+    /// is loaded once at the top of <see cref="DriveAsync"/> and held for the run's whole review
+    /// phase, so a stale read here would miss <c>h9k task revise --clear-interactive-mode</c>
+    /// applied while this run's own review or fix session is still in flight.
     /// </summary>
     private async Task<bool> EnsureInteractiveProceedAsync(
         ReviewContext context, RunAggregate run, string boundaryDescription, CancellationToken cancellationToken)
     {
-        if (!context.Task.InteractiveModeEnabled || run.InteractiveGateCleared)
+        if (run.InteractiveGateCleared || !await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken))
         {
             return true;
         }
@@ -3801,6 +3812,25 @@ public sealed class ReviewEngine(
         TaskDetails? task = await query.LoadAsync<TaskDetails>(context.TaskId, cancellationToken);
         ProjectDetails? project = await query.LoadAsync<ProjectDetails>(context.Project.Id, cancellationToken);
         return ReviewCapResolver.Resolve(task, project, _options);
+    }
+
+    /// <summary>
+    /// Whether interactive mode is on for this task right now (task: interactive mode becomes a
+    /// recorded property of the task), read fresh off the store rather than off
+    /// <see cref="ReviewContext.Task"/> — the identical reasoning <see cref="ResolveReviewCapsAsync"/>
+    /// and <see cref="VerifyCommandsFingerprintMatchesAsync"/> already give for a setting that can
+    /// change mid-run: <see cref="ReviewContext"/> is loaded once at the very top of
+    /// <see cref="DriveAsync"/>, before this run's own review passes and fix sessions — which can
+    /// each run for real wall-clock minutes to hours — ever dispatch, so a task whose flag is
+    /// cleared mid-run (<c>h9k task revise --clear-interactive-mode</c>) needs to be seen at the
+    /// very next boundary check, not only on a future run (independent pre-PR review, cycle 1,
+    /// adversarial lens).
+    /// </summary>
+    private async Task<bool> IsInteractiveModeEnabledAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails? task = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        return task?.InteractiveModeEnabled ?? false;
     }
 
     /// <summary>
