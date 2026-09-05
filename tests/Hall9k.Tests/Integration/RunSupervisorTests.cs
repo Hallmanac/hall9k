@@ -9,6 +9,9 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -411,6 +414,78 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The primary-session half of error-result retry (task: a session that reports an error
+    /// result is retried once in place, measured 2026-09-05: bursty across only 18 distinct
+    /// hours, the shape of a provider-side burst rather than a code defect): a generic error —
+    /// distinct from the recognizable usage-limit shape the budget-park test above answers —
+    /// is retried once, in the same worktree, rather than failing the run outright.
+    /// </summary>
+    [Fact]
+    public async Task A_primary_sessions_error_result_is_retried_once_and_then_succeeds()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+
+        const string errorResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Internal server error"}""";
+        int processId = SpawnFakeAgent(runId, $"echo '{{\"type\":\"assistant\"}}'; echo '{errorResultLine}'");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        ScriptedResumeExecutor resumeExecutor = new(ResultLine);
+        RunSupervisor supervisor = NewSupervisor(
+            store, node, executor: resumeExecutor,
+            options: new DaemonOptions { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(1) });
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+        details.FailureReason.Should().BeNull("the transient error was retried, not failed");
+        resumeExecutor.Spawns.Should().ContainSingle("exactly one retry spawn for the primary session");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        RunSessionErrorRetried retry = events.OfType<RunSessionErrorRetried>().Single();
+        retry.Leg.Should().Be(RunSessionLeg.Build);
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Claimed", "the retried session is still doing the work");
+    }
+
+    /// <summary>
+    /// The residue this task exists to narrow the failures down to: a second consecutive error
+    /// on the primary session's own retry spends the one retry and fails the run exactly as
+    /// before, with the identical reason text a genuinely broken session always got.
+    /// </summary>
+    [Fact]
+    public async Task A_second_consecutive_error_on_the_primary_session_fails_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+
+        const string errorResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Internal server error"}""";
+        int processId = SpawnFakeAgent(runId, $"echo '{{\"type\":\"assistant\"}}'; echo '{errorResultLine}'");
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        ScriptedResumeExecutor resumeExecutor = new(errorResultLine);
+        RunSupervisor supervisor = NewSupervisor(
+            store, node, executor: resumeExecutor,
+            options: new DaemonOptions { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(1) });
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Failed", cts.Token);
+        details.FailureReason.Should().Be(
+            "Agent reported an error result.", "the second consecutive error fails the run with today's reason text unchanged");
+        resumeExecutor.Spawns.Should().ContainSingle("only the one retry is spent before the run fails");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunSessionErrorRetried>().Should().ContainSingle(
+            "only the first error earns a retry; the run fails outright on the second");
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be("Failed");
+    }
+
+    /// <summary>
     /// A follow-up that met a review thread it could not honestly judge parks for the human
     /// instead of pushing (Decisions Log #62): the never-loop rule the pre-PR fix session runs
     /// on, applied to a reviewer's thread. Both positions land beside the run, and the pipeline
@@ -644,6 +719,67 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         return (node, taskId, runId);
     }
 
+    /// <summary>
+    /// <see cref="SeedClaimedTaskAsync"/>'s task carries a project id that was never actually
+    /// registered — fine for every other test here, since nothing along their paths ever loads
+    /// <c>ProjectDetails</c> back. The error-result retry path does (<c>PrimarySessionResumer</c>
+    /// needs the project's own <c>SkipPermissions</c>), so this variant registers a real project
+    /// first and points the task at it.
+    /// </summary>
+    private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskWithProjectAsync(
+        DocumentStore store, CancellationToken cancellationToken)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-session-error-retry-repo-{taskId:N}");
+        await using IDocumentSession session = store.LightweightSession();
+
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"session-error-retry-{taskId:N}", repositoryPath,
+            new Uri("https://github.com/acme/web"), "main", Now);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Executor test task", ["it completes"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+            "/tmp/wt-test", "task/test", ExecutorMode.Subscription, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (node, taskId, runId);
+    }
+
+    /// <summary>
+    /// Scripted stand-in for the resumed process an error-result retry spawns (task: a session
+    /// that reports an error result is retried once in place): writes the given result line
+    /// straight into the run's main stream file, the same file a real `--resume` spawn's stdout
+    /// redirect would truncate and rewrite.
+    /// </summary>
+    private sealed class ScriptedResumeExecutor(string resultLine) : IExecutor
+    {
+        private int _nextProcessId = 7_000;
+
+        public List<AgentSpawnRequest> Spawns { get; } = [];
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Spawns.Add(request);
+            Directory.CreateDirectory(request.RunDirectory);
+            await File.WriteAllTextAsync(RunPaths.StreamFile(request.RunDirectory), resultLine + "\n", cancellationToken);
+            return new SpawnedAgent(_nextProcessId++, Now);
+        }
+    }
+
     private int SpawnFakeAgent(Guid runId, string script)
     {
         Directory.CreateDirectory(RunPaths.GlobalDirectory(runId));
@@ -704,9 +840,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
     private static RunSupervisor NewSupervisor(
         DocumentStore store, NodeContext node, IProcessManager? processManager = null, ILogger<RunSupervisor>? logger = null,
-        IExecutor? executor = null)
+        IExecutor? executor = null, DaemonOptions? options = null)
     {
         processManager ??= ProcessManagers.ForCurrentPlatform();
+        options ??= new DaemonOptions();
         VerificationRunner verification = new(
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
@@ -721,7 +858,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             executor ?? new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())));
         return new RunSupervisor(store, node, processManager, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
-            primarySessionResumer, Options.Create(new DaemonOptions()), logger ?? NullLogger<RunSupervisor>.Instance);
+            primarySessionResumer, Options.Create(options), logger ?? NullLogger<RunSupervisor>.Instance);
     }
 
     public void Dispose()
