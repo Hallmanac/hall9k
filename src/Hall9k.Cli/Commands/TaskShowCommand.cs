@@ -400,17 +400,32 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// only the word; this screen can afford the sentence, and Delivered in particular is a new
     /// word that has to teach itself.
     /// </summary>
-    private static string StateGloss(TaskStatusRow row) => row.State.Word switch
+    internal static string StateGloss(TaskStatusRow row) => row.State.Word switch
     {
         "Draft" => "[dim](being developed; the dispatcher cannot see it)[/]",
         "Published" => "[dim](past the readiness gate; not working yet)[/]",
         "Working" => "[dim](a run owns it and has not pushed yet)[/]",
         "Delivered" => "[dim](pushed; the merge has not been observed)[/]",
-        "Done" => "[dim](true closeout: the merge was observed)[/]",
+        "Done" => $"[dim](true closeout: {DoneReason(row.Type)})[/]",
         "Failed" => "[dim](a waypoint, not an ending — log #27)[/]",
         "Archived" => "[dim](walked away from)[/]",
         _ => "[dim](this build does not recognize the recorded state)[/]",
     };
+
+    /// <summary>
+    /// What true closeout actually observed for a Done task — the wording differs by task type
+    /// because the bar itself does. An ordinary task's Done means the closeout monitor watched
+    /// its pull request merge; a pr-review task never opens one of its own (Decisions Log #99),
+    /// so its Done means the owner delivered the review verdict (<c>h9k review resolve
+    /// --merge-ready</c>), and no merge was ever watched for it. Windows field report item 12
+    /// (2026-09-03): a pr-review task rendered "the merge was observed" while the pull request
+    /// it reviewed sat open, asserting an observation that never happened — the platform's
+    /// never-guess-at-unobserved-facts rule applies to this ledger's prose exactly as it does to
+    /// its data.
+    /// </summary>
+    internal static string DoneReason(string taskType) => taskType == TaskType.PrReview.Value
+        ? "the review was delivered"
+        : "the merge was observed";
 
     /// <summary>
     /// How the newest run's pre-PR review ended (Decisions Log #63). Merge-ready is one word for
