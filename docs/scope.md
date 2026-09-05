@@ -232,7 +232,11 @@ of them is automatic.
 ### Configuration and policy
 
 Per-project and per-owner settings resolving most-specific-wins over a node default: verification
-gates, agent model per role, parallelism, commit style, context links, skip-permissions, the Jira
+gates — each one run once, at `h9k project set --verify` time, against a clean checkout of the
+project's own base branch, refusing the whole `project set` when a gate cannot pass there
+(`--accept-broken-gate` records it anyway, with a loud warning); a run that later fails a gate
+which also fails on clean base says so, rather than reporting a bare gate failure — agent model
+per role, parallelism, commit style, context links, skip-permissions, the Jira
 board binding, the backlog policy and its free-text routing guidance, the branch-name template a
 project's task branches are cut under, and the post-fix review re-request policy. The node has a
 ceiling the dispatcher respects, counted directly in task runs (Decisions Log #111) — the retired

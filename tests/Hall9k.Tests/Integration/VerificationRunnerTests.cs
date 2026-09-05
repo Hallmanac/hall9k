@@ -1,5 +1,6 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using FluentAssertions;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Project;
@@ -106,6 +107,71 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         failed.GateDurations!.Select(gate => gate.Gate).Should().Equal("ok", "boom");
         failed.GateDurations![0].Passed.Should().BeTrue();
         failed.GateDurations![1].Passed.Should().BeFalse("boom is the gate that stopped the line");
+    }
+
+    /// <summary>
+    /// The Windows field report's own origin incident (item 11b): a gate that was never going to
+    /// pass — here, unconditionally — fails every run the same way a real regression would, and a
+    /// human reading only "gate failure (test)" has to rediscover by hand that the gate itself,
+    /// not the agent's work, is what is broken. <see cref="SeedAsync"/>'s default
+    /// <c>repositoryPath</c> reuses <c>_worktree</c>, so the gate genuinely does fail again when
+    /// this comparison reruns it there.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_that_also_fails_on_a_clean_checkout_of_the_base_branch_says_so()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId) = await SeedAsync(
+            store, [new VerifyCommand("broken", "echo unconditionally-broken; exit 1")], cts.Token);
+
+        await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("unconditionally-broken")
+            .And.Contain("also fails when run against a clean checkout of 'main'",
+                "the report must distinguish a gate that was never going to pass from a bare gate failure");
+    }
+
+    /// <summary>
+    /// The other half of the same distinction: a gate that fails only because of what THIS run's
+    /// own branch did must not claim it also fails on clean base — that would be exactly the
+    /// misleading signal item 11b's origin incident already produced, just pointed the wrong way.
+    /// The base checkout here is a real, separate directory that never sees the marker file the
+    /// run's own worktree carries, so the same gate command genuinely passes there.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_that_fails_only_on_this_runs_own_branch_does_not_claim_it_also_fails_on_clean_base()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(cleanBase);
+        try
+        {
+            Directory.CreateDirectory(_worktree);
+            File.WriteAllText(Path.Combine(_worktree, "bug-marker"), "this run's own branch introduced a bug\n");
+            (Guid taskId, Guid runId) = await SeedAsync(
+                store,
+                [new VerifyCommand("regressed", "test -f bug-marker && exit 1 || exit 0")],
+                cts.Token,
+                repositoryPath: cleanBase);
+
+            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.State.Value.Should().Be("Failed");
+            run.FailureReason.Should().NotContain(
+                "also fails when run against a clean checkout",
+                "this gate passes on a clean checkout of the base branch — only this run's own branch broke it");
+        }
+        finally
+        {
+            Directory.Delete(cleanBase, recursive: true);
+        }
     }
 
     /// <summary>
@@ -300,7 +366,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         VerificationRunner runner = new(
             store,
             Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(1) }),
-            NullLogger<VerificationRunner>.Instance);
+            NullLogger<VerificationRunner>.Instance,
+            NewWorktreeManager());
 
         await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -332,7 +399,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         VerificationRunner runner = new(
             store,
             Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(1) }),
-            NullLogger<VerificationRunner>.Instance);
+            NullLogger<VerificationRunner>.Instance,
+            NewWorktreeManager());
 
         bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -381,7 +449,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         VerificationRunner runner = new(
             store,
             Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(1) }),
-            NullLogger<VerificationRunner>.Instance);
+            NullLogger<VerificationRunner>.Instance,
+            NewWorktreeManager());
 
         bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -673,7 +742,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
 
         ListLogger<VerificationRunner> logger = new();
-        VerificationRunner runner = new(store, Options.Create(new DaemonOptions()), logger);
+        VerificationRunner runner = new(store, Options.Create(new DaemonOptions()), logger, NewWorktreeManager());
         await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
         await using IQuerySession query = store.QuerySession();
@@ -772,7 +841,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             [new VerifyCommand("test", "dotnet test --help; echo 'No test matches the given testcase filter'")], cts.Token);
 
         ListLogger<VerificationRunner> logger = new();
-        VerificationRunner runner = new(store, Options.Create(new DaemonOptions()), logger);
+        VerificationRunner runner = new(store, Options.Create(new DaemonOptions()), logger, NewWorktreeManager());
         bool passed = await runner.VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", cts.Token);
 
         passed.Should().BeTrue("the fallback's own full run genuinely passed");
@@ -952,11 +1021,18 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     });
 
     private static VerificationRunner NewRunner(DocumentStore store) =>
-        new(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
+        new(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance, NewWorktreeManager());
+
+    // No test in this file exercises the clean-base comparison's own worktree refresh (every
+    // seeded project here has no HomeDirectory, so ProjectCheckout.IsHomeDevWorktree is always
+    // false and this manager's own methods are never actually called) — a real GitWorktreeManager
+    // is still what every other VerificationRunner constructor call site in the daemon and its own
+    // tests uses, so a fake here would be one more thing to keep in sync with the interface.
+    private static GitWorktreeManager NewWorktreeManager() => new(NullLogger<GitWorktreeManager>.Instance);
 
     private async Task<(Guid TaskId, Guid RunId)> SeedAsync(
         DocumentStore store, IReadOnlyList<VerifyCommand> gates, CancellationToken cancellationToken,
-        TaskType? taskType = null)
+        TaskType? taskType = null, string? repositoryPath = null)
     {
         Directory.CreateDirectory(_worktree);
         Guid ownerId = DomainId.New();
@@ -968,8 +1044,13 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectAggregate project = new();
+        // The clean-base comparison (task: a verify gate that cannot pass on clean main is caught
+        // before it costs a run) reads the project's own RepositoryPath as its stand-in for a
+        // clean checkout of the base branch — a real project keeps that separate from any given
+        // run's own worktree, and a caller that wants to exercise the "fails on the branch, not on
+        // clean base" distinction passes its own directory here instead of reusing _worktree.
         ProjectRegistered registered = ProjectDecider.Register(
-            projectId, ownerId, connectionId, $"verify-{projectId:N}", _worktree, null, "main", Now);
+            projectId, ownerId, connectionId, $"verify-{projectId:N}", repositoryPath ?? _worktree, null, "main", Now);
         project.Apply(registered);
         session.Events.StartStream<ProjectAggregate>(projectId, registered, ProjectDecider.ChangeSettings(
             project,

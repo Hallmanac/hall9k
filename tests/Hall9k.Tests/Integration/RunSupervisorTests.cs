@@ -707,7 +707,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     {
         processManager ??= ProcessManagers.ForCurrentPlatform();
         VerificationRunner verification = new(
-            store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance);
+            store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, Options.Create(new DaemonOptions())), processManager, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance);

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -212,6 +213,16 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             await RecordFailureAsync(session, runId, [gate.Name], gateDurations, cancellationToken);
             AnsiConsole.MarkupLineInterpolated($"[red]Gate '{gate.Name}' failed:[/]");
             AnsiConsole.WriteLine(summary);
+
+            // The same distinction VerificationRunner's own headless failure now reports (task: a
+            // verify gate that cannot pass on clean main is caught before it costs a run) — best
+            // effort here too, so an operator watching this command's own output is not left to
+            // rediscover by hand that the gate itself, not their branch, is what is broken.
+            if (await DescribeCleanBaseComparisonAsync(project, gate, cancellationToken) is { } note)
+            {
+                AnsiConsole.MarkupLineInterpolated($"[yellow]{note}[/]");
+            }
+
             return ExitCodes.Conflict;
         }
 
@@ -221,6 +232,47 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             gatesFingerprint, treeConfirmedClean, gateDurations, cancellationToken);
         AnsiConsole.MarkupLineInterpolated($"[green]Verification passed ({project.VerifyCommands.Count} gate(s)).[/]");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="gate"/> also fails when run once against a clean checkout of the
+    /// project's own base branch — null when the comparison cannot be made (no reachable checkout,
+    /// a bare clone, or a repo/dev this call cannot confirm is at the base branch's current tip) or
+    /// when the gate passes there, in which case this run's own failure is real and a note here
+    /// would only be noise. Mirrors VerificationRunner.DescribeCleanBaseComparisonAsync's own
+    /// daemon-side logic (this project cannot reference Hall9k.Daemon), best effort: a failure
+    /// here is swallowed rather than replacing the real gate failure this command already reported.
+    /// </summary>
+    private static async Task<string?> DescribeCleanBaseComparisonAsync(
+        ProjectDetails project, VerifyCommand gate, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string checkout = ProjectCheckout.ForReading(project);
+            if (!Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout))
+            {
+                return null;
+            }
+
+            if (ProjectCheckout.IsHomeDevWorktree(project, checkout))
+            {
+                GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
+                CheckoutRefresh refresh = await worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken);
+                if (!refresh.UpToDate)
+                {
+                    return null;
+                }
+            }
+
+            GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, GateTimeout, cancellationToken);
+            return result.Passed
+                ? null
+                : $"Gate '{gate.Name}' also fails when run against a clean checkout of '{project.BaseBranch}': {result.OutputTail}";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     // Mirrors DaemonOptions.VerifyGateTimeout's own default (30 minutes, PLAN.md §16 #132's
