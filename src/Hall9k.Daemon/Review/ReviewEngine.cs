@@ -737,8 +737,17 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        if (result is { IsError: true, Summary: { } errorSummary })
+        if (result is { IsError: true })
         {
+            // Summary is null whenever the terminal result carries no string "result" field
+            // (StreamJsonParser.TryParseResult) — exactly the shape Claude Code emits for some
+            // error subtypes, e.g. error_max_turns (adversarial and conformance pre-PR review,
+            // cycle 1: matching on "Summary: { }" here let a null-summary error fall through to
+            // RecordReviewPassAsync as though the session had actually produced a verdict,
+            // instead of ever reaching the retry this task exists to give it). The build leg's
+            // own equivalent already falls back the same way (RunSupervisor.cs's
+            // "result.Summary ?? \"(no message)\"").
+            string errorSummary = result.Summary ?? "(no message)";
             if (run.HasRetriedSessionError(RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens))
             {
                 // A second consecutive error on this exact lens/cycle: the run really is
@@ -759,7 +768,8 @@ public sealed class ReviewEngine(
             // crash-recovery top-up path a lost track already uses.
             return await RetrySessionErrorAsync(
                 context.RunId, RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens,
-                $"the {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle})", errorSummary, cancellationToken);
+                $"the {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle})", errorSummary, result, pass.Model,
+                cancellationToken);
         }
 
         if (result is null)
@@ -803,8 +813,14 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        if (result is { IsError: true, Summary: { } fixErrorSummary })
+        if (result is { IsError: true })
         {
+            // See the review-pass leg's identical fallback a few dozen lines up: Summary is
+            // null for some error subtypes (e.g. error_max_turns), and matching on
+            // "Summary: { }" here let a null-summary error fall through to
+            // RecordFixResultAsync as though a fix had actually been applied (adversarial and
+            // conformance pre-PR review, cycle 1) — recording an unobserved fact as observed.
+            string fixErrorSummary = result.Summary ?? "(no message)";
             if (run.HasRetriedSessionError(RunSessionLeg.Fix, run.ReviewCycle, lens: null))
             {
                 await FailAsync(context.RunId, context.TaskId,
@@ -818,7 +834,8 @@ public sealed class ReviewEngine(
             // RunBudgetExhausted's own AwaitingFix clearing already relies on.
             return await RetrySessionErrorAsync(
                 context.RunId, RunSessionLeg.Fix, run.ReviewCycle, lens: null,
-                $"the fix session (cycle {run.ReviewCycle})", fixErrorSummary, cancellationToken);
+                $"the fix session (cycle {run.ReviewCycle})", fixErrorSummary, result, run.ActiveFixSessionModel,
+                cancellationToken);
         }
 
         if (result is null)
@@ -846,13 +863,23 @@ public sealed class ReviewEngine(
     /// for a review pass, or the <see cref="ReviewPhase.FixNeeded"/> case for a fix session —
     /// the same mechanics an ordinary crash recovery or a budget-exhaustion park's own re-entry
     /// already use, never a third copy of the dispatch logic.
+    /// <para>
+    /// Also records the errored session's own <see cref="TokensRecorded"/> before retrying —
+    /// the build leg already does this (<c>RunSupervisor.CompleteRunAsync</c>) before its own
+    /// retry decision — so a full diff read that ends in an error is not simply dropped from
+    /// the run's totals and the node's spend budget the way a run that terminated outright
+    /// already drops it via <see cref="ParkForBudgetAsync"/> (independent pre-PR review, cycle
+    /// 1, conformance finding: this path is the new one on top of that pre-existing gap, since
+    /// it now spends a second session as well).
+    /// </para>
     /// </summary>
     private async Task<bool> RetrySessionErrorAsync(
         Guid runId, RunSessionLeg leg, int? cycle, ReviewLens? lens, string sourceLabel, string observedMessage,
-        CancellationToken cancellationToken)
+        AgentResult erroredResult, AgentModel erroredModel, CancellationToken cancellationToken)
     {
         await using (IDocumentSession session = store.LightweightSession())
         {
+            session.Events.Append(runId, erroredResult.ToTokensRecorded(runId, DateTimeOffset.UtcNow, erroredModel));
             session.Events.Append(
                 runId, new RunSessionErrorRetried(runId, leg, cycle, lens, observedMessage, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
