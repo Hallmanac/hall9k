@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
@@ -2758,7 +2759,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         ListLogger<ReviewEngine> logger = new();
         ReviewEngine engine = new(store, executor, executor.Processes,
-            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            new VerificationRunner(
+                store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance)),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger);
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
@@ -2821,7 +2824,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         ListLogger<ReviewEngine> logger = new();
         ReviewEngine engine = new(store, executor, executor.Processes,
-            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            new VerificationRunner(
+                store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance)),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger);
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
@@ -5208,7 +5213,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         ScriptedExecutor executor = new("Ignored — the fence must stop before this is ever read.");
         ListLogger<ReviewEngine> logger = new();
         ReviewEngine engine = new(store, executor, executor.Processes,
-            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            new VerificationRunner(
+                store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance)),
             Options.Create(new DaemonOptions()), logger);
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
@@ -5276,7 +5283,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         ScriptedExecutor executor = new("Ignored — parking never dispatches.");
         ListLogger<ReviewEngine> logger = new();
         ReviewEngine engine = new(store, executor, executor.Processes,
-            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            new VerificationRunner(
+                store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance)),
             Options.Create(new DaemonOptions()), logger);
 
         await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
@@ -5309,7 +5318,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor, DaemonOptions options) =>
         new(store, executor, executor.Processes,
-            new VerificationRunner(store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance),
+            new VerificationRunner(
+                store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance)),
             Options.Create(options),
             NullLogger<ReviewEngine>.Instance);
 

@@ -1,6 +1,7 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -34,7 +35,8 @@ namespace Hall9k.Daemon.Execution;
 public sealed partial class VerificationRunner(
     IDocumentStore store,
     IOptions<DaemonOptions> options,
-    ILogger<VerificationRunner> logger)
+    ILogger<VerificationRunner> logger,
+    IWorktreeManager worktrees)
 {
     /// <summary>
     /// Runs the project's gates (task: a fix cycle's verification gate). <paramref name="scopeSinceSha"/>
@@ -283,7 +285,7 @@ public sealed partial class VerificationRunner(
                     $"after already spending its one retry before an earlier daemon restart. {summary}";
                 gateDurations.Add(new GateDuration(
                     gate.Name, gateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
-                await RecordFailureAsync(runId, taskId, gate.Name, adoptedReason, gateDurations, cancellationToken);
+                await RecordGateFailureAsync(runId, taskId, project, gate, adoptedReason, gateDurations, cancellationToken);
                 logger.LogWarning(
                     "Run {RunId} verification failed at gate '{Gate}': its one retry was already spent before adoption",
                     runId, gate.Name);
@@ -294,7 +296,7 @@ public sealed partial class VerificationRunner(
             {
                 gateDurations.Add(new GateDuration(
                     gate.Name, gateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
-                await RecordFailureAsync(runId, taskId, gate.Name, summary, gateDurations, cancellationToken);
+                await RecordGateFailureAsync(runId, taskId, project, gate, summary, gateDurations, cancellationToken);
                 logger.LogWarning("Run {RunId} verification failed at gate '{Gate}': {Summary}", runId, gate.Name, summary);
                 return false;
             }
@@ -346,7 +348,7 @@ public sealed partial class VerificationRunner(
 
             gateDurations.Add(new GateDuration(
                 gate.Name, totalGateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
-            await RecordFailureAsync(runId, taskId, gate.Name, reason, gateDurations, cancellationToken);
+            await RecordGateFailureAsync(runId, taskId, project, gate, reason, gateDurations, cancellationToken);
             logger.LogWarning("Run {RunId} verification failed at gate '{Gate}' after retry: {Summary}", runId, gate.Name, reason);
             return false;
         }
@@ -734,6 +736,85 @@ public sealed partial class VerificationRunner(
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new GateRetried(runId, gate, cause, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Records a gate's real failure, first asking whether this same gate also fails against a
+    /// clean checkout of the project's own base branch — the Windows field report's own origin
+    /// incident (task: a verify gate that cannot pass on clean main is caught before it costs a
+    /// run): a solution-level test gate that always failed under the dotnet SDK's MSBuild parked
+    /// every run Failed as a bare "gate failure (test)", costing a full agent run and a human
+    /// diagnosis session before anyone noticed the gate itself, not the agent's work, was broken.
+    /// A run that fails a gate which also fails on clean main says so, rather than reporting that
+    /// same bare failure a second time.
+    /// </summary>
+    private async Task RecordGateFailureAsync(
+        Guid runId, Guid taskId, ProjectDetails? project, VerifyCommand gate, string reason,
+        IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
+    {
+        string reportedReason = reason;
+        if (project is not null)
+        {
+            try
+            {
+                if (await DescribeCleanBaseComparisonAsync(runId, project, gate, cancellationToken) is { } note)
+                {
+                    reportedReason = $"{reason} {note}";
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Best-effort diagnostic on top of a failure that is already going to be recorded
+                // either way — never let the comparison's own failure (a locked repository, a git
+                // error) mask or replace the real gate failure this method exists to record.
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: could not compare gate '{Gate}' against a clean checkout of the base branch",
+                    runId, gate.Name);
+            }
+        }
+
+        await RecordFailureAsync(runId, taskId, gate.Name, reportedReason, gateDurations, cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="gate"/> also fails when run once against a clean checkout of the
+    /// project's own base branch — null when the comparison itself cannot be made (no reachable
+    /// checkout, a bare clone, or a repo/dev this call cannot confirm is actually at the base
+    /// branch's current tip) or when the gate passes there, in which case the run's own failure is
+    /// real and a note here would only be noise. Never guessed at either way (AGENTS.md's "never
+    /// guess at unobserved facts"): silence is the honest answer when cleanliness cannot be
+    /// confirmed, not an assumed pass or fail.
+    /// </summary>
+    private async Task<string?> DescribeCleanBaseComparisonAsync(
+        Guid runId, ProjectDetails project, VerifyCommand gate, CancellationToken cancellationToken)
+    {
+        string checkout = ProjectCheckout.ForReading(project);
+        if (!Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout))
+        {
+            return null;
+        }
+
+        // Only repo/dev is the platform's own to move — a project registered before homes existed
+        // points at somebody's ordinary clone, which this comparison then reads as-is rather than
+        // fast-forwarding (ProjectCheckout.IsHomeDevWorktree's own doc comment).
+        if (ProjectCheckout.IsHomeDevWorktree(project, checkout))
+        {
+            CheckoutRefresh refresh = await worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken);
+            if (!refresh.UpToDate)
+            {
+                logger.LogInformation(
+                    "Run {RunId}: skipping the clean-base comparison for gate '{Gate}' — {Detail}",
+                    runId, gate.Name, refresh.Detail);
+                return null;
+            }
+        }
+
+        GateCheckResult result = await AdHocGateRunner.RunAsync(
+            checkout, gate.Command, options.Value.VerifyGateTimeout, cancellationToken);
+        return result.Passed
+            ? null
+            : $"Gate '{gate.Name}' also fails when run against a clean checkout of '{project.BaseBranch}': {result.OutputTail}";
     }
 
     private async Task RecordFailureAsync(
