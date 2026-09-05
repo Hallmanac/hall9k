@@ -740,20 +740,6 @@ public sealed partial class VerificationRunner(
     }
 
     /// <summary>
-    /// Caps the clean-base comparison well under the project's own configured
-    /// <c>VerifyGateTimeout</c> (30 minutes by default) — this is a best-effort diagnostic on top
-    /// of a failure that is already being recorded either way, not the gate itself, so it has no
-    /// claim on the same budget a real gate pass does. A gate that is fundamentally broken fails
-    /// within seconds; one that is merely slow times out here as
-    /// <see cref="GateCheckOutcome.Inconclusive"/> rather than a false "also fails on clean base"
-    /// (independent pre-PR review, cycle 1, conformance lens: every gate failure used to pay up to
-    /// the node's whole <c>VerifyGateTimeout</c> a second time, holding the node's run slot for it).
-    /// The smaller of the two still wins, never this cap alone — a node or test that configured a
-    /// shorter <c>VerifyGateTimeout</c> already chose a tighter budget than this default.
-    /// </summary>
-    private static readonly TimeSpan CleanBaseComparisonTimeoutCap = TimeSpan.FromMinutes(5);
-
-    /// <summary>
     /// Records a gate's real failure, first asking whether this same gate also fails against a
     /// clean checkout of the project's own base branch — the Windows field report's own origin
     /// incident (task: a verify gate that cannot pass on clean main is caught before it costs a
@@ -843,27 +829,54 @@ public sealed partial class VerificationRunner(
         // loser's exit code was then recorded as the gate itself being broken. Acquired only
         // around the gate spawn, never around the refresh above, for the identical reentrancy
         // reason ProjectSetCommand.ValidateGatesAgainstCleanBaseAsync's own lock documents.
-        await using IAsyncDisposable gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, cancellationToken);
-        TimeSpan comparisonTimeout = options.Value.VerifyGateTimeout < CleanBaseComparisonTimeoutCap
-            ? options.Value.VerifyGateTimeout
-            : CleanBaseComparisonTimeoutCap;
-        GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, comparisonTimeout, cancellationToken);
-        if (result.Outcome != GateCheckOutcome.Failed)
+        //
+        // The wait to acquire it is itself bounded to CleanBaseCheckTimeoutCap, not left open-ended
+        // (independent pre-PR review, cycle 1, adversarial lens): this same lock also serializes
+        // against `git worktree add`/`remove` for every run and closeout's own worktree cleanup on
+        // this project, so an unbounded wait here — behind a slow gate comparison already holding
+        // it elsewhere, or a `project set --verify` validation holding it for its own gates — would
+        // defer this run's own RecordFailureAsync, and with it the run's failure, its lease
+        // release, and its node slot, for as long as that other holder runs. A lock that cannot be
+        // acquired within budget means the comparison is skipped, honestly, exactly like every
+        // other unobservable case in this method — never a reason to block the real failure this
+        // method exists to record.
+        using CancellationTokenSource lockBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        lockBudget.CancelAfter(AdHocGateRunner.CleanBaseCheckTimeoutCap);
+        IAsyncDisposable gateLock;
+        try
         {
-            if (result.Outcome == GateCheckOutcome.Inconclusive)
-            {
-                logger.LogInformation(
-                    "Run {RunId}: the clean-base comparison for gate '{Gate}' was inconclusive — {Detail}",
-                    runId, gate.Name, result.OutputTail);
-            }
-
+            gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, lockBudget.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogInformation(
+                "Run {RunId}: skipping the clean-base comparison for gate '{Gate}' — could not acquire the " +
+                "repository lock for {Checkout} within {Timeout}",
+                runId, gate.Name, checkout, AdHocGateRunner.CleanBaseCheckTimeoutCap);
             return null;
         }
 
-        string suffix = uncleanNote is null
-            ? string.Empty
-            : $" (checkout {uncleanNote}, so this may reflect the checkout's own local state rather than '{project.BaseBranch}' itself)";
-        return $"Gate '{gate.Name}' also fails when run against a clean checkout of '{project.BaseBranch}'{suffix}: {result.OutputTail}";
+        await using (gateLock)
+        {
+            TimeSpan comparisonTimeout = options.Value.VerifyGateTimeout < AdHocGateRunner.CleanBaseCheckTimeoutCap
+                ? options.Value.VerifyGateTimeout
+                : AdHocGateRunner.CleanBaseCheckTimeoutCap;
+            GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, comparisonTimeout, cancellationToken);
+            if (result.Outcome != GateCheckOutcome.Failed)
+            {
+                if (result.Outcome == GateCheckOutcome.Inconclusive)
+                {
+                    logger.LogInformation(
+                        "Run {RunId}: the clean-base comparison for gate '{Gate}' was inconclusive — {Detail}",
+                        runId, gate.Name, result.OutputTail);
+                }
+
+                return null;
+            }
+
+            string checkoutDescription = CheckoutCleanliness.DescribeCheckoutForComparison(checkout, project.BaseBranch, uncleanNote);
+            return $"Gate '{gate.Name}' also fails when run against {checkoutDescription}: {result.OutputTail}";
+        }
     }
 
     private async Task RecordFailureAsync(

@@ -50,10 +50,37 @@ public static class CheckoutCleanliness
         }
 
         (IReadOnlyList<string> modified, IReadOnlyList<string> untracked) = WorktreeGitStatus.ParsePorcelain(statusOutput);
-        return modified.Count > 0 || untracked.Count > 0
-            ? $"carries {modified.Count} modified and {untracked.Count} untracked file(s)"
+
+        // A known .NET build/test byproduct (TestResults/, bin/, obj/) is exactly what running
+        // this very gate against this very checkout regenerates every time, so counting it here
+        // would make the checkout report itself permanently "not confirmed clean" the moment a
+        // gate ever ran in it once — a defect no retry can ever clear, the identical shape
+        // VerificationRunner's own pre-gate check already excludes it for (adversarial review:
+        // this method used to count every untracked path unfiltered, unlike every other consumer
+        // of WorktreeGitStatus.ParsePorcelain, which all route untracked files through
+        // SplitUntracked first).
+        (IReadOnlyList<string> strandableUntracked, _) = WorktreeGitStatus.SplitUntracked(untracked);
+        return modified.Count > 0 || strandableUntracked.Count > 0
+            ? $"carries {modified.Count} modified and {strandableUntracked.Count} untracked file(s)"
             : null;
     }
+
+    /// <summary>
+    /// The honest way to name <paramref name="checkout"/> inside a sentence that is about to
+    /// assert something a gate comparison observed there — never "a clean checkout of
+    /// '&lt;baseBranch&gt;'" when <paramref name="uncleanNote"/> says the checkout was not
+    /// actually confirmed clean and on that branch, the exact contradiction independent pre-PR
+    /// review flagged: a headline stating "a clean checkout of 'main'" as fact in the same
+    /// sentence a parenthetical then says the checkout is on 'feature-x' instead. Shared here
+    /// rather than duplicated so <c>VerificationRunner</c> (the daemon) and <c>TaskVerifyCommand</c>
+    /// (the CLI, which cannot reference the daemon) report the identical wording instead of
+    /// drifting apart the way they did before this fix.
+    /// </summary>
+    public static string DescribeCheckoutForComparison(string checkout, string baseBranch, string? uncleanNote) =>
+        uncleanNote is null
+            ? $"a clean checkout of '{baseBranch}'"
+            : $"'{checkout}', not confirmed clean ({uncleanNote}), so this may reflect the checkout's " +
+              $"own local state rather than '{baseBranch}' itself";
 
     private static async Task<(int ExitCode, string StandardOutput)> RunGitAsync(
         string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)

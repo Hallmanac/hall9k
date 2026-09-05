@@ -224,9 +224,22 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             // happening (independent pre-PR review, cycle 1, adversarial lens, low).
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Checking whether gate '{gate.Name}' also fails against a clean checkout of '{project.BaseBranch}'...[/]");
-            if (await DescribeCleanBaseComparisonAsync(project, gate, cancellationToken) is { } note)
+
+            // Every distinct outcome is announced, not just a confirmed clean-base failure
+            // (adversarial review, medium): the comparison can also be skipped for four
+            // different reasons (no reachable checkout, a bare clone, a repo/dev not confirmed
+            // up to date, or an unexpected exception) or come back inconclusive, and a silent
+            // command here would make "checked, and it passes on clean base" indistinguishable
+            // from "the check never happened" — the unobserved-as-observed conflation this
+            // whole feature exists to prevent.
+            CleanBaseComparisonResult comparison = await DescribeCleanBaseComparisonAsync(project, gate, cancellationToken);
+            if (comparison.Outcome == CleanBaseComparisonOutcome.NotAttempted)
             {
-                AnsiConsole.MarkupLineInterpolated($"[yellow]{note}[/]");
+                AnsiConsole.MarkupLineInterpolated($"[dim]{comparison.Detail}[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLineInterpolated($"[yellow]{comparison.Detail}[/]");
             }
 
             return ExitCodes.Conflict;
@@ -241,28 +254,55 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
     }
 
     /// <summary>
+    /// Whether the clean-base comparison for <paramref name="gate"/> was actually attempted, and
+    /// what it found — every distinct reason it might not have run is its own
+    /// <see cref="CleanBaseComparisonOutcome.NotAttempted"/> instance rather than one shared null,
+    /// so the caller can announce which one happened instead of staying silent (adversarial
+    /// review, medium: a silent command here made "checked, and it passes on clean base"
+    /// indistinguishable from "the check never happened").
+    /// </summary>
+    private sealed record CleanBaseComparisonResult(CleanBaseComparisonOutcome Outcome, string Detail);
+
+    private enum CleanBaseComparisonOutcome
+    {
+        /// <summary>No reachable checkout, a bare clone, a repo/dev not confirmed up to date, an unbounded lock wait, or an unexpected exception.</summary>
+        NotAttempted,
+        Inconclusive,
+        ConfirmedPasses,
+        ConfirmedFails,
+    }
+
+    /// <summary>
     /// Whether <paramref name="gate"/> also fails when run once against a clean checkout of the
-    /// project's own base branch — null when the comparison cannot be made (no reachable checkout,
-    /// a bare clone, a repo/dev this call cannot confirm is at the base branch's current tip, or the
-    /// attempt is <see cref="GateCheckOutcome.Inconclusive"/>) or when the gate is actually observed
-    /// to pass there, in which case this run's own failure is real and a note here would only be
-    /// noise. Mirrors VerificationRunner.DescribeCleanBaseComparisonAsync's own daemon-side logic
-    /// (this project cannot reference Hall9k.Daemon), best effort: a failure here is swallowed
-    /// rather than replacing the real gate failure this command already reported. Whether the
-    /// checkout itself is confirmed clean and on the base branch is checked and named in the note
-    /// rather than gating whether the note is made at all — the gate command genuinely did run and
+    /// project's own base branch. Mirrors VerificationRunner.DescribeCleanBaseComparisonAsync's own
+    /// daemon-side logic (this project cannot reference Hall9k.Daemon), best effort: an unexpected
+    /// exception here is reported as <see cref="CleanBaseComparisonOutcome.NotAttempted"/> rather
+    /// than replacing the real gate failure this command already reported. Whether the checkout
+    /// itself is confirmed clean and on the base branch is checked and named in the detail rather
+    /// than gating whether a comparison is made at all — the gate command genuinely did run and
     /// exit with a real code either way (independent pre-PR review, cycle 1, both lenses, sweeping
     /// the identical shape found in VerificationRunner's own version of this method).
     /// </summary>
-    private static async Task<string?> DescribeCleanBaseComparisonAsync(
+    private static async Task<CleanBaseComparisonResult> DescribeCleanBaseComparisonAsync(
         ProjectDetails project, VerifyCommand gate, CancellationToken cancellationToken)
     {
         try
         {
             string checkout = ProjectCheckout.ForReading(project);
-            if (!Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout))
+            if (!Directory.Exists(checkout))
             {
-                return null;
+                return new CleanBaseComparisonResult(
+                    CleanBaseComparisonOutcome.NotAttempted,
+                    $"No working checkout of this project exists yet at {checkout}, so whether gate " +
+                    $"'{gate.Name}' also fails on a clean '{project.BaseBranch}' is unobserved rather than confirmed.");
+            }
+
+            if (ProjectCheckout.IsBare(checkout))
+            {
+                return new CleanBaseComparisonResult(
+                    CleanBaseComparisonOutcome.NotAttempted,
+                    $"{checkout} is a bare clone with no working tree, so whether gate '{gate.Name}' also " +
+                    $"fails on a clean '{project.BaseBranch}' is unobserved rather than confirmed.");
             }
 
             GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
@@ -272,7 +312,9 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 CheckoutRefresh refresh = await worktrees.RefreshReadingCheckoutAsync(checkout, project.BaseBranch, cancellationToken);
                 if (!refresh.UpToDate)
                 {
-                    return null;
+                    return new CleanBaseComparisonResult(
+                        CleanBaseComparisonOutcome.NotAttempted,
+                        $"Skipped the clean-base comparison for gate '{gate.Name}' — {refresh.Detail}");
                 }
             }
 
@@ -281,29 +323,59 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             // Serializes this checkout's gate spawn against every other caller that can run a
             // command in it at the same time (the daemon's own post-failure comparison, another
             // concurrent h9k task verify, h9k project set --verify) — the identical reasoning
-            // VerificationRunner.DescribeCleanBaseComparisonAsync's own lock documents.
-            await using IAsyncDisposable gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, cancellationToken);
-            GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, CleanBaseComparisonTimeout, cancellationToken);
-            if (result.Outcome != GateCheckOutcome.Failed)
+            // VerificationRunner.DescribeCleanBaseComparisonAsync's own lock documents. The wait to
+            // acquire it is itself bounded, for the identical reason that method's own bounded wait
+            // documents: this same lock also serializes `git worktree add`/`remove`, so an
+            // unbounded wait here would leave an operator staring at a silent terminal behind
+            // whichever other caller already holds it, with no way to tell "waiting" from "hung".
+            using CancellationTokenSource lockBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            lockBudget.CancelAfter(AdHocGateRunner.CleanBaseCheckTimeoutCap);
+            IAsyncDisposable gateLock;
+            try
             {
-                return null;
+                gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, lockBudget.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return new CleanBaseComparisonResult(
+                    CleanBaseComparisonOutcome.NotAttempted,
+                    $"Could not acquire the repository lock for {checkout} within " +
+                    $"{AdHocGateRunner.CleanBaseCheckTimeoutCap.TotalMinutes:0} minutes — recording the failure " +
+                    "without this validation.");
             }
 
-            string suffix = uncleanNote is null
-                ? string.Empty
-                : $" (checkout {uncleanNote}, so this may reflect the checkout's own local state rather than '{project.BaseBranch}' itself)";
-            return $"Gate '{gate.Name}' also fails when run against a clean checkout of '{project.BaseBranch}'{suffix}: {result.OutputTail}";
+            await using (gateLock)
+            {
+                GateCheckResult result = await AdHocGateRunner.RunAsync(
+                    checkout, gate.Command, AdHocGateRunner.CleanBaseCheckTimeoutCap, cancellationToken);
+                switch (result.Outcome)
+                {
+                    case GateCheckOutcome.Inconclusive:
+                        return new CleanBaseComparisonResult(
+                            CleanBaseComparisonOutcome.Inconclusive,
+                            $"Could not confirm whether gate '{gate.Name}' passes against a clean checkout of " +
+                            $"'{project.BaseBranch}': {result.OutputTail} — recording it without this validation.");
+                    case GateCheckOutcome.Passed:
+                        return new CleanBaseComparisonResult(
+                            CleanBaseComparisonOutcome.ConfirmedPasses,
+                            $"Gate '{gate.Name}' passes when run against " +
+                            $"{CheckoutCleanliness.DescribeCheckoutForComparison(checkout, project.BaseBranch, uncleanNote)} — " +
+                            "this failure looks like it belongs to this claim's own branch, not the gate itself.");
+                    default:
+                        return new CleanBaseComparisonResult(
+                            CleanBaseComparisonOutcome.ConfirmedFails,
+                            $"Gate '{gate.Name}' also fails when run against " +
+                            $"{CheckoutCleanliness.DescribeCheckoutForComparison(checkout, project.BaseBranch, uncleanNote)}: {result.OutputTail}");
+                }
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return null;
+            return new CleanBaseComparisonResult(
+                CleanBaseComparisonOutcome.NotAttempted,
+                $"Could not compare gate '{gate.Name}' against a clean checkout of '{project.BaseBranch}': {exception.Message}");
         }
     }
-
-    // Bounded well under GateTimeout below the same way VerificationRunner.CleanBaseComparisonTimeoutCap
-    // is: this is a best-effort diagnostic on top of a failure already reported either way, not the
-    // gate itself, so it has no claim on the same 30-minute budget a real gate run gets.
-    private static readonly TimeSpan CleanBaseComparisonTimeout = TimeSpan.FromMinutes(5);
 
     // Mirrors DaemonOptions.VerifyGateTimeout's own default (30 minutes, PLAN.md §16 #132's
     // follow-up review) — this project cannot reference Hall9k.Daemon (Reference graph:

@@ -113,26 +113,74 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// The Windows field report's own origin incident (item 11b): a gate that was never going to
     /// pass — here, unconditionally — fails every run the same way a real regression would, and a
     /// human reading only "gate failure (test)" has to rediscover by hand that the gate itself,
-    /// not the agent's work, is what is broken. <see cref="SeedAsync"/>'s default
-    /// <c>repositoryPath</c> reuses <c>_worktree</c>, so the gate genuinely does fail again when
-    /// this comparison reruns it there.
+    /// not the agent's work, is what is broken. The comparison checkout is a real, separate,
+    /// genuinely clean git repository on <c>main</c> (not <c>_worktree</c>, which the run's own
+    /// no-commit pre-gate check needs to stay a plain non-git directory), so the headline's own
+    /// claim of "a clean checkout" is actually true here.
     /// </summary>
     [Fact]
     public async Task A_gate_that_also_fails_on_a_clean_checkout_of_the_base_branch_says_so()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
-        (Guid taskId, Guid runId) = await SeedAsync(
-            store, [new VerifyCommand("broken", "echo unconditionally-broken; exit 1")], cts.Token);
+        string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
+        await InitializeCleanCheckoutAsync(cleanBase, "main", cts.Token);
+        try
+        {
+            (Guid taskId, Guid runId) = await SeedAsync(
+                store, [new VerifyCommand("broken", "echo unconditionally-broken; exit 1")], cts.Token,
+                repositoryPath: cleanBase);
 
-        await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
-        await using IQuerySession query = store.QuerySession();
-        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-        run.State.Value.Should().Be("Failed");
-        run.FailureReason.Should().Contain("unconditionally-broken")
-            .And.Contain("also fails when run against a clean checkout of 'main'",
-                "the report must distinguish a gate that was never going to pass from a bare gate failure");
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.State.Value.Should().Be("Failed");
+            run.FailureReason.Should().Contain("unconditionally-broken")
+                .And.Contain("also fails when run against a clean checkout of 'main'",
+                    "the report must distinguish a gate that was never going to pass from a bare gate failure");
+        }
+        finally
+        {
+            Directory.Delete(cleanBase, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The conformance finding this fix addresses: a comparison checkout that could not be
+    /// confirmed clean must never be asserted as "a clean checkout" in the same headline whose own
+    /// parenthetical then takes it back. The comparison checkout here is a real git repository, but
+    /// on a different branch entirely, so the headline itself must say so plainly instead of
+    /// calling it clean and contradicting itself mid-sentence.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_that_fails_on_a_checkout_not_confirmed_clean_does_not_call_it_clean()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string uncleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-unclean-{Guid.NewGuid():N}");
+        await InitializeCleanCheckoutAsync(uncleanBase, "feature-x", cts.Token);
+        try
+        {
+            (Guid taskId, Guid runId) = await SeedAsync(
+                store, [new VerifyCommand("broken", "echo unconditionally-broken; exit 1")], cts.Token,
+                repositoryPath: uncleanBase);
+
+            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.State.Value.Should().Be("Failed");
+            run.FailureReason.Should().Contain("unconditionally-broken")
+                .And.Contain($"'{uncleanBase}', not confirmed clean")
+                .And.Contain("is on 'feature-x', not 'main'")
+                .And.NotContain("a clean checkout of 'main'",
+                    "the checkout was never confirmed clean and on main, so the headline must not assert it was");
+        }
+        finally
+        {
+            Directory.Delete(uncleanBase, recursive: true);
+        }
     }
 
     /// <summary>
@@ -931,6 +979,22 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             "public sealed class WidgetTests\n{\n    private readonly Widget _widget = new();\n}\n",
             "add widget tests", cancellationToken);
         return (await RunShellCapturingAsync(_worktree, "git rev-parse HEAD", cancellationToken)).Trim();
+    }
+
+    /// <summary>
+    /// A minimal, genuinely clean git repository on <paramref name="branch"/> — nothing modified,
+    /// nothing untracked — for a test that needs the clean-base comparison's own
+    /// <see cref="CheckoutCleanliness.DescribeNotConfirmedCleanAsync"/> check to actually confirm
+    /// the checkout it just spawned a gate against, rather than the plain non-git directory most
+    /// tests in this file use (which git can never confirm anything about at all).
+    /// </summary>
+    private static async Task InitializeCleanCheckoutAsync(string directory, string branch, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(directory);
+        await RunShellAsync(
+            directory,
+            $"git init -q -b {branch} && git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q",
+            cancellationToken);
     }
 
     private async Task CommitAsync(string relativePath, string content, string message, CancellationToken cancellationToken)

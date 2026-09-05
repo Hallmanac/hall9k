@@ -226,7 +226,13 @@ public static class ProjectDecider
             normalizedComposition,
             ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(normalizedRaw, reviewStageCompositionAcknowledged),
             autoPrReview,
-            acceptedBrokenGate);
+            // Clamped here, not merely trusted from the caller (conformance review, low): the
+            // ReviewStageCompositionAcknowledged idiom two lines above is enforced at this exact
+            // boundary rather than left to whichever caller happens to compute it correctly today,
+            // so a future second caller of ChangeSettings — or a refactor of this one — cannot
+            // write an unobserved acceptance to the stream by passing true on a change that
+            // recorded no gate at all.
+            AcceptedBrokenGate: acceptedBrokenGate && verifyCommands.HasValue);
     }
 
     /// <summary>

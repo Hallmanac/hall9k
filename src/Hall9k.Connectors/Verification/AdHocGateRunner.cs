@@ -45,6 +45,20 @@ public static class AdHocGateRunner
     /// <summary>Mirrors DaemonOptions.VerifyGateTimeout's own default; a caller with its own value passes it.</summary>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(30);
 
+    /// <summary>
+    /// The budget a clean-base comparison gets, on either side of the CLI/daemon split — a
+    /// best-effort diagnostic on top of a failure (or a refusal) that is already being recorded
+    /// either way, not a real gate pass, so it has no claim on <see cref="DefaultTimeout"/>'s own
+    /// 30-minute budget. Shared here rather than duplicated per caller (independent pre-PR
+    /// review, cycle 1, conformance lens: <c>h9k project set --verify</c> used to hold the
+    /// repository-wide worktree lock for up to <see cref="DefaultTimeout"/> per gate, with no cap
+    /// of its own, while the daemon's own comparison already capped itself at exactly this value
+    /// for exactly this reason). Also doubles as the budget a caller is willing to wait to
+    /// *acquire* that same lock before giving up on the comparison rather than blocking
+    /// indefinitely behind whichever other caller is already holding it.
+    /// </summary>
+    public static readonly TimeSpan CleanBaseCheckTimeoutCap = TimeSpan.FromMinutes(5);
+
     private const int MaxOutputTailLength = 400;
 
     public static async Task<GateCheckResult> RunAsync(

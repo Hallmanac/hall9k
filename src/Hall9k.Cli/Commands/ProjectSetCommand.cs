@@ -303,14 +303,18 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             RepositoryPath = repositoryPath is { HasValue: true, Value: { } newRepositoryPath } ? newRepositoryPath : details.RepositoryPath,
         };
 
-        bool acceptedBrokenGate = false;
-        if (verifyCommands is { HasValue: true, Value: { } gatesToValidate })
-        {
-            acceptedBrokenGate = await ValidateGatesAgainstCleanBaseAsync(
-                validationTarget, gatesToValidate, settings.AcceptBrokenGate, cancellationToken);
-        }
+        DateTimeOffset changedAt = DateTimeOffset.UtcNow;
 
-        ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+        // Every syntactic refusal ProjectDecider.ChangeSettings itself can raise (a bad --model, an
+        // invalid --commit-style, a review-stage-composition missing its acknowledgment...) is
+        // cheap and synchronous — it costs nothing to discover before the expensive validation
+        // below ever spawns a gate or holds the repository lock (independent pre-PR review, cycle
+        // 1, conformance lens: a typo'd --model used to be discovered only after a full `dotnet
+        // test` gate had already run to completion against a clean checkout, having recorded
+        // nothing). Built as a local function so it can be called again, cheaply, once the gate
+        // validation below knows the real value of acceptedBrokenGate — ChangeSettings is pure
+        // given the same changedAt, so calling it twice costs nothing but a second allocation.
+        ProjectSettingsChanged BuildChangedEvent(bool acceptedBrokenGateValue) => ProjectDecider.ChangeSettings(
             project,
             verifyCommands: verifyCommands,
             skipPermissions: settings.SkipPermissions is { } skip ? skip : Optional<bool>.None,
@@ -318,7 +322,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             contextLinks: settings.Links.Length > 0
                 ? Optional<IReadOnlyList<ContextLink>>.Of([.. settings.Links.Select(ParseLink)])
                 : Optional<IReadOnlyList<ContextLink>>.None,
-            DateTimeOffset.UtcNow,
+            changedAt,
             context.OwnerId,
             commitStyle: settings.CommitStyle is { } commitStyle
                 ? Optional<CommitStyle>.Of(ParseCommitStyle(commitStyle))
@@ -375,7 +379,19 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             autoPrReview: settings.AutoPrReview is { } autoPrReview
                 ? Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Parse(autoPrReview))
                 : Optional<AutoPrReviewSpeed>.None,
-            acceptedBrokenGate: acceptedBrokenGate);
+            acceptedBrokenGate: acceptedBrokenGateValue);
+
+        ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
+
+        if (verifyCommands is { HasValue: true, Value: { } gatesToValidate })
+        {
+            bool acceptedBrokenGate = await ValidateGatesAgainstCleanBaseAsync(
+                validationTarget, gatesToValidate, settings.AcceptBrokenGate, cancellationToken);
+            if (acceptedBrokenGate)
+            {
+                changed = BuildChangedEvent(acceptedBrokenGateValue: true);
+            }
+        }
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);
@@ -571,36 +587,63 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         List<(VerifyCommand Gate, GateCheckResult Result)> failures = [];
 
-        // Serializes this checkout's gate spawn against every other caller that can run a command
-        // in the very same directory at the same time — the daemon's own post-failure comparison
-        // (VerificationRunner.DescribeCleanBaseComparisonAsync) and h9k task verify's, both of
-        // which can share this exact repo/dev checkout, plus a second concurrent `project set
-        // --verify` (independent pre-PR review, cycle 1, both lenses: two dotnet build/test
-        // invocations sharing one obj/bin used to fail each other, and the loser's exit code was
-        // then recorded as the gate itself being broken). Acquired only around the gate spawns
-        // below, never around the refresh above — RefreshReadingCheckoutAsync takes this exact
-        // lock internally and releases it before returning, so holding it here too would either
-        // deadlock (same in-process semaphore) or hang (the cross-process file lock is not
-        // reentrant within one process).
-        await using IAsyncDisposable gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, cancellationToken);
         foreach (VerifyCommand gate in gates)
         {
             AnsiConsole.MarkupLine($"[dim]Validating gate '{gate.Name.EscapeMarkup()}' against {checkoutDescription}...[/]");
-            GateCheckResult result = await AdHocGateRunner.RunAsync(
-                checkout, gate.Command, AdHocGateRunner.DefaultTimeout, cancellationToken);
-            switch (result.Outcome)
+
+            // Serializes this checkout's gate spawn against every other caller that can run a
+            // command in the very same directory at the same time — the daemon's own post-failure
+            // comparison (VerificationRunner.DescribeCleanBaseComparisonAsync) and h9k task
+            // verify's, both of which can share this exact repo/dev checkout, plus a second
+            // concurrent `project set --verify` (independent pre-PR review, cycle 1, both lenses:
+            // two dotnet build/test invocations sharing one obj/bin used to fail each other, and
+            // the loser's exit code was then recorded as the gate itself being broken). Acquired
+            // fresh per gate rather than once for the whole loop, and bounded rather than left
+            // open-ended on either the wait to acquire it or the gate's own run (adversarial
+            // review, medium): this is the same repository-wide lock that serializes `git worktree
+            // add`/`remove`/`fetch` for every run on this project and closeout's own worktree
+            // cleanup, so validating N gates here used to hold that lock — and with it the whole
+            // node's dispatch loop — for up to N times AdHocGateRunner.DefaultTimeout (30 minutes
+            // each), with no cap of its own. Bounded to AdHocGateRunner.CleanBaseCheckTimeoutCap,
+            // the identical budget the daemon's own comparison already uses for the identical
+            // reason: this is a best-effort validation on top of a change that has not landed yet,
+            // never a real gate pass, so it has no claim on the full 30-minute budget.
+            using CancellationTokenSource lockBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            lockBudget.CancelAfter(AdHocGateRunner.CleanBaseCheckTimeoutCap);
+            IAsyncDisposable gateLock;
+            try
             {
-                case GateCheckOutcome.Failed:
-                    failures.Add((gate, result));
-                    break;
-                case GateCheckOutcome.Inconclusive:
-                    AnsiConsole.MarkupLine(
-                        $"[yellow]Could not confirm whether gate '{gate.Name.EscapeMarkup()}' passes against a "
-                        + $"clean checkout of '{project.BaseBranch.EscapeMarkup()}': {result.OutputTail.EscapeMarkup()} "
-                        + "— recording it without this validation.[/]");
-                    break;
-                case GateCheckOutcome.Passed:
-                    break;
+                gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, lockBudget.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Could not confirm whether gate '{gate.Name.EscapeMarkup()}' passes against a "
+                    + $"clean checkout of '{project.BaseBranch.EscapeMarkup()}': could not acquire the "
+                    + $"repository lock for {checkout.EscapeMarkup()} within "
+                    + $"{AdHocGateRunner.CleanBaseCheckTimeoutCap.TotalMinutes:0} minutes — recording it "
+                    + "without this validation.[/]");
+                continue;
+            }
+
+            await using (gateLock)
+            {
+                GateCheckResult result = await AdHocGateRunner.RunAsync(
+                    checkout, gate.Command, AdHocGateRunner.CleanBaseCheckTimeoutCap, cancellationToken);
+                switch (result.Outcome)
+                {
+                    case GateCheckOutcome.Failed:
+                        failures.Add((gate, result));
+                        break;
+                    case GateCheckOutcome.Inconclusive:
+                        AnsiConsole.MarkupLine(
+                            $"[yellow]Could not confirm whether gate '{gate.Name.EscapeMarkup()}' passes against a "
+                            + $"clean checkout of '{project.BaseBranch.EscapeMarkup()}': {result.OutputTail.EscapeMarkup()} "
+                            + "— recording it without this validation.[/]");
+                        break;
+                    case GateCheckOutcome.Passed:
+                        break;
+                }
             }
         }
 
