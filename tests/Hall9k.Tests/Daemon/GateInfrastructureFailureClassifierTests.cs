@@ -26,16 +26,19 @@ public sealed class GateInfrastructureFailureClassifierTests
 
     /// <summary>
     /// Kept out of the shared theory above, unlike every other marker there, so a broken
-    /// classifier failing this one specific case does not render the MSB4166 marker text into
-    /// this fact's own failing display name — a `[Fact]` has none, where a `[Theory]`'s default
-    /// display embeds its `[InlineData]` argument — and get the resulting `dotnet test` output
-    /// misclassified as the very infrastructure failure this test exists to recognize (adversarial
-    /// review, cycle 1). The pre-existing markers above already carry this same self-reference
-    /// risk; this one is isolated rather than the whole theory reworked, since only this entry is
-    /// this branch's own change.
+    /// classifier failing this one specific case does not render the marker text into this fact's
+    /// own failing display name (a `[Theory]`'s default display embeds its `[InlineData]`
+    /// argument) and get the resulting `dotnet test` output misclassified as the very
+    /// infrastructure failure this test exists to recognize. The marker itself is deliberately
+    /// kept out of this method's own name too (cycle 1 review, both lenses): xUnit's default
+    /// display name for a `[Fact]` is its fully-qualified method name, so a literal marker there
+    /// would render exactly as it would inside a `[Theory]`'s argument, defeating the isolation
+    /// this split exists to provide. The pre-existing markers above already carry this same
+    /// self-reference risk; this one is isolated rather than the whole theory reworked, since only
+    /// this entry is this branch's own change.
     /// </summary>
     [Fact]
-    public void An_MSB4166_child_node_crash_classifies_as_infrastructure()
+    public void A_child_node_crash_classifies_as_infrastructure()
     {
         string gateOutput =
             "Gate 'test' exited 1. Output: MSBUILD : error MSB4166: Child node \"1\" exited prematurely. " +
@@ -72,11 +75,22 @@ public sealed class GateInfrastructureFailureClassifierTests
         GateInfrastructureFailureClassifier.MatchingExcerpt("Xunit.Sdk.EqualException: expected true, was false")
             .Should().BeNull();
 
+    /// <summary>
+    /// Asserted through the excerpt's own <see cref="string.IndexOf(string, StringComparison)"/>
+    /// position rather than <c>Should().Contain("MSB4166")</c>, so a genuine regression here
+    /// fails on a plain "expected a non-negative index" message instead of one that echoes the
+    /// literal marker text back into this test's own failure output (cycle 1 review, both
+    /// lenses) — the same self-reference this file's other new fact is named to avoid.
+    /// </summary>
     [Fact]
-    public void MatchingExcerpt_names_the_MSB4166_marker_so_the_recorded_retry_cause_says_what_triggered_it() =>
-        GateInfrastructureFailureClassifier.MatchingExcerpt(
-                "MSBUILD : error MSB4166: Child node \"1\" exited prematurely. Shutting down. Fatal error.")
-            .Should().Contain("MSB4166");
+    public void MatchingExcerpt_names_the_child_node_crash_marker_so_the_recorded_retry_cause_says_what_triggered_it()
+    {
+        string? excerpt = GateInfrastructureFailureClassifier.MatchingExcerpt(
+            "MSBUILD : error MSB4166: Child node \"1\" exited prematurely. Shutting down. Fatal error.");
+
+        excerpt.Should().NotBeNull();
+        excerpt!.IndexOf("MSB4166", StringComparison.OrdinalIgnoreCase).Should().BeGreaterThanOrEqualTo(0);
+    }
 
     // A directory rather than a captured-output string, deliberately: the gate's own console
     // output cannot be relied on here (see IsUnresolvedGateWaitTimeout's own doc comment) —
