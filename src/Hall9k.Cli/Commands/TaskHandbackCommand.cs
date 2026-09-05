@@ -93,27 +93,25 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
                 $"Task {taskId} is {task.State.Value} — only a task with an active interactive claim hands back this way.");
         }
 
-        RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
-            ?? throw new DomainConflictException(
-                $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
-                + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
-                + "dispatch queue.");
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
 
         // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
         // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
         // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), which reads identically
-        // to one on IsInteractiveClaim's own Guid.Empty discriminator. Gated on the run record
-        // actually existing, not on task state alone: the no-record check just above already
-        // recovers the one case where CreateOneAsync's own launch died before RunDispatched ever
-        // committed, and refusing that case here too — before ever loading the run — would
-        // misreport it as "already running headlessly" when nothing ever ran, closing off
-        // h9k task release's own recovery path with a claim that overclaims what was actually
-        // observed (independent pre-PR review, cycle 6, class sweep off TaskReleaseCommand.cs's own
-        // pr-review guard, the same shape adversarial cycle 6 found there). A live run is already
-        // being driven by this daemon's own RunSupervisor, exactly like an ordinary headless
-        // dispatch — superseding it here would requeue the task while the live run keeps going,
-        // dispatching a second run alongside it (independent pre-PR review, cycle 1, adversarial
-        // lens).
+        // to one on IsInteractiveClaim's own Guid.Empty discriminator. Checked ahead of the
+        // run-null branch below, not only the terminal/non-terminal split that branch used to
+        // apply after it (mirrors TaskReleaseCommand's own ordering, independent pre-PR review,
+        // cycle 10, adversarial lens): CreateOneAsync commits TaskClaimed and only afterward calls
+        // LaunchAsync, which fetches the pull request, cuts the worktree, writes the prompt and
+        // spawns before RunDispatched ever commits — so a run-null read here is far more often
+        // "the launch is still in flight" than "the launch died", and the run-null branch's own
+        // "h9k task release" advice names a lever that refuses every pr-review task outright
+        // (TaskReleaseCommand's own pr-review guard), sending the operator on a dead-end hop
+        // instead of straight to the one lever that actually works here, h9k task abandon
+        // (independent pre-PR review, cycle 1, conformance lens). RunState.Unknown when there is
+        // no run record yet at all is what that arm of PrReviewSentinelClaim.Refuse is for: the
+        // state genuinely is not recorded, said out loud rather than guessed at either way (a died
+        // launch or one still running).
         //
         // Unconditional on run.State, not RunState.IsLive and not merely non-terminal (independent
         // pre-PR review, cycle 10, adversarial lens): a pr-review sentinel run also parks
@@ -127,7 +125,15 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // observed in.
         if (task.Type == TaskType.PrReview)
         {
-            throw PrReviewSentinelClaim.Refuse(taskId, run.State, "hand back");
+            throw PrReviewSentinelClaim.Refuse(taskId, run?.State ?? RunState.Unknown, "hand back");
+        }
+
+        if (run is null)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is claimed interactively but run {runId} has no record — the process likely died "
+                + $"while preparing the worktree. h9k task release {taskId} to give the claim back to the "
+                + "dispatch queue.");
         }
 
         // An operator's own session, still attached in another terminal, owns this worktree right
