@@ -1280,16 +1280,24 @@ public static class AgentPromptBuilder
 
         // A bare h9k review proceed carries no defect text or redirect (task: interactive mode
         // becomes a recorded property of the task) — nothing here for you to re-check or avoid
-        // re-raising, unlike the two sections above. This is context only: this task runs under
-        // interactive mode, and a human is actively walking its boundaries.
+        // re-raising, unlike the two sections above. This is historical context only: these
+        // approvals are permanent, task-wide history, so their presence says a human reviewed a
+        // boundary at some point in this task's past — never that interactive mode is on NOW.
+        // TaskAggregate.InteractiveModeEnabled is the only current-state source, and it is not
+        // threaded into this prompt builder; a task can turn the flag off (h9k task handback)
+        // after these approvals were recorded, so asserting present tense here would tell a later,
+        // headless-dispatched agent that a human is "actively engaged" when nobody is watching
+        // (independent pre-PR review, cycle 1, adversarial lens).
         if (priorBoundaryApprovals is { Count: > 0 })
         {
-            prompt.AppendLine("## Interactive-mode boundaries already approved on this task");
+            prompt.AppendLine("## Interactive-mode boundaries approved earlier on this task");
             prompt.AppendLine();
-            prompt.AppendLine("This task runs under interactive mode: a human reviews every phase boundary");
-            prompt.AppendLine("before the loop advances. The date(s) below are when they proceeded with no");
-            prompt.AppendLine("redirect of their own — nothing for you to check or avoid re-raising, just");
-            prompt.AppendLine("context that a human is actively engaged with this task's own progress:");
+            prompt.AppendLine("At some point in this task's history, interactive mode was on and a human");
+            prompt.AppendLine("reviewed a phase boundary before the loop advanced. The date(s) below are when");
+            prompt.AppendLine("they proceeded with no redirect of their own — nothing for you to check or avoid");
+            prompt.AppendLine("re-raising. This does not mean interactive mode is on now, or that a human is");
+            prompt.AppendLine("watching this run: h9k task handback can turn it back off, and this task may be");
+            prompt.AppendLine("running fully headless today.");
             prompt.AppendLine();
             foreach (BoundaryApprovalRecord approval in priorBoundaryApprovals.TakeLast(MaxPriorRulings))
             {
