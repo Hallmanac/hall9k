@@ -5,6 +5,25 @@ using Hall9k.Domain.Infrastructure.Storage;
 namespace Hall9k.Cli.DaemonControl;
 
 /// <summary>
+/// The three states <see cref="DaemonProcess.ProbeBootStatus"/> distinguishes: a confirmed
+/// pid file, no daemon and no launch in flight, or a recent <c>h9k daemon start</c> spawn
+/// still booting. <see cref="Starting"/> exists so that window never reads the same as
+/// <see cref="NotRunning"/> — the read that used to invite a second launch straight into
+/// the first spawn's singleton lock.
+/// </summary>
+public enum DaemonBootState
+{
+    NotRunning,
+    Starting,
+    Running,
+}
+
+/// <summary>
+/// <see cref="Running"/> is set only when <see cref="State"/> is <see cref="DaemonBootState.Running"/>.
+/// </summary>
+public sealed record DaemonBootStatus(DaemonBootState State, DaemonProcessDescriptor? Running);
+
+/// <summary>
 /// How the CLI knows whether h9kd is running: the pid file's recorded identity
 /// (pid + process start time, Decisions Log #2 — a bare pid is a lie waiting to
 /// happen) verified against the live process table. A stale pid file reads as
@@ -22,6 +41,26 @@ public static class DaemonProcess
         return recorded is not null && IsAlive(recorded.ProcessId, recorded.StartedAt)
             ? recorded
             : null;
+    }
+
+    /// <summary>
+    /// <see cref="Probe"/>, widened to distinguish "not running" from "a launch h9k daemon
+    /// start just kicked off is still booting" — the pid file alone cannot tell those apart
+    /// for however long the daemon takes to reach its own single-instance guard and write
+    /// it, which has taken up to ~15s on at least one real Windows machine (task 92da629d).
+    /// A stale or absent <see cref="DaemonStartingMarker"/> reads as
+    /// <see cref="DaemonBootState.NotRunning"/>, never as an error.
+    /// </summary>
+    public static DaemonBootStatus ProbeBootStatus()
+    {
+        DaemonProcessDescriptor? running = Probe();
+        if (running is not null)
+        {
+            return new DaemonBootStatus(DaemonBootState.Running, running);
+        }
+
+        bool starting = DaemonStartingMarker.IndicatesRecentLaunch(DaemonRuntime.StartingMarkerFile, DateTimeOffset.UtcNow);
+        return new DaemonBootStatus(starting ? DaemonBootState.Starting : DaemonBootState.NotRunning, null);
     }
 
     /// <summary>
