@@ -147,6 +147,14 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
 
     public void Apply(IEvent<ReviewParked> @event, RunListItem view) => view.State = RunState.ReviewParked;
 
+    // Mirrors RunDetails/RunAggregate: a bare h9k review proceed (task: interactive mode becomes
+    // a recorded property of the task) resumes the loop exactly like a verdict-bearing
+    // ReviewParkResolved does, so this lean row needs the identical transition off ReviewParked —
+    // without it NodeLoad.LiveSlots undercounts a live run for the whole window until the next
+    // ReviewDispatched/ReviewFixDispatched lands (independent pre-PR review, cycle 1, adversarial
+    // lens).
+    public void Apply(IEvent<ReviewBoundaryApproved> @event, RunListItem view) => view.State = RunState.UnderReview;
+
     public void Apply(IEvent<ReviewParkResolved> @event, RunListItem view) => view.State = RunState.UnderReview;
 
     // Mirrors RunAggregate/RunDetails: a fix session redispatched over a budget park

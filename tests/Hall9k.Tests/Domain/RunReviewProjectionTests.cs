@@ -385,6 +385,35 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// A bare <c>h9k review proceed</c> (task: interactive mode becomes a recorded property of
+    /// the task) resumes the loop exactly like a verdict-bearing <see cref="ReviewParkResolved"/>
+    /// does, so this lean row needs the identical UnderReview transition off ReviewParked. Without
+    /// it, <c>NodeLoad.LiveSlots</c> keeps reading the row as parked (not live) for the whole
+    /// window until the next <c>ReviewDispatched</c>/<c>ReviewFixDispatched</c> lands, undercounting
+    /// a run that is actually back in flight (independent pre-PR review, cycle 1, adversarial
+    /// lens).
+    /// </summary>
+    [Fact]
+    public void Run_list_item_walks_review_parked_to_under_review_on_a_bare_proceed()
+    {
+        RunListItemProjection projection = new();
+        Guid id = DomainId.New();
+        RunListItem view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now)));
+
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now)), view);
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "Interactive mode is on for this task.", Now, IsInteractiveGate: true)), view);
+        view.State.Should().Be(RunState.ReviewParked);
+
+        projection.Apply(new FakeEvent<ReviewBoundaryApproved>(
+            new ReviewBoundaryApproved(id, Now, DomainId.New())), view);
+        view.State.Should().Be(RunState.UnderReview);
+    }
+
+    /// <summary>
     /// The escape-hatch invariant's own record (task: every outside interaction a dispatched
     /// agent has is logged unconditionally): <c>h9k task log-interaction</c> appends this event,
     /// and <see cref="RunDetails.ExternalInteractions"/> is the read model
