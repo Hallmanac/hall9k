@@ -737,14 +737,38 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        if (result is null || result.IsError)
+        if (result is { IsError: true, Summary: { } errorSummary })
+        {
+            if (run.HasRetriedSessionError(RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens))
+            {
+                // A second consecutive error on this exact lens/cycle: the run really is
+                // failing now, so the sibling goes down with it exactly as a
+                // died-without-a-result failure already does — nobody will read its verdict.
+                TerminateSiblingPasses(run, pass);
+                await FailAsync(context.RunId, context.TaskId,
+                    $"The {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle}) reported an error result.",
+                    cancellationToken);
+                return false;
+            }
+
+            // The first error for this lens this cycle (task: a session that reports an error
+            // result is retried once in place — measured 2026-09-05: bursty, provider-side).
+            // The sibling pass, if any, is left running untouched (never terminated on this
+            // account): the aggregate drops only THIS lens's own in-flight entry, so the next
+            // iteration's DispatchMissingPassesAsync tops it up fresh through the identical
+            // crash-recovery top-up path a lost track already uses.
+            return await RetrySessionErrorAsync(
+                context.RunId, RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens,
+                $"the {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle})", errorSummary, cancellationToken);
+        }
+
+        if (result is null)
         {
             // The run is over; a sibling pass still reading the diff would burn tokens on a
             // verdict nobody will collect, so it goes down with this one.
             TerminateSiblingPasses(run, pass);
-            await FailAsync(context.RunId, context.TaskId, result is null
-                ? $"The {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle}) died without a result."
-                : $"The {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle}) reported an error result.",
+            await FailAsync(context.RunId, context.TaskId,
+                $"The {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle}) died without a result.",
                 cancellationToken);
             return false;
         }
@@ -779,17 +803,66 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        if (result is null || result.IsError)
+        if (result is { IsError: true, Summary: { } fixErrorSummary })
         {
-            await FailAsync(context.RunId, context.TaskId, result is null
-                ? $"The fix session (cycle {run.ReviewCycle}) died without a result."
-                : $"The fix session (cycle {run.ReviewCycle}) reported an error result.", cancellationToken);
+            if (run.HasRetriedSessionError(RunSessionLeg.Fix, run.ReviewCycle, lens: null))
+            {
+                await FailAsync(context.RunId, context.TaskId,
+                    $"The fix session (cycle {run.ReviewCycle}) reported an error result.", cancellationToken);
+                return false;
+            }
+
+            // First error this cycle (task: a session that reports an error result is retried
+            // once in place): the next iteration's FixNeeded phase redispatches a fresh fix
+            // session over the same cycle's findings, the identical redispatch
+            // RunBudgetExhausted's own AwaitingFix clearing already relies on.
+            return await RetrySessionErrorAsync(
+                context.RunId, RunSessionLeg.Fix, run.ReviewCycle, lens: null,
+                $"the fix session (cycle {run.ReviewCycle})", fixErrorSummary, cancellationToken);
+        }
+
+        if (result is null)
+        {
+            await FailAsync(context.RunId, context.TaskId,
+                $"The fix session (cycle {run.ReviewCycle}) died without a result.", cancellationToken);
             return false;
         }
 
         await RecordFixResultAsync(
             context.RunId, CurrentRunDirectory(run), run.ReviewCycle, context.Task.FollowUpKind, result,
             run.ActiveFixSessionModel, cancellationToken);
+        return true;
+    }
+
+    /// <summary>
+    /// The review-loop half of error-result retry (task: a session that reports an error result
+    /// is retried once in place): records the retry on the run stream and backs off briefly,
+    /// in place, inside this same <see cref="DriveAsync"/> call — deliberately not a call out to
+    /// <see cref="RunSupervisor.ResumeReviewLoop"/>, since that would mean ending this loop and
+    /// waiting for something else to re-enter it. <see cref="RunAggregate.Apply(RunSessionErrorRetried)"/>
+    /// already dropped just the errored leg (a review pass's own lens, or the fix session),
+    /// so the true redispatch is left to the very next <see cref="DriveAsync"/> iteration's
+    /// ordinary dispatch code — <see cref="DispatchMissingPassesAsync"/>'s crash-recovery top-up
+    /// for a review pass, or the <see cref="ReviewPhase.FixNeeded"/> case for a fix session —
+    /// the same mechanics an ordinary crash recovery or a budget-exhaustion park's own re-entry
+    /// already use, never a third copy of the dispatch logic.
+    /// </summary>
+    private async Task<bool> RetrySessionErrorAsync(
+        Guid runId, RunSessionLeg leg, int? cycle, ReviewLens? lens, string sourceLabel, string observedMessage,
+        CancellationToken cancellationToken)
+    {
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(
+                runId, new RunSessionErrorRetried(runId, leg, cycle, lens, observedMessage, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        logger.LogWarning(
+            "Run {RunId}: {Source} reported an error result — retrying once after a short backoff. {Message}",
+            runId, sourceLabel, observedMessage);
+
+        await Task.Delay(_options.SessionErrorRetryBackoff, cancellationToken);
         return true;
     }
 

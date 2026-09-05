@@ -168,6 +168,19 @@ public sealed class DaemonOptions
     public TimeSpan TokenBudgetRetryInterval { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
+    /// How long a session-error retry (task: a session that reports an error result is retried
+    /// once in place) waits before redispatching the same leg fresh. Measured 2026-09-05 from
+    /// the event store: 41 error-result failures land in only 18 distinct hours, with single
+    /// hours holding 7, 5, 4, and 4 — the shape of a provider-side rate-limit or overload burst,
+    /// not a steady failure rate, so this backoff only has to outlast a burst's worst SECOND,
+    /// not its worst hour. 90 seconds is the starting assumption; unlike
+    /// <see cref="TokenBudgetRetryInterval"/>'s clock-bound subscription window (measured in
+    /// hours), a burst is the shape this backoff answers, so that interval is not a precedent
+    /// for how long this one should be.
+    /// </summary>
+    public TimeSpan SessionErrorRetryBackoff { get; set; } = TimeSpan.FromSeconds(90);
+
+    /// <summary>
     /// Cycles the conformance track may run before the run parks for a human (Decisions Log
     /// #63). Conformance has no severity grades to gate on — a criterion is met or it is not —
     /// so its bound is simply "how many times may a machine be told the same thing". A

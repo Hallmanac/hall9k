@@ -143,6 +143,7 @@ builder.Services.AddSingleton<ReviewEngine>();
 builder.Services.AddSingleton<PrReviewEngine>();
 builder.Services.AddSingleton<PullRequestOpener>();
 builder.Services.AddSingleton<BlockerContextAssembler>();
+builder.Services.AddSingleton<PrimarySessionResumer>();
 builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
 builder.Services.AddSingleton<TokenBudgetRetryEngine>();
