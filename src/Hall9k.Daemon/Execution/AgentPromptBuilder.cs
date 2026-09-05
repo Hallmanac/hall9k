@@ -833,7 +833,7 @@ public static class AgentPromptBuilder
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         if (task.InteractiveModeEnabled)
         {
-            AppendOutboundMilestoneRules(prompt, task.Id, "review", OutboundMilestone.Review, interactiveSessionAddress);
+            AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
         }
 
         AppendFindingContract(prompt, project, ReviewMode.Verify);
@@ -1048,7 +1048,7 @@ public static class AgentPromptBuilder
         // for a milestone message to precede.
         if (task.InteractiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
         {
-            AppendOutboundMilestoneRules(prompt, task.Id, "review", OutboundMilestone.Review, interactiveSessionAddress);
+            AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
         }
 
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
@@ -1161,7 +1161,7 @@ public static class AgentPromptBuilder
         // identical guard for why that engine's park never reaches slice 8's boundaries.
         if (interactiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
         {
-            AppendOutboundMilestoneRules(prompt, taskId, "review", OutboundMilestone.Review, interactiveSessionAddress);
+            AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
         }
 
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
@@ -2001,11 +2001,6 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  the verification gates and a fresh review after you finish.");
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
-        if (task.InteractiveModeEnabled)
-        {
-            AppendOutboundMilestoneRules(prompt, task.Id, "fix", OutboundMilestone.Fix, interactiveSessionAddress);
-        }
-
         prompt.AppendLine("- **Follow the platform's disposition for each finding**, in the section headed");
         prompt.AppendLine($"  \"{ReviewFindingDispositions.Heading}\" if the findings above have one. It is");
         prompt.AppendLine("  machine bookkeeping over the reviewers' declared severity and scope, and it is not");
@@ -2031,6 +2026,17 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  would be deciding your own way past that. The platform hands disputes to a human");
         prompt.AppendLine("  with both positions on record.");
         AppendReviewFixSelfCheckPhaseRules(prompt, project);
+
+        // Last, not immediately after AppendExternalInteractionLoggingRule (independent pre-PR
+        // review, cycle 1, both lenses): this method opens its own "##" heading, so calling it
+        // mid-list nested every rule appended after it — the disposition contract, the dispute
+        // rule, the self-check phase — under "Reporting to the human" instead of under
+        // "## Working rules".
+        if (task.InteractiveModeEnabled)
+        {
+            AppendOutboundMilestoneRules(prompt, "fix", OutboundMilestone.Fix, interactiveSessionAddress);
+        }
+
         prompt.AppendLine();
         prompt.AppendLine("## Resolution (required)");
         prompt.AppendLine();
