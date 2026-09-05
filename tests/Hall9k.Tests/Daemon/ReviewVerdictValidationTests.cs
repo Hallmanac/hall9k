@@ -1648,6 +1648,78 @@ public sealed class ReviewVerdictValidationTests
     }
 
     /// <summary>
+    /// The comma-"so" clause-boundary guard's carve-out only recognizes "so" as an adjectival
+    /// intensifier immediately before "wrong", "broken" or "amiss" that itself completes the
+    /// clause — followed by end-of-sentence punctuation, a comma, a semicolon, or one of "here",
+    /// "it", "that", "this" — not merely by any occurrence of one of those three words (independent
+    /// pre-PR review, conformance finding #1, task 29025f60): before this fix, the carve-out
+    /// silenced the boundary whenever "so" was followed by anything in the whole denial vocabulary,
+    /// so a participle-led consequence clause following "so" — stating the very defect the
+    /// sentence's first clause names — was swallowed into the denial span and discarded, the exact
+    /// hole acceptance criterion 2 exists to close. Narrowing the vocabulary to just "wrong",
+    /// "broken" and "amiss" was not sufficient on its own: "broken" is itself one of the three
+    /// retained words, so a consequence clause that happens to open with "broken" as an ordinary
+    /// adjective ("so broken paths reach the shell") still tripped the carve-out and swallowed
+    /// "broken" — the only defect word that sentence states — unless the carve-out also requires
+    /// the word to actually complete the clause the way both recorded intensifier examples do.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "`Auth.cs:42` — nothing is retried, so dropped events are lost forever."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Auth.cs:42` — nothing is escaped, so broken paths reach the shell."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Auth.cs:42` — nothing is checked so stale entries survive the sweep."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Auth.cs:42` — nothing is logged, so requests are silently dropped."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_so_led_consequence_clause_stating_a_defect_still_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// The narrowed "so" carve-out still recognizes both recorded intensifier examples as denials,
+    /// not findings, once it also requires the adjective to complete the clause (independent pre-PR
+    /// review, conformance finding #1's own fourth reproduction, task 29025f60): a regression here
+    /// would mean the completion requirement added to close the "so broken paths …" gap above
+    /// silently broke the very two examples the carve-out exists to recognize.
+    /// </summary>
+    [Theory]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing is so wrong here.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing here is so broken it matters."
+        + "\n\nVERDICT: needs-fixes")]
+    public void The_so_intensifier_carve_out_still_recognizes_its_own_recorded_examples(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// <see cref="ReviewVerdictValidation.ClauseBoundary"/> also stops a tempered tail at a
+    /// subordinating conjunction — "when", "while", "before", "after", "if", "until" — not only a
+    /// coordinating one (independent pre-PR review, adversarial finding, cycle 1, task 29025f60):
+    /// before this fix, the participle-widened subject-copula alternative and the "no … is/are …"
+    /// alternative both let their tails cross a subordinate clause boundary freely, so a located
+    /// defect stated with "no" bound to the copula-plus-participle of a following, unrelated
+    /// subordinate clause and the whole span was misread as one denial.
+    /// </summary>
+    [Theory]
+    [InlineData("`Auth.cs:42` has no timeout when the socket is dropped.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Foo.cs:9` has no null check when the payload is missing.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Http.cs:88` sets no header when the request is failing.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Store.cs:40` writes with no lock while the row is overwritten."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "In `Store.cs:40` nothing is written to disk when the token is dropped."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "Nothing is retried after the connection is lost in `Http.cs:88`."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_located_defect_bound_to_a_subordinate_clause_still_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
     /// A genuine finding that restates an acceptance criterion's own wording still names a finding
     /// from the location the criterion and the finding share (cycle-10 adversarial finding,
     /// `ReviewVerdictValidation.cs:326`): the conformance lens's most ordinary phrasing restates
