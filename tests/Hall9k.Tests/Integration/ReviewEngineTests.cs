@@ -80,6 +80,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         /// </summary>
         public HashSet<int> ErrorAtSpawnIndex { get; } = [];
 
+        /// <summary>
+        /// Spawn indexes whose error result carries no "result" string field at all — the shape
+        /// Claude Code emits for some error subtypes (e.g. error_max_turns), distinct from
+        /// <see cref="ErrorAtSpawnIndex"/>'s own error-with-message shape: StreamJsonParser
+        /// reads a missing (or non-string) "result" property as a null Summary rather than
+        /// failing to parse, so the terminal event still arrives, just without a message.
+        /// </summary>
+        public HashSet<int> NullSummaryErrorAtSpawnIndex { get; } = [];
+
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
             if (Spawns.Count == 0)
@@ -104,15 +113,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             }
 
             bool isError = ErrorAtSpawnIndex.Contains(spawnIndex);
+            bool nullSummaryError = NullSummaryErrorAtSpawnIndex.Contains(spawnIndex);
             string line = JsonSerializer.Serialize(new Dictionary<string, object?>
             {
                 ["type"] = "result",
-                ["subtype"] = isError ? "error_during_execution" : "success",
-                ["is_error"] = isError,
+                ["subtype"] = isError || nullSummaryError ? "error_during_execution" : "success",
+                ["is_error"] = isError || nullSummaryError,
                 ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 1_000, ["output_tokens"] = 200 },
                 ["total_cost_usd"] = 0.01,
                 ["num_turns"] = 12,
-                ["result"] = summary,
+                ["result"] = nullSummaryError ? null : summary,
             });
             Directory.CreateDirectory(request.RunDirectory);
             await File.WriteAllTextAsync(
@@ -5189,9 +5199,52 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         retry.Leg.Should().Be(RunSessionLeg.ReviewPass);
         retry.Lens.Should().Be(ReviewLens.Conformance);
         retry.Cycle.Should().Be(1);
+        events.OfType<TokensRecorded>().Should().HaveCount(
+            3, "the errored pass's own tokens are recorded before the retry, exactly like the two clean passes' own — "
+            + "a full diff read that ends in an error is not simply dropped from the run's totals");
 
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.SessionErrorRetries.Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The shape that used to fall through entirely (independent pre-PR review, cycle 1, both
+    /// lenses): an error result whose "result" field is missing (or non-string) parses to a
+    /// null Summary, which the old "IsError: true, Summary: { }" pattern match did not treat as
+    /// an error at all — it fell straight through into RecordReviewPassAsync as though the
+    /// session had actually produced a verdict, parsed to ReviewVerdict.Unknown, and burned the
+    /// cycle's re-prompt on a session that never said anything. A null-summary error must be
+    /// retried exactly like one that carries a message.
+    /// </summary>
+    [Fact]
+    public async Task A_review_session_erroring_with_no_result_message_is_retried_exactly_like_one_that_has_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "unused — overridden to a null result by NullSummaryErrorAtSpawnIndex",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            "Clean on the retry.\n\nVERDICT: merge-ready")
+        {
+            NullSummaryErrorAtSpawnIndex = { 0 },
+        };
+        DaemonOptions options = new() { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(1) };
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the null-summary error is retried once, not read as a real (empty) verdict");
+        executor.Spawns.Should().HaveCount(3, "conformance's error costs one extra spawn; adversarial dispatches once");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        RunSessionErrorRetried retry = events.OfType<RunSessionErrorRetried>().Single();
+        retry.Leg.Should().Be(RunSessionLeg.ReviewPass);
+        retry.Lens.Should().Be(ReviewLens.Conformance);
+        retry.ObservedMessage.Should().Be(
+            "(no message)", "the observed error carried no text, and that absence is recorded honestly rather than guessed");
+        events.OfType<ReviewVerdictReprompted>().Should().BeEmpty(
+            "the null-summary error must never be mistaken for an empty verdict worth re-prompting");
     }
 
     /// <summary>
