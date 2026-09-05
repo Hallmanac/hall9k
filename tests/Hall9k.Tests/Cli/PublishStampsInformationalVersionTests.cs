@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Xunit;
@@ -23,92 +22,28 @@ public sealed class PublishStampsInformationalVersionTests : IDisposable
 
     public void Dispose()
     {
-        TryDelete(directory);
-        TryDelete(artifactsPath);
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            Directory.Delete(path, recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
+        PublishTestSupport.TryDelete(directory);
+        PublishTestSupport.TryDelete(artifactsPath);
     }
 
     [Fact]
     public async Task A_published_binary_reports_the_informational_version_override_with_metadata_stripped()
     {
-        string repoRoot = FindRepositoryRoot();
+        string repoRoot = PublishTestSupport.FindRepositoryRoot();
         using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(5));
 
-        ExecResult publish = await RunPublishAsync(repoRoot, "0.2.0-12-gabc1234", timeout.Token);
+        PublishTestSupport.ExecResult publish = await PublishTestSupport.RunPublishAsync(
+            repoRoot,
+            "Hall9k.Cli",
+            directory,
+            artifactsPath,
+            ["-p:InformationalVersion=0.2.0-12-gabc1234"],
+            timeout.Token);
 
-        publish.Succeeded.Should().BeTrue(
-            $"dotnet publish should succeed:\n{publish.StandardOutput}\n{publish.StandardError}");
+        publish.AssertSucceeded();
         InstallCommand.ReadPublishedVersion(directory).Should().Be("0.2.0-12-gabc1234",
             "the override must win over the checked-in csproj <Version>, and any +<sha> build "
             + "metadata the SDK appends afterward must be stripped, exactly as InstallCommand's "
             + "own install output relies on");
-    }
-
-    private async Task<ExecResult> RunPublishAsync(
-        string repoRoot, string informationalVersion, CancellationToken cancellationToken)
-    {
-        using Process process = new();
-        process.StartInfo = new ProcessStartInfo
-        {
-            FileName = "dotnet",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        foreach (string argument in new[]
-        {
-            "publish", Path.Combine(repoRoot, "src", "Hall9k.Cli"), "-c", "Release", "-o", directory, "--nologo",
-            $"-p:InformationalVersion={informationalVersion}",
-            "-p:UseArtifactsOutput=true", $"-p:ArtifactsPath={artifactsPath}",
-        })
-        {
-            process.StartInfo.ArgumentList.Add(argument);
-        }
-
-        process.Start();
-        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
-        try
-        {
-            await process.WaitForExitAsync(cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            process.Kill(entireProcessTree: true);
-            throw;
-        }
-
-        return new ExecResult(process.ExitCode, await standardOutput, await standardError);
-    }
-
-    private sealed record ExecResult(int ExitCode, string StandardOutput, string StandardError)
-    {
-        public bool Succeeded => ExitCode == 0;
-    }
-
-    private static string FindRepositoryRoot()
-    {
-        DirectoryInfo? candidate = new(AppContext.BaseDirectory);
-        while (candidate is not null)
-        {
-            if (File.Exists(Path.Combine(candidate.FullName, "Hall9k.slnx")))
-            {
-                return candidate.FullName;
-            }
-
-            candidate = candidate.Parent;
-        }
-
-        throw new InvalidOperationException($"No Hall9k.slnx found above {AppContext.BaseDirectory}.");
     }
 }
