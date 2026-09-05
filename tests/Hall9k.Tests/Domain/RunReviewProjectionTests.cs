@@ -478,6 +478,29 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// h9k task delegate's own record (design ruling R6, idea fcaded0b's design rulings, Take the
+    /// Wheel epic 9272e514's slice 10): a single interactive claim can be delegated more than once
+    /// across its lifetime — delegate, re-enter, delegate again — so this is a history, the same
+    /// shape <see cref="ExternalInteractions"/> already is above.
+    /// </summary>
+    [Fact]
+    public void Run_details_keeps_every_phase_delegation_as_history()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunPhaseDelegated>(new RunPhaseDelegated(
+            id, "Drafted the migration; untested past the happy path.", Now, DomainId.New(), "abc12345-build")), view);
+        projection.Apply(new FakeEvent<RunPhaseDelegated>(new RunPhaseDelegated(
+            id, "Second phase: wire up the CLI command.", Now, DomainId.New(), "abc12345-build")), view);
+
+        view.PhaseDelegations.Should().HaveCount(2, "a claim can be delegated more than once across its lifetime");
+        view.PhaseDelegations[0].Note.Should().Be("Drafted the migration; untested past the happy path.");
+        view.PhaseDelegations[1].Note.Should().Be("Second phase: wire up the CLI command.");
+    }
+
+    /// <summary>
     /// RunListItem gained no handlers for the pr-review task type's own two events
     /// (PrReviewEngine) when they landed, so it disagreed with RunDetails for the whole
     /// conformance-lens window — stuck reporting Verifying, a state meaning "the project's
