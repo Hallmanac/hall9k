@@ -47,7 +47,13 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     // from an incomplete picture. A PR carrying 100+ review threads has left the range
     // this automation is for. reviewRequests gets a smaller cap for the same reason,
     // sized to what a closeout-relevant pull request actually carries rather than to a
-    // theoretical maximum.
+    // theoretical maximum. pageInfo.hasNextPage on reviewThreads is what lets a caller tell
+    // "every thread read as resolved" apart from "only the first 100 were read, and they
+    // happen to be resolved" — the latter still safely waits for a human on the ordinary
+    // follow-up path (nothing here merges on its own), but a pre-approved task's own merge
+    // gate has no human left to fall back on, so it needs the distinction this cap's own
+    // comment above did not previously expose (independent pre-PR review, cycle 1,
+    // adversarial finding).
     private const string ReviewsQuery =
         """
         query($owner: String!, $name: String!, $number: Int!) {
@@ -59,6 +65,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
               reviewDecision
               reviewThreads(first: 100) {
                 nodes { id isResolved comments(first: 1) { nodes { author { login __typename } pullRequestReview { id } } } }
+                pageInfo { hasNextPage }
               }
               reviewRequests(first: 20) {
                 nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { slug } } }
@@ -95,7 +102,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             && baseRefElement.ValueKind == JsonValueKind.String
                 ? baseRefElement.GetString()
                 : null;
-        (IReadOnlyList<string> failing, bool pending) = ReadChecks(view.RootElement);
+        (IReadOnlyList<string> failing, bool pending, bool checksObserved) = ReadChecks(view.RootElement);
 
         // Reviews matter only while the PR is open; skip the second call otherwise.
         ReviewObservation reviews = state == "OPEN"
@@ -109,6 +116,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             ClosedAt: closedAt,
             FailingChecks: failing,
             HasPendingChecks: pending,
+            HasObservedChecks: checksObserved,
             UnresolvedReviewThreadCount: reviews.UnresolvedThreads,
             UnresolvedHumanThreadCount: reviews.UnresolvedHumanThreads,
             Reviewers: reviews.Reviewers,
@@ -122,7 +130,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             IsConflicting: reviews.IsConflicting,
             BaseRefName: baseRefName,
             ReviewDecision: reviews.ReviewDecision,
-            OutstandingReviewerLogins: reviews.OutstandingReviewerLogins);
+            OutstandingReviewerLogins: reviews.OutstandingReviewerLogins,
+            ReviewThreadsTruncated: reviews.ReviewThreadsTruncated);
     }
 
     /// <summary>
@@ -211,7 +220,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         int CopilotReviewThreadCount,
         bool IsConflicting = false,
         string? ReviewDecision = null,
-        IReadOnlyList<string>? OutstandingReviewerLogins = null)
+        IReadOnlyList<string>? OutstandingReviewerLogins = null,
+        bool ReviewThreadsTruncated = false)
     {
         public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], [], ExternalReviewState.None, 0);
     }
@@ -254,10 +264,15 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         // sets feed two different uses (Decisions Log #80, backlog 45): the full set is the
         // closeout budget's mechanical obstruction key, and the human subset is what a later
         // poll diffs to recognize a newly opened human thread.
+        JsonElement reviewThreads = pullRequest.GetProperty("reviewThreads");
+        bool reviewThreadsTruncated = reviewThreads.TryGetProperty("pageInfo", out JsonElement threadsPageInfo)
+            && threadsPageInfo.TryGetProperty("hasNextPage", out JsonElement hasNextPage)
+            && hasNextPage.ValueKind == JsonValueKind.True;
+
         List<string> threadIds = [];
         List<string> humanThreadIds = [];
         int copilotThreadCount = 0;
-        foreach (JsonElement thread in pullRequest.GetProperty("reviewThreads").GetProperty("nodes").EnumerateArray())
+        foreach (JsonElement thread in reviewThreads.GetProperty("nodes").EnumerateArray())
         {
             // Read once and reused below: the resolved-or-not count needs it for the "landed
             // (or stale) with its comment-thread count" phase text, so it is read ahead of the
@@ -309,7 +324,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             copilotThreadCount,
             IsConflicting: ReadMergeable(pullRequest) == "CONFLICTING",
             ReviewDecision: ReadReviewDecision(pullRequest),
-            OutstandingReviewerLogins: ReadOutstandingReviewerLogins(pullRequest));
+            OutstandingReviewerLogins: ReadOutstandingReviewerLogins(pullRequest),
+            ReviewThreadsTruncated: reviewThreadsTruncated);
     }
 
     /// <summary>GitHub's own branch-protection-aware verdict, or null when the repository has no rule requiring one.</summary>
@@ -365,7 +381,12 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             }
         }
 
-        return logins;
+        // Sorted (and de-duplicated) before it ever reaches a caller: GitHub's own
+        // reviewRequests ordering is not guaranteed stable sweep to sweep, and this list feeds
+        // an equality comparison (CloseoutEngine.RecordExternalReviewObservationAsync) that would
+        // otherwise append a fresh ExternalReviewObserved event on harmless reordering alone
+        // (independent pre-PR review, cycle 2, both lenses).
+        return [.. logins.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
     }
 
     /// <summary>
@@ -781,13 +802,25 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         _ => IsCopilotLogin(login) ? ReviewerKind.Bot : ReviewerKind.Human,
     };
 
-    private static (IReadOnlyList<string> Failing, bool Pending) ReadChecks(JsonElement root)
+    /// <summary>
+    /// Reads the rollup, plus whether GitHub has actually reported any check at all
+    /// (<paramref name="root"/>'s own <c>statusCheckRollup</c> array non-empty). The two are not
+    /// the same fact: a rollup GitHub has not yet populated (a workflow run object typically takes
+    /// only seconds to appear, but can take longer under Actions queue congestion, or right after a
+    /// mechanical rebase's own force-push re-triggers CI) reads identically to a repository with no
+    /// CI configured at all — both come back as an empty array — yet only the second one is really
+    /// "green" (independent pre-PR review, cycle 1, adversarial finding: a pre-approved task could
+    /// merge past a workflow that simply had not registered yet). Observed is the caller's signal
+    /// to wait out a bounded settle window before trusting silence as absence.
+    /// </summary>
+    private static (IReadOnlyList<string> Failing, bool Pending, bool Observed) ReadChecks(JsonElement root)
     {
         if (!root.TryGetProperty("statusCheckRollup", out JsonElement rollup) || rollup.ValueKind != JsonValueKind.Array)
         {
-            return ([], false);
+            return ([], false, false);
         }
 
+        bool observed = rollup.GetArrayLength() > 0;
         List<string> failing = [];
         bool pending = false;
         foreach (JsonElement check in rollup.EnumerateArray())
@@ -824,7 +857,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             }
         }
 
-        return (failing, pending);
+        return (failing, pending, observed);
     }
 
     private static DateTimeOffset? ReadTimestamp(JsonElement root, string property) =>

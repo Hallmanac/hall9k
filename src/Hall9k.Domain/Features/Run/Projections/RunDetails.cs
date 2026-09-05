@@ -77,6 +77,14 @@ public sealed class RunDetails
     public List<ActiveSession> ActiveSessions { get; set; } = [];
     public string? PullRequestUrl { get; set; }
     public int? PullRequestNumber { get; set; }
+    /// <summary>
+    /// When this run's own pull request was opened or, for a follow-up run, when its own push
+    /// landed — from <see cref="Events.PullRequestOpened.OpenedAt"/> / <see cref="Events.PullRequestUpdated.UpdatedAt"/>.
+    /// Not refreshed by a mechanical rebase's own force-push (<see cref="LastMechanicalRebaseAt"/>
+    /// is that anchor instead) — this field names only this run's own opener call. Null for a run
+    /// that never reached a push (still building, or one recorded before this field existed).
+    /// </summary>
+    public DateTimeOffset? PullRequestPushedAt { get; set; }
     public DateTimeOffset? PullRequestMergedAt { get; set; }
     public List<string> FailingChecks { get; set; } = [];
     public int UnresolvedReviewThreads { get; set; }
@@ -131,7 +139,7 @@ public sealed class RunDetails
     /// When Copilot's review request was first observed still pending, null once it lands, goes
     /// stale, or clears — the bounded settle-window anchor (task: a task can be published
     /// pre-approved): a requested review that never arrives within
-    /// <see cref="Hall9k.Daemon.DaemonOptions.CopilotReviewSettleWindow"/> of this timestamp parks
+    /// <c>Hall9k.Daemon.DaemonOptions.CopilotReviewSettleWindow</c> of this timestamp parks
     /// the run instead of waiting forever. Set the moment <see cref="ExternalReviewState"/> first
     /// transitions TO <see cref="ExternalReviewState.RequestedPending"/>, so a run whose Copilot
     /// review has sat pending across many quiet sweeps still measures from the original ask, not
@@ -628,6 +636,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.PullRequestNumber = @event.Data.PullRequestNumber;
+        view.PullRequestPushedAt = @event.Data.OpenedAt;
         EndSessions(view);
         view.State = RunState.AwaitingReview;
     }
@@ -636,6 +645,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.PullRequestNumber = @event.Data.PullRequestNumber;
+        view.PullRequestPushedAt = @event.Data.UpdatedAt;
         EndSessions(view);
         view.State = RunState.AwaitingReview;
     }

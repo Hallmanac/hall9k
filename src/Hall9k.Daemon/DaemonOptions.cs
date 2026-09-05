@@ -198,6 +198,22 @@ public sealed class DaemonOptions
     public TimeSpan CopilotReviewSettleWindow { get; set; } = TimeSpan.FromHours(24);
 
     /// <summary>
+    /// How long a pre-approved task's merge gate waits, after the current head was last pushed,
+    /// for GitHub to report even one check run before trusting an empty
+    /// <see cref="Hall9k.Daemon.Closeout.PullRequestSnapshot.HasPendingChecks"/>/<see cref="Hall9k.Daemon.Closeout.PullRequestSnapshot.FailingChecks"/>
+    /// reading as "CI green" (independent pre-PR review, cycle 1, adversarial finding: a workflow
+    /// run object can take longer than one sweep to register, especially under Actions queue
+    /// congestion or right after a mechanical rebase's own force-push re-triggers CI, and an
+    /// unregistered rollup reads identically to a repository with no CI configured at all). Fifteen
+    /// minutes is generous next to the seconds a check run ordinarily takes to appear and short
+    /// next to how long a genuinely CI-free repository's very first pre-approved merge would
+    /// otherwise be held up for nothing. Once the window elapses with still no check observed, the
+    /// gate proceeds exactly as if no CI gate existed — the honest reading for a repository that
+    /// never configures one.
+    /// </summary>
+    public TimeSpan ChecksRegistrationSettleWindow { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
     /// How often the daemon retries runs parked on token-budget exhaustion (backlog 40).
     /// The subscription window resets on a known-ish clock rather than an event the
     /// platform can watch for, so a patient poll is the whole mechanism — hourly is close

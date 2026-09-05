@@ -18,12 +18,16 @@ public sealed class GitHubPullRequestInspectorTests
     private static string Payload(
         string author, string headOid, string threads, string reviews,
         string reviewRequests = "", string timelineItems = "", string? mergeable = null,
-        string? reviewDecision = null) =>
+        string? reviewDecision = null, bool? reviewThreadsHasNextPage = null) =>
         ("{'data':{'repository':{'pullRequest':{"
             + $"'author':{author},'headRefOid':'{headOid}',"
             + (mergeable is null ? "" : $"'mergeable':'{mergeable}',")
             + (reviewDecision is null ? "" : $"'reviewDecision':'{reviewDecision}',")
-            + $"'reviewThreads':{{'nodes':[{threads}]}},"
+            + $"'reviewThreads':{{'nodes':[{threads}]"
+            + (reviewThreadsHasNextPage is { } hasNextPage
+                ? $",'pageInfo':{{'hasNextPage':{(hasNextPage ? "true" : "false")}}}"
+                : "")
+            + "},"
             + $"'reviewRequests':{{'nodes':[{reviewRequests}]}},"
             + $"'timelineItems':{{'nodes':[{timelineItems}]}},"
             + $"'latestReviews':{{'nodes':[{reviews}]}}"
@@ -81,6 +85,35 @@ public sealed class GitHubPullRequestInspectorTests
             1, "the author's own thread is a self-note and counts as a person's (AGENTS.md invariant)");
         observation.UnresolvedThreadIds.Should().BeEquivalentTo(["thread-bot", "thread-self-note"]);
         observation.UnresolvedHumanThreadIds.Should().Equal("thread-self-note");
+    }
+
+    /// <summary>
+    /// GitHub's own 100-thread page cap can leave real threads unread — the "0 unresolved" this
+    /// read reports is not the same claim as "every thread is resolved" when the provider itself
+    /// says there is a next page (independent pre-PR review, cycle 1, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void Review_threads_truncated_by_the_providers_own_page_cap_is_read_and_reported()
+    {
+        string truncated = Payload(
+            Actor("hallmanac", "User"), "cafe1",
+            Thread(resolved: true, Actor("teammate", "User")),
+            "",
+            reviewThreadsHasNextPage: true);
+        string notTruncated = Payload(
+            Actor("hallmanac", "User"), "cafe1",
+            Thread(resolved: true, Actor("teammate", "User")),
+            "",
+            reviewThreadsHasNextPage: false);
+        string noPageInfoAtAll = Payload(
+            Actor("hallmanac", "User"), "cafe1",
+            Thread(resolved: true, Actor("teammate", "User")),
+            "");
+
+        GitHubPullRequestInspector.ParseReviews(truncated).ReviewThreadsTruncated.Should().BeTrue();
+        GitHubPullRequestInspector.ParseReviews(notTruncated).ReviewThreadsTruncated.Should().BeFalse();
+        GitHubPullRequestInspector.ParseReviews(noPageInfoAtAll).ReviewThreadsTruncated.Should().BeFalse(
+            "a payload predating this field is read as untruncated, never guessed at");
     }
 
     /// <summary>

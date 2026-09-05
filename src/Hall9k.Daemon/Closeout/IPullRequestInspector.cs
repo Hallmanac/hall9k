@@ -143,6 +143,31 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// provider read predates this field being collected — treated as "unknown, proceed as before"
 /// rather than as a mismatch.
 /// </para>
+/// <para>
+/// HasObservedChecks is whether GitHub's own <c>statusCheckRollup</c> actually reported any
+/// check at all, as distinct from <see cref="HasPendingChecks"/> and <see cref="FailingChecks"/>
+/// both reading as clean. The two are not the same fact: a rollup GitHub has not yet populated
+/// (a workflow run object typically takes only seconds to appear, longer under Actions queue
+/// congestion, or right after a mechanical rebase re-triggers CI) comes back as an empty array
+/// indistinguishable from a repository with no CI configured at all — both leave
+/// <see cref="HasPendingChecks"/> false and <see cref="FailingChecks"/> empty. Only the pre-approved
+/// merge gate reads this field (task: a task can be published pre-approved, independent pre-PR
+/// review, cycle 1, adversarial lens): "no check observed" is not the same claim as "CI green",
+/// and treating an unregistered rollup as green would let a pre-approved task merge before its
+/// own CI had a chance to run. Defaults true so a snapshot built before this field existed, or a
+/// test fixture that never sets it, reads as the ordinary "nothing here to wait on" case.
+/// </para>
+/// <para>
+/// ReviewThreadsTruncated is GitHub's own <c>reviewThreads.pageInfo.hasNextPage</c> read: whether
+/// the provider's own 100-thread page cap (a deliberate cap on <c>GitHubPullRequestInspector.ReviewsQuery</c>,
+/// not missing pagination) actually cut off real threads this snapshot never saw.
+/// <see cref="UnresolvedReviewThreadCount"/> reading zero is not the same claim as "every thread is
+/// resolved" when this is true — only that the first 100 happened to be. The ordinary follow-up
+/// path already tolerates the cap safely (a monster PR simply waits for a human to look at it
+/// eventually, since nothing there merges on its own), but the pre-approved merge gate has no
+/// human left in that loop, so it treats a truncated read as an obstruction of its own rather than
+/// trusting the zero (independent pre-PR review, cycle 1, adversarial finding).
+/// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(
     bool IsMerged,
@@ -164,7 +189,9 @@ public sealed record PullRequestSnapshot(
     bool IsConflicting = false,
     string? BaseRefName = null,
     string? ReviewDecision = null,
-    IReadOnlyList<string>? OutstandingReviewerLogins = null)
+    IReadOnlyList<string>? OutstandingReviewerLogins = null,
+    bool HasObservedChecks = true,
+    bool ReviewThreadsTruncated = false)
 {
     /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
     public IReadOnlyList<string> ThreadIds => UnresolvedReviewThreadIds ?? [];
