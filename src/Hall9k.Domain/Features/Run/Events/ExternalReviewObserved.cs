@@ -24,9 +24,33 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// claim that this sweep went on to read past failing checks or unresolved threads, or that none
 /// were found: a parked run records this and returns without ever reaching those reads.
 /// </param>
+/// <param name="ReviewDecision">
+/// GitHub's own branch-protection-aware verdict for the pull request — <c>APPROVED</c>,
+/// <c>REVIEW_REQUIRED</c>, <c>CHANGES_REQUESTED</c>, or null when the repository has no branch
+/// rule requiring one (task: a task can be published pre-approved) — read purely for display: a
+/// pre-approved task's own merge gate reads this fresh off the same sweep's live snapshot rather
+/// than off this persisted copy, so this field exists only so the Delivered surfaces can say
+/// "waiting on human approval" without a live GitHub call of their own.
+/// </param>
+/// <param name="OutstandingReviewerLogins">
+/// Every login with a review request currently outstanding, Copilot included and unfiltered —
+/// deliberately the raw provider read, unlike <c>PendingReviewRequestLogins</c>'s own
+/// human-engagement filtering, because a pre-approved merge gate (and the display that explains
+/// it) needs "is anyone still asked to look", not "did a human just re-ask".
+/// </param>
+/// <param name="OutstandingHumanReviewerLogins">
+/// The subset of <paramref name="OutstandingReviewerLogins"/> that is not Copilot
+/// (<c>PullRequestSnapshot.OutstandingHumanReviewers</c>), recorded so the CLI's own "waiting on
+/// human approval" display can read a Copilot-filtered list without duplicating the
+/// Copilot-detection table, which lives only in the daemon and is not reachable from
+/// <c>Hall9k.Cli</c> (task: a task can be published pre-approved).
+/// </param>
 public sealed record ExternalReviewObserved(
     Guid Id,
     ExternalReviewState State,
     int ThreadCount,
     bool ChecksPending,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    string? ReviewDecision = null,
+    IReadOnlyList<string>? OutstandingReviewerLogins = null,
+    IReadOnlyList<string>? OutstandingHumanReviewerLogins = null);
