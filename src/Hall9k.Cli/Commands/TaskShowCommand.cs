@@ -49,6 +49,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         header.AddRow("Type", details.Type.Value.EscapeMarkup());
         header.AddRow("Id", $"[dim]{details.Id}[/]");
         header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, cancellationToken));
+        if (details.InteractiveModeEnabled)
+        {
+            // Task: interactive mode becomes a recorded property of the task. Named plainly here
+            // because it is the reason a task's review/fix/re-review/pull-request boundaries keep
+            // parking for a routine h9k review proceed rather than advancing on their own — the
+            // one recorded, task-level fact behind every one of those rows.
+            header.AddRow("Interactive mode", "[blue]on[/] [dim](every review/fix/PR boundary parks for h9k review proceed; h9k task handback turns it off)[/]");
+        }
+
         if (details.Model != AgentModel.Unknown)
         {
             header.AddRow("Model", $"{details.Model.Value.EscapeMarkup()} [dim](task override)[/]");

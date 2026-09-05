@@ -216,6 +216,14 @@ public static class CliCommandTree
                 .WithExample("review", "resolve", "28b19893", "--merge-ready")
                 .WithExample("review", "resolve", "28b19893", "--merge-ready", "--reason", "\"False positive - confirmed via git log\"")
                 .WithExample("review", "resolve", "28b19893", "--needs-fixes", "\"The limiter reset finding is real; fix it as the reviewer described\"");
+            review.AddCommand<ReviewProceedCommand>("proceed")
+                .WithDescription(
+                    "Interactive mode's bare-proceed lever (task: interactive mode becomes a recorded property "
+                    + "of the task): a boundary with no dispute needs only this — no verdict, no reason, just "
+                    + "your recorded go to continue exactly where the park interrupted the loop. Refused on a "
+                    + "run parked for a genuine dispute or a cap/budget reason, which still take only "
+                    + "h9k review resolve.")
+                .WithExample("review", "proceed", "28b19893");
         });
 
         config.AddCommand<StatusCommand>("status")
