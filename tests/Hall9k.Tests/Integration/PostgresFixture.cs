@@ -33,8 +33,10 @@ namespace Hall9k.Tests.Integration;
 /// the corresponding guard, <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>, fails
 /// the build if any test class starts a Postgres container any other way. Four is chosen
 /// conservatively: it is nowhere near the eleven that caused the OOM, while still giving the
-/// suite's largest tier (29 classes as of this writing) real parallel throughput rather than
-/// serializing it outright — see PLAN.md §16 #108 for the measured wall-clock cost of the bound.
+/// suite's largest tier (37 classes as of this writing — re-observed during this task's own
+/// review, task e507c143; #108's original "29" went stale as the suite grew and was carried
+/// forward unre-observed here) real parallel throughput rather than serializing it outright —
+/// see PLAN.md §16 #108 for the measured wall-clock cost of the bound.
 /// </para>
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
@@ -51,7 +53,7 @@ public sealed class PostgresFixture : IAsyncLifetime
     // it was sized against this one process's own tier duration (PLAN.md §16 #108's measured
     // 7m29s-8m4s), which stopped being the right number the moment the gate went cross-process —
     // N overlapping dotnet test invocations queue behind each other's permits too, not just this
-    // process's own 29 acquisitions, so the same deadline that was generous for one process starts
+    // process's own 37 acquisitions, so the same deadline that was generous for one process starts
     // firing under two or three and misreports genuine contention as "the gate or the Docker daemon
     // is genuinely stuck". GitWorktreeManager.AcquireCrossProcessLockAsync already settled this for
     // the same shape of wait: "there is no safe value to time this out to". What that wait uses

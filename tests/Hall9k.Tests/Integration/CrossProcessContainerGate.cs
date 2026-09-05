@@ -89,7 +89,13 @@ internal static class CrossProcessContainerGate
         string discoverableWaitFile = Path.Combine(gateDirectory, $"waiting-{Environment.ProcessId}-{Guid.NewGuid():N}.txt");
         string? waitEvidenceDirectory = Environment.GetEnvironmentVariable(
             GateInfrastructureFailureClassifier.GateWaitEvidenceDirectoryEnvironmentVariable);
-        string? waitEvidenceFile = waitEvidenceDirectory is null
+        // string.IsNullOrEmpty, not `is null`: the reader side (GateInfrastructureFailureClassifier
+        // .IsUnresolvedGateWaitTimeout/UnresolvedGateWaitExcerpt) already treats an empty value as
+        // unset, so this writer must too — an exported-but-empty env var otherwise reads as "set"
+        // here and produces a bare relative filename from Path.Combine("", ...), landing every
+        // queued class's evidence file in this process's own current working directory instead
+        // (adversarial review, this cycle).
+        string? waitEvidenceFile = string.IsNullOrEmpty(waitEvidenceDirectory)
             ? null
             : Path.Combine(waitEvidenceDirectory, $"waiting-{Environment.ProcessId}-{Guid.NewGuid():N}.txt");
 
@@ -123,8 +129,14 @@ internal static class CrossProcessContainerGate
                     // are routinely the contenders too (this file's own doc comment above names
                     // "this one's own next class" as a legitimate holder) — stating only what was
                     // actually observed (independent pre-PR review, cycle 1).
+                    // Leads with a wall-clock timestamp (not just the relative elapsed figure
+                    // later in the line) so a file a curious operator finds long after the fact —
+                    // left behind by a process this gate's own finally below never got to run for,
+                    // see that block's own comment — can be told apart from a wait genuinely still
+                    // in progress without cross-referencing the filename's pid against the process
+                    // table (independent pre-PR review, this cycle).
                     string diagnostic =
-                        $"Waiting on cross-process container gate {gateDirectory} " +
+                        $"[{now:O}] Waiting on cross-process container gate {gateDirectory} " +
                         $"({(now - waitStarted).TotalSeconds:0}s elapsed, {maxConcurrent} max concurrent) " +
                         "— every permit is currently held (by this process's own other classes, " +
                         "or by another process on this machine)";
@@ -144,10 +156,20 @@ internal static class CrossProcessContainerGate
         }
         finally
         {
-            // Cleared on every exit from the wait — success, cancellation, or an unexpected
-            // exception alike — so a permit acquired cleanly (or a wait abandoned by the caller)
-            // never leaves either file behind for a later, unrelated timeout (or a curious
-            // operator, for discoverableWaitFile) to mistake for a wait still in progress.
+            // Cleared on every exit from THIS METHOD's own control flow — success, cancellation,
+            // or an unexpected exception alike — so a permit acquired cleanly (or a wait abandoned
+            // by the caller) never leaves either file behind for a later, unrelated timeout (or a
+            // curious operator, for discoverableWaitFile) to mistake for a wait still in progress.
+            // What this cannot cover is the process itself being killed mid-wait
+            // (VerificationRunner's own process.Kill(entireProcessTree: true), the whole reason
+            // discoverableWaitFile exists in the first place): a killed process never runs any
+            // finally block, .NET's or otherwise, so each queued class at the moment of such a
+            // kill leaves its own file behind permanently in the shared, never-swept gate
+            // directory (independent pre-PR review, this cycle — an earlier version of this
+            // comment claimed no case ever leaves one behind, which the kill path already
+            // contradicted). The leading wall-clock timestamp the diagnostic above now carries is
+            // what makes such a leftover file identifiable as stale without cross-referencing its
+            // filename's pid against the process table.
             TryDeleteEvidence(discoverableWaitFile);
             if (waitEvidenceFile is not null)
             {
@@ -162,12 +184,15 @@ internal static class CrossProcessContainerGate
         {
             File.WriteAllText(path, diagnostic);
         }
-        catch (DirectoryNotFoundException)
+        catch (IOException)
         {
-            // The containing directory vanished (or, for the env-var-provided target, was never
-            // created — a caller that names one but never provisions it). Best-effort: a lost
-            // evidence write degrades this call back to whatever other visibility it still has,
-            // it never fails the wait itself.
+            // The containing directory vanished (DirectoryNotFoundException, an IOException
+            // subtype — or, for the env-var-provided target, was never created at all, a caller
+            // that names one but never provisions it), or the write failed for another reason
+            // entirely — ENOSPC on a full /tmp chief among them (adversarial review, this cycle:
+            // this catch previously named only the vanished-directory case, so a full disk failed
+            // the wait itself instead of degrading it, contrary to this method's own contract).
+            // Either way this is a lost evidence write, never something that fails the wait.
         }
     }
 
@@ -181,6 +206,12 @@ internal static class CrossProcessContainerGate
         {
             // Nothing else reads this file once the wait is over; a failed best-effort cleanup
             // is not this call's problem to solve.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same reasoning as the IOException case above (adversarial review, this cycle: this
+            // catch previously named only IOException, leaving a permission failure to escape the
+            // wait it is meant to be a harmless cleanup step of).
         }
     }
 
@@ -246,7 +277,7 @@ internal static class CrossProcessContainerGate
             // other holder of a permit this process *can* open still releases it eventually, but
             // a permit this process can never open never will — so this fails immediately and
             // names the fix rather than letting .NET's own unadorned "Access to the path ... is
-            // denied" propagate out of all 29 PostgresFixture acquisitions with no hint that a
+            // denied" propagate out of all 37 PostgresFixture acquisitions with no hint that a
             // stale, differently-owned gate directory is the cause.
             stream?.Dispose();
             throw new UnauthorizedAccessException(
