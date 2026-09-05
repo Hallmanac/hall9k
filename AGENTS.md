@@ -136,8 +136,10 @@ h9k task set-review-caps <id> --max-compliance-review-cycles <N>   # a task-leve
 h9k task publish <id> [--assign]                  # the readiness gate; --assign starts it too
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
+h9k task publish <id> --pre-approved              # the owner stops being a synchronous gate at the pull request: the daemon rebase-merges once every real gate (CI, review decision, requested reviewers, threads) reads satisfied (Decisions Log #135)
 h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
 h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
+h9k task set-pre-approved <id> on|off             # flip standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged (Decisions Log #135)
 h9k task unassign <id>                            # back to Published (refused while leased)
 h9k task draft <id>                               # Published back to Draft, so it can be revised
 ```
@@ -741,9 +743,17 @@ The checkpoints, in the order the window sees them:
    retargeted to a base other than the project's own) falls back to the ordinary follow-up dispatch
    above. `h9k task show` prints a **Mechanical rebase** line either way, so a branch rewritten
    under an open pull request is never silent about who did it or when.
-6. **The human merges.** The platform never merges. The observed merge is true closeout: it is the
-   moment the run completes, dependents unblock, and the worktree is removed. The task was already
-   Done; what the merge changes is everything around it.
+6. **The human merges.** Ordinarily, the platform never merges — with one deliberate, opt-in
+   exception: a task published or later set `h9k task publish --pre-approved` /
+   `h9k task set-pre-approved <id> on` (Decisions Log #135) removes the owner as a synchronous gate
+   at the pull request. For that task alone, the daemon reads GitHub's own gates — CI, the review
+   decision from branch protection, requested reviewers (Copilot handled on its own bounded settle
+   window, a required human approval or an outstanding requester stated as a visible wait, never a
+   park), and thread resolution — and rebase-merges once every one of them reads satisfied, with no
+   agent session involved in the merge itself. Every other human waypoint (Failed, a review park, a
+   cap trip) still stops it exactly as it would an ordinary task. The observed merge is true
+   closeout either way: it is the moment the run completes, dependents unblock, and the worktree is
+   removed. The task was already Done; what the merge changes is everything around it.
 
 The window's part is steps 3, 5 and 6: relay the parks, tell the human when a PR is waiting on
 them, and never start a review thread yourself. That last one is not a style preference; the
