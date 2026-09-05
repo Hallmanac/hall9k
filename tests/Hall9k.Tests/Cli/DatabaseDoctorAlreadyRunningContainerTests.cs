@@ -11,8 +11,9 @@ namespace Hall9k.Tests.Cli;
 /// The not-configured path's other fix (<c>DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync</c>):
 /// a confirmed-<c>Running</c> <c>hall9k-postgres</c> has nothing to start, only something to
 /// point at, and used to dead-end on "Set one: export …" advice because
-/// <c>OfferAndStartAsync</c> refuses the already-running case outright (Decisions Log finding on
-/// <c>DatabaseDoctor.cs:309</c>). A fake probe stands in for
+/// <c>OfferAndStartAsync</c> refuses the already-running case outright (the pre-existing defect
+/// this class exercises the fix for, originally at <c>DatabaseDoctor.OfferAndStartAsync</c>). A
+/// fake probe stands in for
 /// <see cref="DatabaseReachability.ProbeAsync"/> so this exercises the reachable and unreachable
 /// cases without depending on a real Postgres bound to the exact host and port
 /// <see cref="Hall9kDatabase.DefaultConnectionString"/> names — the same seam
@@ -63,7 +64,13 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
     {
         // A freshly-started container can report Running before Postgres inside it has finished
         // initialising — the sibling OfferAndStartAsync path already waits for this; this
-        // exercises the same wait added here (Decisions Log review finding, DatabaseDoctor.cs:357).
+        // exercises the same wait added here (cycle-1 conformance and adversarial review
+        // findings, DatabaseDoctor.cs:361). A clock that advances one poll interval per read,
+        // not the wall clock, so the third probe's readiness must land inside the timeout
+        // regardless of how slow the runner actually is — the same reason
+        // DatabaseDoctorReadinessTests.A_slow_container_that_becomes_ready_before_the_timeout_is_caught
+        // uses SteppingClock rather than TimeProvider.System (origin incident: raced the real
+        // clock and failed on a loaded windows-latest CI runner, GitHub Actions run 32897678640).
         int calls = 0;
         Task<ReachabilityReport> Probe(CancellationToken token)
         {
@@ -71,8 +78,10 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
             return Task.FromResult(calls < 3 ? RefusedConnection() : Reachable());
         }
 
+        SteppingClock clock = new(ShortPollInterval);
+
         ConnectionStringResolution? resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
-            assumeYes: true, Probe, ShortTimeout, ShortPollInterval, TimeProvider.System, CancellationToken.None);
+            assumeYes: true, Probe, ShortTimeout, ShortPollInterval, clock, CancellationToken.None);
 
         resolution.Should().NotBeNull("readiness that arrives on the third probe is still well inside the timeout");
         calls.Should().Be(3, "the loop must keep polling — a slow start is not the same as a dead one");
