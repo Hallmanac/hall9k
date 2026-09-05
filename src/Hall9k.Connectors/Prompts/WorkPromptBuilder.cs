@@ -216,14 +216,6 @@ public static class WorkPromptBuilder
 
         AppendHomeSkillRule(prompt, project, skills);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
-        // The live-attended build (isInteractive) is the human's own session — there is nobody
-        // else here for it to report to, so R8's outbound milestones apply only to a headless
-        // build dispatched under interactive mode (h9k task start, or a handback that kept it).
-        if (task.InteractiveModeEnabled && !isInteractive)
-        {
-            AppendOutboundMilestoneRules(
-                prompt, task.Id, "build", OutboundMilestone.Build, interactiveMilestoneAddress);
-        }
 
         AppendAdoptedContextRule(prompt, task);
         AppendBlockerContextRule(prompt, blockerContext);
@@ -239,6 +231,21 @@ public static class WorkPromptBuilder
         }
 
         prompt.AppendLine("- End with a short summary: what you did, decisions made, assumptions, open questions.");
+
+        // Last, not immediately after AppendExternalInteractionLoggingRule (independent pre-PR
+        // review, cycle 1, both lenses): this method opens its own "##" heading, so calling it
+        // mid-list nested every rule appended after it under "Reporting to the human" instead of
+        // under "## Working rules". The live-attended build (isInteractive) is the human's own
+        // session — there is nobody else here for it to report to, so R8's outbound milestones
+        // apply only to a headless build dispatched under interactive mode (h9k task start, or a
+        // handback that kept it).
+        if (task.InteractiveModeEnabled && !isInteractive)
+        {
+            AppendOutboundMilestoneRules(
+                prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress,
+                parksAtBoundaryAfterward: !isDeliberateHeadlessStart);
+        }
+
         if (!isInteractive)
         {
             AppendHandoffRules(prompt);
@@ -902,10 +909,15 @@ public static class WorkPromptBuilder
     /// (<see cref="Hall9k.Domain.Features.Run.OutboundMilestone"/>) this dispatched agent sends to
     /// the human's own registered session — not a running commentary, and not a substitute for
     /// slice 8's own park, which holds at the phase boundary regardless of whether any message
-    /// ever lands. Placed immediately after <see cref="AppendExternalInteractionLoggingRule"/> in
-    /// every caller so "the rule above" reads correctly below: a milestone send is exactly the
-    /// outside-interaction case that rule already commits this session to logging, restated here
-    /// only for the parts that rule cannot know on its own — when to send, and who to address.
+    /// ever lands. This method opens its own "##" heading, so every caller places it AFTER the
+    /// rest of its own bullet list — never in the middle of one — so the heading closes that list
+    /// out instead of nesting whatever came after it underneath "Reporting to the human"
+    /// (independent pre-PR review, cycle 1, both lenses: the two callers that continue a bullet
+    /// list past this call had exactly that bug). A milestone send is exactly the outside-
+    /// interaction case <see cref="AppendExternalInteractionLoggingRule"/> already commits this
+    /// session to logging — called earlier in every caller's own prompt, not necessarily
+    /// immediately above — restated here only for the parts that rule cannot know on its own —
+    /// when to send, and who to address.
     /// </summary>
     /// <param name="phaseLabel">Names the phase in the bound sentence ("build", "review", "fix") — cosmetic only.</param>
     /// <param name="milestones">
@@ -921,8 +933,19 @@ public static class WorkPromptBuilder
     /// name to send to. Both are the honest "nothing to address" AGENTS.md's own "never guess at
     /// unobserved facts" rule asks this method to degrade against rather than invent a name for.
     /// </param>
+    /// <param name="parksAtBoundaryAfterward">
+    /// True (the default, and the only case for the review and fix roles, which the review engine
+    /// itself always dispatched) when slice 8's own phase-boundary park actually holds the instant
+    /// this session ends. False only for a build session dispatched by <c>h9k task start</c>
+    /// (<c>isDeliberateHeadlessStart</c>): nothing supervises that run once it starts, and
+    /// verification, delivery, and the review loop's own first boundary are a human's to trigger by
+    /// hand with <c>h9k task deliver</c> — asserting a park already holds there would contradict the
+    /// rule this same prompt gives the session for that path (independent pre-PR review, cycle 1,
+    /// both lenses).
+    /// </param>
     public static void AppendOutboundMilestoneRules(
-        StringBuilder prompt, Guid taskId, string phaseLabel, IReadOnlyList<string> milestones, string? address)
+        StringBuilder prompt, string phaseLabel, IReadOnlyList<string> milestones, string? address,
+        bool parksAtBoundaryAfterward = true)
     {
         prompt.AppendLine();
         prompt.AppendLine("## Reporting to the human (interactive mode)");
@@ -942,9 +965,20 @@ public static class WorkPromptBuilder
             if (isFinal)
             {
                 prompt.AppendLine("  (your closing summary, handoff, or verdict and findings — not just this");
-                prompt.AppendLine("  label), then end. Slice 8's own boundary park holds from there until the");
-                prompt.AppendLine("  human's `h9k review proceed` or `h9k review resolve`, whether or not the");
-                prompt.AppendLine("  send below actually lands.");
+                prompt.AppendLine("  label), then end.");
+                if (parksAtBoundaryAfterward)
+                {
+                    prompt.AppendLine("  Slice 8's own boundary park holds from there until the human's");
+                    prompt.AppendLine("  `h9k review proceed` or `h9k review resolve`, whether or not the send");
+                    prompt.AppendLine("  below actually lands.");
+                }
+                else
+                {
+                    prompt.AppendLine("  Nothing supervises this run once you end: verification, delivery, and");
+                    prompt.AppendLine("  the review loop's own first boundary are a human's to trigger by hand");
+                    prompt.AppendLine("  with `h9k task deliver`, not something that starts on its own the moment");
+                    prompt.AppendLine("  you finish, whether or not the send below actually lands.");
+                }
             }
         }
 
@@ -964,7 +998,9 @@ public static class WorkPromptBuilder
             prompt.AppendLine("No registered human session is on record for this run right now — nobody has run");
             prompt.AppendLine("`h9k task register-session` against it (the honest case for a run dispatched");
             prompt.AppendLine("headless from the start, or a handback nobody re-attached to). Skip sending these");
-            prompt.AppendLine("milestones; the phase boundary still parks for the human's own proceed regardless.");
+            prompt.AppendLine(parksAtBoundaryAfterward
+                ? "milestones; the phase boundary still parks for the human's own proceed regardless."
+                : "milestones; nothing parks here either — h9k task deliver is still a human's to trigger by hand.");
             prompt.AppendLine("Log this once for the phase, not once per milestone, through the rule above.");
         }
     }
