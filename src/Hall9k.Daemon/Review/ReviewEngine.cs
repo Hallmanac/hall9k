@@ -612,15 +612,23 @@ public sealed class ReviewEngine(
                     // human already approved the boundary (independent pre-PR review, cycle 1,
                     // adversarial lens). Mirrors the Settling branch's own
                     // gateAlreadyRanFullOverCurrentHead guard, using head equality alone rather than
-                    // its fingerprint/full-scope logic: this gate can legitimately be scoped, and the
-                    // only way Reverify is ever entered with a head that already matches this run's
-                    // own last recorded gate is exactly this resume — a genuine fix session or fresh
-                    // follow-up either has no VerificationPassed on this run's own stream yet, or one
-                    // recorded against an earlier head that a real commit has since moved past.
+                    // its full-scope half: this gate can legitimately be scoped, and the only way
+                    // Reverify is ever entered with a head that already matches this run's own last
+                    // recorded gate is exactly this resume — a genuine fix session or fresh follow-up
+                    // either has no VerificationPassed on this run's own stream yet, or one recorded
+                    // against an earlier head that a real commit has since moved past. The fingerprint
+                    // half is still consulted, though (independent pre-PR review, cycle 2, adversarial
+                    // lens): a park here can sit for the "days" this design explicitly allows, and an
+                    // operator running `h9k project set --verify` while it sits changes what "already
+                    // ran" actually means without moving HEAD at all — exactly the gap
+                    // VerifyCommandsFingerprintMatchesAsync's own doc names and the Settling branch's
+                    // gateAlreadyRanFullOverCurrentHead already closes for its own resume shape.
                     string? reverifyCurrentHeadSha =
                         await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
                     bool reverifyGateAlreadyRan =
-                        run.LastGateHeadSha is not null && run.LastGateHeadSha == reverifyCurrentHeadSha;
+                        run.LastGateHeadSha is not null
+                        && run.LastGateHeadSha == reverifyCurrentHeadSha
+                        && await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
                     if (!reverifyGateAlreadyRan && !await verification.VerifyAsync(
                         context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, cancellationToken))
                     {

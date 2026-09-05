@@ -794,6 +794,103 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 2, adversarial lens: the Reverify branch's own
+    /// idempotent-resume guard (task: interactive mode becomes a recorded property of the task)
+    /// used to compare HEAD alone, unlike its sibling <see cref="GateAlreadyRanFullOverCurrentHeadAsync"/>
+    /// guard for Settling. An interactive-mode run parks at the "fix to re-review" boundary once its
+    /// reverify gate passes, and that park can sit for "days" by design — HEAD never moves while it
+    /// does. An operator changing the project's verify commands during that window is invisible to a
+    /// HEAD-only comparison: on <c>h9k review proceed</c>, the resumed Reverify case saw the identical
+    /// HEAD it last gated and skipped the gate outright, dispatching the next review cycle over a tip
+    /// the new verify commands had never actually run against.
+    /// </summary>
+    [Fact]
+    public async Task A_verify_commands_change_while_parked_at_the_reverify_interactive_gate_still_runs_the_gate_on_resume()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, Guid projectId) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, interactiveMode: true, reviewStageComposition: ReviewStageComposition.AdversarialOnly);
+
+        // Interactive mode's own "build done to review" boundary parks before cycle 1 ever dispatches.
+        bool step1 = await NewEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token);
+        step1.Should().BeFalse("interactive mode parks before cycle 1's review ever dispatches");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewBoundaryApproved(runId, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Cycle 1: the sole (adversarial) lens finds something, parking at "review verdict to fix".
+        ScriptedExecutor discoveryExecutor = new(
+            "FINDING: severity=medium; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: the widget never initializes.\n\nVERDICT: needs-fixes");
+        bool step2 = await NewEngine(store, discoveryExecutor).ReviewAsync(runId, taskId, cts.Token);
+        step2.Should().BeFalse("interactive mode parks again before the fix session ever dispatches");
+        discoveryExecutor.Spawns.Should().HaveCount(1);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewBoundaryApproved(runId, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The fix session lands a real commit — the reverify gate that follows sees a moved HEAD,
+        // exactly the shape a genuine fix leaves behind, and then parks at "fix to re-review".
+        ScriptedExecutor fixExecutor = new("Initialized the widget.\n\nRESOLUTION: fixed");
+        fixExecutor.OnSpawnByIndex[0] = () => CommitDocOnlyChange(worktreePath);
+        bool step3 = await NewEngine(store, fixExecutor).ReviewAsync(runId, taskId, cts.Token);
+        step3.Should().BeFalse("interactive mode parks again at the fix-to-re-review boundary");
+        fixExecutor.Spawns.Should().HaveCount(1);
+
+        await using IQuerySession verifyQueryAfterFix = store.QuerySession();
+        List<VerificationPassed> passesAfterFix = [.. (await verifyQueryAfterFix.Events.FetchStreamAsync(runId, token: cts.Token))
+            .Select(e => e.Data).OfType<VerificationPassed>()];
+        passesAfterFix.Should().HaveCount(2, "the seeded initial gate, plus the reverify gate the fix's own moved HEAD earned");
+        string gatedHeadSha = passesAfterFix[^1].HeadSha!;
+
+        // While parked here — a park the design explicitly allows to sit for days — an operator
+        // changes the project's verify commands. HEAD does not move.
+        await ChangeVerifyCommandsAsync(store, projectId, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewBoundaryApproved(runId, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Another needs-fixes verdict, deliberately: a merge-ready verdict here would let the
+        // track conclude and carry the run on into Settling, whose OWN fingerprint check would
+        // then mask exactly the defect this test exists to catch (that check already ran the
+        // gate correctly regardless of this fix). Needs-fixes instead parks straight back at
+        // "review verdict to fix" with no further gate involved, so every VerificationPassed
+        // recorded in this step is attributable to the Reverify branch's own guard alone.
+        ScriptedExecutor resumeExecutor = new(
+            "FINDING: severity=medium; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: still not initialized correctly.\n\nVERDICT: needs-fixes");
+        bool step4 = await NewEngine(store, resumeExecutor).ReviewAsync(runId, taskId, cts.Token);
+        step4.Should().BeFalse("interactive mode parks again at the review-verdict-to-fix boundary");
+        resumeExecutor.Spawns.Should().HaveCount(1, "only the cycle-2 review pass itself, no fix session yet");
+
+        await using IQuerySession verifyQueryAfterResume = store.QuerySession();
+        List<VerificationPassed> passesAfterResume = [.. (await verifyQueryAfterResume.Events.FetchStreamAsync(runId, token: cts.Token))
+            .Select(e => e.Data).OfType<VerificationPassed>()];
+        passesAfterResume.Should().HaveCount(
+            passesAfterFix.Count + 1,
+            "HEAD never moved while parked, but the project's verify commands changed underneath the park — "
+                + "the Reverify branch's own idempotent-resume guard must not mistake an unchanged HEAD for "
+                + "an unchanged gate, the same guarantee GateAlreadyRanFullOverCurrentHeadAsync already gives Settling. "
+                + "This step never reaches Settling (a needs-fixes verdict keeps the track active), so this count "
+                + "isolates the Reverify branch's own gate from Settling's already-correct one");
+        VerificationPassed reverifyGateOnResume = passesAfterResume[^1];
+        reverifyGateOnResume.HeadSha.Should().Be(gatedHeadSha, "no commit landed between the park and the resume");
+        reverifyGateOnResume.VerifyCommandsFingerprint.Should().NotBe(
+            passesAfterFix[^1].VerifyCommandsFingerprint,
+            "the resumed gate must run under the NEW verify commands, not silently reuse the stale pass recorded before the change");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 3, adversarial lens: <c>VerifyCommandsFingerprintMatchesAsync</c>
     /// must read a never-recorded <see cref="RunAggregate.LastGateVerifyCommandsFingerprint"/> — a
     /// stream written before that field existed — as "unknown", not as "the gates changed". Seeds
@@ -954,7 +1051,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>Like <see cref="SeedVerifiedRunAsync(DocumentStore, CancellationToken)"/>, but a real git worktree and a real `dotnet test`-shaped gate, for tests that need <see cref="VerificationRunner"/>'s own scoping to run for real rather than short-circuit on "no gates configured".</summary>
     private async Task<(Guid TaskId, Guid RunId, string WorktreePath, Guid ProjectId)> SeedVerifiedRunWithTestGateAsync(
-        DocumentStore store, CancellationToken cancellationToken, bool recordVerifyCommandsFingerprint = true)
+        DocumentStore store, CancellationToken cancellationToken, bool recordVerifyCommandsFingerprint = true,
+        bool interactiveMode = false, ReviewStageComposition? reviewStageComposition = null)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -1002,6 +1100,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 TaskType.Chore, null, null, null, Now, node.OwnerId),
             node.OwnerId, Now);
         var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        if (interactiveMode)
+        {
+            claimed = claimed with { InteractiveMode = true };
+        }
+
         session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
 
@@ -1014,7 +1117,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         // review, cycle 3, adversarial lens).
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
-                worktreePath, "task/review-me", ExecutorMode.Subscription, Now),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now,
+                ReviewStageComposition: reviewStageComposition),
             new AgentSessionCompleted(runId, Now),
             new VerificationPassed(
                 runId, Now, RanFullScope: true, HeadSha: headSha,
