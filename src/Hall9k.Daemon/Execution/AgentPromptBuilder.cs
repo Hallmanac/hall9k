@@ -1908,6 +1908,15 @@ public static class AgentPromptBuilder
     /// session starts with zero memory of the branch, so it needs enough orientation to tell
     /// genuinely finished work apart from something the prior session may have left half-written
     /// on purpose.
+    /// <para>
+    /// Whatever is judged not to belong has to actually leave the tree (reverted or deleted), not
+    /// merely be left sitting there with a stated reason: the mechanical re-check that decides
+    /// whether this recovery succeeded (<c>VerificationRunner.DetectStrandedWorkAsync</c>) counts
+    /// any remaining modified or untracked file as still stranded regardless of what the session
+    /// said about it, so the two have to agree on the same bar — a clean tree, by commit or by
+    /// removal — rather than one asking for a stated exclusion the other has no way to honor
+    /// (independent pre-PR review, cycle 1, adversarial finding).
+    /// </para>
     /// </summary>
     public static string BuildUncommittedWorkRecovery(TaskDetails task, IReadOnlyList<string> strandedFiles)
     {
@@ -1921,25 +1930,36 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("Your only job is turning this into well-formed commits, then stopping. If this repo");
         prompt.AppendLine("ships a commit-plan skill, invoke it now — that is exactly the judgment call it exists");
-        prompt.AppendLine("for: organize what is genuinely finished work into cohesive, buildable commits, and");
-        prompt.AppendLine("deliberately leave out anything that looks like scratch state or was left uncommitted");
-        prompt.AppendLine("on purpose, rather than sweeping everything in blind. If this repo ships no such skill,");
-        prompt.AppendLine("use the same judgment by hand: `git add` and `git commit` what belongs, in as many");
-        prompt.AppendLine("commits as the change actually needs.");
+        prompt.AppendLine("for: organize what is genuinely finished work into cohesive, buildable commits. If");
+        prompt.AppendLine("this repo ships no such skill, use the same judgment by hand: `git add` and");
+        prompt.AppendLine("`git commit` what belongs, in as many commits as the change actually needs.");
+        prompt.AppendLine();
+        prompt.AppendLine("Anything you decide does NOT belong — scratch state, something left uncommitted on");
+        prompt.AppendLine("purpose — must not simply be left sitting there: revert a modified tracked file back");
+        prompt.AppendLine("to its committed state (`git checkout -- <file>`) or delete an untracked one. Stating");
+        prompt.AppendLine("your reasoning is not enough on its own — the tree has to actually be clean, because");
+        prompt.AppendLine("whatever a plain `git status` still shows afterward is treated as still stranded,");
+        prompt.AppendLine("whatever you decided about it.");
         prompt.AppendLine();
         prompt.AppendLine("Do not read or act on any review findings. Do not fix bugs, add tests, or change any");
         prompt.AppendLine("file's content beyond what committing requires. Do not run the build or test suite.");
         prompt.AppendLine("Do not open a pull request — the platform does that once this run reaches its gates on");
-        prompt.AppendLine("its own. When `git status` shows nothing left uncommitted that belongs in this change —");
-        prompt.AppendLine("or you have deliberately decided a file should not be committed and said so — stop.");
+        prompt.AppendLine("its own. Stop once `git status` shows nothing left: everything that belongs is");
+        prompt.AppendLine("committed, and everything else is cleared rather than sitting uncommitted.");
+        prompt.AppendLine();
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        AppendExternalInteractionLoggingRule(prompt, task.Id);
 
         return prompt.ToString();
     }
 
     /// <summary>
-    /// Every stranded file named for the recovery prompt above, capped the same way
-    /// <c>VerificationRunner.SummarizeFiles</c> caps the failure reason it is built from — a
-    /// session recovering from an unusually wide strand should not open on a wall of filenames.
+    /// Every stranded file named for the recovery prompt above — a wider cap than
+    /// <c>VerificationRunner.SummarizeFiles</c>'s own <c>MaxListedFiles</c> (20) uses for the
+    /// one-line failure reason it is built from, deliberately: a session recovering from the
+    /// strand needs to see every file it might need to act on, not the eliding summary a human
+    /// reads in a failure message, so this prompt affords more room before it elides too.
     /// </summary>
     private const int MaxListedRecoveryFiles = 30;
 
