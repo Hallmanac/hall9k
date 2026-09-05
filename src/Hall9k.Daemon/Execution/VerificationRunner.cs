@@ -460,6 +460,28 @@ public sealed partial class VerificationRunner(
         process.StartInfo.Environment[GateInfrastructureFailureClassifier.GateWaitEvidenceDirectoryEnvironmentVariable] = gateWaitDirectory;
         if (OperatingSystem.IsWindows())
         {
+            // Windows field report item 3 (ruled 2026-09-01): two concurrent dotnet-test-shaped
+            // gates on one Windows machine crashed each other's shared MSBuild child nodes with
+            // MSB4166. Applied at the spawn, for every gate, rather than asked of each project's
+            // own verify command — a build or lint gate that shells out to MSBuild indirectly is
+            // exposed to the same node-reuse crash, not just a `dotnet test` gate. A project's own
+            // verify command that sets this variable itself (`set MSBUILDDISABLENODEREUSE=0 && ...`)
+            // still wins: that assignment runs inside the shell after this process's environment is
+            // inherited, not before it, so it simply overwrites this default for its own session.
+            // Single-process MSBuild (-m:1), the field workaround's other half, is deliberately not
+            // set here: the arx workaround used both flags together, but only this cheap half
+            // ships now, since GateInfrastructureFailureClassifier's own MSB4166 recognition makes
+            // a residual node-reuse crash cost a retry rather than a dead task.
+            //
+            // Scoped to Windows only, not because MSBuild's own node reuse is Windows-specific —
+            // it isn't; `dotnet build-server shutdown` exists on every platform — but because the
+            // field report this fix answers was a Windows machine, and nothing has yet confirmed
+            // the identical contention on a non-Windows node. The MSB4166 marker just below
+            // classifies regardless of platform already, so a non-Windows occurrence still costs
+            // a retry rather than a dead task; only this preventive half is narrowed to the
+            // platform the incident was actually observed on (independent pre-PR review, cycle 1).
+            process.StartInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+
             // The raw Arguments string, never ArgumentList (see WindowsCommandLine): a
             // project's verify command is entirely capable of carrying its own embedded
             // quotes (this repo's own CI filter, `--filter "Category!=RequiresDocker"`,
