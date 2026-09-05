@@ -113,6 +113,18 @@ after reporting — nothing waits on a live process, and a boundary approved day
 exactly as one approved in seconds. A task without the flag behaves byte-for-byte as the
 fire-and-forget pipeline always has: no default changes.
 
+Under the flag, a dispatched build, review, or fix session also reports outbound, judiciously
+(design ruling R8): a small, fixed vocabulary per role — claimed and gates green for a headless
+build, findings drafted and verdict recorded for a review pass, and a report-ready send for every
+role's own end-of-phase report (a build's handoff, a review's verdict and findings, a fix
+session's summary) as its last act before it ends normally. The address is the human's own
+registered session (`h9k task register-session`, the same record the double-booking guards read),
+reached through the cross-session mesh's SendMessage tool; every send, landed or not, is logged
+through `h9k task log-interaction` so what the human was told lives on the run stream rather than
+only in a transcript. With no registered session, or one SendMessage cannot reach, the agent
+degrades honestly: it skips sending, logs that once per phase instead of once per milestone, and
+the boundary still parks exactly as it would anyway — nothing about slice 8's own park changes.
+
 ### A deliberate human kick-off
 
 `h9k task start <id>` dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead of
