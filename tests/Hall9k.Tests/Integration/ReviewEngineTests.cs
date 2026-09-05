@@ -72,6 +72,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         /// <summary>Lets a test act like the spawn actually touched the worktree — a fix session's own commit, keyed by that spawn's zero-based index — since every session here is scripted rather than real.</summary>
         public Dictionary<int, Action> OnSpawnByIndex { get; } = [];
 
+        /// <summary>
+        /// Spawn indexes (zero-based, dispatch order) whose scripted summary comes back as a
+        /// generic `is_error: true` result instead of a clean success — task: a session that
+        /// reports an error result is retried once in place. Distinct from a null script entry,
+        /// which reports the session dying without any result at all.
+        /// </summary>
+        public HashSet<int> ErrorAtSpawnIndex { get; } = [];
+
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
             if (Spawns.Count == 0)
@@ -84,6 +92,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 onSpawn();
             }
 
+            int spawnIndex = Spawns.Count;
             Spawns.Add(request);
             request.SessionArtifactName.Should().NotBeNull("review legs must never overwrite the main session's files");
 
@@ -94,11 +103,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 return new SpawnedAgent(processId, Now);
             }
 
+            bool isError = ErrorAtSpawnIndex.Contains(spawnIndex);
             string line = JsonSerializer.Serialize(new Dictionary<string, object?>
             {
                 ["type"] = "result",
-                ["subtype"] = "success",
-                ["is_error"] = false,
+                ["subtype"] = isError ? "error_during_execution" : "success",
+                ["is_error"] = isError,
                 ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 1_000, ["output_tokens"] = 200 },
                 ["total_cost_usd"] = 0.01,
                 ["num_turns"] = 12,
@@ -5141,6 +5151,124 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             ReviewLens.Conformance.Slug, "the failure says which pass went silent");
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Failed);
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull("failure releases the lease");
+    }
+
+    /// <summary>
+    /// The core case (task: a session that reports an error result is retried once in place,
+    /// measured 2026-09-05: bursty across only 18 distinct hours, the shape of a provider-side
+    /// burst): the conformance pass reports a generic error while the adversarial pass reads
+    /// clean at the same time. The errored lens is redispatched fresh after a short backoff and
+    /// the sibling is never touched on that account — its verdict is kept exactly as if nothing
+    /// had happened.
+    /// </summary>
+    [Fact]
+    public async Task A_review_session_reporting_an_error_result_is_retried_once_leaving_its_sibling_untouched()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Hit a transient snag.",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            "Clean on the retry.\n\nVERDICT: merge-ready")
+        {
+            ErrorAtSpawnIndex = { 0 },
+        };
+        DaemonOptions options = new() { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(1) };
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the transient error is retried once, not failed");
+        executor.Spawns.Should().HaveCount(3, "conformance's error costs one extra spawn; adversarial dispatches once");
+        executor.Processes.Terminations.Should().BeEmpty(
+            "the sibling adversarial pass must never be terminated on the other lens's account");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        RunSessionErrorRetried retry = events.OfType<RunSessionErrorRetried>().Single();
+        retry.Leg.Should().Be(RunSessionLeg.ReviewPass);
+        retry.Lens.Should().Be(ReviewLens.Conformance);
+        retry.Cycle.Should().Be(1);
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.SessionErrorRetries.Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The residue this task exists to narrow the failures down to: a SECOND consecutive error
+    /// on the identical lens/cycle spends the one retry and fails the run exactly as before —
+    /// same reason text as a genuinely broken session always got.
+    /// </summary>
+    [Fact]
+    public async Task A_second_consecutive_error_on_the_same_lens_and_cycle_fails_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "First transient-looking error.",
+            "Nothing of my own.\n\nVERDICT: merge-ready",
+            "Second error — not transient after all.")
+        {
+            ErrorAtSpawnIndex = { 0, 2 },
+        };
+        DaemonOptions options = new() { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(1) };
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a second consecutive error on the same lens/cycle fails the run");
+        executor.Spawns.Should().HaveCount(3, "one retry is spent; the second error ends the run rather than a third spawn");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunSessionErrorRetried>().Should().ContainSingle(
+            "only the first error earns a retry; the run fails outright on the second");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed);
+        run.FailureReason.Should().Contain("reported an error result").And.Contain(
+            ReviewLens.Conformance.Slug, "the failure says which pass it was, exactly as an ordinary failure already does");
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Failed);
+    }
+
+    /// <summary>
+    /// The fix-session leg of the same recovery: an error mid-fix redispatches fresh over the
+    /// same cycle's findings, the identical redispatch shape <see cref="RunBudgetExhausted"/>'s
+    /// own AwaitingFix clearing already relies on — but the run never parks, it just retries in
+    /// place after a short backoff.
+    /// </summary>
+    [Fact]
+    public async Task A_fix_session_reporting_an_error_result_is_retried_once_over_the_same_findings()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            "Hit a transient snag applying the fix.",
+            "Reset the limiter window.\n\nRESOLUTION: fixed",
+            // Cycle 2: only conformance is still active, so it gets one Verify pass.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready")
+        {
+            ErrorAtSpawnIndex = { 2 },
+        };
+        DaemonOptions options = new() { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(1) };
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the fix session's transient error is retried once, not failed");
+        executor.Spawns.Should().HaveCount(7, "the fix session's own error costs one extra spawn");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        RunSessionErrorRetried retry = events.OfType<RunSessionErrorRetried>().Single();
+        retry.Leg.Should().Be(RunSessionLeg.Fix);
+        retry.Cycle.Should().Be(1);
+        events.OfType<ReviewFixDispatched>().Should().HaveCount(2, "the errored attempt plus its retry");
     }
 
     /// <summary>
