@@ -54,7 +54,7 @@ internal static class PublishedFacts
             // (independent pre-PR review, cycle 1, conformance lens). Pre-approval is stated here
             // too for the identical reason — it is settable on any live non-terminal task, not
             // only a Published one, and the board must not go quiet about it just because the
-            // task has moved on to Queued, Blocked, or Working. Two states are carved out.
+            // task has moved on to Queued, Blocked, or Working. Three states are carved out.
             // LifecycleState.Done renders only at TRUE closeout (the merge observed), so a task's
             // pre-approval no longer governs anything there — stating it would claim a future
             // merge for a pull request that has already merged (independent pre-PR review, cycle
@@ -64,10 +64,18 @@ internal static class PublishedFacts
             // draft is republished, so a Draft carrying a stale true would claim a pull request
             // will be auto-merged when a plain republish is one command away from silently
             // clearing that promise (independent pre-PR review, cycle 1, conformance lens).
+            // LifecycleState.Archived is the third: TaskAggregate.Apply(TaskAbandoned) leaves
+            // PreApproved untouched too, but TaskDecider.SetPreApproved itself refuses to flip the
+            // flag on an abandoned task ("there is no future pull request left for pre-approval to
+            // govern") — so a stale true surviving abandonment must not go on claiming a merge the
+            // platform will never attempt (independent pre-PR review, cycle 1, both lenses).
             return
             [
                 .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
-                .. task.PreApproved && state != LifecycleState.Done && state != LifecycleState.Draft
+                .. task.PreApproved
+                    && state != LifecycleState.Done
+                    && state != LifecycleState.Draft
+                    && state != LifecycleState.Archived
                     ? (string[])[PreApprovedFact]
                     : [],
             ];
