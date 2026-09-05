@@ -25,11 +25,12 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
                 break;
             case { State: DaemonBootState.Starting }:
                 AnsiConsole.MarkupLine(
-                    "[yellow]h9kd: starting[/] — a launch from moments ago is still booting (assembly "
-                    + "resolution and JIT for the entry point, before it ever reaches its own "
-                    + "single-instance guard, has taken up to ~15s on at least one real machine) and has "
-                    + "not yet been observed to reach that guard; a second h9k daemon start here is refused "
-                    + "rather than risked against it. Check again shortly.");
+                    "[yellow]h9kd: starting[/] — a marker recorded moments ago says a spawn is in flight, "
+                    + "but whether it is still booting (assembly resolution and JIT for the entry point, "
+                    + "before it ever reaches its own single-instance guard, has taken up to ~15s on at "
+                    + "least one real machine) or already died before writing its pid file isn't known "
+                    + "here; a second h9k daemon start here is refused rather than risked against it. "
+                    + "Check again shortly.");
                 break;
             default:
                 AnsiConsole.MarkupLine(
