@@ -371,10 +371,12 @@ internal static class AttentionComposer
     /// is exactly what this flag removes, so nothing here is ever <see cref="AttentionLevel.NeedsYou"/>
     /// — a required human approval or an outstanding requested reviewer is stated as a visible,
     /// self-resuming wait (design ruling 3), named plainly so the owner can take whatever social
-    /// action they choose on their own initiative; the platform itself never nudges. Age is the
-    /// run's own dispatch time — the closest recorded anchor to "how long this pull request has
-    /// been open" this composer has, since there is no persisted "entered AwaitingReview" timestamp
-    /// of its own.
+    /// action they choose on their own initiative; the platform itself never nudges. Age is
+    /// <see cref="RunDetails.PullRequestPushedAt"/> when this run's own opener call recorded one —
+    /// the pull request's own opened/updated timestamp — falling back to the run's dispatch time for
+    /// a stream recorded before that field existed, named honestly as "dispatched" rather than
+    /// "open" so the fallback is never read as an observed fact it is not (independent pre-PR
+    /// review, cycle 1, adversarial finding).
     /// </summary>
     private static TaskAttention PreApprovedAwaitingReviewAttention(RunDetails run, DateTimeOffset now)
     {
@@ -408,11 +410,18 @@ internal static class AttentionComposer
                 "pre-approved — GitHub's own gates read satisfied; the daemon merges it on its own");
         }
 
-        string age = TaskStatusComposer.RelativeAge(now - run.DispatchedAt);
+        // RunDetails carries no PR-opened timestamp on a stream recorded before
+        // PullRequestPushedAt existed, so that gap is named rather than papered over with the
+        // run's own dispatch age, which can understate or overstate how long the pull request has
+        // actually been open by however long the build session ran before it pushed (independent
+        // pre-PR review, cycle 1, adversarial finding).
+        bool openAgeObserved = run.PullRequestPushedAt is not null;
+        string age = TaskStatusComposer.RelativeAge(now - (run.PullRequestPushedAt ?? run.DispatchedAt));
+        string ageClause = openAgeObserved ? $"open {age}" : $"dispatched {age}";
         return new TaskAttention(
             AttentionLevel.WaitingHandled,
             $"pre-approved; waiting on {string.Join(" and ", waitingOn)} for the pull request "
-            + $"(open {age}) — it merges automatically once satisfied; nothing for you to do here, "
+            + $"({ageClause}) — it merges automatically once satisfied; nothing for you to do here, "
             + "though you may want to nudge a reviewer yourself");
     }
 
