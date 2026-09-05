@@ -14,7 +14,12 @@ namespace Hall9k.Cli.DaemonControl;
 /// </summary>
 public static class DaemonLifecycle
 {
-    private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(10);
+    // Wide enough to absorb the ~15s assembly-resolution-and-JIT boot for the top-level
+    // entry point — before the daemon ever reaches its own single-instance guard, so
+    // Wolverine's later handler-discovery scan is not the cause — observed on the Arx
+    // Windows node (2026-09-03), so the ordinary slow-boot case still resolves to a
+    // confirmed pid rather than falling through to the "still starting" guess below.
+    private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan CatchUpTimeout = TimeSpan.FromSeconds(30);
 
     // The daemon's graceful-shutdown budget is 30s (HostOptions.ShutdownTimeout); give
@@ -23,12 +28,25 @@ public static class DaemonLifecycle
 
     public static async Task<int> StartAsync(IDaemonAutostart autostart, string? binaryOverride, CancellationToken cancellationToken)
     {
-        if (DaemonProcess.Probe() is { } running)
+        DaemonBootStatus initialStatus = DaemonProcess.ProbeBootStatus();
+        if (initialStatus is { State: DaemonBootState.Running, Running: { } running })
         {
             await Console.Error.WriteLineAsync(
                 $"h9kd is already running (pid {running.ProcessId}, started {running.StartedAt:u}). "
                 + "One daemon per node is the rule — the single-instance guard would refuse a second anyway. "
                 + "See it with h9k daemon status; end it with h9k daemon stop.");
+            return ExitCodes.Conflict;
+        }
+
+        if (initialStatus.State == DaemonBootState.Starting)
+        {
+            await Console.Error.WriteLineAsync(
+                "h9kd is already starting — a spawn from moments ago is still booting (assembly "
+                + "resolution and JIT for the entry point, before it ever reaches its own single-instance "
+                + "guard, has taken up to ~15s on at least one real machine) and has not yet been observed "
+                + "to reach that guard, so whether it already holds the lock isn't known here. Refusing to "
+                + "spawn a second attempt rather than risk racing it. Give it a little longer; h9k daemon "
+                + "status shows it as starting until its pid file lands.");
             return ExitCodes.Conflict;
         }
 
@@ -51,7 +69,7 @@ public static class DaemonLifecycle
             // An override is resolved against the caller's directory and checked here,
             // for the same reason DaemonBinary.Locate() checks every candidate it
             // returns: SpawnDetached runs /bin/sh in ~/.hall9k, which cannot report a
-            // missing file back, so an unresolvable path surfaces only as the 10s start
+            // missing file back, so an unresolvable path surfaces only as the 20s start
             // timeout — a diagnosis that names the wrong rule. Origin incident:
             // h9k daemon start --binary ./src/Hall9k.Daemon/bin/Debug/net10.0/h9kd from
             // the repo root, the natural dev-loop invocation, blocked for the full
@@ -125,35 +143,91 @@ public static class DaemonLifecycle
             startThroughAutostart = false;
         }
 
-        if (startThroughAutostart)
+        // Written just before the spawn, not after: it is the only evidence a concurrent
+        // h9k daemon status has that this attempt is in flight during however long it
+        // takes the daemon to reach its own single-instance guard and write the pid file
+        // that would otherwise be the sole source of truth (DaemonRuntime.StartingMarkerFile's
+        // own doc has the field incident this covers). The marker is advisory — a status
+        // read during this window that misses it just reads as "not running" the way it
+        // always did before this feature existed — so a write that fails (a locked file, a
+        // concurrent h9k daemon status holding a read handle on Windows) must not abort the
+        // boot it was only ever meant to describe.
+        try
         {
-            // Autostart owns the job: starting through the service manager keeps
-            // stop/restart with it instead of leaving it a process it knows nothing about.
-            AnsiConsole.MarkupLineInterpolated($"[dim]Autostart is registered — starting through {autostart.MechanismDescription}.[/]");
-            if (!await autostart.StartAsync(cancellationToken))
+            DaemonStartingMarker.Write(DaemonRuntime.StartingMarkerFile, DateTimeOffset.UtcNow);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Could not record the starting marker ({exception.Message}) — starting anyway; h9k daemon status may read this launch as not running until its pid file lands.[/]");
+        }
+
+        try
+        {
+            if (startThroughAutostart)
             {
-                await Console.Error.WriteLineAsync(
-                    $"{autostart.MechanismDescription} could not start the daemon — try h9k daemon autostart disable, then h9k daemon start.");
-                return ExitCodes.Error;
+                // Autostart owns the job: starting through the service manager keeps
+                // stop/restart with it instead of leaving it a process it knows nothing about.
+                AnsiConsole.MarkupLineInterpolated($"[dim]Autostart is registered — starting through {autostart.MechanismDescription}.[/]");
+                if (!await autostart.StartAsync(cancellationToken))
+                {
+                    // The service manager itself reported failure — there is no launch in
+                    // flight for the marker to describe, so leaving it behind would tell a
+                    // concurrent h9k daemon status the opposite of what just happened.
+                    DaemonStartingMarker.Delete(DaemonRuntime.StartingMarkerFile);
+                    await Console.Error.WriteLineAsync(
+                        $"{autostart.MechanismDescription} could not start the daemon — try h9k daemon autostart disable, then h9k daemon start.");
+                    return ExitCodes.Error;
+                }
+            }
+            else
+            {
+                SpawnDetached(binary, connectionString);
             }
         }
-        else
+        catch
         {
-            SpawnDetached(binary, connectionString);
+            // Only the spawn attempt itself is covered here — SpawnDetached failing
+            // outright, or autostart.StartAsync throwing rather than returning false.
+            // Either means there is no launch in flight for the marker to describe, so
+            // leaving it behind would misreport "starting" for the rest of its grace
+            // period. Once this block returns without throwing, the daemon (or the
+            // service manager's own child) is genuinely launched and detached from this
+            // CLI process by design — the whole point of SpawnDetached's double fork — so
+            // it must not also wrap the poll below: a Ctrl-C there cancels this command,
+            // not the boot already under way, and deleting the marker on that exception
+            // (pre-PR review, cycle 1's own fix, corrected here) would misreport a launch
+            // that is still genuinely booting as not running, the exact bug task 92da629d
+            // exists to fix, reintroduced by a different trigger.
+            DaemonStartingMarker.Delete(DaemonRuntime.StartingMarkerFile);
+            throw;
         }
 
         DaemonProcessDescriptor? started = await PollAsync(DaemonProcess.Probe, StartTimeout, cancellationToken);
+
         if (started is null)
         {
-            await Console.Error.WriteLineAsync(
-                $"h9kd did not come up within {StartTimeout.TotalSeconds:0}s — the log has the story:");
+            // Not a failure: the marker just written proves this attempt is genuinely in
+            // flight, and the pid file not landing within StartTimeout is exactly the
+            // Windows boot-time gap this command exists to stop misreporting (task
+            // 92da629d) — never leave the operator believing the daemon is down while a
+            // first spawn is still booting. Whether it has reached its own
+            // single-instance guard yet hasn't been observed either way.
+            AnsiConsole.MarkupLine(
+                $"[yellow]h9kd is still starting[/] after {StartTimeout.TotalSeconds:0}s — assembly "
+                + "resolution and JIT for the entry point, before it ever reaches its own "
+                + "single-instance guard, can run past this wait on some machines. That guard hasn't "
+                + "been observed to run yet, so this is not necessarily a failed launch. Check again "
+                + "shortly with h9k daemon status; the log has what it has said so far:");
             foreach (string line in DaemonLog.Tail(5))
             {
-                await Console.Error.WriteLineAsync($"  {line}");
+                AnsiConsole.MarkupLineInterpolated($"  [dim]{line}[/]");
             }
 
-            return ExitCodes.Error;
+            return ExitCodes.Ok;
         }
+
+        DaemonStartingMarker.Delete(DaemonRuntime.StartingMarkerFile);
 
         AnsiConsole.MarkupLineInterpolated(
             $"[green]h9kd started[/] (pid {started.ProcessId}) — logging to {DaemonRuntime.LogFile}");
@@ -254,6 +328,13 @@ public static class DaemonLifecycle
                 + "it finishes in-flight event appends before exiting. Check again with h9k daemon status.");
             return ExitCodes.Error;
         }
+
+        // A starting marker describes a launch that, if it ever existed, has definitely
+        // ended by the time the daemon it would have described is confirmed stopped here
+        // — leaving it behind would have status/start keep reporting "starting" for the
+        // rest of its grace period after a deliberate, successful stop (pre-PR review,
+        // cycle 1).
+        DaemonStartingMarker.Delete(DaemonRuntime.StartingMarkerFile);
 
         AnsiConsole.MarkupLineInterpolated(
             $"[green]h9kd stopped[/] (pid {running.ProcessId}). Detached agents keep running by design — the next start adopts them.");
