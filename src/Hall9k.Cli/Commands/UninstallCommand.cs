@@ -734,7 +734,12 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// deletes it too, on the same best-effort basis, and this entry is the backstop for when
     /// that delete loses to a lock or autostart was never cleanly disabled — a stray copy is not
     /// just clutter, since it can carry a captured PATH and (before this same task stopped
-    /// embedding it) a Postgres connection string in plain text.
+    /// embedding it) a Postgres connection string in plain text. <c>h9kd.starting</c> (task
+    /// 92da629d) joins the same group for a related reason: <c>h9k daemon start</c> deletes it
+    /// once the daemon it describes is either confirmed up or confirmed stopped, but a start
+    /// that timed out waiting for the pid file and was never followed by a stop leaves it behind
+    /// with nothing else on the machine left to clear it — an uninstall that left it in place
+    /// would be no cleaner than leaving a stale pid file itself.
     /// </para>
     /// <para>
     /// Built from <paramref name="home"/> with the literal relative names rather than by
@@ -759,6 +764,7 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         Path.Combine(home, "h9kd.lock"),
         Path.Combine(home, "h9kd.stop"),
         Path.Combine(home, "h9kd.stop.claimed"),
+        Path.Combine(home, "h9kd.starting"),
         Path.Combine(home, "h9kd-autostart-launch.vbs"),
     ];
 
