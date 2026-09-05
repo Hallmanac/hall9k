@@ -400,64 +400,67 @@ public sealed class RunSupervisor(
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
 
-        await using IDocumentSession session = store.LightweightSession();
+        bool willRetryBuildSession;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // The build session's own resolved model, as RunDispatched recorded it — read back
+            // from the stream itself rather than re-resolved, since a re-resolution could
+            // disagree with what this session actually ran on if the node's model configuration
+            // changed mid-run.
+            RunAggregate? run = await session.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
+            AgentModel model = run?.Model ?? AgentModel.Unknown;
 
-        // The build session's own resolved model, as RunDispatched recorded it — read back from
-        // the stream itself rather than re-resolved, since a re-resolution could disagree with
-        // what this session actually ran on if the node's model configuration changed mid-run.
-        RunAggregate? run = await session.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
-        AgentModel model = run?.Model ?? AgentModel.Unknown;
+            session.Events.Append(runId, new AgentSessionCompleted(runId, now));
+            session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
 
-        session.Events.Append(runId, new AgentSessionCompleted(runId, now));
-        session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
+            willRetryBuildSession = false;
+            if (result.IsError && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
+            {
+                // External and clock-recoverable, not a machine or code fault (backlog 40): the
+                // run parks with the task still Claimed — worktree and lease intact — instead of
+                // failing. TokenBudgetRetryEngine's hourly sweep is what clears this.
+                session.Events.Append(runId, new RunBudgetExhausted(runId, summary, now));
+                logger.LogWarning(
+                    "Run {RunId}: token budget exhausted — parked rather than failed; the daemon retries hourly. {Message}",
+                    runId, summary);
+            }
+            else if (result.IsError
+                && run is not null
+                && !run.HasRetriedSessionError(RunSessionLeg.Build, cycle: null, lens: null))
+            {
+                // The first error for the build session (task: a session that reports an error
+                // result is retried once in place — measured 2026-09-05: bursty across only 18
+                // distinct hours, the shape of a provider-side burst, not a code defect). Recorded
+                // and saved below, in this same block, before the backoff wait even starts —
+                // RetryBuildSessionAsync does the actual spawn afterward, in its own session —
+                // so a crash mid-backoff leaves a run that already remembers its one retry was
+                // spent, rather than events sitting unsaved in memory across a real-time wait.
+                session.Events.Append(
+                    runId, new RunSessionErrorRetried(runId, RunSessionLeg.Build, Cycle: null, Lens: null, result.Summary ?? "(no message)", now));
+                willRetryBuildSession = true;
+            }
+            else if (result.IsError)
+            {
+                session.Events.Append(runId, new RunFailed(runId, "Agent reported an error result.", now));
+                // One transaction with the run-stream events above (Copilot review, PR #30's
+                // expectedVersion fix, kept atomic with them on purpose): splitting the
+                // task-level write into its own session opened a window where a poller could
+                // observe this run Failed while its task still read Claimed. Losing the
+                // run-stream facts too on the rare lost generation race is the smaller cost.
+                await AppendFencedTaskFailureAsync(session, runId, taskId, "Agent reported an error result.", now, cancellationToken);
+            }
 
-        bool willRetryBuildSession = false;
-        if (result.IsError && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
-        {
-            // External and clock-recoverable, not a machine or code fault (backlog 40): the run
-            // parks with the task still Claimed — worktree and lease intact — instead of
-            // failing. TokenBudgetRetryEngine's hourly sweep is what clears this.
-            session.Events.Append(runId, new RunBudgetExhausted(runId, summary, now));
-            logger.LogWarning(
-                "Run {RunId}: token budget exhausted — parked rather than failed; the daemon retries hourly. {Message}",
-                runId, summary);
-        }
-        else if (result.IsError
-            && run is not null
-            && !run.HasRetriedSessionError(RunSessionLeg.Build, cycle: null, lens: null))
-        {
-            // The first error for the build session (task: a session that reports an error
-            // result is retried once in place — measured 2026-09-05: bursty across only 18
-            // distinct hours, the shape of a provider-side burst, not a code defect). Recorded
-            // and saved BELOW before the backoff wait even starts — RetryBuildSessionAsync does
-            // the actual spawn afterward, in its own session — so a crash mid-backoff leaves a
-            // run that already remembers its one retry was spent, rather than events sitting
-            // unsaved in memory across a real-time wait.
-            session.Events.Append(
-                runId, new RunSessionErrorRetried(runId, RunSessionLeg.Build, Cycle: null, Lens: null, result.Summary ?? "(no message)", now));
-            willRetryBuildSession = true;
-        }
-        else if (result.IsError)
-        {
-            session.Events.Append(runId, new RunFailed(runId, "Agent reported an error result.", now));
-            // One transaction with the run-stream events above (Copilot review, PR #30's
-            // expectedVersion fix, kept atomic with them on purpose): splitting the
-            // task-level write into its own session opened a window where a poller could
-            // observe this run Failed while its task still read Claimed. Losing the
-            // run-stream facts too on the rare lost generation race is the smaller cost.
-            await AppendFencedTaskFailureAsync(session, runId, taskId, "Agent reported an error result.", now, cancellationToken);
-        }
-
-        try
-        {
-            await session.SaveChangesAsync(cancellationToken);
-        }
-        catch (EventStreamUnexpectedMaxEventIdException)
-        {
-            logger.LogInformation(
-                "Task {TaskId}: lost the generation race recording {Transition} for run {RunId} — a newer claim committed first",
-                taskId, nameof(TaskFailed), runId);
-            return null;
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: lost the generation race recording {Transition} for run {RunId} — a newer claim committed first",
+                    taskId, nameof(TaskFailed), runId);
+                return null;
+            }
         }
 
         logger.LogInformation(
