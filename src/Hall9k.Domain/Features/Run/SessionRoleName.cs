@@ -42,6 +42,14 @@ public static class SessionRoleName
     /// <summary>Condenses a fan-in of blocker handoffs into one context document (Decisions Log #36). Not part of the epic's named vocabulary; still named.</summary>
     public const string Synthesis = "synthesis";
 
+    /// <summary>
+    /// The one bounded, commit-only session an uncommitted-files pre-gate failure may spawn onto
+    /// the SAME worktree before the run fails (task: when a session ends with finished work
+    /// uncommitted, the daemon recovers on its own). Not part of the epic's named vocabulary;
+    /// still named.
+    /// </summary>
+    public const string CommitRecovery = "commit-recovery";
+
     /// <summary>A fix session applying a cycle's review findings.</summary>
     public static string Fix(int cycle) => $"fix-{cycle}";
 
