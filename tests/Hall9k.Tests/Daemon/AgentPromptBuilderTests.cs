@@ -1487,6 +1487,46 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The recovery session (task: when a session ends with finished work uncommitted, the
+    /// daemon recovers on its own) is dispatched mid-run — <c>VerificationRunner.VerifyAsync</c>
+    /// always runs against a claimed task's own current run — so it carries the same
+    /// outside-interaction logging invariant every other dispatched prompt does, unlike the two
+    /// prompts that legitimately omit it (a fresh session's own zero-memory-of-the-branch framing
+    /// is not one of those exemptions).
+    /// </summary>
+    [Fact]
+    public void Uncommitted_work_recovery_prompt_carries_the_outside_interaction_logging_invariant()
+    {
+        TaskDetails task = SomeTask();
+        task.Id = Guid.Parse("33333333-3333-3333-3333-333333333333");
+
+        string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(task, ["src/Feature.cs"]);
+
+        prompt.Should().Contain("Log every outside interaction, unconditionally");
+        prompt.Should().Contain($"h9k task log-interaction {task.Id}");
+    }
+
+    /// <summary>
+    /// The mechanical re-check that decides whether the recovery succeeded
+    /// (<c>VerificationRunner.DetectStrandedWorkAsync</c>) treats any remaining modified or
+    /// untracked file as still stranded, whatever the session says about its reasons for leaving
+    /// it — so the prompt cannot tell the session a stated exclusion is enough on its own; it has
+    /// to instruct the session to actually clear the file out of the tree (independent pre-PR
+    /// review, cycle 1, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void Uncommitted_work_recovery_prompt_requires_clearing_excluded_files_rather_than_just_stating_intent()
+    {
+        string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(SomeTask(), ["src/Feature.cs"]);
+
+        prompt.Should().Contain("git checkout --", "a modified tracked file the session excludes must be reverted");
+        prompt.Should().Contain("delete an untracked one", "an untracked file the session excludes must be removed");
+        prompt.Should().NotContain(
+            "or you have deliberately decided a file should not be committed and said so — stop",
+            "a stated exclusion alone is no longer accepted as a stopping condition");
+    }
+
+    /// <summary>
     /// The adversarial lens stays blind to the task's objective and acceptance criteria, but a
     /// task id is neither — the escape-hatch invariant reaches this lens exactly as it reaches
     /// conformance, so a human steering an adversarial pass mid-run is logged just as honestly.
