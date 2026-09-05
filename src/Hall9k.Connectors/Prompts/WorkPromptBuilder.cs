@@ -3,6 +3,7 @@ using System.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -32,7 +33,8 @@ public static class WorkPromptBuilder
         bool isInteractive = false,
         bool isHandback = false,
         bool isDeliberateHeadlessStart = false,
-        bool requiresSelfRegistration = false)
+        bool requiresSelfRegistration = false,
+        string? interactiveMilestoneAddress = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -214,6 +216,14 @@ public static class WorkPromptBuilder
 
         AppendHomeSkillRule(prompt, project, skills);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
+        // The live-attended build (isInteractive) is the human's own session — there is nobody
+        // else here for it to report to, so R8's outbound milestones apply only to a headless
+        // build dispatched under interactive mode (h9k task start, or a handback that kept it).
+        if (task.InteractiveModeEnabled && !isInteractive)
+        {
+            AppendOutboundMilestoneRules(
+                prompt, task.Id, "build", OutboundMilestone.Build, interactiveMilestoneAddress);
+        }
 
         AppendAdoptedContextRule(prompt, task);
         AppendBlockerContextRule(prompt, blockerContext);
@@ -884,6 +894,79 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  and never report their call as your own independent decision, whatever they asked.");
         prompt.AppendLine("  This is best-effort, not enforcement: nothing forces the call, and the platform");
         prompt.AppendLine("  records only what this and its other channels actually see.");
+    }
+
+    /// <summary>
+    /// R8's outbound half of interactive mode (task: agents on an interactive-mode task report
+    /// outbound, idea fcaded0b's design rulings): a small, fixed vocabulary of milestones
+    /// (<see cref="Hall9k.Domain.Features.Run.OutboundMilestone"/>) this dispatched agent sends to
+    /// the human's own registered session — not a running commentary, and not a substitute for
+    /// slice 8's own park, which holds at the phase boundary regardless of whether any message
+    /// ever lands. Placed immediately after <see cref="AppendExternalInteractionLoggingRule"/> in
+    /// every caller so "the rule above" reads correctly below: a milestone send is exactly the
+    /// outside-interaction case that rule already commits this session to logging, restated here
+    /// only for the parts that rule cannot know on its own — when to send, and who to address.
+    /// </summary>
+    /// <param name="phaseLabel">Names the phase in the bound sentence ("build", "review", "fix") — cosmetic only.</param>
+    /// <param name="milestones">
+    /// This role's own fixed list (<see cref="Hall9k.Domain.Features.Run.OutboundMilestone"/>);
+    /// its length IS the bound this method states, not a separately-tracked number.
+    /// </param>
+    /// <param name="address">
+    /// The human's registered interactive session name for this run
+    /// (<c>RunDetails.RegisteredInteractiveSessionName</c>), resolved by the caller at
+    /// prompt-build time. Null when nobody has ever run <c>h9k task register-session</c> against
+    /// this run (a run dispatched headless from the start under interactive mode, or a handback
+    /// nobody re-attached to); blank when someone did but their own session carries no display
+    /// name to send to. Both are the honest "nothing to address" AGENTS.md's own "never guess at
+    /// unobserved facts" rule asks this method to degrade against rather than invent a name for.
+    /// </param>
+    public static void AppendOutboundMilestoneRules(
+        StringBuilder prompt, Guid taskId, string phaseLabel, IReadOnlyList<string> milestones, string? address)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine("## Reporting to the human (interactive mode)");
+        prompt.AppendLine();
+        prompt.AppendLine("This task is worked under interactive mode: a human is the arbiter at each phase");
+        prompt.AppendLine("boundary, and staying present means being told rather than polling. Your part is");
+        prompt.AppendLine("judicious, not a running commentary — at most " + milestones.Count
+            + (milestones.Count == 1 ? " message" : " messages") + $" for this {phaseLabel} phase, one per");
+        prompt.AppendLine("moment below, in order:");
+        prompt.AppendLine();
+        for (int i = 0; i < milestones.Count; i++)
+        {
+            bool isFinal = i == milestones.Count - 1;
+            prompt.AppendLine(isFinal
+                ? $"- **{milestones[i]}** — your last act before you end normally. Send the actual report"
+                : $"- **{milestones[i]}** — a one-line note, the moment it becomes true.");
+            if (isFinal)
+            {
+                prompt.AppendLine("  (your closing summary, handoff, or verdict and findings — not just this");
+                prompt.AppendLine("  label), then end. Slice 8's own boundary park holds from there until the");
+                prompt.AppendLine("  human's `h9k review proceed` or `h9k review resolve`, whether or not the");
+                prompt.AppendLine("  send below actually lands.");
+            }
+        }
+
+        prompt.AppendLine();
+        if (address.IsNotBlank())
+        {
+            prompt.AppendLine($"Address: `{address}` — the human's own registered session, reached through the");
+            prompt.AppendLine("cross-session mesh's SendMessage tool. Every milestone you send — whether it lands");
+            prompt.AppendLine("or the session cannot be reached — is exactly the outside-interaction case the rule");
+            prompt.AppendLine("above already commits you to logging: log each one there, so the record of what the");
+            prompt.AppendLine("human was told lives on the run stream, not only in a transcript. A send that fails");
+            prompt.AppendLine("(the session has ended, or SendMessage otherwise cannot reach it) is logged the same");
+            prompt.AppendLine("way, rather than dropped silently, and never blocks you — keep working either way.");
+        }
+        else
+        {
+            prompt.AppendLine("No registered human session is on record for this run right now — nobody has run");
+            prompt.AppendLine("`h9k task register-session` against it (the honest case for a run dispatched");
+            prompt.AppendLine("headless from the start, or a handback nobody re-attached to). Skip sending these");
+            prompt.AppendLine("milestones; the phase boundary still parks for the human's own proceed regardless.");
+            prompt.AppendLine("Log this once for the phase, not once per milestone, through the rule above.");
+        }
     }
 
     /// <summary>

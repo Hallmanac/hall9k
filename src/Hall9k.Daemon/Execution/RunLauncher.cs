@@ -300,6 +300,10 @@ public sealed class RunLauncher(
                 // spawned yet — the whole point is that the dependent starts already knowing.
                 string? handoffs = await blockerContext.AssembleAsync(
                     runId, runDirectory, task, project, worktree.Path, mode, cancellationToken);
+                // interactiveMilestoneAddress stays null: this is a brand-new RunDispatched, so no
+                // h9k task register-session call could possibly have landed on it yet (task:
+                // agents on an interactive-mode task report outbound) — a genuinely fresh headless
+                // build under interactive mode always starts with nobody registered to address.
                 prompt = AgentPromptBuilder.Build(
                     task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs);
             }

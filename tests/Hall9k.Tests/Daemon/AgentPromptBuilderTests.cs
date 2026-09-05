@@ -2647,6 +2647,152 @@ public sealed class AgentPromptBuilderTests : IDisposable
         task.ExternalReference.Should().NotBeNull("the task is still linked to the item it came from");
     }
 
+    /// <summary>
+    /// Task: agents on an interactive-mode task report outbound (design ruling R8). A task that
+    /// never turned interactive mode on gets no outbound-milestone section at all, in any
+    /// dispatched prompt — the feature is entirely inert for the ordinary headless case.
+    /// </summary>
+    [Fact]
+    public void Outbound_milestones_are_silent_when_interactive_mode_is_off()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = false;
+
+        AgentPromptBuilder.Build(task, SomeProject(), "task/1-slug", _worktreePath)
+            .Should().NotContain("Reporting to the human");
+        AgentPromptBuilder.BuildReview(task, SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance)
+            .Should().NotContain("Reporting to the human");
+        AgentPromptBuilder.BuildReview(task, SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Adversarial)
+            .Should().NotContain("Reporting to the human");
+        AgentPromptBuilder.BuildReviewFix(task, SomeProject(), "task/1-slug", "findings", cycle: 1)
+            .Should().NotContain("Reporting to the human");
+    }
+
+    /// <summary>
+    /// The live-attended build (an operator's own `h9k task work`) is the human's own session —
+    /// there is nobody else for it to report to, so the outbound-milestone section is specific to
+    /// a headless dispatch (<see cref="WorkPromptBuilder.Build"/>'s own <c>isInteractive</c> flag)
+    /// even when the task's interactive-mode flag is on.
+    /// </summary>
+    [Fact]
+    public void Outbound_milestones_are_silent_for_the_humans_own_attended_build_session()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true, requiresSelfRegistration: true);
+
+        prompt.Should().NotContain("Reporting to the human", "the attached operator IS the session; nobody else needs telling");
+    }
+
+    /// <summary>
+    /// The headless build prompt names the small, bounded vocabulary (task: the milestone
+    /// vocabulary is defined once, per role) and degrades honestly when the caller resolved no
+    /// registered human session for this run — the expected case for a run dispatched headless
+    /// from the start (h9k task start), since nobody could have self-registered on a stream that
+    /// did not exist before this dispatch.
+    /// </summary>
+    [Fact]
+    public void Headless_build_prompt_names_its_milestones_and_degrades_honestly_with_no_registered_session()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = AgentPromptBuilder.Build(task, SomeProject(), "task/1-slug", _worktreePath);
+
+        prompt.Should().Contain("## Reporting to the human (interactive mode)");
+        prompt.Should().Contain("claimed");
+        prompt.Should().Contain("gates green");
+        prompt.Should().Contain("report ready");
+        prompt.Should().Contain("at most 3 messages");
+        prompt.Should().Contain("No registered human session is on record for this run right now");
+        prompt.Should().Contain("Log this once for the phase");
+        prompt.Should().NotContain("Address:", "there is nothing resolved to address here");
+    }
+
+    /// <summary>
+    /// Once the caller resolves a registered session (the run's own address, from the slice-7
+    /// registration gate), the build prompt names it as where the milestones go, through the
+    /// cross-session mesh — and still logs an unreachable send rather than dropping it, per the
+    /// outside-interaction rule the section deliberately reuses.
+    /// </summary>
+    [Fact]
+    public void Headless_build_prompt_names_the_resolved_address_when_one_is_registered()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, interactiveMilestoneAddress: "brians-terminal");
+
+        prompt.Should().Contain("Address: `brians-terminal`");
+        prompt.Should().Contain("outside-interaction case");
+        prompt.Should().NotContain("No registered human session is on record");
+    }
+
+    /// <summary>
+    /// The review lenses (conformance and adversarial) get the review-shaped vocabulary — findings
+    /// drafted, then the verdict itself as the report — and the address the review engine resolved
+    /// off the run's own <c>RegisteredInteractiveSessionName</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Review_prompt_teaches_its_own_milestone_vocabulary_when_interactive(string lens)
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = AgentPromptBuilder.BuildReview(
+            task, SomeProject(), "task/1-slug", cycle: 1, lens, interactiveSessionAddress: "brians-terminal");
+
+        prompt.Should().Contain("## Reporting to the human (interactive mode)");
+        prompt.Should().Contain("findings drafted");
+        prompt.Should().Contain("verdict recorded");
+        prompt.Should().Contain("at most 2 messages");
+        prompt.Should().Contain("Address: `brians-terminal`");
+    }
+
+    /// <summary>
+    /// A pr-review task's own lens (<see cref="AgentPromptBuilder.BuildPrReviewLens"/>) parks on
+    /// its own findings-report gate, never slice 8's boundaries (§16 #99) — the outbound-milestone
+    /// section never applies there, whatever the task's interactive-mode flag says, since
+    /// <see cref="AgentPromptBuilder.BuildPrReviewLens"/> never threads either through.
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void Pr_review_lens_never_teaches_outbound_milestones(string lens)
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(task, SomeProject(), "task/1-slug", lens, "main");
+
+        prompt.Should().NotContain("Reporting to the human");
+    }
+
+    /// <summary>
+    /// A fix session has nothing worth reporting until it is done, so its own report is its one
+    /// milestone — the bound is 1, not the review shape's 2.
+    /// </summary>
+    [Fact]
+    public void Fix_prompt_teaches_its_one_milestone_when_interactive()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            task, SomeProject(), "task/1-slug", "findings", cycle: 1, interactiveSessionAddress: "brians-terminal");
+
+        prompt.Should().Contain("## Reporting to the human (interactive mode)");
+        prompt.Should().Contain("report ready");
+        prompt.Should().Contain("at most 1 message");
+        prompt.Should().NotContain("findings drafted", "a fix session drafts nothing of its own to report early");
+        prompt.Should().Contain("Address: `brians-terminal`");
+    }
+
     /// <summary>An adopted task as import leaves it: the reference recorded, the quote composed.</summary>
     private static TaskDetails AdoptedTask()
     {
