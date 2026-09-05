@@ -509,6 +509,39 @@ public sealed class RunAggregate
     public RunState ParkedFromState { get; private set; } = RunState.Unknown;
 
     /// <summary>
+    /// The <see cref="ReviewPhase"/> this run was about to act on when the park interrupted it
+    /// (task: interactive mode becomes a recorded property of the task) — captured the same way
+    /// <see cref="ParkedFromState"/> already is, from <see cref="ReviewPhase"/> immediately before
+    /// <see cref="Apply(Events.ReviewParked)"/> overwrites it. Only meaningful for an interactive
+    /// gate (<see cref="ParkedIsInteractiveGate"/>): a bare <c>h9k review proceed</c> carries no
+    /// verdict of its own, so <see cref="Apply(Events.ReviewBoundaryApproved)"/> resumes the loop
+    /// by restoring exactly this phase rather than deriving a new one the way
+    /// <see cref="Apply(Events.ReviewParkResolved)"/>'s verdict-bearing branches do.
+    /// </summary>
+    public ReviewPhase ParkedFromReviewPhase { get; private set; } = ReviewPhase.None;
+
+    /// <summary>
+    /// Whether the park just recorded is interactive mode's own routine boundary gate rather than
+    /// a disputed finding or a cap/budget park (task: interactive mode becomes a recorded property
+    /// of the task) — mirrors <see cref="Events.ReviewParked.IsInteractiveGate"/>. What
+    /// <c>ReviewProceedCommand</c> checks before accepting a bare <c>h9k review proceed</c>:
+    /// <c>h9k review resolve</c> keeps working unchanged on every park regardless of this flag.
+    /// </summary>
+    public bool ParkedIsInteractiveGate { get; private set; }
+
+    /// <summary>
+    /// True the moment a fresh <c>h9k review proceed</c> (or, on the FixNeeded boundary, an
+    /// <c>h9k review resolve</c>) has cleared THIS run's own interactive-mode gate for whichever
+    /// boundary is next in line, false again the instant the corresponding dispatch actually
+    /// consumes it (<see cref="Apply(Events.ReviewDispatched)"/>,
+    /// <see cref="Apply(Events.ReviewFixDispatched)"/>) — one shot per boundary, so a task with
+    /// <c>InteractiveModeEnabled</c> is asked again at the very next one rather than sailing
+    /// through the rest of the run on a single approval (task: interactive mode becomes a
+    /// recorded property of the task).
+    /// </summary>
+    public bool InteractiveGateCleared { get; private set; }
+
+    /// <summary>
     /// Whether granting <c>--needs-fixes</c> against the park just recorded cannot clear it (a
     /// per-track cap-0 takeover park, a final-full-pass cap-0 park, or the lifetime-budget park)
     /// — mirrors <see cref="Events.ReviewParked.NeedsFixesOffersNoProgress"/> and
@@ -638,6 +671,10 @@ public sealed class RunAggregate
             @event.ProcessId, @event.ProcessStartedAt, @event.Model ?? AgentModel.Unknown, CurrentCycleMode);
         ReviewPhase = ReviewPhase.AwaitingVerdict;
         State = RunState.UnderReview;
+        // The review-dispatch/re-review boundary's own approval is spent the moment the dispatch
+        // it bought actually lands — the very next boundary (review verdict to fix) asks fresh
+        // (task: interactive mode becomes a recorded property of the task).
+        InteractiveGateCleared = false;
     }
 
     public void Apply(ReviewPassCompleted @event)
@@ -793,6 +830,10 @@ public sealed class RunAggregate
         ActiveFixProcessStartedAt = @event.ProcessStartedAt;
         ActiveFixSessionModel = @event.Model ?? AgentModel.Unknown;
         ReviewPhase = ReviewPhase.AwaitingFix;
+        // The review-verdict-to-fix boundary's own approval is spent the moment the fix session
+        // it bought actually dispatches (task: interactive mode becomes a recorded property of
+        // the task).
+        InteractiveGateCleared = false;
         // Always true already except the one path that needs it stated: a fix session
         // dispatched to redispatch over a budget park (backlog 40) left State at BudgetParked,
         // and nothing else in this event's normal firing would move it off that.
@@ -857,11 +898,31 @@ public sealed class RunAggregate
 
     public void Apply(ReviewParked @event)
     {
-        // Captured before the overwrite: State still holds where the park caught the run.
+        // Captured before the overwrite: State (and, for interactive mode's own gate, ReviewPhase)
+        // still hold where the park caught the run.
         ParkedFromState = State;
+        ParkedFromReviewPhase = ReviewPhase;
         ParkedNeedsFixesOffersNoProgress = @event.NeedsFixesOffersNoProgress;
+        ParkedIsInteractiveGate = @event.IsInteractiveGate;
         ReviewPhase = ReviewPhase.Parked;
         State = RunState.ReviewParked;
+    }
+
+    /// <summary>
+    /// The bare-proceed sibling of <see cref="Apply(ReviewParkResolved)"/> (task: interactive mode
+    /// becomes a recorded property of the task): unlike every branch there, this carries no
+    /// verdict to derive a new phase from, so it restores the exact phase and state the park
+    /// interrupted rather than deciding a new one. Never reached except from a park where
+    /// <see cref="ParkedIsInteractiveGate"/> was true — <c>ReviewProceedCommand</c> is what
+    /// enforces that before this event is ever appended.
+    /// </summary>
+    public void Apply(ReviewBoundaryApproved @event)
+    {
+        ReviewPhase = ParkedFromReviewPhase;
+        State = ParkedFromState;
+        InteractiveGateCleared = true;
+        ParkedIsInteractiveGate = false;
+        ParkedNeedsFixesOffersNoProgress = false;
     }
 
     public void Apply(ReviewParkResolved @event)
@@ -914,6 +975,13 @@ public sealed class RunAggregate
         }
 
         ParkedNeedsFixesOffersNoProgress = false;
+        ParkedIsInteractiveGate = false;
+        // A verdict-bearing resolve engages the boundary exactly as a bare proceed would (task:
+        // interactive mode becomes a recorded property of the task) — whichever phase this
+        // resolution landed the loop on, that phase's own next dispatch must not immediately
+        // re-park asking the identical question the human just answered with --merge-ready or
+        // --needs-fixes.
+        InteractiveGateCleared = true;
         State = RunState.UnderReview;
     }
 

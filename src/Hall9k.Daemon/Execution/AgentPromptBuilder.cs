@@ -606,14 +606,15 @@ public static class AgentPromptBuilder
         IReadOnlyList<ReviewParkResolution>? priorRulings = null,
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         ReviewMechanicsOverride? mechanicsOverride = null,
-        string? sinceSha = null) =>
+        string? sinceSha = null,
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null) =>
         lens == ReviewLens.Adversarial
             ? BuildAdversarialReview(
                 task.Id, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
-                priorHumanDirectedInteractions, mechanicsOverride, sinceSha)
+                priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals)
             : BuildConformanceReview(
                 task, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
-                priorHumanDirectedInteractions, mechanicsOverride, sinceSha);
+                priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals);
 
     /// <summary>
     /// A pr-review task's one-shot lens (PrReviewEngine): delegates to <see cref="BuildReview"/>
@@ -716,7 +717,8 @@ public static class AgentPromptBuilder
         TaskDetails task, ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewLens> tracks,
         string priorFindings, string priorFixPosition, string? sinceSha, ReviewMode priorCycleMode,
         string? priorCycleSinceSha, IReadOnlyList<ReviewParkResolution>? priorRulings = null,
-        IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null)
+        IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null)
     {
         bool priorCycleReadFullBranch =
             priorCycleMode != ReviewMode.FinalFullPass || priorCycleSinceSha is null;
@@ -761,7 +763,7 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
-        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions);
+        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals: priorBoundaryApprovals);
         prompt.AppendLine("## The prior cycle's findings");
         prompt.AppendLine();
         if (priorFindings.IsBlank())
@@ -900,7 +902,8 @@ public static class AgentPromptBuilder
         TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewMode mode,
         IReadOnlyList<ReviewParkResolution>? priorRulings,
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
-        ReviewMechanicsOverride? mechanicsOverride = null, string? sinceSha = null)
+        ReviewMechanicsOverride? mechanicsOverride = null, string? sinceSha = null,
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -990,7 +993,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride);
+        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals);
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1067,7 +1070,8 @@ public static class AgentPromptBuilder
         IReadOnlyList<ReviewParkResolution>? priorRulings,
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         ReviewMechanicsOverride? mechanicsOverride = null,
-        string? sinceSha = null)
+        string? sinceSha = null,
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1125,7 +1129,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("Those are where the last incident's defects were, not where the next one will be.");
         prompt.AppendLine("Work through them, then keep going where they do not point.");
         prompt.AppendLine();
-        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride);
+        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals);
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
         prompt.AppendLine("- Read the changed code in its surroundings, not as isolated hunks: a defect is often");
@@ -1209,7 +1213,8 @@ public static class AgentPromptBuilder
     private static void AppendSettledRulings(
         StringBuilder prompt, IReadOnlyList<ReviewParkResolution>? priorRulings,
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
-        ReviewMechanicsOverride? mechanicsOverride = null)
+        ReviewMechanicsOverride? mechanicsOverride = null,
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null)
     {
         if (priorRulings is { Count: > 0 })
         {
@@ -1268,6 +1273,28 @@ public static class AgentPromptBuilder
                 prompt.AppendLine(
                     $"- {loggedAt}, with {PrintedInteractionParty(interaction)}: " +
                     $"{PrintedInteractionSummary(interaction)} (reason given: {PrintedInteractionReason(interaction)})");
+            }
+
+            prompt.AppendLine();
+        }
+
+        // A bare h9k review proceed carries no defect text or redirect (task: interactive mode
+        // becomes a recorded property of the task) — nothing here for you to re-check or avoid
+        // re-raising, unlike the two sections above. This is context only: this task runs under
+        // interactive mode, and a human is actively walking its boundaries.
+        if (priorBoundaryApprovals is { Count: > 0 })
+        {
+            prompt.AppendLine("## Interactive-mode boundaries already approved on this task");
+            prompt.AppendLine();
+            prompt.AppendLine("This task runs under interactive mode: a human reviews every phase boundary");
+            prompt.AppendLine("before the loop advances. The date(s) below are when they proceeded with no");
+            prompt.AppendLine("redirect of their own — nothing for you to check or avoid re-raising, just");
+            prompt.AppendLine("context that a human is actively engaged with this task's own progress:");
+            prompt.AppendLine();
+            foreach (BoundaryApprovalRecord approval in priorBoundaryApprovals.TakeLast(MaxPriorRulings))
+            {
+                string approvedAt = approval.ApprovedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                prompt.AppendLine($"- {approvedAt}: proceeded with no redirect.");
             }
 
             prompt.AppendLine();

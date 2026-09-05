@@ -259,6 +259,21 @@ public sealed class RunDetails
     /// </summary>
     public bool ParkedNeedsFixesOffersNoProgress { get; set; }
     /// <summary>
+    /// Whether the park just recorded in <see cref="ParkedReason"/> is interactive mode's own
+    /// routine boundary gate rather than a disputed finding or a cap/budget park (task: interactive
+    /// mode becomes a recorded property of the task) — mirrors
+    /// <see cref="RunAggregate.ParkedIsInteractiveGate"/> so <c>h9k status</c>'s lever can lead with
+    /// <c>h9k review proceed</c> instead of only <c>h9k review resolve</c>.
+    /// </summary>
+    public bool ParkedIsInteractiveGate { get; set; }
+    /// <summary>
+    /// Every human <c>h9k review proceed</c> this run has ever recorded, oldest first — the
+    /// settled-rulings surface's (#88) third source, alongside <see cref="ReviewParkResolutions"/>
+    /// and <see cref="ExternalInteractions"/> (task: interactive mode becomes a recorded property
+    /// of the task).
+    /// </summary>
+    public List<BoundaryApprovalRecord> BoundaryApprovals { get; set; } = [];
+    /// <summary>
     /// Whether this run handed anything down at true closeout, and when not, why (Decisions Log
     /// #36). Unknown on every run that has not closed out yet, and on streams written before
     /// handoffs existed — those replay as Unknown rather than as a reconstruction.
@@ -547,8 +562,20 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ParkedReason = @event.Data.Reason;
         view.ParkedNeedsFixesOffersNoProgress = @event.Data.NeedsFixesOffersNoProgress;
+        view.ParkedIsInteractiveGate = @event.Data.IsInteractiveGate;
         EndSessions(view);
         view.State = RunState.ReviewParked;
+    }
+
+    public void Apply(IEvent<ReviewBoundaryApproved> @event, RunDetails view)
+    {
+        view.BoundaryApprovals.Add(new BoundaryApprovalRecord(@event.Data.ApprovedAt));
+        view.ParkedReason = null;
+        view.ParkedNeedsFixesOffersNoProgress = false;
+        view.ParkedIsInteractiveGate = false;
+        // The resume sweep re-dispatches; until it does, nothing is running.
+        EndSessions(view);
+        view.State = RunState.UnderReview;
     }
 
     public void Apply(IEvent<ReviewParkResolved> @event, RunDetails view)
@@ -578,6 +605,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
         view.ParkedReason = null;
         view.ParkedNeedsFixesOffersNoProgress = false;
+        view.ParkedIsInteractiveGate = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
         EndSessions(view);
         view.State = RunState.UnderReview;
