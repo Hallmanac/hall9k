@@ -347,6 +347,36 @@ public sealed class ProjectDeciderTests
         changed.ReviewStageCompositionAcknowledged.Should().BeFalse();
     }
 
+    /// <summary>
+    /// The AcceptedBrokenGate idiom mirrors ReviewStageCompositionAcknowledged's own clamp
+    /// (independent pre-PR review, conformance lens, low): a caller cannot write an unobserved
+    /// acceptance to the stream by passing true on a change that carries no VerifyCommands at all.
+    /// </summary>
+    [Fact]
+    public void Change_settings_never_records_an_accepted_broken_gate_when_no_verify_commands_are_carried()
+    {
+        ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            acceptedBrokenGate: true);
+
+        changed.AcceptedBrokenGate.Should().BeFalse(
+            "there is no gate on this change for the acceptance to be about");
+    }
+
+    [Fact]
+    public void Change_settings_records_an_accepted_broken_gate_alongside_the_verify_commands_it_describes()
+    {
+        ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+            Registered(),
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of([new VerifyCommand("test", "dotnet test")]),
+            skipPermissions: Optional<bool>.None, maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            acceptedBrokenGate: true);
+
+        changed.AcceptedBrokenGate.Should().BeTrue();
+    }
+
     private static ProjectAggregate Registered()
     {
         ProjectAggregate project = new();

@@ -93,8 +93,10 @@ public sealed record ProjectSettingsChanged(
     /// Whether this change recorded a <c>--verify</c> gate that fails when run once against a
     /// clean checkout of the base branch anyway (<c>--accept-broken-gate</c>), the same
     /// acknowledged-override idiom <see cref="ReviewStageCompositionAcknowledged"/> already uses —
-    /// clamped to false by the caller on any change that recorded no such gate, so the stream
-    /// never asserts an unobserved acceptance (independent pre-PR review, cycle 1, conformance
-    /// lens: this override used to leave no durable record at all).
+    /// clamped to false by <see cref="Handlers.ProjectDecider.ChangeSettings"/> itself on any
+    /// change that carries no <c>VerifyCommands</c> at all, so the stream never asserts an
+    /// unobserved acceptance regardless of what a caller passes (independent pre-PR review, cycle
+    /// 1, conformance lens: this override used to leave no durable record at all; a later cycle's
+    /// own conformance lens found the clamp itself lived only in the CLI caller, not here).
     /// </summary>
     bool AcceptedBrokenGate = false);
