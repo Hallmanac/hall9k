@@ -1179,6 +1179,107 @@ public sealed class RunAggregateTests
             "the exhausted session never finished, so the human's own instructions must survive for redispatch");
     }
 
+    /// <summary>
+    /// The whole point of the narrower retry (task: a session that reports an error result is
+    /// retried once in place): unlike <see cref="RunBudgetExhausted"/>, which clears every
+    /// in-flight pass because a park may sit for an hour, this is a short in-place backoff, so a
+    /// sibling lens that is still genuinely running must never be disturbed on the other lens's
+    /// account.
+    /// </summary>
+    [Fact]
+    public void Session_error_retried_review_pass_drops_only_that_lens_leaving_its_sibling_in_flight()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Conformance));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5011, Now, Now, Lens: ReviewLens.Adversarial));
+
+        run.Apply(new RunSessionErrorRetried(
+            id, RunSessionLeg.ReviewPass, Cycle: 1, Lens: ReviewLens.Conformance, "boom", Now));
+
+        run.State.Should().Be(
+            RunState.UnderReview, "this is a short in-place retry, not a park — nothing about the run's own state changes");
+        run.ReviewPhase.Should().Be(ReviewPhase.AwaitingVerdict);
+        run.InFlightReviewPasses.Should().ContainSingle(pass => pass.Lens == ReviewLens.Adversarial,
+            "the sibling lens is still genuinely running and must never be terminated on the other lens's account");
+        run.HasRetriedSessionError(RunSessionLeg.ReviewPass, 1, ReviewLens.Conformance).Should().BeTrue();
+        run.HasRetriedSessionError(RunSessionLeg.ReviewPass, 1, ReviewLens.Adversarial).Should().BeFalse(
+            "the sibling never errored, so it never spent a retry of its own");
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 6001, Now, Now, Lens: ReviewLens.Conformance));
+        run.InFlightReviewPasses.Should().HaveCount(2, "the redispatched lens rejoins its still-running sibling");
+    }
+
+    /// <summary>
+    /// The fix-session counterpart of the review-pass test above: the errored fix session drops
+    /// back to FixNeeded, the same redispatch shape <see cref="RunBudgetExhausted"/>'s own
+    /// AwaitingFix clearing already uses — but the run's own <see cref="RunAggregate.State"/>
+    /// stays live throughout, since this is a short backoff rather than a park.
+    /// </summary>
+    [Fact]
+    public void Session_error_retried_fix_session_reopens_fix_needed_without_parking()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 5002, Now, Now));
+
+        run.Apply(new RunSessionErrorRetried(id, RunSessionLeg.Fix, Cycle: 1, Lens: null, "boom", Now));
+
+        run.State.Should().Be(RunState.UnderReview, "a short in-place retry never parks the run");
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded, "the errored fix session redispatches fresh, not resumes");
+        run.ActiveFixSessionId.Should().BeNull();
+        run.HasRetriedSessionError(RunSessionLeg.Fix, 1, null).Should().BeTrue();
+
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), Cycle: 1, ProcessId: 6002, Now, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.AwaitingFix);
+    }
+
+    /// <summary>
+    /// Only a SECOND consecutive error on the identical leg/cycle/lens fails the run (task: a
+    /// session that reports an error result is retried once in place) — the engine reads this
+    /// query, not a state transition, to decide, so the aggregate itself has to keep the key
+    /// space narrow: a different cycle or a different lens is a fresh leg with its own retry.
+    /// </summary>
+    [Fact]
+    public void HasRetriedSessionError_is_scoped_to_the_exact_leg_cycle_and_lens()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        run.Apply(new RunSessionErrorRetried(id, RunSessionLeg.Build, Cycle: null, Lens: null, "boom", Now));
+        run.Apply(new RunSessionErrorRetried(
+            id, RunSessionLeg.ReviewPass, Cycle: 2, Lens: ReviewLens.Adversarial, "boom", Now));
+
+        run.HasRetriedSessionError(RunSessionLeg.Build, null, null).Should().BeTrue();
+        run.HasRetriedSessionError(RunSessionLeg.Fix, null, null).Should().BeFalse("a different leg never spent this one's retry");
+        run.HasRetriedSessionError(RunSessionLeg.ReviewPass, 2, ReviewLens.Adversarial).Should().BeTrue();
+        run.HasRetriedSessionError(RunSessionLeg.ReviewPass, 2, ReviewLens.Conformance).Should().BeFalse(
+            "a different lens in the same cycle is a different leg entirely");
+        run.HasRetriedSessionError(RunSessionLeg.ReviewPass, 3, ReviewLens.Adversarial).Should().BeFalse(
+            "a later cycle's same lens is a fresh leg, not a repeat of this one");
+        run.SessionErrorRetryCount.Should().Be(2);
+    }
+
     [Fact]
     public void Superseded_run_is_terminal_with_the_superseding_generation_recorded()
     {
