@@ -159,6 +159,45 @@ public sealed class DaemonOptions
     public int MaxCloseoutLapsPerObstruction { get; set; } = 2;
 
     /// <summary>
+    /// A pre-approved task's own single mechanical-resolution budget pool (task: a task can be
+    /// published pre-approved, design ruling 6): a merge attempt that GitHub itself refuses for a
+    /// mechanical reason costs one unit here rather than dispatching an agent session, and
+    /// exhausting the pool parks the run with an itemized reason — the same "matching the existing
+    /// pr-resolve retry-budget pattern" shape <see cref="MaxAutomaticCloseoutRuns"/> already gives
+    /// ordinary closeout, on its own counter (<c>TaskAggregate.MechanicalResolutionAttempts</c>)
+    /// since this budget answers a narrower question ("has the machine tried to merge this and
+    /// failed too many times") than that one's ("has this task's pull request spent too many
+    /// automatic follow-up dispatches"). A manual <c>h9k pr resolve</c> resets it alongside the
+    /// ordinary one.
+    /// <para>
+    /// A conflicting base's own mechanical fetch+rebase+push (Decisions Log #131) is deliberately
+    /// left out of this pool: it already dispatches automatically with no agent when it can, is
+    /// already bounded (a repeated failure to clear the SAME conflict already escalates through
+    /// <see cref="MaxAutomaticCloseoutRuns"/>/<see cref="MaxCloseoutLapsPerObstruction"/>, which
+    /// already parks with an itemized reason a manual <c>h9k pr resolve</c> already refills), and
+    /// unlike a merge attempt's own mechanical failure, a genuine content conflict needs an agent's
+    /// judgment to actually resolve — pre-approval changes who merges at the end, never how an
+    /// obstruction like this one is addressed (the acceptance criteria's own framing). This pool
+    /// exists for the one obstruction the existing machinery has no equivalent budget for: the
+    /// merge attempt itself.
+    /// </para>
+    /// </summary>
+    public int MaxMechanicalResolutionAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// How long a pre-approved task's pull request waits for a REQUESTED Copilot review to
+    /// actually arrive before the run parks instead of waiting forever (task: a task can be
+    /// published pre-approved, design ruling 2: "the bounded settle window plus park answers the
+    /// review-that-never-comes anomaly"). Measured from
+    /// <see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.CopilotReviewRequestPendingSince"/>,
+    /// the first sweep that observed the request still pending — not from when the request was
+    /// made, which this node never directly observes. A day is generous next to how quickly
+    /// Copilot ordinarily answers a request, and short next to how long a genuinely stuck request
+    /// would otherwise hold a pre-approved merge hostage with nothing for a human to look at.
+    /// </summary>
+    public TimeSpan CopilotReviewSettleWindow { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>
     /// How often the daemon retries runs parked on token-budget exhaustion (backlog 40).
     /// The subscription window resets on a known-ish clock rather than an event the
     /// platform can watch for, so a patient poll is the whole mechanism — hourly is close
