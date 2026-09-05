@@ -1419,6 +1419,22 @@ public static class AgentPromptBuilder
     /// any other in-scope Medium — so this pass gets the true rule instead: grade honestly
     /// against the anchors, and know that only a High blocks a merge-ready verdict here.
     /// </para>
+    /// <para>
+    /// The Medium anchor no longer absorbs "a doctrine violation that misleads a reader without
+    /// corrupting anything" (Decisions Log #134); that clause moved to Low, and the existing
+    /// "stale reference" case on Low widened alongside it to cover a misleading stale reference
+    /// too, so nothing falls between the two anchors.
+    /// Origin: across the event store's full history, 243 of 279 fix cycles dispatched on
+    /// Discovery and Verify contained no High finding at all, and the in-scope Medium rate per
+    /// Verify pass sat flat at 0.51, 0.47, and 0.50 across cycles 1-2, 3-6, and 7+ — a constant
+    /// arrival rate, not a draining defect pool, which is what an honest severity gate should show
+    /// as cycles climb. The Medium band was doing two jobs at once: a real defect with bounded or
+    /// unlikely impact, which is worth a fix-and-re-review cycle, and a doctrine or prose
+    /// violation, which never stops arriving because prose never converges the way a bug count
+    /// does. Only the first still meets the fix bar on its own; the second rides along with
+    /// whatever cycle is already dispatching, or is recorded as a residual when none is (Decisions
+    /// Log #63's ride-along contract, untouched by this change).
+    /// </para>
     /// </summary>
     private static void AppendFindingContract(
         StringBuilder prompt, ProjectDetails project, ReviewMode mode,
@@ -1440,10 +1456,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine("**severity** — grade against these anchors, not against your own sense of importance:");
         prompt.AppendLine();
         prompt.AppendLine("- `high` — a correctness, security, or data-integrity defect reachable in realistic use.");
-        prompt.AppendLine("- `medium` — a real defect with bounded or unlikely impact, or a doctrine violation");
-        prompt.AppendLine("  that misleads a reader without corrupting anything.");
-        prompt.AppendLine("- `low` — polish: phrasing, comment or doc-string wording, a stale reference that");
-        prompt.AppendLine("  misleads nobody, a style nit.");
+        prompt.AppendLine("- `medium` — a real defect with bounded or unlikely impact.");
+        prompt.AppendLine("- `low` — polish: phrasing, comment or doc-string wording, a doctrine or prose violation");
+        prompt.AppendLine("  that misleads a reader without corrupting anything, a stale reference whether or not");
+        prompt.AppendLine("  it misleads, or a style nit.");
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
