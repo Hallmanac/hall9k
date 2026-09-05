@@ -808,7 +808,17 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         // park is not. view.ParkedIsInteractiveGate (still true here; cleared just below) is what
         // tells the two cycle-0 parks apart, the same discriminator ReviewResolveCommand.cs's own
         // rebase-conflict refusal already uses for the identical collision.
-        if (view.ReviewCycle != 0 || view.ParkedIsInteractiveGate)
+        //
+        // A disputed pre-final-pass rebase conflict (task: a run rebases its branch onto the
+        // current base branch, independent pre-PR review, cycle 2, adversarial lens) is the
+        // identical case for the identical reason, but ReviewCycle alone cannot discriminate it:
+        // this dispute can land at any review cycle, mid-run, not only at cycle 0 the way a
+        // thread dispute always does. view.ParkedOnRebaseRecoveryDispute is still the value this
+        // park's own PreFinalPassRebaseRecoveryCompleted set (the reset below runs after this
+        // check), so it is what the ReviewCycle == 0 check is for thread disputes here — the
+        // human decided the conflict, not a review finding, so it must not ride into a later
+        // review prompt as a settled ruling on the diff either.
+        if ((view.ReviewCycle != 0 || view.ParkedIsInteractiveGate) && !view.ParkedOnRebaseRecoveryDispute)
         {
             view.ReviewParkResolutions.Add(new ReviewParkResolution(
                 view.ReviewCycle, @event.Data.Verdict, @event.Data.Reason, @event.Data.ResolvedAt));
