@@ -247,6 +247,18 @@ public sealed class RunDetails
     /// </summary>
     public const string PullRequestClosedWithoutMerge = "Pull request closed without merge.";
 
+    /// <summary>
+    /// The reason recorded when a build-session error-result retry's own resumed spawn could
+    /// not happen (missing task/project docs, or the resume itself throwing) — named apart from
+    /// the plain <c>"Agent reported an error result."</c> a genuine second consecutive agent
+    /// error still uses, so a reader (<c>h9k task show</c>'s session-error-retries line among
+    /// them) does not have to guess which one happened from indistinguishable text (independent
+    /// pre-PR review, cycle 1, adversarial finding: AGENTS.md's "never guess at unobserved
+    /// facts" applies to a reader inferring an agent's own second failure from a machinery
+    /// failure that never gave the agent a chance to run at all).
+    /// </summary>
+    public const string ErrorResultRetryCouldNotResume = "The error-result retry could not be resumed.";
+
     /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
     public string? ParkedReason { get; set; }
     /// <summary>
@@ -317,6 +329,20 @@ public sealed class RunDetails
     /// than a second, parallel counter that could disagree with it.
     /// </summary>
     public List<SessionErrorRetryRecord> SessionErrorRetries { get; set; } = [];
+
+    /// <summary>
+    /// True from the moment a build-session error-result retry is recorded until its resumed
+    /// spawn actually lands (<see cref="RunResumed"/>) or the run leaves the picture some other
+    /// way. <see cref="RunDetailsProjection.Apply(IEvent{Events.AgentSessionCompleted}, RunDetails)"/>
+    /// moves <see cref="State"/> to <see cref="RunState.Verifying"/> unconditionally the moment
+    /// the errored session's own completion is recorded — before <c>RunSupervisor</c> has even
+    /// decided whether to retry, let alone spawned the resumed process — so for the whole
+    /// backoff wait a retry-in-flight run and a genuinely finished one read identically
+    /// (independent pre-PR review, cycle 1, conformance finding). A daemon restart during that
+    /// window must not read Verifying as "the work is done" the way <c>AdoptOrphansAsync</c>
+    /// ordinarily does; this is what lets it tell the two apart and finish the retry instead.
+    /// </summary>
+    public bool PendingBuildSessionErrorRetry { get; set; }
 }
 
 /// <summary>One retry <see cref="RunDetailsProjection.Apply(IEvent{RunSessionErrorRetried}, RunDetails)"/> recorded on <see cref="RunDetails.SessionErrorRetries"/>.</summary>
@@ -382,6 +408,11 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ProcessId = @event.Data.ProcessId;
         view.ProcessStartedAt = @event.Data.ProcessStartedAt;
+        // The resumed spawn this event records is what a pending build-session error-result
+        // retry was waiting on — whether this resume is that retry's own spawn (the ordinary
+        // case) or a later budget retry that superseded it, either way there is no longer an
+        // unresumed retry for AdoptOrphansAsync to finish.
+        view.PendingBuildSessionErrorRetry = false;
         // The resumed spawn's own recorded name wins when a stream predates RunDispatched's
         // own SessionName field: TokenBudgetRetryEngine computes and spawns under a fallback
         // name in that case, and the live process answers to that name, not to view.SessionName's
@@ -741,9 +772,15 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.State = RunState.BudgetParked;
     }
 
-    public void Apply(IEvent<RunSessionErrorRetried> @event, RunDetails view) =>
+    public void Apply(IEvent<RunSessionErrorRetried> @event, RunDetails view)
+    {
         view.SessionErrorRetries.Add(new SessionErrorRetryRecord(
             @event.Data.Leg, @event.Data.Cycle, @event.Data.Lens, @event.Data.ObservedMessage, @event.Data.RetriedAt));
+        if (@event.Data.Leg == RunSessionLeg.Build)
+        {
+            view.PendingBuildSessionErrorRetry = true;
+        }
+    }
 
     public void Apply(IEvent<RunFailed> @event, RunDetails view)
     {

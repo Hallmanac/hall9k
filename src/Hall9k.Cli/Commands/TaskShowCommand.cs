@@ -502,10 +502,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// Every session-error retry the newest run recorded (task: a session that reports an error
     /// result is retried once in place) — a leg that reported a generic error and was
     /// redispatched fresh after a short backoff rather than failing the run outright. The
-    /// outcome shown is inferred rather than tracked separately: a run that ultimately failed
-    /// with the exact "reported an error result" text is the one case where a retry's leg
-    /// errored a second consecutive time and spent the run's one retry; anything else means at
-    /// least one retried leg went on to complete normally.
+    /// outcome shown is inferred rather than tracked separately, off the run's own
+    /// <see cref="RunDetails.FailureReason"/>: the plain "reported an error result" text is the
+    /// one case where a retry's own resumed leg errored a second consecutive time and spent the
+    /// run's one retry, while <see cref="RunDetails.ErrorResultRetryCouldNotResume"/> names the
+    /// other failure shape apart — the retry's spawn itself never got the chance to run
+    /// (missing docs, or the resume throwing) — rather than reporting it as the same "errored
+    /// twice" outcome the agent never actually produced (independent pre-PR review, cycle 1,
+    /// adversarial finding: AGENTS.md's "never guess at unobserved facts"). Anything else means
+    /// at least one retried leg went on to complete normally.
     /// </summary>
     private static void WriteSessionErrorRetries(RunDetails? run)
     {
@@ -515,12 +520,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         string legs = string.Join(", ", run.SessionErrorRetries.Select(SessionErrorRetryLabel));
-        bool secondConsecutiveErrorFailedTheRun =
-            run.State == RunState.Failed && (run.FailureReason ?? string.Empty).Contains(
-                "reported an error result", StringComparison.OrdinalIgnoreCase);
-        string outcome = secondConsecutiveErrorFailedTheRun
-            ? "[red]a retry still errored a second time — the run failed[/]"
-            : "[green]recovered[/]";
+        string reason = run.FailureReason ?? string.Empty;
+        string outcome = run.State != RunState.Failed
+            ? "[green]recovered[/]"
+            : reason == RunDetails.ErrorResultRetryCouldNotResume
+                ? "[red]the retry itself could not be resumed — the run failed[/]"
+                : reason.Contains("reported an error result", StringComparison.OrdinalIgnoreCase)
+                    ? "[red]a retry still errored a second time — the run failed[/]"
+                    : "[green]recovered[/]";
 
         AnsiConsole.MarkupLine(
             $"\n[bold]Session error retries[/]  {run.SessionErrorRetries.Count} ({legs.EscapeMarkup()}) {outcome}");

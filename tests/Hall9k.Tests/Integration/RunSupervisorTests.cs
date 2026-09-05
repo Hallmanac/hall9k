@@ -438,14 +438,23 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             options: new DaemonOptions { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(1) });
         supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
 
-        RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
-        details.FailureReason.Should().BeNull("the transient error was retried, not failed");
+        // Not WaitForStateAsync(..., "Verifying", ...): AgentSessionCompleted moves the run to
+        // Verifying at the FIRST (errored) session's own completion, before the retry even
+        // spawns — polling for that state alone races the retry and can pass without ever
+        // observing it complete (adversarial pre-PR review, cycle 1). Waiting for the second
+        // AgentSessionCompleted — the resumed session's own — is what actually proves the
+        // retry ran to a clean result, regardless of whatever state the run moves to next.
+        await WaitForEventCountAsync<AgentSessionCompleted>(store, runId, 2, cts.Token);
         resumeExecutor.Spawns.Should().ContainSingle("exactly one retry spawn for the primary session");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         RunSessionErrorRetried retry = events.OfType<RunSessionErrorRetried>().Single();
         retry.Leg.Should().Be(RunSessionLeg.Build);
+        events.OfType<AgentSessionCompleted>().Should().HaveCount(
+            2, "the original errored session and its resumed retry both completed");
+        RunDetails details = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        details.FailureReason.Should().BeNull("the transient error was retried, not failed");
         TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
         task.State.Value.Should().Be("Claimed", "the retried session is still doing the work");
     }
@@ -483,6 +492,95 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         events.OfType<RunSessionErrorRetried>().Should().ContainSingle(
             "only the first error earns a retry; the run fails outright on the second");
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be("Failed");
+    }
+
+    /// <summary>
+    /// AgentSessionCompleted moves the run to Verifying, and the retry decision
+    /// (RunSessionErrorRetried) is durably saved, before the resumed spawn itself ever happens
+    /// (RunSupervisor.RetryBuildSessionAsync's own doc comment) — so a daemon that dies in that
+    /// gap and restarts must not read Verifying as "the work is done" and hand an unresumed
+    /// build to the review loop. AdoptOrphansAsync has to finish the retry itself instead
+    /// (independent pre-PR review, cycle 1, conformance finding).
+    /// </summary>
+    [Fact]
+    public async Task Daemon_restart_mid_backoff_finishes_the_pending_build_session_retry_instead_of_treating_it_as_done()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+
+        // The exact durable commit CompleteRunAsync makes before the backoff wait even starts —
+        // simulating a crash landing right after it, before RetryBuildSessionAsync's own resumed
+        // spawn ever ran.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            session.Events.Append(runId, new RunSessionErrorRetried(
+                runId, RunSessionLeg.Build, Cycle: null, Lens: null, "Internal server error", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedResumeExecutor resumeExecutor = new(ResultLine);
+        RunSupervisor restarted = NewSupervisor(store, node, executor: resumeExecutor);
+        OrphanAdoption adoption = await restarted.AdoptOrphansAsync(cts.Token);
+
+        resumeExecutor.Spawns.Should().ContainSingle(
+            "the crash-stranded retry must be finished on restart, not silently dropped as already done");
+        adoption.RunsAdopted.Should().BeGreaterThanOrEqualTo(1);
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunResumed>().Should().ContainSingle("the pending retry's own resumed spawn landed on restart");
+        RunDetails details = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        details.PendingBuildSessionErrorRetry.Should().BeFalse("the resumed session actually spawned");
+    }
+
+    /// <summary>
+    /// If the claim moved on during the backoff (an abandon, a lease-expiry requeue-and-reclaim,
+    /// or any other release) there is nothing left here to resume — the same guard
+    /// TokenBudgetRetryEngine.RetryOneAsync already applies before its own resume spawn. The run
+    /// must be retired with RunSuperseded rather than left live at Verifying with no monitor
+    /// (which would pin a NodeLoad slot forever) or failed with a reason implying the agent
+    /// erred twice when it never got the chance to run again at all.
+    /// </summary>
+    [Fact]
+    public async Task A_claim_that_moved_on_during_the_backoff_retires_the_run_instead_of_resuming_or_failing_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            session.Events.Append(runId, new RunSessionErrorRetried(
+                runId, RunSessionLeg.Build, Cycle: null, Lens: null, "Internal server error", Now));
+            await session.SaveChangesAsync(cts.Token);
+
+            // The claim moved on before the retry's own resumed spawn ran: a second generation
+            // reclaimed the task under a different run.
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var reclaimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now);
+            session.Events.Append(taskId, requeued, reclaimed);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedResumeExecutor resumeExecutor = new(ResultLine);
+        RunSupervisor restarted = NewSupervisor(store, node, executor: resumeExecutor);
+        await restarted.AdoptOrphansAsync(cts.Token);
+
+        resumeExecutor.Spawns.Should().BeEmpty("the claim moved on; there is nothing left here to resume");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails details = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        details.State.Value.Should().Be("Superseded", "retired explicitly rather than left live or reported as a second agent error");
+        details.FailureReason.Should().BeNull("a superseded run was never actually failed");
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Value.Should().Be("Claimed", "the live generation's own claim is untouched");
+        task2.LeaseGeneration.Should().Be(2);
     }
 
     /// <summary>
@@ -836,6 +934,32 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         throw new TimeoutException(
             $"Run {runId} never reached state {state}; it is {reached?.State.Value ?? "(no projection)"} "
             + $"(failure: {reached?.FailureReason ?? "none"}, park: {reached?.ParkedReason ?? "none"}).");
+    }
+
+    /// <summary>
+    /// Polls the run's own stream, rather than its projected state, for at least
+    /// <paramref name="count"/> events of type <typeparamref name="T"/> — a stable wait for a
+    /// milestone that may not correspond to any single stable state (a resumed session's own
+    /// completion, for instance, immediately hands off into whatever the pipeline does next).
+    /// </summary>
+    private static async Task WaitForEventCountAsync<T>(
+        DocumentStore store, Guid runId, int count, CancellationToken cancellationToken)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await using IQuerySession query = store.QuerySession();
+            int actual = (await query.Events.FetchStreamAsync(runId, token: cancellationToken))
+                .Count(e => e.Data is T);
+            if (actual >= count)
+            {
+                return;
+            }
+
+            await Task.Delay(250, cancellationToken);
+        }
+
+        throw new TimeoutException($"Run {runId} never recorded {count} {typeof(T).Name} event(s).");
     }
 
     private static RunSupervisor NewSupervisor(
