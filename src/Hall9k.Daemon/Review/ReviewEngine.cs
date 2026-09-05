@@ -601,7 +601,27 @@ public sealed class ReviewEngine(
                                 : reverifyMode == ReviewMode.Discovery
                                     ? "no review pass has run on this branch yet"
                                     : "no prior cycle head to scope the fix's commits against");
-                    if (!await verification.VerifyAsync(
+                    // Idempotent resume (task: interactive mode becomes a recorded property of the
+                    // task): a run parked at this boundary's own interactive gate below re-enters
+                    // this case from the top on `h9k review proceed`, with nothing having moved the
+                    // worktree meanwhile — reverifyMode and reverifyScopeSinceSha above are pure
+                    // functions of run.ReviewCycle, run.ActiveReviewLenses and run.CycleHeadSha, none
+                    // of which change between the gate's first run and this resume, so re-entering
+                    // unguarded would gate the identical commits a second time, record a duplicate
+                    // VerificationPassed, and risk a flaky second run failing the task after the
+                    // human already approved the boundary (independent pre-PR review, cycle 1,
+                    // adversarial lens). Mirrors the Settling branch's own
+                    // gateAlreadyRanFullOverCurrentHead guard, using head equality alone rather than
+                    // its fingerprint/full-scope logic: this gate can legitimately be scoped, and the
+                    // only way Reverify is ever entered with a head that already matches this run's
+                    // own last recorded gate is exactly this resume — a genuine fix session or fresh
+                    // follow-up either has no VerificationPassed on this run's own stream yet, or one
+                    // recorded against an earlier head that a real commit has since moved past.
+                    string? reverifyCurrentHeadSha =
+                        await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
+                    bool reverifyGateAlreadyRan =
+                        run.LastGateHeadSha is not null && run.LastGateHeadSha == reverifyCurrentHeadSha;
+                    if (!reverifyGateAlreadyRan && !await verification.VerifyAsync(
                         context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, cancellationToken))
                     {
                         // VerificationRunner already failed the run and task honestly.
