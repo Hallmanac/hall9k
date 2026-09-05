@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text;
+using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project;
@@ -85,8 +87,27 @@ public sealed class ReviewEngine(
     IProcessManager processManager,
     VerificationRunner verification,
     IOptions<DaemonOptions> options,
-    ILogger<ReviewEngine> logger)
+    ILogger<ReviewEngine> logger,
+    IWorktreeManager worktrees)
 {
+    /// <summary>
+    /// How long a single git call in the pre-final-pass rebase check gets (task: a run rebases
+    /// its branch onto the current base branch) — mirrors <c>CloseoutEngine.GitDeadline</c>,
+    /// sized for the same reason: a fetch, unlike the short metadata reads
+    /// <see cref="ExternalProcess.Deadline"/> is scoped for, can transfer real data.
+    /// </summary>
+    private static readonly TimeSpan GitDeadline = TimeSpan.FromMinutes(10);
+
+    private enum RebaseGateOutcome
+    {
+        /// <summary>No-op, or a git rebase that applied cleanly (or a fetch/read that could not be completed) — proceed to the mandatory gate in this same iteration.</summary>
+        Proceed,
+        /// <summary>A conflict was found and a recovery session dispatched — stop this iteration and let the loop re-enter fresh.</summary>
+        LoopAgain,
+        /// <summary>The run was parked or failed.</summary>
+        Stop,
+    }
+
     /// <summary>
     /// The artifact name a pass with no lens recorded files its findings under. It is an
     /// honest label rather than <c>conformance</c>: the pass covers the conformance track
@@ -294,6 +315,34 @@ public sealed class ReviewEngine(
                     bool lastGateHasComparableFullScope = run.LastGateRanFullScope && run.LastGateHeadSha is not null;
                     bool verifyCommandsFingerprintChanged = lastGateHasComparableFullScope
                         && !await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
+
+                    // Immediately before the mandatory final gate that "nothing merges on scoped
+                    // green alone" is about to run (task: a run rebases its branch onto the
+                    // current base branch): every HEAD-independent signal that this iteration is
+                    // headed there is already known at this point (none of the three depend on a
+                    // live git read), so the rebase lands here — before gateAlreadyRanFullOverCurrentHead's
+                    // own HEAD comparison below, which must read whatever this step leaves in the
+                    // worktree, not a pre-rebase snapshot. The ordinary "nothing owed" settle path
+                    // (none of these three ever true) never reaches this check at all: there is no
+                    // mandatory final gate coming for it to land before (see EnsureRebasedBeforeFinalPassAsync's own doc).
+                    bool settlingRebaseLoopAgain = false;
+                    if (needsFullGateBeforeSettling || verifyCommandsFingerprintChanged || run.HumanEndedTheLoop)
+                    {
+                        switch (await EnsureRebasedBeforeFinalPassAsync(context, run, cancellationToken))
+                        {
+                            case RebaseGateOutcome.Stop:
+                                return false;
+                            case RebaseGateOutcome.LoopAgain:
+                                settlingRebaseLoopAgain = true;
+                                break;
+                        }
+                    }
+
+                    if (settlingRebaseLoopAgain)
+                    {
+                        break;
+                    }
+
                     // A fingerprint mismatch already answers the "already ran full over this
                     // head" question on its own (GateAlreadyRanFullOverCurrentHeadAsync's own doc:
                     // a mismatch falls through to false before ever reaching its HEAD comparison),
@@ -558,6 +607,29 @@ public sealed class ReviewEngine(
                         cancellationToken: cancellationToken);
                     return false;
 
+                case ReviewPhase.AwaitingRebaseRecovery:
+                    if (!await AwaitRebaseRecoverySessionAsync(context, run, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    break;
+
+                case ReviewPhase.RebaseRecoveryDisputed:
+                    await ParkAsync(
+                        context.RunId, context.TaskId, RebaseRecoveryDisputedParkReason(run),
+                        cancellationToken: cancellationToken);
+                    return false;
+
+                case ReviewPhase.RebaseRecoveryNeeded:
+                    if (!await DispatchRebaseRecoverySessionAsync(
+                        context, run, run.PendingRebaseRecoveryGuidance, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    break;
+
                 case ReviewPhase.Reverify:
                     // Whichever tracks are still owed a look get one merged Verify pass (task:
                     // review cycles after the first) — unless nothing is left, in which case this
@@ -575,6 +647,29 @@ public sealed class ReviewEngine(
                     ReviewMode reverifyMode = run.ReviewCycle == 0
                         ? ReviewMode.Discovery
                         : run.ActiveReviewLenses.Count == 0 ? ReviewMode.FinalFullPass : ReviewMode.Verify;
+
+                    // The Reverify branch's own mirror of the Settling branch's identical rebase
+                    // step (task: a run rebases its branch onto the current base branch): reached
+                    // only when this fix's next stop really is the mandatory final pass — an
+                    // ordinary Verify or Discovery reverify is a scoped, intermediate gate, not the
+                    // point base staleness is being guarded against here.
+                    if (reverifyMode == ReviewMode.FinalFullPass)
+                    {
+                        bool reverifyRebaseLoopAgain = false;
+                        switch (await EnsureRebasedBeforeFinalPassAsync(context, run, cancellationToken))
+                        {
+                            case RebaseGateOutcome.Stop:
+                                return false;
+                            case RebaseGateOutcome.LoopAgain:
+                                reverifyRebaseLoopAgain = true;
+                                break;
+                        }
+
+                        if (reverifyRebaseLoopAgain)
+                        {
+                            break;
+                        }
+                    }
 
                     // Only a fix whose next stop is an ordinary Verify cycle scopes its own gate
                     // pass: a Verify cycle can never settle or reach FinalFullPass without another
@@ -1516,6 +1611,371 @@ public sealed class ReviewEngine(
 
         return true;
     }
+
+    /// <summary>
+    /// Immediately before the mandatory final full pass (task: a run rebases its branch onto the
+    /// current base branch — the "nothing merges on scoped green alone" point both call sites
+    /// share): fetches the project's base branch and, if it moved past what this branch already
+    /// contains, rebases onto it right here, in the run's own worktree, so the mandatory gate and
+    /// pass that are about to run read the rebased tree rather than a tip that will conflict the
+    /// moment it is pushed. The 2026-08-22 origin incident — a clean-looking rebase that broke the
+    /// build — is why this lands before the gate and not between the gate and the push: whatever
+    /// runs next has to see what this step actually produced.
+    /// <para>
+    /// A no-op (origin's base had not moved past this branch's own merge base) and a clean git
+    /// apply are recorded and returned as <see cref="RebaseGateOutcome.Proceed"/> — the caller
+    /// continues in this same iteration, over the (possibly rebased) worktree, with no extra
+    /// Discovery cycle, lens, or fix session earned by the rebase itself (Brian's 2026-09-04
+    /// ruling: git applying every commit without a conflict is itself the evidence that no
+    /// judgment was exercised). A conflict is never left for the caller to discover: the worktree
+    /// is restored to its pre-attempt tip and a narrow recovery session is dispatched right here,
+    /// inside this same run — <see cref="RebaseGateOutcome.LoopAgain"/> tells the caller to stop
+    /// this iteration so <c>DriveAsync</c>'s own loop re-enters fresh at
+    /// <see cref="ReviewPhase.AwaitingRebaseRecovery"/>.
+    /// </para>
+    /// <para>
+    /// A fetch or read failure is logged and treated as <see cref="RebaseGateOutcome.Proceed"/>
+    /// rather than failing or parking the run: a transient network blip is not this run's fault,
+    /// and the ordinary post-push closeout mechanical rebase (<see cref="Events.PullRequestMechanicalRebaseAttempted"/>)
+    /// still covers whatever residual staleness this step could not observe.
+    /// </para>
+    /// </summary>
+    private async Task<RebaseGateOutcome> EnsureRebasedBeforeFinalPassAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+        {
+            return RebaseGateOutcome.Stop;
+        }
+
+        string worktreePath = context.Run.WorktreePath;
+        string baseBranch = context.Project.BaseBranch;
+        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+
+        // The fetch, merge-base read and rebase are taken under the same repository lock every
+        // worktree-add/fetch operation on this repository already serializes behind (Decisions
+        // Log #4) — the identical convention CloseoutEngine's own mechanical rebase and
+        // VerificationRunner's clean-base comparison already follow for a `git fetch` touching
+        // this project's shared bare repository. Scoped to this block, not the whole method: the
+        // conflict branch below calls DispatchRebaseRecoverySessionAsync, which acquires the
+        // identical lock for its own brief fetch — the in-process semaphore behind it is not
+        // reentrant, so this lock must already be released by the time that call is made.
+        await using (IAsyncDisposable repositoryLock =
+            await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
+        {
+            // The lock's own wait is unbounded, so the generation this attempt was handed can go
+            // stale while it merely waits its turn — re-checked immediately after the lock is
+            // acquired and before anything in the worktree is touched (the same shape
+            // CloseoutEngine.TryMechanicalRebaseAsync's own fence re-check documents).
+            if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+            {
+                return RebaseGateOutcome.Stop;
+            }
+
+            try
+            {
+                ProcessResult fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+                if (fetch.ExitCode != 0)
+                {
+                    logger.LogWarning(
+                        "Run {RunId}: could not fetch origin/{Base} before the mandatory final pass ({Error}) — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
+                        context.RunId, baseBranch, FirstLine(fetch.StandardError));
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                ProcessResult originTipResult = await git("git", ["rev-parse", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+                ProcessResult mergeBaseResult = await git(
+                    "git", ["merge-base", "HEAD", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+                if (originTipResult.ExitCode != 0 || mergeBaseResult.ExitCode != 0)
+                {
+                    logger.LogWarning(
+                        "Run {RunId}: could not read origin/{Base} or its merge-base before the mandatory final pass — proceeding unrebased",
+                        context.RunId, baseBranch);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                string originTip = originTipResult.StandardOutput.Trim();
+                string mergeBase = mergeBaseResult.StandardOutput.Trim();
+                if (mergeBase == originTip)
+                {
+                    // origin/<base> has not moved past what this branch already contains (task:
+                    // the no-op guarantee) — nothing to rebase, and nothing recorded beyond the
+                    // fact that this was checked.
+                    await RecordRebaseOutcomeAsync(
+                        context.RunId, mergeBase, originTip, wasNoOp: true, recoveredByAgentSession: false,
+                        $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
+                        cancellationToken);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                ProcessResult rebase = await git("git", ["rebase", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+                if (rebase.ExitCode == 0)
+                {
+                    await RecordRebaseOutcomeAsync(
+                        context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
+                        $"Rebased cleanly onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}).",
+                        cancellationToken);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                // Conflict: abort back to the pre-attempt tip rather than leaving the mandatory
+                // gate and pass to trip over a worktree mid-rebase, then fall out of this lock
+                // scope to dispatch the recovery session below (Brian's 2026-09-04 ruling on
+                // scope: git conflicting is itself evidence that judgment IS required, unlike the
+                // clean-apply case above).
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, cancellationToken);
+            }
+            catch (TimeoutException exception)
+            {
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, cancellationToken);
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: a git call exceeded its deadline checking origin/{Base} before the mandatory final pass — proceeding unrebased",
+                    context.RunId, baseBranch);
+                return RebaseGateOutcome.Proceed;
+            }
+        }
+
+        // Reached only on a conflict: every other path above returns from inside the lock scope.
+        return await DispatchRebaseRecoverySessionAsync(context, run, humanGuidance: null, cancellationToken)
+            ? RebaseGateOutcome.LoopAgain
+            : RebaseGateOutcome.Stop;
+    }
+
+    private async Task RecordRebaseOutcomeAsync(
+        Guid runId, string rebasedFromCommit, string rebasedOntoCommit, bool wasNoOp, bool recoveredByAgentSession,
+        string detail, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new RunRebasedOntoBase(
+            runId, rebasedFromCommit, rebasedOntoCommit, wasNoOp, recoveredByAgentSession, detail,
+            DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation("Run {RunId}: pre-final-pass rebase — {Detail}", runId, detail);
+    }
+
+    /// <summary>
+    /// Restores the worktree to its own branch tip after a plain rebase attempt conflicted
+    /// (`git rebase --abort`, harmless when no rebase is in progress) — simpler than
+    /// <c>CloseoutEngine.RestoreWorktreeBestEffortAsync</c>'s own version because nothing here
+    /// ever pushes: there is no "the rebase completed but the push failed" case to also hard-reset
+    /// for, since <see cref="EnsureRebasedBeforeFinalPassAsync"/> never reaches a push at all.
+    /// </summary>
+    private async Task RestoreRebaseWorktreeBestEffortAsync(
+        ProcessRunner git, string worktreePath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await git("git", ["rebase", "--abort"], worktreePath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Pre-final-pass rebase recovery failed to abort the in-progress rebase at {Path}", worktreePath);
+        }
+    }
+
+    /// <summary>
+    /// Spawns the narrow rebase-recovery session (task: a run rebases its branch onto the current
+    /// base branch) — the rebase-onto-main skill's own mechanics, dispatched inside this run
+    /// rather than through a task reopen, so it neither fails the run nor reopens the task. Redoes
+    /// its own fetch and merge-base read rather than trusting values a caller computed earlier:
+    /// the first call (from <see cref="EnsureRebasedBeforeFinalPassAsync"/>) is only moments
+    /// removed from its own fetch, but a retry dispatched from
+    /// <see cref="ReviewPhase.RebaseRecoveryNeeded"/> follows a human park that could have sat for
+    /// hours, and the agent's own prompt has it fetch fresh besides — recomputing here is what
+    /// keeps the recorded "from/onto" pair honest for either caller instead of a hard-coded
+    /// assumption about who already fetched.
+    /// </summary>
+    private async Task<bool> DispatchRebaseRecoverySessionAsync(
+        ReviewContext context, RunAggregate run, string? humanGuidance, CancellationToken cancellationToken)
+    {
+        string worktreePath = context.Run.WorktreePath;
+        string baseBranch = context.Project.BaseBranch;
+        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        string rebasedFromCommit = "unknown";
+        string rebasedOntoCommit = "unknown";
+        try
+        {
+            // The same repository lock every fetch touching this project's shared bare
+            // repository already serializes behind (see EnsureRebasedBeforeFinalPassAsync's own
+            // comment) — a caller reached this dispatch from either that method's own conflict
+            // branch (whose lock is already released by the time it calls here) or a fresh
+            // ReviewPhase.RebaseRecoveryNeeded retry with no ambient lock at all, so this fetch
+            // always needs to take its own.
+            await using IAsyncDisposable repositoryLock =
+                await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken);
+            await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+            ProcessResult mergeBaseResult = await git(
+                "git", ["merge-base", "HEAD", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+            ProcessResult originTipResult = await git("git", ["rev-parse", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+            if (mergeBaseResult.ExitCode == 0)
+            {
+                rebasedFromCommit = mergeBaseResult.StandardOutput.Trim();
+            }
+
+            if (originTipResult.ExitCode == 0)
+            {
+                rebasedOntoCommit = originTipResult.StandardOutput.Trim();
+            }
+        }
+        catch (Exception exception) when (exception is TimeoutException or InvalidOperationException)
+        {
+            // Best-effort only: these two values are recorded for the human/audit trail, never
+            // read back to drive behavior — the dispatched session redoes its own fetch and
+            // rebase regardless of what this read observed.
+            logger.LogWarning(exception, "Run {RunId}: could not read origin/{Base}'s tip before dispatching the rebase-recovery session", context.RunId, baseBranch);
+        }
+
+        if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+        {
+            return false;
+        }
+
+        Guid sessionId = DomainId.New();
+        CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
+        string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
+            context.Task, context.Project, context.Run.Branch, commitStyle, humanGuidance);
+        ExecutorMode mode = context.Run.ExecutorMode;
+        AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
+        string artifactName = RebaseRecoveryArtifactName(sessionId);
+        string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), artifactName);
+        SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
+            context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
+            context.Project.SkipPermissions, artifactName)
+        {
+            SessionName = sessionName,
+        }, cancellationToken);
+
+        DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(context.RunId, new PreFinalPassRebaseRecoveryDispatched(
+            context.RunId, sessionId, agent.ProcessId, agent.StartedAt, dispatchedAt, model,
+            rebasedFromCommit, rebasedOntoCommit, sessionName));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: pre-final-pass rebase conflicted — narrow recovery session dispatched (session {SessionId}, pid {ProcessId}, model {Model})",
+            context.RunId, sessionId, agent.ProcessId, model.Value);
+        return true;
+    }
+
+    private async Task<bool> AwaitRebaseRecoverySessionAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        if (run.ActiveRebaseRecoverySessionId is not { } sessionId
+            || run.ActiveRebaseRecoveryProcessId is not { } processId
+            || run.ActiveRebaseRecoveryProcessStartedAt is not { } processStartedAt)
+        {
+            await FailAsync(context.RunId, context.TaskId,
+                "Run stream records an in-flight pre-final-pass rebase-recovery session without its identity.",
+                cancellationToken);
+            return false;
+        }
+
+        string streamFile = RunPaths.SessionStreamFile(CurrentRunDirectory(run), RebaseRecoveryArtifactName(sessionId));
+        AgentResult? result = await WaitForSessionResultAsync(
+            context.RunId, streamFile, processId, processStartedAt, cancellationToken);
+        if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
+        {
+            await ParkForBudgetAsync(context.RunId, "the pre-final-pass rebase-recovery session", summary, cancellationToken);
+            return false;
+        }
+
+        if (result is { IsError: true })
+        {
+            string errorSummary = result.Summary ?? "(no message)";
+            if (run.HasRetriedSessionError(RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null))
+            {
+                await FailAsync(context.RunId, context.TaskId,
+                    "The pre-final-pass rebase-recovery session reported an error result.", cancellationToken);
+                return false;
+            }
+
+            return await RetrySessionErrorAsync(
+                context.RunId, RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null,
+                "the pre-final-pass rebase-recovery session", errorSummary, result, run.ActiveRebaseRecoveryModel,
+                cancellationToken);
+        }
+
+        if (result is null)
+        {
+            await FailAsync(context.RunId, context.TaskId,
+                "The pre-final-pass rebase-recovery session died without a result.", cancellationToken);
+            return false;
+        }
+
+        await RecordRebaseRecoveryResultAsync(
+            context.RunId, CurrentRunDirectory(run), result, run.ActiveRebaseRecoveryModel,
+            run.ActiveRebaseRecoveryFromCommit ?? "unknown", run.ActiveRebaseRecoveryOntoCommit ?? "unknown",
+            cancellationToken);
+        return true;
+    }
+
+    private async Task RecordRebaseRecoveryResultAsync(
+        Guid runId, string runDirectory, AgentResult result, AgentModel model, string rebasedFromCommit,
+        string rebasedOntoCommit, CancellationToken cancellationToken)
+    {
+        string summary = result.Summary ?? string.Empty;
+        ReviewFixOutcome outcome = ReviewResultParser.ParseFixOutcome(summary);
+        if (outcome == ReviewFixOutcome.Disputed)
+        {
+            string disputeFile = RunPaths.PreFinalPassRebaseDisputeFile(runDirectory);
+            Exception? failure = await RunPaths.AppendDisputePositionAsync(disputeFile, summary, cancellationToken);
+            if (failure is not null)
+            {
+                logger.LogWarning(failure, "Could not write the pre-final-pass rebase dispute position to {FilePath}", disputeFile);
+            }
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
+        session.Events.Append(runId, new PreFinalPassRebaseRecoveryCompleted(runId, outcome, now));
+        if (outcome != ReviewFixOutcome.Disputed)
+        {
+            // Fixed (and Unknown — no resolution declared, treated the same optimistic way an
+            // ordinary fix session's own undeclared outcome is) records the resolution as a
+            // completed rebase, the same event a clean git-only apply appends, so h9k task show
+            // renders one consistent outcome regardless of which path resolved it.
+            session.Events.Append(runId, new RunRebasedOntoBase(
+                runId, rebasedFromCommit, rebasedOntoCommit, WasNoOp: false, RecoveredByAgentSession: true,
+                $"Resolved by a narrow recovery session (rebase-onto-main skill), from {ShortSha(rebasedFromCommit)} to {ShortSha(rebasedOntoCommit)}.",
+                now));
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: pre-final-pass rebase-recovery session completed — outcome {Outcome} ({Input}in/{Output}out tokens)",
+            runId, outcome == ReviewFixOutcome.Unknown ? "(undeclared)" : outcome.Value, result.TotalInputTokens, result.OutputTokens);
+    }
+
+    /// <summary>
+    /// The park message for a disputed pre-final-pass rebase-recovery session (task: a run
+    /// rebases its branch onto the current base branch) — deliberately its own message rather
+    /// than <see cref="DisputedParkReason"/> reused: that one is keyed to
+    /// <see cref="RunAggregate.ReviewCycle"/> == 0 meaning "a post-PR follow-up's own pre-gate
+    /// dispute," which this is not — this dispute can land at any review cycle, mid-run, with no
+    /// pull request open yet, and reusing that text would point a human at the wrong files and
+    /// the wrong resolve semantics.
+    /// </summary>
+    private static string RebaseRecoveryDisputedParkReason(RunAggregate run)
+    {
+        string runDirectory = ParkedRunDirectory(run);
+        return "The mandatory final pass's own pre-flight rebase conflicted, and the recovery " +
+            "session could not honestly resolve it — both sides change the same behavior, not " +
+            $"just the same lines. Its position: {RunPaths.PreFinalPassRebaseDisputeFile(runDirectory)}. " +
+            "Decide the conflict yourself, then resolve with h9k review resolve --needs-fixes " +
+            "\"<your resolution>\" — nothing has been pushed. (--merge-ready is refused here: " +
+            "nothing has been rebased yet.)";
+    }
+
+    private static string RebaseRecoveryArtifactName(Guid sessionId) => SessionRoleName.PreFinalPassRebase(Short(sessionId));
+
+    private static string ShortSha(string sha) => sha.Length > 10 ? sha[..10] : sha;
+
+    private static string FirstLine(string text) =>
+        text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) is [string first, ..]
+            ? first
+            : text.Trim();
 
     /// <summary>
     /// The park message for a disputed fix session. A pre-gate dispute resume that disputes

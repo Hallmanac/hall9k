@@ -445,6 +445,102 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// A narrow, mid-run recovery session (task: a run rebases its branch onto the current base
+    /// branch): dispatched inside the build run's own lifecycle — no follow-up, no task reopen,
+    /// no pull request yet — after a plain <c>git rebase</c> onto the base branch conflicted
+    /// immediately before the mandatory final full pass. Brian's 2026-09-04 ruling on scope: git
+    /// conflicting is itself evidence that judgment is required, unlike the clean-apply case this
+    /// session exists precisely because git could NOT resolve on its own. Deliberately not
+    /// <see cref="BuildRebase"/> reused as-is: that prompt is written for a follow-up over an
+    /// EXISTING pull request ("the original task already shipped..."), and nothing here has
+    /// shipped or opened yet.
+    /// </summary>
+    public static string BuildPreFinalPassRebase(
+        TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
+        string? humanResolution = null)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Rebase this branch onto its base before the mandatory final review pass");
+        prompt.AppendLine();
+        prompt.AppendLine("This run's own work is not done yet — no pull request has opened, and nothing has");
+        prompt.AppendLine($"been pushed. But other work merged into `{project.BaseBranch}` while this run was");
+        prompt.AppendLine("building, and a plain rebase onto it just conflicted. Your job is to bring this");
+        prompt.AppendLine("branch current before the platform's own mandatory final review pass and gates run,");
+        prompt.AppendLine("preserving the branch's own authored history — not to redo the original work.");
+        prompt.AppendLine();
+
+        if (humanResolution.IsNotBlank())
+        {
+            prompt.AppendLine("## The human's decision on the disputed conflict");
+            prompt.AppendLine();
+            prompt.AppendLine("A previous attempt at this rebase hit a conflict it could not honestly resolve");
+            prompt.AppendLine("and parked for a human. Apply their decision below instead of re-litigating it;");
+            prompt.AppendLine("only raise a new dispute if you hit a DIFFERENT conflict that is genuinely");
+            prompt.AppendLine("undecidable.");
+            prompt.AppendLine();
+            prompt.AppendLine(humanResolution);
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## Original objective (context, already implemented)");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+
+        if (project.ContextLinks.Count > 0)
+        {
+            prompt.AppendLine("## Project links (fetch yourself as needed)");
+            prompt.AppendLine();
+            foreach (var link in project.ContextLinks)
+            {
+                prompt.AppendLine($"- {link.Name}: {link.Url}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        AppendProjectHome(prompt, project);
+
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        prompt.AppendLine("- You are in this run's own git worktree, checked out on its own in-progress");
+        prompt.AppendLine($"  branch `{branch}` — not yet pushed anywhere. Work only here.");
+        AppendRetainedWorktreeNote(prompt);
+        prompt.AppendLine("- The worktree is already back at this branch's own tip (an earlier plain rebase");
+        prompt.AppendLine("  attempt that conflicted was aborted before you were spawned) — there is no rebase");
+        prompt.AppendLine("  already in progress here. If the repo ships a rebase-onto-main skill (or an");
+        prompt.AppendLine("  absorb-review-fixes skill that covers rebasing), invoke it — it walks these exact");
+        prompt.AppendLine("  mechanics. Either way:");
+        prompt.AppendLine($"  - `git fetch origin` first — rebasing onto a stale `origin/{project.BaseBranch}`");
+        prompt.AppendLine("    can leave the branch still conflicting after the rebase reports success.");
+        prompt.AppendLine($"  - `git rebase origin/{project.BaseBranch}`, resolving each conflict by reading");
+        prompt.AppendLine("    both sides' intent, not by mechanically picking one. Keep both changes when both");
+        prompt.AppendLine("    are still wanted, take the side that is still correct when one supersedes the");
+        prompt.AppendLine("    other, and never guess when you cannot honestly tell which — see the dispute");
+        prompt.AppendLine("    path below.");
+        prompt.AppendLine("  - The rebase replays this branch's own commits onto the new base; it must keep");
+        prompt.AppendLine("    doing exactly that. Do not squash it into one commit and do not invent new");
+        prompt.AppendLine("    \"merge conflict\" or \"resolve rebase\" commits — a resolved conflict's content");
+        prompt.AppendLine("    belongs inside the commit being replayed when it lands (`git add` then");
+        prompt.AppendLine("    `git rebase --continue`).");
+        prompt.AppendLine("  - **Never leave a conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) in a commit.**");
+        prompt.AppendLine("    Before continuing past any conflicted commit, grep the resolved files for those");
+        prompt.AppendLine("    markers and confirm none remain.");
+        AppendRebaseVerificationRule(prompt, project, commitStyle);
+        prompt.AppendLine("  - Do NOT push, and do NOT open a pull request — the platform's own mandatory");
+        prompt.AppendLine("    final gate and review pass run over the tree you leave behind, and the daemon");
+        prompt.AppendLine("    pushes and opens the pull request itself once everything is green.");
+        AppendRebaseDisputeRules(prompt);
+        AppendSessionEndsAtFinalMessageRule(prompt);
+        AppendExternalInteractionLoggingRule(prompt, task.Id);
+        prompt.AppendLine("- End with a short summary: what conflicted, how you resolved each conflict and");
+        prompt.AppendLine("  why, and the verification results.");
+        AppendHandoffRules(prompt);
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
     /// Who wrote what, and why the answer is not "read the login" (Decisions Log #62).
     /// <para>
     /// The discriminator this section teaches works only because agents author commits and
