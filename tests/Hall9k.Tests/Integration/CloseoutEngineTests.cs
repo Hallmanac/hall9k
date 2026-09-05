@@ -558,11 +558,114 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.Completed);
         run.LastAutoMergeSucceeded.Should().BeTrue();
+        run.PullRequestMergedAt.Should().BeNull(
+            "nothing here re-reads GitHub's own merge timestamp after the merge call — the ObservedAt "
+            + "on PullRequestMerged is what records when this node noticed, not a guessed MergedAt "
+            + "(independent pre-PR review, cycle 1, adversarial finding)");
 
         TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
         task.State.Should().Be(TaskState.Done, "Done on the observed merge, exactly as for an operator's own merge");
 
         Directory.Exists(worktree.Path).Should().BeFalse("the same worktree/branch reclaim an observed merge always triggers");
+    }
+
+    /// <summary>
+    /// GitHub not having reported a single check run yet (an empty statusCheckRollup, indistinguishable
+    /// from a repository with no CI configured at all) is a visible wait within the settle window —
+    /// not "CI green", so the daemon neither merges nor parks (independent pre-PR review, cycle 1,
+    /// adversarial finding). A generous window next to the seeded pull request's own already-elapsed
+    /// age keeps this deterministic without needing to fake wall-clock time.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_task_neither_merges_nor_parks_while_checks_have_not_registered_yet()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HasObservedChecks = false } };
+        CloseoutEngine engine = NewEngine(
+            store, node, inspector, worktrees, checksRegistrationSettleWindow: TimeSpan.FromDays(3650));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(0, "an empty rollup is not yet distinguishable from CI that hasn't registered");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview, "still within the checks-registration settle window");
+        run.ParkedReason.Should().BeNull("a transient registration lag is a wait, not a park");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
+    /// Once the checks-registration settle window elapses with still no check observed, the
+    /// silence is trusted as "no CI configured" and the merge proceeds exactly as if the check
+    /// gate never existed — a zero-width window makes the very first observation already overdue,
+    /// without needing to fake elapsed wall-clock time (mirrors the Copilot settle-window pair
+    /// immediately below).
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_task_merges_once_the_checks_registration_settle_window_elapses_with_still_nothing_observed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HasObservedChecks = false } };
+        CloseoutEngine engine = NewEngine(
+            store, node, inspector, worktrees, checksRegistrationSettleWindow: TimeSpan.Zero);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(1, "the window is already spent, so the continued silence reads as no CI configured");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+    }
+
+    /// <summary>
+    /// GitHub's own 100-thread page cap can leave real unresolved threads unread, so
+    /// UnresolvedReviewThreadCount reading zero is not the same claim as "every thread is
+    /// resolved" — a permanent condition (the pull request will never carry fewer than 100
+    /// threads), so this parks immediately rather than waiting out a clock that would never run
+    /// out (independent pre-PR review, cycle 1, adversarial finding).
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_task_parks_when_the_review_thread_list_was_truncated()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { ReviewThreadsTruncated = true } };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(0, "a truncated thread read can never be trusted as fully resolved");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("100-thread page cap");
     }
 
     /// <summary>
@@ -3721,7 +3824,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         int maxAutomaticCloseoutRuns = 2,
         int maxCloseoutLapsPerObstruction = 2,
         int maxMechanicalResolutionAttempts = 3,
-        TimeSpan? copilotReviewSettleWindow = null) =>
+        TimeSpan? copilotReviewSettleWindow = null,
+        TimeSpan? checksRegistrationSettleWindow = null) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
             (github ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
             (jira ?? RecordingJiraRequester.Succeeding(200, "{}")).Requester,
@@ -3732,6 +3836,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 MaxReviewRerequestsAfterFixes = maxReviewRerequests,
                 MaxMechanicalResolutionAttempts = maxMechanicalResolutionAttempts,
                 CopilotReviewSettleWindow = copilotReviewSettleWindow ?? TimeSpan.FromHours(24),
+                ChecksRegistrationSettleWindow = checksRegistrationSettleWindow ?? TimeSpan.FromMinutes(15),
             }),
             NullLogger<CloseoutEngine>.Instance);
 

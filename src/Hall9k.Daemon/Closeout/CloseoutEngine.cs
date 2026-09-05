@@ -943,6 +943,40 @@ public sealed class CloseoutEngine(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        if (!snapshot.HasObservedChecks)
+        {
+            DateTimeOffset lastPush = LastHeadPushObservedAt(run);
+            if (now - lastPush < _options.ChecksRegistrationSettleWindow)
+            {
+                // GitHub has not reported a single check run yet for this head — indistinguishable
+                // from a repository with no CI configured at all until the settle window elapses.
+                // A visible wait, not a park: the next sweep re-reads and either finds real checks
+                // (which flow into the ordinary HasPendingChecks/FailingChecks branches above on
+                // THEIR OWN next sweep) or, once the window is spent, the continued silence is
+                // trusted as "no CI" (independent pre-PR review, cycle 1, adversarial finding).
+                return InspectionOutcome.Inspected;
+            }
+        }
+
+        if (snapshot.ReviewThreadsTruncated)
+        {
+            // GitHub's own 100-thread page cap left real threads unread, so
+            // UnresolvedReviewThreadCount reading zero here means only "the first 100 happened to
+            // be resolved", not "every thread is resolved". Nothing here can ever change that
+            // (the pull request will always carry more than 100 threads), so — unlike the settle
+            // windows above — this parks immediately rather than waiting out a clock that will
+            // never run out (independent pre-PR review, cycle 1, adversarial finding).
+            await ParkAsync(
+                session, run,
+                "Pre-approved, but this pull request carries more review threads than the provider "
+                + "read can see (GitHub's own 100-thread page cap) — the platform cannot tell whether "
+                + "every thread is actually resolved, and that will not change on its own. Review the "
+                + "threads directly on GitHub and merge it by hand, or turn off pre-approval with "
+                + "h9k task set-pre-approved off so ordinary human-supervised closeout takes over.",
+                now, cancellationToken);
+            return InspectionOutcome.Inspected;
+        }
+
         if (snapshot.CopilotReviewState == ExternalReviewState.RequestedPending)
         {
             DateTimeOffset pendingSince = run.CopilotReviewRequestPendingSince ?? now;
@@ -958,9 +992,7 @@ public sealed class CloseoutEngine(
                 + $"{_options.CopilotReviewSettleWindow.TotalHours:0.#}-hour settle window (requested "
                 + $"{pendingSince:u}). Re-request the review by hand, merge without it, or grant "
                 + "another attempt with h9k pr resolve.";
-            session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
-            await session.SaveChangesAsync(cancellationToken);
-            logger.LogWarning("Run {RunId}: closeout parked for the human — {Reason}", run.Id, parkReason);
+            await ParkAsync(session, run, parkReason, now, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -978,9 +1010,7 @@ public sealed class CloseoutEngine(
                 $"Pre-approved merge attempts spent ({task.MechanicalResolutionAttempts}/"
                 + $"{_options.MaxMechanicalResolutionAttempts}): {DescribeAutoMergeFailure(run)}. "
                 + "Merge it by hand, or grant another attempt with h9k pr resolve.";
-            session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
-            await session.SaveChangesAsync(cancellationToken);
-            logger.LogWarning("Run {RunId}: closeout parked for the human — {Reason}", run.Id, parkReason);
+            await ParkAsync(session, run, parkReason, now, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -1007,8 +1037,12 @@ public sealed class CloseoutEngine(
         // The same deterministic transition an observed operator merge produces — Done on the
         // observed merge, closeout comment only, GitHub issue never closed, Jira never transitioned
         // (design ruling 8) — since this daemon code IS the merge, not an inspection of one that
-        // already happened elsewhere.
-        await CompleteCloseoutAsync(session, run, project, task, now, now, expectedVersion: null, cancellationToken);
+        // already happened elsewhere. mergedAt is null rather than this sweep's own `now`: nothing
+        // here re-reads GitHub's own merge timestamp after the call above, and CompleteCloseoutAsync's
+        // own contract for that parameter is "what GitHub reported, not when this node noticed" — the
+        // ObservedAt argument that follows is what the daemon-noticed timestamp is for (independent
+        // pre-PR review, cycle 1, adversarial finding).
+        await CompleteCloseoutAsync(session, run, project, task, mergedAt: null, now, expectedVersion: null, cancellationToken);
         logger.LogInformation(
             "Task {TaskId}: pre-approved pull request {Url} merged automatically", task.Id, task.PullRequestUrl);
         return InspectionOutcome.MergeObserved;
@@ -1019,6 +1053,22 @@ public sealed class CloseoutEngine(
         run.LastAutoMergeFailureReason.IsNotBlank()
             ? run.LastAutoMergeFailureReason
             : "the last attempt's own reason was not recorded";
+
+    /// <summary>
+    /// When the run's current head was last actually pushed — the anchor the checks-registration
+    /// settle window measures from. A clean mechanical rebase (<see cref="RunDetails.LastMechanicalRebaseSucceeded"/>)
+    /// force-pushes a new head without ever appending <see cref="PullRequestOpened"/> or
+    /// <see cref="PullRequestUpdated"/> (the run deliberately stays AwaitingReview for that path, see
+    /// the comment above <see cref="TryMechanicalRebaseAsync"/>'s own call site), so its own
+    /// <see cref="RunDetails.LastMechanicalRebaseAt"/> wins whenever it postdates the opener's own
+    /// <see cref="RunDetails.PullRequestPushedAt"/>. <see cref="RunDetails.DispatchedAt"/> is the
+    /// last fallback, for a run recorded before either field existed.
+    /// </summary>
+    private static DateTimeOffset LastHeadPushObservedAt(RunDetails run) =>
+        run.LastMechanicalRebaseSucceeded == true && run.LastMechanicalRebaseAt is { } rebasedAt
+            && (run.PullRequestPushedAt is null || rebasedAt > run.PullRequestPushedAt)
+            ? rebasedAt
+            : run.PullRequestPushedAt ?? run.DispatchedAt;
 
     /// <summary>
     /// One append per change: the post-PR review watcher's fact only lands on the run stream
