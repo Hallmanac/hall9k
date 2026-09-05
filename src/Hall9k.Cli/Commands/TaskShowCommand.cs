@@ -368,6 +368,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 .OrderByDescending(r => r.LastMechanicalRebaseAt)
                 .FirstOrDefault();
             WriteMechanicalRebaseOutcome(mechanicalRebaseRun);
+            RunDetails? preFinalPassRebaseRun = runDetailsById.Values
+                .Where(r => r.LastPreFinalPassRebaseAt is not null)
+                .OrderByDescending(r => r.LastPreFinalPassRebaseAt)
+                .FirstOrDefault();
+            WritePreFinalPassRebaseOutcome(preFinalPassRebaseRun);
             RunDetails? autoMergeRun = runDetailsById.Values
                 .Where(r => r.LastAutoMergeAttemptedAt is not null)
                 .OrderByDescending(r => r.LastAutoMergeAttemptedAt)
@@ -663,6 +668,32 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine(
             $"\n[bold]Mechanical rebase[/]  {outcome} "
             + $"[dim]({run.LastMechanicalRebaseAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
+    }
+
+    /// <summary>
+    /// The mandatory final full pass's own pre-flight rebase (task: a run rebases its branch onto
+    /// the current base branch) — the before-push counterpart to
+    /// <see cref="WriteMechanicalRebaseOutcome"/>'s after-push line, selected across every run the
+    /// same defensive way for the same reason: this feature never reopens the task on its own, but
+    /// an ordinary <c>h9k task retry</c> after a Failed run still starts a fresh one.
+    /// </summary>
+    private static void WritePreFinalPassRebaseOutcome(RunDetails? run)
+    {
+        if (run is not { LastPreFinalPassRebaseAt: not null })
+        {
+            return;
+        }
+
+        string detail = ExternalText.OneLineMarkup(run.LastPreFinalPassRebaseDetail ?? string.Empty);
+        string outcome = run.LastPreFinalPassRebaseWasNoOp == true
+            ? $"[dim]no-op[/] [dim]— {detail}[/]"
+            : run.LastPreFinalPassRebaseRecovered
+                ? $"[yellow]recovered by a narrow session[/] [dim]— {detail}[/]"
+                : $"[green]clean[/] [dim]— {detail}[/]";
+
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Pre-final-pass rebase[/]  {outcome} "
+            + $"[dim]({run.LastPreFinalPassRebaseAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
     }
 
     /// <summary>

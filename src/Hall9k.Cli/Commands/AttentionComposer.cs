@@ -622,7 +622,10 @@ internal static class AttentionComposer
     /// The review-parked row's lever, honest about the parks where one of the two verdicts
     /// is refused (<c>ReviewResolveCommand</c>'s own guards, never advertised past their refusal)
     /// or accepted but useless. A disputed rebase conflict raised before any review pass ran
-    /// (<c>task.FollowUpKind == Rebase &amp;&amp; run.ReviewCycle == 0</c>) has nothing to call
+    /// (<c>task.FollowUpKind == Rebase &amp;&amp; run.ReviewCycle == 0</c>), or a mandatory
+    /// final-pass pre-flight rebase's own disputed conflict at any cycle
+    /// (<see cref="RunDetails.ParkedOnRebaseRecoveryDispute"/>, task: a run rebases its branch
+    /// onto the current base branch), has nothing to call
     /// "ready" — nothing has been rebased yet — so only --needs-fixes applies. A pr-review task's
     /// own park (<c>ResolvePrReviewAsync</c>) is the opposite refusal: there is no diff of its own
     /// to fix, so only --merge-ready applies. A cap-0 takeover park or the lifetime-budget park
@@ -645,7 +648,7 @@ internal static class AttentionComposer
             ? $"h9k review proceed {id} (or h9k review resolve {id} --merge-ready / --needs-fixes \"…\" to redirect it)"
             : task.Type == TaskType.PrReview
                 ? $"h9k review resolve {id} --merge-ready (a pr-review task has no diff of its own for a fix session; direct the findings report by hand first)"
-                : task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0
+                : (task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0) || run.ParkedOnRebaseRecoveryDispute
                     ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
                     : run.ParkedNeedsFixesOffersNoProgress
                         ? $"h9k review resolve {id} --merge-ready (--needs-fixes will not clear this park — raise the cap or budget first, per the reason above)"
