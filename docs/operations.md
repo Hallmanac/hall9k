@@ -66,7 +66,9 @@ h9k daemon status     # running or not, pid, uptime, autostart posture, recent l
 ```
 
 **A daemon can be starting, not just running or not.** `h9k daemon start` waits up to 20s for the
-daemon's pid file to land before it says anything; on a machine where that first-boot cost
+daemon's pid file to land before concluding the launch is still starting — earlier output (a log
+rotation notice, a database reachability prompt, an autostart routing line) can print before that
+wait even begins; on a machine where that first-boot cost
 (assembly resolution and JIT for the entry point, before the daemon ever reaches its own
 single-instance guard) runs past that wait — observed up to ~15s on one real Windows machine —
 `h9k daemon start` and `h9k daemon status` both report a third, yellow **starting** state instead

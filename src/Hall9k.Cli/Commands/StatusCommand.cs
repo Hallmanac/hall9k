@@ -42,8 +42,9 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 break;
             case DaemonBootState.Starting:
                 AnsiConsole.MarkupLine(
-                    "[yellow]daemon starting[/] — a launch from moments ago is still booting; "
-                    + "tasks queue and will dispatch once it is up. Check h9k daemon status shortly.");
+                    "[yellow]daemon starting[/] — a marker recorded moments ago says a spawn is in "
+                    + "flight, though whether it is still booting isn't known here; tasks queue and "
+                    + "will dispatch once it is up. Check h9k daemon status shortly.");
                 break;
             default:
                 AnsiConsole.MarkupLine(

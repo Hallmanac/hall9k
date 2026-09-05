@@ -41,12 +41,14 @@ public static class DaemonLifecycle
         if (initialStatus.State == DaemonBootState.Starting)
         {
             await Console.Error.WriteLineAsync(
-                "h9kd is already starting — a spawn from moments ago is still booting (assembly "
-                + "resolution and JIT for the entry point, before it ever reaches its own single-instance "
-                + "guard, has taken up to ~15s on at least one real machine) and has not yet been observed "
-                + "to reach that guard, so whether it already holds the lock isn't known here. Refusing to "
-                + "spawn a second attempt rather than risk racing it. Give it a little longer; h9k daemon "
-                + "status shows it as starting until its pid file lands.");
+                "h9kd start refused — a marker recorded moments ago says a spawn is in flight, but "
+                + "whether it is still booting (assembly resolution and JIT for the entry point, before "
+                + "it ever reaches its own single-instance guard, has taken up to ~15s on at least one "
+                + "real machine) or already died before writing its pid file isn't known here, so "
+                + "whether it already holds the lock isn't known either. Refusing to spawn a second "
+                + "attempt rather than risk racing it. Give it a little longer; h9k daemon status shows "
+                + "it as starting until its pid file lands or the marker's own 60s grace period ages it "
+                + "out with no pid file ever appearing.");
             return ExitCodes.Conflict;
         }
 
