@@ -407,19 +407,27 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// countersign re-request after a fix push recreates Copilot's review request while its
     /// earlier review of the pre-fix commit still sits in <c>latestReviews</c> — the same
     /// staleness <see cref="ReadReviewers"/>/<see cref="ReadReviewedCommit"/> already track for
-    /// the countersign), so a stale review falls through to the pending-request check below
-    /// exactly as if Copilot had not reviewed yet.
+    /// the countersign), so a stale review is kept as a candidate exactly as if Copilot had not
+    /// reviewed yet.
     /// <para>
-    /// The pending check reads <c>reviewRequests</c> raw, deliberately not through
-    /// <see cref="ReadPendingReviewRequestLogins"/> — that method excludes a bot's own request
-    /// unless a human is shown to have re-asked for it (the human-engagement signal this
-    /// question is not). Whether Copilot is currently outstanding at all, however it got that
-    /// way, is exactly what "awaiting Copilot review" needs to say.
+    /// Whether Copilot currently has a pending request (<see cref="IsCopilotReviewRequestPending"/>)
+    /// is checked first, before anything about <c>latestReviews</c> is read at all: a currently
+    /// outstanding request means "awaiting Copilot review" regardless of what an earlier review
+    /// already said, landed or otherwise, about an earlier — or even the same — commit. Checking
+    /// it only after a landed-review match let that match short-circuit the method before the
+    /// request was ever read, so a human re-requesting Copilot's review through GitHub's UI with no
+    /// new push (leaving the earlier landed review sitting in <c>latestReviews</c> at the same head)
+    /// stayed reported as <see cref="ExternalReviewState.Landed"/> forever (independent pre-PR
+    /// review, cycle 1, conformance finding). That check reads <c>reviewRequests</c> raw,
+    /// deliberately not through <see cref="ReadPendingReviewRequestLogins"/> — that method excludes
+    /// a bot's own request unless a human is shown to have re-asked for it (the human-engagement
+    /// signal this question is not). Whether Copilot is currently outstanding at all, however it
+    /// got that way, is exactly what "awaiting Copilot review" needs to say.
     /// </para>
     /// <para>
     /// A non-errored Copilot review that does not match <paramref name="headCommit"/> is kept as
-    /// a stale candidate rather than discarded: if the loop finds no landed review and no pending
-    /// re-request follows, that stale review is what gets reported (<see cref="ExternalReviewState.Stale"/>)
+    /// a stale candidate rather than discarded: if the loop finds no landed review and no request
+    /// is pending, that stale review is what gets reported (<see cref="ExternalReviewState.Stale"/>)
     /// instead of the state falling all the way through to <see cref="ExternalReviewState.None"/>,
     /// which would tell a reader Copilot never looked at all (independent pre-PR review, cycle 6).
     /// A review that could not be compared on either side reports
@@ -437,6 +445,20 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     private static (ExternalReviewState State, string? ReviewId) ReadCopilotReviewState(
         JsonElement pullRequest, string? headCommit)
     {
+        // Checked first, and unconditionally: a currently pending request means Copilot is
+        // outstanding right now, regardless of whatever an earlier review already said about
+        // an earlier (or even the same) commit. Checking this only after the latestReviews loop
+        // let a Landed review at the current head short-circuit the whole method before this
+        // request was ever read, so a human re-requesting Copilot's review (through GitHub's UI,
+        // no new push) on a commit Copilot had already reviewed stayed reported as Landed forever
+        // — the exact "no outstanding requested reviewer" gate this discriminator exists to serve
+        // then merged past a review request that was genuinely still open (independent pre-PR
+        // review, cycle 1, conformance finding).
+        if (IsCopilotReviewRequestPending(pullRequest))
+        {
+            return (ExternalReviewState.RequestedPending, null);
+        }
+
         string? staleReviewId = null;
         bool unclassifiedReviewSeen = false;
         if (pullRequest.TryGetProperty("latestReviews", out JsonElement latest))
@@ -490,25 +512,39 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             }
         }
 
-        if (pullRequest.TryGetProperty("reviewRequests", out JsonElement requests))
-        {
-            foreach (JsonElement request in requests.GetProperty("nodes").EnumerateArray())
-            {
-                if (request.TryGetProperty("requestedReviewer", out JsonElement reviewer)
-                    && reviewer.ValueKind == JsonValueKind.Object
-                    && reviewer.TryGetProperty("login", out JsonElement login)
-                    && IsCopilotLogin(login.GetString()))
-                {
-                    return (ExternalReviewState.RequestedPending, null);
-                }
-            }
-        }
-
         return staleReviewId is not null
             ? (ExternalReviewState.Stale, staleReviewId)
             : unclassifiedReviewSeen
                 ? (ExternalReviewState.Unknown, null)
                 : (ExternalReviewState.None, null);
+    }
+
+    /// <summary>
+    /// Whether Copilot currently has an outstanding review request, read from
+    /// <c>reviewRequests</c> raw — deliberately not through <see cref="ReadPendingReviewRequestLogins"/>,
+    /// which excludes a bot's own automatically recreated request unless a human is shown to have
+    /// re-asked for it. <see cref="ReadCopilotReviewState"/> needs "is Copilot currently asked to
+    /// look", however that request got there, checked before anything else it reports.
+    /// </summary>
+    private static bool IsCopilotReviewRequestPending(JsonElement pullRequest)
+    {
+        if (!pullRequest.TryGetProperty("reviewRequests", out JsonElement requests))
+        {
+            return false;
+        }
+
+        foreach (JsonElement request in requests.GetProperty("nodes").EnumerateArray())
+        {
+            if (request.TryGetProperty("requestedReviewer", out JsonElement reviewer)
+                && reviewer.ValueKind == JsonValueKind.Object
+                && reviewer.TryGetProperty("login", out JsonElement login)
+                && IsCopilotLogin(login.GetString()))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

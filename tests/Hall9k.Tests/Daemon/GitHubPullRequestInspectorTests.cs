@@ -470,6 +470,27 @@ public sealed class GitHubPullRequestInspectorTests
     }
 
     /// <summary>
+    /// A human re-requesting Copilot's review through GitHub's UI, with no new push, leaves an
+    /// earlier landed review of the CURRENT head sitting in <c>latestReviews</c> alongside a fresh
+    /// pending request. Reading the landed review first and returning immediately hid the
+    /// still-outstanding request from a pre-approved merge gate's "no outstanding requested
+    /// reviewer" check, letting it merge past a review request that was genuinely still open
+    /// (independent pre-PR review, cycle 1, conformance finding).
+    /// </summary>
+    [Fact]
+    public void A_pending_re_request_is_observed_even_when_an_earlier_review_already_landed_on_the_current_head()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "Looks good."),
+            reviewRequests: RequestedReviewer("copilot-pull-request-reviewer", "Bot"));
+
+        GitHubPullRequestInspector.ParseReviews(json).CopilotReviewState.Should().Be(
+            ExternalReviewState.RequestedPending,
+            "a fresh request outstanding right now outranks an earlier review of the same commit");
+    }
+
+    /// <summary>
     /// A stale review with no pending request behind it is not outstanding, but it is not
     /// nothing either: Copilot did review the diff, just against a commit that is no longer the
     /// head. Collapsing this into <see cref="ExternalReviewState.None"/> told a reader Copilot
