@@ -59,6 +59,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Session cap", $"{sessionCap} [dim](task override — h9k task set-session-cap)[/]");
         }
 
+        if (details.PreApproved)
+        {
+            header.AddRow("Pre-approved",
+                "[green]yes[/] [dim]— the daemon merges this task's pull request on its own once GitHub's own "
+                + "gates are satisfied (h9k task set-pre-approved to change)[/]");
+        }
+
         // One row per cap actually overridden (task: the review cycle caps become settable at
         // three levels) — an operator glancing at a task can see a one-off limit without having
         // to resolve the whole task > project > node > default chain by hand.
@@ -329,6 +336,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 .OrderByDescending(r => r.LastMechanicalRebaseAt)
                 .FirstOrDefault();
             WriteMechanicalRebaseOutcome(mechanicalRebaseRun);
+            RunDetails? autoMergeRun = runDetailsById.Values
+                .Where(r => r.LastAutoMergeAttemptedAt is not null)
+                .OrderByDescending(r => r.LastAutoMergeAttemptedAt)
+                .FirstOrDefault();
+            WriteAutoMergeOutcome(autoMergeRun);
             await WriteSessionsAsync(session, runs, runDetailsById, cancellationToken);
             await WriteGateDurationAnomaliesAsync(session, details.ProjectId, runs[^1], cancellationToken);
         }
@@ -376,12 +388,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         if (row is { Facts.Count: > 0 })
         {
-            // PublishedFacts.Compose states the queue-first marker wherever it is set, Published
-            // row or not (Decisions Log #127), so a non-Published row's Facts is the marker and
-            // only the marker — "Waiting on" would misdescribe a task that is running, done, or
-            // otherwise not actually waiting on anything (independent pre-PR review, cycle 1,
-            // conformance and adversarial lenses).
-            string label = row.State == LifecycleState.Published ? "Waiting on" : "Queue priority";
+            // PublishedFacts.Compose states the queue-first marker and the pre-approval marker
+            // wherever either is set, Published row or not (Decisions Log #127; task: a task can
+            // be published pre-approved), so a non-Published row's Facts is whichever of those
+            // markers apply — never only "Queue priority", which named just the first of the two
+            // and misdescribed the row once pre-approval could appear here too (independent pre-PR
+            // review, cycle 1, both lenses). "Waiting on" would misdescribe a task that is running,
+            // done, or otherwise not actually waiting on anything.
+            string label = row.State == LifecycleState.Published ? "Waiting on" : "Facts";
             standing.AddRow($"[bold]{label}[/]",
                 string.Join(" [dim]·[/] ", row.Facts.Select(fact => $"[dim]{fact.EscapeMarkup()}[/]")));
         }
@@ -522,6 +536,28 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine(
             $"\n[bold]Mechanical rebase[/]  {outcome} "
             + $"[dim]({run.LastMechanicalRebaseAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
+    }
+
+    /// <summary>
+    /// The pre-approved task's own auto-merge attempt line (task: a task can be published
+    /// pre-approved) — deterministic daemon code, never an agent (design ruling 8). Not
+    /// necessarily the newest run by dispatch order for the same reason the mechanical-rebase
+    /// line above is not: the caller selects by <c>LastAutoMergeAttemptedAt</c> across every run.
+    /// </summary>
+    private static void WriteAutoMergeOutcome(RunDetails? run)
+    {
+        if (run is not { LastAutoMergeAttemptedAt: not null })
+        {
+            return;
+        }
+
+        string outcome = run.LastAutoMergeSucceeded == true
+            ? "[green]merged[/]"
+            : $"[yellow]failed[/] [dim]— {ExternalText.OneLineMarkup(run.LastAutoMergeFailureReason ?? "reason not recorded")}[/]";
+
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Auto-merge[/]  {outcome} "
+            + $"[dim]({run.LastAutoMergeAttemptedAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
     }
 
     /// <summary>

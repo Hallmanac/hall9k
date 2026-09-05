@@ -480,6 +480,111 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
+    /// A pre-approved task's own AwaitingReview arm never reads NeedsYou (task: a task can be
+    /// published pre-approved, design ruling 3): waiting on a required human approval, or an
+    /// outstanding requested reviewer, is a visible, self-resuming wait, never a park and never a
+    /// nudge — the opposite of the unflagged "the merge is yours" arm this same run state gives
+    /// above.
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_task_waiting_on_human_approval_reads_as_a_visible_wait_not_needs_you()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/24";
+        TaskListItem preApproved = StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproved: true);
+
+        RunDetails reviewRequired = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        reviewRequired.ExternalReviewDecision = "REVIEW_REQUIRED";
+        TaskStatusRow waitingOnApproval = StatusFixtures.Compose(preApproved, reviewRequired);
+
+        waitingOnApproval.Attention.Level.Should().Be(AttentionLevel.WaitingHandled);
+        waitingOnApproval.Attention.NeedsYou.Should().BeFalse("pre-approval removed the owner as a synchronous gate");
+        waitingOnApproval.Attention.Cause.Should().Contain("pre-approved");
+        waitingOnApproval.Attention.Cause.Should().Contain("human approval");
+
+        RunDetails copilotRequested = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        copilotRequested.ExternalReviewState = ExternalReviewState.RequestedPending;
+        copilotRequested.ExternalReviewDecision = "REVIEW_REQUIRED";
+        TaskStatusRow waitingOnBoth = StatusFixtures.Compose(preApproved, copilotRequested);
+
+        waitingOnBoth.Attention.NeedsYou.Should().BeFalse();
+        waitingOnBoth.Attention.Cause.Should().Contain("copilot review");
+        waitingOnBoth.Attention.Cause.Should().Contain("human approval");
+
+        RunDetails outstandingHumanReviewer = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        outstandingHumanReviewer.ExternalOutstandingReviewerLogins = ["teammate"];
+        outstandingHumanReviewer.ExternalOutstandingHumanReviewerLogins = ["teammate"];
+        TaskStatusRow waitingOnReviewer = StatusFixtures.Compose(preApproved, outstandingHumanReviewer);
+
+        waitingOnReviewer.Attention.NeedsYou.Should().BeFalse();
+        waitingOnReviewer.Attention.Cause.Should().Contain("human approval");
+
+        RunDetails clean = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        TaskStatusRow gatesSatisfied = StatusFixtures.Compose(preApproved, clean);
+
+        gatesSatisfied.Attention.NeedsYou.Should().BeFalse();
+        gatesSatisfied.Attention.Cause.Should().Contain("pre-approved");
+        gatesSatisfied.Attention.Cause.Should().Contain("merges it on its own");
+    }
+
+    /// <summary>
+    /// RunDetails.ExternalOutstandingReviewerLogins is deliberately Copilot-inclusive and
+    /// unfiltered (display of the raw provider read); the pre-approved arm must read the
+    /// Copilot-filtered twin, ExternalOutstandingHumanReviewerLogins, or it tells the owner a
+    /// human approval is outstanding when only Copilot's review is pending — contradicting the
+    /// daemon's own merge gate, which never treats Copilot as a human reviewer
+    /// (PullRequestSnapshot.HasOutstandingHumanReviewer) and merges the moment Copilot answers and
+    /// threads resolve (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_task_with_only_copilot_outstanding_does_not_claim_human_approval_is_needed()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/25";
+        TaskListItem preApproved = StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproved: true);
+
+        RunDetails copilotOnly = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 25);
+        copilotOnly.ExternalOutstandingReviewerLogins = ["copilot-pull-request-reviewer"];
+        // ExternalOutstandingHumanReviewerLogins is deliberately left empty here: the daemon
+        // filters Copilot out before ever recording it, which is the fact under test.
+
+        TaskStatusRow row = StatusFixtures.Compose(preApproved, copilotOnly);
+
+        row.Attention.NeedsYou.Should().BeFalse();
+        row.Attention.Cause.Should().NotContain("human approval",
+            "no human review is outstanding — only Copilot's, which the daemon's own merge gate "
+            + "never counts as a human reviewer");
+    }
+
+    /// <summary>
+    /// The pre-approved "GitHub's own gates read satisfied" claim must not fire while CI is still
+    /// reporting: CloseoutEngine's own HasPendingChecks short-circuit runs ahead of the
+    /// review-decision and outstanding-reviewer reads this composer draws on, so a quiet-looking
+    /// RunDetails with checks still pending is not actually a merged-or-about-to-merge state
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_task_with_checks_still_pending_does_not_claim_gates_are_satisfied()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/26";
+        TaskListItem preApproved = StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproved: true);
+
+        RunDetails checksPending = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 26);
+        checksPending.ExternalReviewChecksPending = true;
+
+        TaskStatusRow row = StatusFixtures.Compose(preApproved, checksPending);
+
+        row.Attention.NeedsYou.Should().BeFalse();
+        row.Attention.Cause.Should().NotContain("gates read satisfied",
+            "CI is still reporting, so nothing has actually merged and nothing is guaranteed to");
+        row.Attention.Cause.Should().Contain("CI checks");
+    }
+
+    /// <summary>
     /// Delivered work nobody is assigned to. h9k pr resolve reopens a done task to Queued and
     /// keeps its pull request; h9k task unassign then takes it to Published, which leaves an open
     /// pull request with no run watching it and no owner whose nodes could claim the follow-up.

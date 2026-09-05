@@ -322,6 +322,44 @@ public sealed class TaskLifecycleSurfaceTests
             .Which.Should().Contain("marked queue-first");
     }
 
+    /// <summary>
+    /// Pre-approval is settable on any live non-terminal task, not only a Published one (task: a
+    /// task can be published pre-approved), so the board must not go quiet about it just because
+    /// the task has moved on to Working — the identical reasoning the queue-first marker above
+    /// already gets.
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_task_says_so_even_while_working()
+    {
+        Guid runId = DomainId.New();
+        TaskListItem working = StatusFixtures.Task(TaskState.Claimed, runId, preApproved: true);
+
+        TaskStatusRow row = StatusFixtures.Compose(working, StatusFixtures.Run(runId, RunState.Running));
+
+        row.State.Should().Be(LifecycleState.Working);
+        row.Facts.Should().ContainSingle()
+            .Which.Should().Contain("pre-approved");
+    }
+
+    /// <summary>
+    /// LifecycleState.Done renders only at TRUE closeout (the merge observed), so a pre-approved
+    /// task's own fact must not survive there: it would claim a future merge for a pull request
+    /// that has already merged (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public void A_truly_closed_out_done_task_no_longer_states_its_pre_approval()
+    {
+        Guid runId = DomainId.New();
+        const string PullRequest = "https://github.com/acme/widgets/pull/9";
+        TaskListItem task = StatusFixtures.Task(TaskState.Done, runId, PullRequest, preApproved: true);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, StatusFixtures.Run(runId, RunState.Completed, sessionProcessId: null));
+
+        row.State.Should().Be(LifecycleState.Done, "closeout observed the merge");
+        row.Facts.Should().BeEmpty(
+            "the pull request already merged — there is nothing left for pre-approval to govern");
+    }
+
     [Fact]
     public void An_abandoned_task_reads_as_archived_whichever_word_the_stream_records()
     {

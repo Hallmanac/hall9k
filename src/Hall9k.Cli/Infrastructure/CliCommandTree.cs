@@ -544,7 +544,8 @@ public static class CliCommandTree
                 .WithExample("task", "publish", "28b19893", "--assign")
                 .WithExample("task", "publish", "28b19893", "--no-assign")
                 .WithExample("task", "publish", "28b19893", "--no-existing-item")
-                .WithExample("task", "publish", "28b19893", "--untracked");
+                .WithExample("task", "publish", "28b19893", "--untracked")
+                .WithExample("task", "publish", "28b19893", "--pre-approved");
             task.AddCommand<TaskAssignCommand>("assign")
                 .WithDescription(
                     "Assign a published task to an owner: the dispatch trigger, and the only way a task "
@@ -566,6 +567,18 @@ public static class CliCommandTree
                 .WithExample("task", "set-session-cap", "28b19893", "1")
                 .WithExample("task", "set-session-cap", "28b19893", "3")
                 .WithExample("task", "set-session-cap", "28b19893", "default");
+            task.AddCommand<TaskSetPreApprovedCommand>("set-pre-approved")
+                .WithDescription(
+                    "Flip a task's standing pre-approval after publish (task: a task can be published "
+                    + "pre-approved) — settable on any live non-terminal task, without the "
+                    + "unassign/draft/revise/publish ceremony a readiness-contract change would otherwise "
+                    + "need. Once on, the daemon merges this task's pull request on its own, "
+                    + "deterministically, the moment GitHub's own gates read satisfied (CI green, the review "
+                    + "decision satisfied, no outstanding requested reviewer, every thread resolved) — every "
+                    + "existing human waypoint (Failed, a review park, a severity-bar failure, a cap trip) "
+                    + "still stops the pipeline exactly as it does unflagged.")
+                .WithExample("task", "set-pre-approved", "28b19893", "on")
+                .WithExample("task", "set-pre-approved", "28b19893", "off");
             task.AddCommand<TaskUnassignCommand>("unassign")
                 .WithDescription(
                     "Take a queued or blocked task back to Published, so no node claims it. Refused while a "
