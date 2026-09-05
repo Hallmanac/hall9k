@@ -323,26 +323,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
 
-        // The full resolution chain (Decisions Log #33): the CLI cannot reach a live daemon's
-        // in-memory DaemonOptions (Reference graph: Cli -> Domain + Connectors), but the node's
-        // per-role and platform-default tiers are durable settings, not daemon state — they live
-        // in the platform config file and environment, read through the same
-        // OperatingSettingsResolver h9k config show already renders them with, so a start-it-mine
-        // session resolves to exactly the model a dispatcher-launched build on this node would.
-        // Checked before anything is claimed: a broken model refuses up front rather than after
-        // the claim and worktree cut are already committed.
-        OperatingSettingsReport operatingSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
-        string? buildRoleDefault = operatingSettings.ModelByRole
-            .First(role => role.Role == nameof(RoleModelSettings.Build)).Model.Value;
-        AgentModel model = AgentModel.Resolve(
-            taskOverride: taskDetails.Model, roleDefault: buildRoleDefault, projectDefault: project.Model,
-            platformDefault: operatingSettings.DefaultModel.Value);
-        if (!model.IsWellFormed)
-        {
-            throw new DomainConflictException(
-                $"Task {task.Id} resolved to an unusable model ('{model.Value}') — fix it with "
-                + $"h9k task revise {task.Id} --model or h9k project set --model before starting it this way.");
-        }
+        AgentModel model = await ResolveBuildModelAsync(taskDetails, project, cancellationToken);
 
         // A pr-review task dispatches through a completely different path (a detached checkout of
         // the pull request's own head, the pr-review prompt lens, no branch of its own) that this
@@ -432,16 +413,17 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
                 : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(taskDetails), runId);
 
-            // Resolved once, here, and frozen on RunDispatched for this run's whole lifetime
-            // (task: the review pipeline's stage composition becomes configuration recorded per
-            // run), exactly as RunLauncher and TaskWorkCommand's own dispatch sites already do —
-            // this third dispatch site was the one PLAN.md #129 overlooked (independent pre-PR
-            // review, cycle 1, conformance lens). operatingSettings was already resolved above for
-            // the model, through the same OperatingSettingsResolver that honors the
-            // Hall9k__ReviewStageComposition environment variable ahead of the platform config
-            // file, so this reads the node level identically to a headless dispatch on this
-            // machine and to TaskWorkCommand's own interactive claim, which resolves the node
-            // level through the same resolver (PLAN.md #129).
+            // Frozen on RunDispatched for this run's whole lifetime (task: the review pipeline's
+            // stage composition becomes configuration recorded per run), exactly as RunLauncher and
+            // TaskWorkCommand's own dispatch sites already do — this third dispatch site was the one
+            // PLAN.md #129 overlooked (independent pre-PR review, cycle 1, conformance lens).
+            // Re-resolved here (ResolveBuildModelAsync already resolved the node level once above,
+            // for the model) through the same OperatingSettingsResolver that honors the
+            // Hall9k__ReviewStageComposition environment variable ahead of the platform config file,
+            // so this reads the node level identically to a headless dispatch on this machine and to
+            // TaskWorkCommand's own interactive claim, which resolves the node level through the
+            // same resolver (PLAN.md #129).
+            OperatingSettingsReport operatingSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
             ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
                 taskDetails.ReviewStageComposition, project.ReviewStageComposition,
                 operatingSettings.ReviewStageComposition.Value);
@@ -469,6 +451,36 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         await Hall9k.Cli.Infrastructure.Doorbell.RingAsync($"task-claimed-deliberately:{task.Id}", cancellationToken);
         return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork, model);
+    }
+
+    /// <summary>
+    /// The full resolution chain (Decisions Log #33): the CLI cannot reach a live daemon's
+    /// in-memory DaemonOptions (Reference graph: Cli -> Domain + Connectors), but the node's
+    /// per-role and platform-default tiers are durable settings, not daemon state — they live in
+    /// the platform config file and environment, read through the same
+    /// OperatingSettingsResolver h9k config show already renders them with, so a ceiling-exempt
+    /// headless session resolves to exactly the model a dispatcher-launched build on this node
+    /// would. Shared with <see cref="TaskDelegateCommand"/> (task 15f889e3, design ruling R6): a
+    /// contractor dispatched onto an already-claimed interactive task resolves its build model
+    /// exactly this way too, rather than a second copy of the same chain.
+    /// </summary>
+    internal static async Task<AgentModel> ResolveBuildModelAsync(
+        TaskDetails taskDetails, ProjectDetails project, CancellationToken cancellationToken)
+    {
+        OperatingSettingsReport operatingSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
+        string? buildRoleDefault = operatingSettings.ModelByRole
+            .First(role => role.Role == nameof(RoleModelSettings.Build)).Model.Value;
+        AgentModel model = AgentModel.Resolve(
+            taskOverride: taskDetails.Model, roleDefault: buildRoleDefault, projectDefault: project.Model,
+            platformDefault: operatingSettings.DefaultModel.Value);
+        if (!model.IsWellFormed)
+        {
+            throw new DomainConflictException(
+                $"Task {taskDetails.Id} resolved to an unusable model ('{model.Value}') — fix it with "
+                + $"h9k task revise {taskDetails.Id} --model or h9k project set --model before starting it this way.");
+        }
+
+        return model;
     }
 
     /// <summary>
