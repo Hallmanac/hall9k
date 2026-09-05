@@ -406,26 +406,33 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         "Published" => "[dim](past the readiness gate; not working yet)[/]",
         "Working" => "[dim](a run owns it and has not pushed yet)[/]",
         "Delivered" => "[dim](pushed; the merge has not been observed)[/]",
-        "Done" => $"[dim](true closeout: {DoneReason(row.Type)})[/]",
+        "Done" => $"[dim](true closeout: {DoneReason(row.Type, row.PullRequestUrl)})[/]",
         "Failed" => "[dim](a waypoint, not an ending — log #27)[/]",
         "Archived" => "[dim](walked away from)[/]",
         _ => "[dim](this build does not recognize the recorded state)[/]",
     };
 
     /// <summary>
-    /// What true closeout actually observed for a Done task — the wording differs by task type
-    /// because the bar itself does. An ordinary task's Done means the closeout monitor watched
-    /// its pull request merge; a pr-review task never opens one of its own (Decisions Log #99),
-    /// so its Done means the owner delivered the review verdict (<c>h9k review resolve
-    /// --merge-ready</c>), and no merge was ever watched for it. Windows field report item 12
-    /// (2026-09-03): a pr-review task rendered "the merge was observed" while the pull request
-    /// it reviewed sat open, asserting an observation that never happened — the platform's
+    /// What true closeout actually observed for a Done task — the wording follows the closeout
+    /// cause, not the task type alone. A pr-review task never opens a pull request of its own
+    /// (Decisions Log #99): its Done means the owner delivered the review verdict (<c>h9k review
+    /// resolve --merge-ready</c>), and no merge was ever watched for it, even though
+    /// <c>PrReviewEngine.FinalizeAsync</c> records the reviewed pull request's URL on the same
+    /// task (Windows field report item 12, 2026-09-03: a pr-review task rendered "the merge was
+    /// observed" while the pull request it reviewed sat open). Every other task type reaches
+    /// Done by one of two doors <see cref="TaskStatusComposer.Closed"/> already discriminates:
+    /// pushed and merged (or its run completed), or closed by hand with no pull request ever
+    /// opened — and only the first of those is a merge anyone observed. A blank
+    /// <paramref name="pullRequestUrl"/> is that second door: the platform's
     /// never-guess-at-unobserved-facts rule applies to this ledger's prose exactly as it does to
     /// its data.
     /// </summary>
-    internal static string DoneReason(string taskType) => taskType == TaskType.PrReview.Value
-        ? "the review was delivered"
-        : "the merge was observed";
+    internal static string DoneReason(TaskType taskType, string pullRequestUrl) => taskType switch
+    {
+        _ when taskType == TaskType.PrReview => "the review was delivered",
+        _ when pullRequestUrl.IsBlank() => "the task was closed with no pull request to watch",
+        _ => "the merge was observed",
+    };
 
     /// <summary>
     /// How the newest run's pre-PR review ended (Decisions Log #63). Merge-ready is one word for
