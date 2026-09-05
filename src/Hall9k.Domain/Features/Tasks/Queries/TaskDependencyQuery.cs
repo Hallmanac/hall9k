@@ -65,37 +65,53 @@ public static class TaskDependencyQuery
             .ToListAsync(cancellationToken);
 
         Guid[] runIds = [.. tasks.Select(task => task.CurrentRunId).OfType<Guid>()];
-        Dictionary<Guid, RunState> runStates = runIds.Length == 0
+        // Read off RunDetails, not RunListItem: PullRequestNumber and FailureReason have been
+        // populated there for every run since S1-03, while a mirror on RunListItem would need its
+        // own backfill for existing rows to ever agree with it (independent pre-PR review, cycle
+        // 1, both lenses). Projected to the three scalar fields this query actually needs, the
+        // same lightweight shape ReviewRerequestScalars and MissingRunCandidate already use in
+        // CloseoutEngine, so the join stays as light as the RunListItem one it replaces.
+        Dictionary<Guid, RunDependencyScalars> runs = runIds.Length == 0
             ? []
-            : (await session.Query<RunListItem>()
+            : (await session.Query<RunDetails>()
                     .Where(run => run.Id.IsOneOf(runIds))
+                    .Select(run => new RunDependencyScalars(run.Id, run.State, run.PullRequestNumber, run.FailureReason))
                     .ToListAsync(cancellationToken))
-                .ToDictionary(run => run.Id, run => run.State);
+                .ToDictionary(run => run.Id);
 
-        return [.. tasks.Select(task => Snapshot(task, CurrentRunStateOf(task, runStates)))];
+        return [.. tasks.Select(task => Snapshot(task, CurrentRunOf(task, runs)))];
     }
 
-    private static TaskDependency Snapshot(TaskListItem task, RunState? currentRunState) => new(
+    private static TaskDependency Snapshot(TaskListItem task, RunDependencyScalars? currentRun) => new(
         task.Id,
         task.Objective,
         task.State,
-        IsClosedOut(task, currentRunState),
-        currentRunState,
+        IsClosedOut(task, currentRun?.State),
+        currentRun?.State,
         task.PullRequestUrl,
         task.Type,
-        task.BlockedBy);
+        task.BlockedBy,
+        currentRun?.PullRequestNumber,
+        currentRun?.FailureReason);
 
     /// <summary>
-    /// The state of the run the task currently hangs on, or null when it has none — a task
-    /// that never claimed, one requeued back to nothing, or (defensively) one pointing at a
-    /// run whose projection is missing. Null carries "no run to observe" rather than dressing
-    /// the gap up as a run in some state.
+    /// The run the task currently hangs on, or null when it has none — a task that never
+    /// claimed, one requeued back to nothing, or (defensively) one pointing at a run whose
+    /// projection is missing. Null carries "no run to observe" rather than dressing the gap up
+    /// as a run in some state.
     /// </summary>
-    private static RunState? CurrentRunStateOf(
-        TaskListItem task, IReadOnlyDictionary<Guid, RunState> runStates) =>
-        task.CurrentRunId is { } runId && runStates.TryGetValue(runId, out RunState? state)
-            ? state
+    private static RunDependencyScalars? CurrentRunOf(
+        TaskListItem task, IReadOnlyDictionary<Guid, RunDependencyScalars> runs) =>
+        task.CurrentRunId is { } runId && runs.TryGetValue(runId, out RunDependencyScalars? run)
+            ? run
             : null;
+
+    /// <summary>
+    /// The three RunDetails fields this query actually needs, so the join here materializes
+    /// nothing heavier than an id, a state and two nullable scalars per run (see the comment
+    /// above SnapshotAsync's own read of these).
+    /// </summary>
+    private sealed record RunDependencyScalars(Guid Id, RunState State, int? PullRequestNumber, string? FailureReason);
 
     /// <summary>
     /// True closeout: the task is Done and the run that carried it reached Completed, which

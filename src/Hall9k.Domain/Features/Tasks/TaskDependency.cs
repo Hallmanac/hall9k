@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Extensions;
 
 namespace Hall9k.Domain.Features.Tasks;
@@ -28,6 +29,21 @@ namespace Hall9k.Domain.Features.Tasks;
 /// any form"), so advice naming h9k pr resolve must never reach one (adversarial review,
 /// cycle 7).
 /// </param>
+/// <param name="RunPullRequestNumber">
+/// The pull request number <see cref="CurrentRunState"/>'s own run document carries, read from
+/// <c>RunDetails.PullRequestNumber</c> — populated for every run since S1-03, unlike a mirror on
+/// the lean <c>RunListItem</c> join would be, which would need its own backfill to agree with it
+/// on every run recorded before such a mirror shipped (independent pre-PR review, cycle 1, both
+/// lenses). Null on a run that never recorded one of its own, which <see
+/// cref="CloseoutCanStillArrive"/> reads as honestly unwatched rather than guessing.
+/// </param>
+/// <param name="RunFailureReason">
+/// <see cref="CurrentRunState"/>'s own run document's recorded failure reason, read from
+/// <c>RunDetails.FailureReason</c> for the same reason <see cref="RunPullRequestNumber"/> is.
+/// Carried so <see cref="CloseoutCanStillArrive"/> can exclude the one failure the closeout
+/// orphan sweep itself excludes — a pull request the monitor already observed closed without
+/// merging, where a repeat inspection would only relearn a fact already on the stream.
+/// </param>
 public sealed record TaskDependency(
     Guid Id,
     string Objective,
@@ -36,7 +52,9 @@ public sealed record TaskDependency(
     RunState? CurrentRunState,
     string? PullRequestUrl,
     TaskType Type,
-    IReadOnlyList<Guid> BlockedBy)
+    IReadOnlyList<Guid> BlockedBy,
+    int? RunPullRequestNumber = null,
+    string? RunFailureReason = null)
 {
     /// <summary>
     /// This blocker can no longer reach true closeout, so anything waiting behind it waits
@@ -57,12 +75,39 @@ public sealed record TaskDependency(
     public bool Blocks => !IsClosedOut;
 
     /// <summary>
-    /// A Done task closes out when the closeout monitor observes its pull request merge, and
-    /// that can only happen while the run carrying the pull request is still in the pipeline.
-    /// No run, or a run already terminal on some ending other than Completed, means there is
-    /// nobody left to observe anything.
+    /// A Done task closes out when the closeout monitor observes its pull request merge. Most of
+    /// the time that only happens while the run carrying the pull request is still in the
+    /// pipeline — no run, or a run already terminal on some ending other than Completed, means
+    /// there is nobody left to observe anything. But <c>CloseoutEngine</c>'s own orphan sweep
+    /// (Decisions Log #72) keeps watching a Failed or Killed run that still carries a pull
+    /// request number nothing has recorded as closed without merging, and completes closeout
+    /// against it unaided — so a run terminal on Failed or Killed is not automatically dead the
+    /// way Superseded or an absent run is. <see cref="StillWatchedByOrphanSweep"/> is this
+    /// predicate's mirror of <c>AttentionComposer.IsOrphanSweepCandidate</c>'s first arm (the two
+    /// must never disagree about which pull requests the sweep is still going to find), narrowed
+    /// to data this record actually carries: the sweep's other arm, the missing-run shape that
+    /// resolves a task-recorded pull-request URL nobody's own run document ever parsed a number
+    /// onto, needs <c>PullRequestUrls.ParseNumber</c> from Hall9k.Connectors, which the domain
+    /// layer never references (AGENTS.md's reference graph) — a run whose own document never
+    /// recorded a number still reads dead here, which is the pre-existing, narrower gap that
+    /// shape was always going to leave (independent pre-PR review, cycle 3: a resolved blocker's
+    /// pull request the orphan sweep is actively watching read dead to its dependents).
     /// </summary>
-    private bool CloseoutCanStillArrive => CurrentRunState is { } run && !run.IsTerminal;
+    private bool CloseoutCanStillArrive =>
+        CurrentRunState is { } run && (!run.IsTerminal || StillWatchedByOrphanSweep(run));
+
+    /// <summary>
+    /// Mirrors <c>CloseoutEngine.PollOnceAsync</c>'s own orphan-candidate query and
+    /// <c>AttentionComposer.IsOrphanSweepCandidate</c>'s first arm: only Failed or Killed is ever
+    /// swept (Superseded is not), only a run that recorded a pull request number of its own is a
+    /// candidate, and a run the monitor already observed closed without merging is excluded — that
+    /// run already told the sweep everything an inspection could, so it never re-enters the
+    /// candidate set.
+    /// </summary>
+    private bool StillWatchedByOrphanSweep(RunState run) =>
+        (run == RunState.Failed || run == RunState.Killed)
+        && RunPullRequestNumber is > 0
+        && RunFailureReason != RunDetails.PullRequestClosedWithoutMerge;
 
     /// <summary>The id fragment h9k accepts on the command line, as every surface prints it.</summary>
     private string ShortId => Id.ToString("N")[^8..];
