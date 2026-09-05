@@ -415,6 +415,16 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         if (OperatingSystem.IsWindows())
         {
             process.StartInfo.FileName = "cmd.exe";
+            // Windows field report item 3 (ruled 2026-09-01): two concurrent dotnet-test-shaped
+            // gates on one Windows machine crashed each other's shared MSBuild child nodes with
+            // MSB4166. VerificationRunner.RunGateAsync's own identical spawn already sets this for
+            // the same reason; this path is the platform's other Windows verify-gate spawner, and
+            // it was the one missed when that fix landed, so it stayed exposed to the same crash
+            // (adversarial review, cycle 1). Scoped to Windows only for the identical reason
+            // VerificationRunner.RunGateAsync's own comment gives: the field report this answers
+            // was a Windows machine, and nothing has yet confirmed the same MSBuild node-reuse
+            // contention on a non-Windows node (independent pre-PR review, cycle 1).
+            process.StartInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
             // WindowsCommandLine.WrapForCmdExe's own doc comment records why: cmd.exe's /c
             // parsing does not follow the CommandLineToArgvW convention ArgumentList assumes, so
             // a gate command carrying its own embedded quotes gets mangled unless it is wrapped
