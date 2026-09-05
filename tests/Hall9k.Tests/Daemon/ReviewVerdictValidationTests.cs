@@ -1392,6 +1392,21 @@ public sealed class ReviewVerdictValidationTests
         ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
 
     /// <summary>
+    /// The bare-"so" clause-boundary guard does not fire when "so" is an intensifier immediately
+    /// modifying the denial's own vocabulary word rather than opening a second clause (PR #214
+    /// review, Copilot): "Nothing is so wrong here." and "Nothing here is so broken it matters."
+    /// both deny a defect exists, and treating "so" as a boundary there stopped the tail from
+    /// reaching "wrong"/"broken" at all, leaving the denial unrecognized and the sentence exposed
+    /// to being credited as a finding wherever a location happened to sit nearby.
+    /// </summary>
+    [Theory]
+    [InlineData("Nothing is so wrong here.\n\nVERDICT: needs-fixes")]
+    [InlineData("Nothing here is so broken it matters.\n\nVERDICT: needs-fixes")]
+    public void A_denial_using_so_as_an_intensifier_before_the_vocabulary_word_is_not_credited(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
     /// A semicolon-joined clause that merely restates the same denial, naming no concrete location
     /// of its own, is still recognized as a denial rather than a finding (independent pre-PR
     /// review, both lenses, cycle 3, task 29025f60): the cycle-3 fix that added a bare semicolon to
@@ -1496,6 +1511,86 @@ public sealed class ReviewVerdictValidationTests
         "Nothing should change; .gitignored paths are already excluded everywhere."
         + "\n\nVERDICT: needs-fixes")]
     public void A_semicolon_joined_near_miss_location_does_not_disqualify_the_denial(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// A genuine two-clause finding whose clauses are joined by a bare comma, an em dash or a
+    /// colon still names a finding, not only by the semicolon, "and" and "so" the cycle-1 and
+    /// cycle-4 fixes guarded (cycle-9 conformance finding, `ReviewVerdictValidation.cs:701`): each
+    /// tempered tail in <see cref="ReviewVerdictValidation.HeadingDenialPattern"/> carried its own
+    /// hand-written clause-boundary list and they had drifted apart — the "no … is/are …
+    /// violated/unmet" alternative did not stop at a bare comma even though its "does not …
+    /// departs" sibling one line below already did, and none of the three stopped at an em dash or
+    /// a colon — so the denial span swallowed the very defect the sentence's first clause states
+    /// and <see cref="ReviewVerdictValidation.StatesDefectOutsideDenial"/> found nothing left
+    /// outside it. Every tail now steps through the one shared
+    /// <see cref="ReviewVerdictValidation.ClauseBoundary"/> literal.
+    /// </summary>
+    [Theory]
+    [InlineData("`Store.cs:40` has no test, criterion 3 is unmet.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Store.cs:40` has no test: criterion 3 is unmet.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Sweep.cs:12` acquires no lock — the invariant is violated.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Foo.cs:12` does not seal the record — it departs from AGENTS.md.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Foo.cs:12` does not seal the record: it departs from AGENTS.md.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "Nothing should be logged before the guard runs — `Store.cs:40` logs first."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "Nothing should be logged before the guard runs: `Store.cs:40` logs first."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_two_clause_finding_split_by_a_comma_em_dash_or_colon_still_names_a_finding(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A semicolon-joined clause naming only a dotted `Type.Member` symbol is still a denial, the
+    /// same way a bare undotted symbol already was (cycle-9 adversarial finding,
+    /// `ReviewVerdictValidation.cs:707`): the shared location literal is interpolated into
+    /// <see cref="ReviewVerdictValidation.HeadingDenialPattern"/>, which compiles with
+    /// <see cref="System.Text.RegularExpressions.RegexOptions.IgnoreCase"/> while
+    /// <see cref="ReviewVerdictValidation.LocationPattern"/> compiles with no options, and in .NET
+    /// that option reaches an interpolated character class too — so the deliberately lowercase
+    /// `[a-z]{2,10}` extension rule that cycle 6 added to keep `Uri.TryCreate` from reading as a
+    /// location matched it anyway inside the denial pattern's own disqualifier, and the hollow
+    /// verdict was credited over a location that was never named. Sharing one literal keeps the
+    /// two patterns' text identical; only the literal's own `(?-i:…)` scope makes them mean the
+    /// same thing.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nI found nothing wrong; `Uri.TryCreate` handles this "
+        + "correctly.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing wrong here; `CloseoutEngine.Inspect` orders "
+        + "the calls intentionally.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nI found nothing wrong; `File.WriteAllTextAsync` is "
+        + "awaited on every path.\n\nVERDICT: needs-fixes")]
+    public void A_semicolon_joined_clause_naming_only_a_type_member_symbol_is_still_a_denial(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// A compound denial whose second clause states the same absence with a defect word outside
+    /// the "wrong/broken/amiss/defect/bug/issue/problem" noun list is still a denial (cycle-9
+    /// adversarial finding, `ReviewVerdictValidation.cs:1428`): once
+    /// <see cref="ReviewVerdictValidation.StatesDefectOutsideDenial"/> replaced the whole-sentence
+    /// veto with span-scoped coverage, that narrower noun list left the second clause's own word
+    /// ("missing", "skipped", "lost", "overwritten", "dropped") outside every denial match, and
+    /// the hollow verdict was credited on it. The recognized denial vocabulary now also covers the
+    /// participles and adjectives <see cref="ReviewVerdictValidation.DefectLanguagePattern"/>
+    /// itself already reads as defect language, which is the only reason a word left uncovered by
+    /// a denial means anything.
+    /// </summary>
+    [Theory]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing here is broken and nothing is missing.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing is wrong; nothing is missing.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing is amiss; nothing was skipped.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing is wrong and no behavior is lost.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing here is a defect; nothing is overwritten.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing is wrong; no cancellation token is dropped.\n\nVERDICT: needs-fixes")]
+    public void A_compound_denial_whose_second_clause_uses_another_defect_word_is_not_credited(
+        string output) =>
         ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
 
     /// <summary>

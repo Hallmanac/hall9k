@@ -683,34 +683,63 @@ public static partial class ReviewVerdictValidation
     /// denial over a location that was never actually named. <see cref="LocationShape"/> is now
     /// the one literal <see cref="LocationPattern"/> itself compiles from (via its own
     /// <c>[GeneratedRegex(LocationShape)]</c>) rather than a hand-copied duplicate, which is what
-    /// actually keeps the two from drifting apart — a shared literal cannot itself drift, where a
-    /// second hand-copy always risks it again the next time either one changes.
+    /// keeps the two patterns' text from drifting apart, where a second hand-copy always risks it
+    /// again the next time either one changes.
+    /// </para>
+    /// <para>
+    /// Sharing the literal was not on its own enough to make the two mean the same thing (cycle-9
+    /// adversarial finding, `ReviewVerdictValidation.cs:707`), because a shared literal does not
+    /// share the options each pattern is compiled under: this one compiles with
+    /// <see cref="RegexOptions.IgnoreCase"/> and <see cref="LocationPattern"/> with none, so the
+    /// location shape's deliberately lowercase extension rule matched a `Type.Member` reference
+    /// here that <see cref="LocationPattern"/> rejects. <see cref="LocationShape"/> now pins its
+    /// own casing with a <c>(?-i:…)</c> scope; its doc comment carries the detail.
+    /// </para>
+    /// <para>
+    /// Every tempered tail in this pattern now steps through <see cref="DenialTailStep"/> or
+    /// <see cref="StrictDenialTailStep"/>, and both disqualifier lookaheads through
+    /// <see cref="ContrastiveOrLocatedClause"/>, rather than each carrying its own hand-written
+    /// copy of the clause-boundary list (cycle-9 conformance finding,
+    /// `ReviewVerdictValidation.cs:701`): the five copies had drifted apart a cycle at a time,
+    /// and each gap swallowed a genuine two-clause finding as a denial. Those constants' own doc
+    /// comments carry the detail.
+    /// </para>
+    /// <para>
+    /// The subject-copula alternative and the "no … is/are …" one also carry the contrastive
+    /// disqualifier their "nothing/none … wrong/broken/amiss" sibling has had since cycle 4, which
+    /// they need now that <see cref="DenialParticiples"/> widened what they can reach: a real
+    /// finding stated in a contrastive second clause — "Nothing is corrupted, but every Windows
+    /// self-update emits the same warning twice.", "This is cosmetic — no state is wrong, no card
+    /// is duplicated — but it lands in the operator-facing sentence." — was credited before that
+    /// widening only because the denial never matched the participle at all, and would have been
+    /// discarded after it without this guard. Both are drawn from this install's own recorded lens
+    /// output, found by re-running the old and new patterns over all 2,042 of them.
     /// </para>
     /// </summary>
     [GeneratedRegex(
         @"\b(?:nothing|none)\b(?:\s+\w+){0,4}?\s+(?:is|are|was|were|stands?|remains?|exists?|"
         + @"qualif(?:y|ies)(?:\s+as)?|amounts?\s+to|counts?\s+as|worth\s+calling|"
         + @"introduced|raised|survived)\b"
-        + @"(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,40}"
-        + @"\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
-        + @"|\b(?:nothing|none)\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,30}?"
-        + @"\b(?:wrong|broken|amiss)\b(?![^.!?]{0,20}(?:\bbut\b|\byet\b|\bhowever\b|"
-        + @";\s*(?:in\s+)?[`*]{0,3}" + LocationShape + @"))"
+        + DenialTailStep + @"{0,40}"
+        + @"\b(?:" + DenialNouns + @"|" + DenialParticiples + @")\b"
+        + @"(?![^.!?]{0,20}" + ContrastiveOrLocatedClause + @")"
+        + @"|\b(?:nothing|none)\b" + DenialTailStep + @"{0,30}?"
+        + @"\b(?:wrong|broken|amiss)\b(?![^.!?]{0,20}" + ContrastiveOrLocatedClause + @")"
         + @"|\b(?:nothing|none)\b\s+of\s+the\s+(?:defects?|bugs?|issues?|problems?)\b"
         + @"|\bno\b[^.!?]{0,10}\b(?:defects?|bugs?|issues?|problems?)\s+(?:stands?|remains?|exists?|found)\b"
-        + @"|\bno\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,30}?"
-        + @"\b(?:is|are)\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,10}?"
-        + @"\b(?:violat(?:es?|ed)|unmet)\b"
-        + @"|\b(?:does|do|did)\s+not\b(?:(?!,|;|\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b))|\b(?:and|which|but)\b)[^.!?]){0,30}?\bdeparts?\b"
-        + @"|\b(?:nothing|none)\b\s+should\b(?![^.!?]{0,40}(?:\bbut\b|\byet\b|\bhowever\b|"
-        + @";\s*(?:in\s+)?[`*]{0,3}" + LocationShape + @"))",
+        + @"|\bno\b" + StrictDenialTailStep + @"{0,30}?"
+        + @"\b(?:is|are|was|were)\b" + StrictDenialTailStep + @"{0,10}?"
+        + @"\b(?:" + DenialNouns + @"|" + DenialParticiples + @")\b"
+        + @"(?![^.!?]{0,20}" + ContrastiveOrLocatedClause + @")"
+        + @"|\b(?:does|do|did)\s+not\b" + StrictDenialTailStep + @"{0,30}?\bdeparts?\b"
+        + @"|\b(?:nothing|none)\b\s+should\b(?![^.!?]{0,40}" + ContrastiveOrLocatedClause + @")",
         RegexOptions.IgnoreCase)]
     private static partial Regex HeadingDenialPattern();
 
     /// <summary>
-    /// The location shape <see cref="LocationPattern"/> itself compiles from and the two
-    /// semicolon-disqualifier lookaheads in <see cref="HeadingDenialPattern"/> require after the
-    /// semicolon: one literal both use, rather than a hand-copied duplicate that can drift away
+    /// The location shape <see cref="LocationPattern"/> itself compiles from and
+    /// <see cref="ContrastiveOrLocatedClause"/> requires after a clause separator: one literal
+    /// both use, rather than a hand-copied duplicate that can drift away
     /// from <see cref="LocationPattern"/>'s own three alternatives the way two earlier copies each
     /// did in turn (cycle-6 verify finding, `ReviewVerdictValidation.cs:673`, dropped the dotfile
     /// and bare-conventional-filename alternatives entirely; cycle-7 verify finding,
@@ -719,11 +748,135 @@ public static partial class ReviewVerdictValidation
     /// alternatives, so it matched more text as a location than <see cref="LocationPattern"/>
     /// itself would — "Dockerfiles" and ".gitignored" both matched as a `Dockerfile`/`.gitignore`
     /// prefix even though neither is a location <see cref="LocationPattern"/> recognizes).
+    /// <para>
+    /// Wrapped in a <c>(?-i:…)</c> scope (cycle-9 adversarial finding,
+    /// `ReviewVerdictValidation.cs:707`): sharing one literal keeps the two patterns' *text* from
+    /// drifting, but it does not share the options each one is compiled under, and
+    /// <see cref="HeadingDenialPattern"/> compiles with <see cref="RegexOptions.IgnoreCase"/>
+    /// while <see cref="LocationPattern"/> compiles with none. In .NET that option applies to an
+    /// interpolated character class too, so the extension alternative's deliberately lowercase
+    /// <c>[a-z]{2,10}</c> — the cycle-6 narrowing that keeps a `Type.Member` reference from
+    /// reading as a location — matched `Uri.TryCreate` inside the denial pattern's own
+    /// disqualifier while <see cref="LocationPattern"/> rejected it, so "I found nothing wrong;
+    /// `Uri.TryCreate` handles this correctly." had its semicolon disqualified over a location
+    /// that was never named and the hollow verdict was credited. The explicit scope pins the
+    /// casing rule to the literal itself rather than to whichever pattern happens to interpolate
+    /// it, which is what actually makes this one literal mean one thing in both places.
+    /// </para>
     /// </summary>
     private const string LocationShape =
-        @"(?:[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(:\d+)?"
+        @"(?-i:[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(:\d+)?"
         + @"|\B\.(?:gitignore|gitattributes|gitmodules|dockerignore|editorconfig|env|npmrc|nvmrc)(?::\d+)?\b"
         + @"|\b(?:Dockerfile|Makefile|Jenkinsfile|Gemfile|Rakefile|Procfile|Vagrantfile)(?::\d+)?\b)";
+
+    /// <summary>
+    /// Every way a reviewer's sentence opens a second, independent clause, as one literal shared
+    /// by every tempered tail in <see cref="HeadingDenialPattern"/> (cycle-9 conformance finding,
+    /// `ReviewVerdictValidation.cs:701`): each of those tails had grown its own hand-written list
+    /// of boundaries a cycle at a time, and they had drifted apart — the "no … is/are …
+    /// violated/unmet" alternative blocked <c>;</c>, "and" and "so" but not a bare comma, while
+    /// its sibling "does not … departs" one line below already blocked the comma, and none of
+    /// them blocked an em dash or a colon. A genuine two-clause finding — "`Store.cs:40` has no
+    /// test, criterion 3 is unmet.", "`Sweep.cs:12` acquires no lock — the invariant is
+    /// violated.", "`Foo.cs:12` does not seal the record — it departs from AGENTS.md." — was
+    /// swallowed whole as a denial by whichever tail was missing that one separator, and the
+    /// finding was discarded. One literal, the same reason <see cref="LocationShape"/> is one:
+    /// five hand-maintained copies of the same idea drift, and each drift costs a real finding.
+    /// <para>
+    /// "but", "yet", "however" and "which" join the list here for the same reason: the two
+    /// lookahead-style disqualifiers below already treated them as contrastive, and the
+    /// "does not … departs" tail already blocked "which" and "but", but the two
+    /// "nothing/none …" tails did not, so "Nothing is wrong, which hides the real bug." read as
+    /// one denial span covering the very defect its second clause states.
+    /// </para>
+    /// <para>
+    /// An em dash is blocked outright rather than only when it opens a fresh clause, which costs
+    /// one recognized denial shape: an em-dash-bracketed aside ("Nothing here is — in my
+    /// judgment — a defect.") now reads as a stated finding, where its comma-bracketed twin
+    /// ("Nothing here is, in my judgment, a defect.") still reads as the denial it is, because a
+    /// bare comma stays permitted in <see cref="DenialTailStep"/> for exactly that shape. Telling
+    /// a paired aside dash from a lone clause-break dash needs a pairing rule a tempered token
+    /// cannot state honestly, and the trade is deliberately taken in the direction every cycle in
+    /// this file has taken it: an unrecognized denial is the accepted recall gap this file's other
+    /// vocabulary lists already disclose, while a discarded real finding parks a human over a
+    /// finding that was stated plainly.
+    /// </para>
+    /// <para>
+    /// The bare "so" alternative also stays silent when "so" is immediately followed by one of
+    /// <see cref="DenialNouns"/> or <see cref="DenialParticiples"/> (PR #214 review, Copilot): "so"
+    /// there is an intensifier modifying the adjective ("Nothing is so wrong here.", "Nothing here
+    /// is so broken it matters."), not a word opening a second clause, and treating it as one broke
+    /// the tail's own reach to the vocabulary word the denial pattern needs to recognize the
+    /// sentence as a denial at all — a pure denial phrased this way could then be misclassified as
+    /// a finding wherever a location happened to sit nearby. A "so" followed by anything else
+    /// ("Nothing here is fine, so the bug is real, …") still opens a boundary exactly as before.
+    /// </para>
+    /// </summary>
+    private const string ClauseBoundary =
+        @";|:|\s*[—–]|\b(?:but|yet|however|which)\b"
+        + @"|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)"
+        + @"|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b"
+        + @"|(?:" + DenialNouns + @"|" + DenialParticiples + @")\b))";
+
+    /// <summary>
+    /// One character of a denial's tempered tail: any character that neither ends the sentence nor
+    /// opens a <see cref="ClauseBoundary"/>. A bare comma is deliberately permitted here, because
+    /// this is the tail the two "nothing/none …" alternatives use and a genuine denial's own
+    /// comma-bounded aside sits inside it ("Nothing here is, in my judgment, a defect.", "Nothing
+    /// else in the delta introduced a regression, and I found no new defect …").
+    /// </summary>
+    private const string DenialTailStep = @"(?:(?!" + ClauseBoundary + @")[^.!?])";
+
+    /// <summary>
+    /// The same tail step, additionally stopping at a bare comma: the tail the "no … is/are …"
+    /// and "does not … departs" alternatives use, where a comma is a clause break rather than an
+    /// aside ("`Store.cs:40` has no test, criterion 3 is unmet."). The "does not … departs"
+    /// alternative already stopped at a comma before cycle 9; its "no … is/are …" sibling, added
+    /// in the same commit, did not, which is the inconsistency that finding named.
+    /// </summary>
+    private const string StrictDenialTailStep = @"(?:(?!,|" + ClauseBoundary + @")[^.!?])";
+
+    /// <summary>
+    /// What disqualifies a "nothing/none … wrong" or bare "nothing/none should" denial: an
+    /// explicit contrastive conjunction, or a clause separator followed by an actual
+    /// <see cref="LocationShape"/> — the discriminator that tells a real second clause naming a
+    /// defect's location from an elaboration that merely restates the denial. The separator was a
+    /// bare semicolon until cycle 9 (conformance finding, `ReviewVerdictValidation.cs:705`), so
+    /// "Nothing should be logged before the guard runs — `Store.cs:40` logs first." was read as a
+    /// denial covering its own second clause's defect; a colon and an em dash join a semicolon
+    /// here for the same reason.
+    /// </summary>
+    private const string ContrastiveOrLocatedClause =
+        @"(?:\bbut\b|\byet\b|\bhowever\b|(?:[;:]|\s*[—–])\s*(?:in\s+)?[`*]{0,3}"
+        + LocationShape + @")";
+
+    /// <summary>
+    /// The nouns a denial names the absent defect with, the vocabulary
+    /// <see cref="HeadingDenialPattern"/> has always recognized.
+    /// </summary>
+    private const string DenialNouns = @"wrong|broken|amiss|defects?|bugs?|issues?|problems?";
+
+    /// <summary>
+    /// The participles and adjectives a second denial clause states the same absence with, drawn
+    /// from <see cref="DefectLanguagePattern"/>'s own vocabulary (cycle-9 adversarial finding,
+    /// `ReviewVerdictValidation.cs:1428`): once <see cref="StatesDefectOutsideDenial"/> replaced
+    /// the whole-span veto with span-scoped coverage, a compound denial whose second clause used
+    /// any defect word outside <see cref="DenialNouns"/> left that word uncovered and credited the
+    /// hollow verdict — "Nothing here is broken and nothing is missing.", "Nothing is amiss;
+    /// nothing was skipped.", "Nothing is wrong and no behavior is lost.", "Nothing is wrong; no
+    /// cancellation token is dropped." are all recorded-shape denials that were credited as
+    /// findings. The list is the subset of <see cref="DefectLanguagePattern"/>'s vocabulary that
+    /// reads naturally as the predicate of "nothing/no X is …"; a defect word that does not
+    /// ("logged", "validated", "escaped") is deliberately absent, because "nothing is logged" is
+    /// a defect statement rather than a denial — the exact shape this task exists to stop
+    /// discarding. Widening it is safe only because the tail that reaches it cannot cross a
+    /// <see cref="ClauseBoundary"/>, so a real defect stated in a *second* clause is still never
+    /// swallowed.
+    /// </summary>
+    private const string DenialParticiples =
+        @"missing|incorrect|stale|inconsistent|unhandled|vulnerable|lost|dropped|skipped|ignored|"
+        + @"corrupted|overwritten|duplicated|mismatched|deleted|departs?|stuck|failing|failed|"
+        + @"unmet|violat(?:es?|ed)";
 
     /// <summary>
     /// Whether a needs-fixes pass's own output states at least one finding, once the verdict
@@ -1422,13 +1575,26 @@ public static partial class ReviewVerdictValidation
     /// alternative anchors at its own negator word, and every <see cref="DefectLanguagePattern"/>
     /// match is word-bounded, so a defect match can never start before the denial match it would
     /// need to overlap — but a future vocabulary addition to either pattern could change that.
+    /// <para>
+    /// The defect scan runs first and returns early when it finds nothing (cycle-9 adversarial
+    /// finding, `ReviewVerdictValidation.cs:1428`): this method is called once per sentence from
+    /// <see cref="NamesFindingInProse"/> and once per paragraph from
+    /// <see cref="StatesDefectInLaterParagraph"/>, and for the common span that carries no defect
+    /// vocabulary at all there is nothing for the far more expensive denial scan to screen.
+    /// </para>
     /// </summary>
     private static bool StatesDefectOutsideDenial(string text)
     {
-        List<Match> denialMatches = [.. HeadingDenialPattern().Matches(text).Cast<Match>()];
-        foreach (Match defect in DefectLanguagePattern().Matches(text))
+        MatchCollection defects = DefectLanguagePattern().Matches(text);
+        if (defects.Count == 0)
         {
-            bool coveredByDenial = denialMatches.Any(
+            return false;
+        }
+
+        MatchCollection denials = HeadingDenialPattern().Matches(text);
+        foreach (Match defect in defects)
+        {
+            bool coveredByDenial = denials.Any(
                 denial => defect.Index >= denial.Index && defect.Index < denial.Index + denial.Length);
             if (!coveredByDenial)
             {
