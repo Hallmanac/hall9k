@@ -63,8 +63,8 @@ time either way. Check 2 is the one that actually catches this: it inspects the 
 tree itself, not the commit graph, so the file shows up there even when the diff is silent
 about it.
 
-**A non-empty check 1 with a clean check 2 is not automatically a pass, and it is not
-automatically a failure either — read what the diff shows before concluding.** The normal
+**A non-empty check 1 with a clean check 2 is not automatically a failure, but it is not a
+pass to declare in place either — read what the diff shows before concluding.** The normal
 `Process` above (step 1: inspect `git status`) already picks up a file that was never
 checkpointed before the pre-reset tip was recorded, right alongside everything else, and
 step 3 commits it as part of the plan like any other file — there is nothing wrong with
@@ -72,13 +72,22 @@ that commit. But the pre-reset tip predates that content, so `git diff <pre-rese
 will show it as newly added forever, no matter how correctly it was composed; that tip
 cannot be satisfied by any recompose from here, because it never claimed to cover content
 it never held. If everything the diff shows is exactly that kind of legitimate addition —
-material `git status` surfaced during step 1 and the plan folded in on its own commit, not a
-deletion and not something you cannot account for from that inspection — record a new
-pre-reset tip right here (`git rev-parse HEAD`) and treat the recompose as finished; there is
-nothing further to prove against the old tip once a fresh one exists to measure from. If the
-diff instead shows a deletion, or content you cannot trace back to step 1's own inspection,
-treat it as a real failure the same as any other: something was dropped or mis-composed, and
-it needs fixing and re-verifying, not a fresh tip papering over it.
+material `git status` surfaced during step 1 and the plan folded into a commit, not a
+deletion and not something you cannot account for from that inspection — this is the same
+failure mode check 2 catches below (content that belongs in this branch but was never
+checkpointed before the pre-reset tip was recorded), just caught one step later, at the diff
+instead of at the working tree, and it takes the identical fix. Do not paper over it by
+recording a new pre-reset tip from the current, already-recomposed HEAD — that would compare
+the new tip against itself and prove nothing about the recompose it is supposed to verify.
+Instead: `git reset --mixed <old-pre-reset-tip>` to unwind the composed commits back to the
+original baseline (a mixed reset changes only which commits exist, never the tree, so the
+content the diff surfaced is still sitting right there afterward, now uncommitted again),
+checkpoint-commit that content as an ordinary checkpoint commit, record a *new* pre-reset tip
+from that checkpoint (`git rev-parse HEAD`), and redo the reset-and-recompose from there,
+exactly as check 2's own first bullet below prescribes for the same content found the other
+way. If the diff instead shows a deletion, or content you cannot trace back to step 1's own
+inspection, treat it as a real failure the same as any other: something was dropped or
+mis-composed, and it needs fixing and re-verifying, not a fresh tip papering over it.
 
 If check 2 finds anything, decide which of two things it is before touching it:
 
