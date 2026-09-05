@@ -244,6 +244,24 @@ reach a live address. A handback is never one of these no-registration cases eit
 the interactive-mode flag unconditionally, so a handback-dispatched run never reaches these rules
 at all.
 
+Delegating the build while staying at the wheel is its own command, distinct from handback
+(task 15f889e3, design ruling R6): `h9k task delegate <id> --note "<text>"` dispatches a headless
+build contractor onto the operator's own live interactive claim — the same run, worktree, and
+branch, reused exactly as they stand, whether or not any work has been committed there yet — while
+the task stays the operator's, still in interactive mode. It shares `h9k task start`'s own
+ceiling-exempt mechanism (the claim's sentinel node id already exempts it) and its slice-1
+`<task-shortid>-build` name, and sets `ResumesPreviousWork` whenever the branch already carries a
+commit ahead of base, exactly as a resumed retry does. `--note` is required and carries the
+operator's own handoff into the contractor's starting prompt in the blocker-handoff mold (what was
+attempted, what is deliberate versus abandoned, what latitude is granted); the prompt's own default
+posture toward inherited work is conservative, and discard latitude exists only when the note
+grants it explicitly. Refused on everything but that live claim — a headless claim, a different
+owner's claim, a pr-review sentinel claim, a run already handed to the standard pipeline, or a
+worktree another session is still attached to all refuse by name. The reverse move: once the
+contractor reports back, `h9k task work <id>` re-enters the same worktree interactively so the
+operator can finish the build themselves — the wheel changes hands in both directions, always at a
+boundary.
+
 By default `h9k task work` claims and cuts as above, then prints the worktree path, the branch,
 and a starting prompt (assembled through `WorkPromptBuilder`, the same code every path already
 uses) for the operator to paste into a Claude Code session started anywhere — it no longer
@@ -266,6 +284,7 @@ h9k task work <id> --acknowledge-unmet-dependencies   # claim a task anyway, des
 h9k task register-session <id>       # the pasted session's own first act: register its process identity against the claim
 h9k task verify <id>                 # run the project's gates on demand against the claim's worktree
 h9k task deliver <id>                # push and hand the claim into the standard delivery pipeline
+h9k task delegate <id> --note "<text>"   # dispatch a headless build contractor onto this same claim for one phase, staying in interactive mode
 h9k task handback <id>               # release the claim to a headless agent partway through, resuming the branch
 h9k task handback <id> --first   # same release, plus the queue-first marker: the next free slot takes it regardless of age (Decisions Log #127)
 h9k task handback <id> --now     # same release, dispatched immediately, ceiling-exempt, through h9k task start's own mechanism — refused together with --first
