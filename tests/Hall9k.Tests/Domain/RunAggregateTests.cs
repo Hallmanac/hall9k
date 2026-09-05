@@ -936,6 +936,26 @@ public sealed class RunAggregateTests
         run.PendingHumanFindings.Should().BeNull("the fix session finished, so the human findings are consumed");
     }
 
+    [Fact]
+    public void Review_parked_records_needs_fixes_offers_no_progress_and_resolve_clears_it()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        run.Apply(new ReviewParked(
+            id, "The conformance track's own cap is 0.", Now, NeedsFixesOffersNoProgress: true));
+        run.ParkedNeedsFixesOffersNoProgress.Should().BeTrue(
+            "a cap-0 takeover park never dispatches a fix session before the identical park reappears");
+
+        run.Apply(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "Go ahead anyway.", Now, DomainId.New()));
+        run.ParkedNeedsFixesOffersNoProgress.Should().BeFalse(
+            "the park just resolved, so the flag it carried does not bleed into whatever this run does next");
+    }
+
     /// <summary>
     /// A fix round dispatched purely over a human's needs-fixes reason (a cap park resolved
     /// with new guidance, never a fix session over that cycle's own automated findings) must

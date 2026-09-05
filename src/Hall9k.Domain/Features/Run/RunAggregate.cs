@@ -508,6 +508,17 @@ public sealed class RunAggregate
     /// </summary>
     public RunState ParkedFromState { get; private set; } = RunState.Unknown;
 
+    /// <summary>
+    /// Whether granting <c>--needs-fixes</c> against the park just recorded cannot clear it (a
+    /// per-track cap-0 takeover park, a final-full-pass cap-0 park, or the lifetime-budget park)
+    /// — mirrors <see cref="Events.ReviewParked.NeedsFixesOffersNoProgress"/> and
+    /// <see cref="Projections.RunDetails.ParkedNeedsFixesOffersNoProgress"/> so
+    /// <c>ReviewResolveCommand</c>'s own outcome message agrees with what
+    /// <c>h9k status</c> already says, instead of unconditionally promising progress a cap or
+    /// budget still blocks.
+    /// </summary>
+    public bool ParkedNeedsFixesOffersNoProgress { get; private set; }
+
     /// <summary>Whether this run handed anything down at true closeout, and when not, why (log #36).</summary>
     public HandoffOutcome HandoffOutcome { get; private set; } = HandoffOutcome.Unknown;
 
@@ -848,6 +859,7 @@ public sealed class RunAggregate
     {
         // Captured before the overwrite: State still holds where the park caught the run.
         ParkedFromState = State;
+        ParkedNeedsFixesOffersNoProgress = @event.NeedsFixesOffersNoProgress;
         ReviewPhase = ReviewPhase.Parked;
         State = RunState.ReviewParked;
     }
@@ -901,6 +913,7 @@ public sealed class RunAggregate
             FinalFullPassRounds = 0;
         }
 
+        ParkedNeedsFixesOffersNoProgress = false;
         State = RunState.UnderReview;
     }
 
