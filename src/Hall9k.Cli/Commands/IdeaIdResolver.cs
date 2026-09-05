@@ -20,6 +20,13 @@ internal static class IdeaIdResolver
         }
 
         string fragment = idOrFragment.Replace("-", "");
+        if (fragment.Length == 0)
+        {
+            throw new DomainValidationException(
+                $"'{idOrFragment}' has no characters to match an idea by — pass a full id or a "
+                + "non-empty fragment of one.");
+        }
+
         IReadOnlyList<IdeaDetails> all = await session.Query<IdeaDetails>().ToListAsync(cancellationToken);
         Guid[] matches = [.. all
             .Where(idea => idea.Id.ToString("N").StartsWith(fragment, StringComparison.OrdinalIgnoreCase)

@@ -15,6 +15,13 @@ internal static class TaskIdResolver
         }
 
         string fragment = idOrFragment.Replace("-", "");
+        if (fragment.Length == 0)
+        {
+            throw new DomainValidationException(
+                $"'{idOrFragment}' has no characters to match a task by — pass a full id or a "
+                + "non-empty fragment of one.");
+        }
+
         IReadOnlyList<TaskListItem> all = await session.Query<TaskListItem>().ToListAsync(cancellationToken);
         Guid[] matches = [.. all
             .Where(t => t.Id.ToString("N").StartsWith(fragment, StringComparison.OrdinalIgnoreCase)
