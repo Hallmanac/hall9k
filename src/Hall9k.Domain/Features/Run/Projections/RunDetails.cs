@@ -736,7 +736,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         // sat pending for the whole settle window would never actually trip it.
         if (@event.Data.State == ExternalReviewState.RequestedPending)
         {
-            view.CopilotReviewRequestPendingSince ??= @event.Timestamp;
+            view.CopilotReviewRequestPendingSince ??= @event.Data.ObservedAt;
         }
         else
         {
