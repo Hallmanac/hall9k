@@ -1305,6 +1305,14 @@ public sealed class RunAggregate
     {
     }
 
+    // No-op for the identical reason ExternalInteractionLogged's own Apply above is: delegating
+    // this run's own next session to a contractor changes nothing this aggregate fences on — the
+    // claim, the assignment, and the worktree/branch are all untouched (design ruling R6). Exists
+    // only so this stream replays without a gap; RunDetails.PhaseDelegations is the read model.
+    public void Apply(RunPhaseDelegated @event)
+    {
+    }
+
     public void Apply(PullRequestOpened @event)
     {
         PullRequestUrl = @event.PullRequestUrl;

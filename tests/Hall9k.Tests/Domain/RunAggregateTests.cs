@@ -1848,6 +1848,30 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// h9k task delegate's own event (design ruling R6, idea fcaded0b's design rulings, Take the
+    /// Wheel epic 9272e514's slice 10) replays the identical way <see cref="ExternalInteractionLogged"/>
+    /// does — a pure log entry the write path fences on nothing, so this stream replays without a
+    /// gap and <see cref="RunDetails.PhaseDelegations"/> is the read model anything that actually
+    /// needs the delegation history.
+    /// </summary>
+    [Fact]
+    public void Run_phase_delegated_replays_as_a_pure_no_op()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+
+        Action act = () => run.Apply(new RunPhaseDelegated(
+            id, "Drafted the migration; untested past the happy path.", Now, DomainId.New(), "abc12345-build"));
+
+        act.Should().NotThrow();
+        run.State.Should().Be(RunState.Dispatched, "delegating this run's own next session never advances its state");
+    }
+
+    /// <summary>
     /// Closeout's mechanical rebase fast path (recommendation 3, idea fc85f609): a clean apply
     /// records the four fields and leaves State untouched (still AwaitingReview) so the very next
     /// sweep re-inspects the pushed head — the sibling PullRequestConflictObserved handler two

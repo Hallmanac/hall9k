@@ -225,6 +225,15 @@ public sealed class RunDetails
     /// </summary>
     public List<ExternalInteractionRecord> ExternalInteractions { get; set; } = [];
     /// <summary>
+    /// Every <see cref="Events.RunPhaseDelegated"/> this run has recorded, oldest first (design
+    /// ruling R6, idea fcaded0b's design rulings, Take the Wheel epic 9272e514's slice 10): an
+    /// operator holding this task interactively dispatched a contractor build agent for one
+    /// phase rather than leaving the wheel. A task can be delegated more than once across a
+    /// single interactive claim's lifetime — delegate, re-enter, delegate again — so this is a
+    /// history, the same shape <see cref="ExternalInteractions"/> already is.
+    /// </summary>
+    public List<PhaseDelegation> PhaseDelegations { get; set; } = [];
+    /// <summary>
     /// How the review loop ended (Decisions Log #63): Clean when a reviewer read the final tip
     /// and found nothing, Settled when the severity gate, scope routing, or a human's park
     /// resolution ended it. Unknown while the loop runs, and Unknown forever for a run whose
@@ -765,6 +774,10 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ExternalInteractions.Add(new ExternalInteractionRecord(
             @event.Data.LoggedAt, @event.Data.Party, @event.Data.Summary, @event.Data.HumanDirected,
             @event.Data.Reason));
+
+    public void Apply(IEvent<RunPhaseDelegated> @event, RunDetails view) =>
+        view.PhaseDelegations.Add(new PhaseDelegation(
+            @event.Data.DelegatedAt, @event.Data.Note, @event.Data.DelegatedByOwnerId, @event.Data.SessionName));
 
     public void Apply(IEvent<PullRequestOpened> @event, RunDetails view)
     {
