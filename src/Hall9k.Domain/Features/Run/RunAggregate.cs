@@ -145,6 +145,19 @@ public sealed class RunAggregate
     /// <summary>The owner's h9k review resolve --merge-ready verdict on a pr-review park: walk done, close the task.</summary>
     public bool PrReviewDelivered { get; private set; }
 
+    /// <summary>
+    /// Every leg/cycle/lens combination that has already spent its one error-result retry
+    /// (task: a session that reports an error result is retried once in place) — checked by
+    /// <see cref="HasRetriedSessionError"/> before a second consecutive error on the identical
+    /// combination is allowed to fail the run rather than retry again. Never cleared: a key is
+    /// only ever checked again by the exact same leg/cycle/lens that produced it, and a second
+    /// occurrence there is precisely the "second consecutive error" this exists to catch.
+    /// </summary>
+    private readonly HashSet<string> _errorRetriedLegs = [];
+
+    /// <summary>How many sessions this run has retried once after an error result — a count for the record; <see cref="HasRetriedSessionError"/> is what the engine actually decides on.</summary>
+    public int SessionErrorRetryCount { get; private set; }
+
     /// The pre-PR review loop (log #24): which round of review the run is on, from 1. Every
     /// still-active track shares it — tracks only ever advance together, because the only thing
     /// that advances one is a fix session and gates that every live track then re-reads (log
@@ -1309,6 +1322,41 @@ public sealed class RunAggregate
             PrReviewConformanceBudgetExhausted = true;
         }
     }
+
+    /// <summary>
+    /// Records the one retry a leg/cycle/lens combination gets (task: a session that reports an
+    /// error result is retried once in place). Deliberately narrower than
+    /// <see cref="Apply(RunBudgetExhausted)"/>: that clears every in-flight review pass because
+    /// a park may sit for an hour and nobody would ever read a sibling's verdict either, while
+    /// this retry is a short in-place backoff, so a review-pass leg removes only ITS OWN
+    /// in-flight entry (<see cref="ReviewPass"/> keeps a still-running sibling lens exactly as it
+    /// was — the run engine redispatches the missing lens the same way an ordinary crash-recovery
+    /// top-up already does) and a fix leg clears the active fix session so the loop's own
+    /// FixNeeded phase redispatches it fresh over the same findings.
+    /// </summary>
+    public void Apply(RunSessionErrorRetried @event)
+    {
+        _errorRetriedLegs.Add(ErrorRetryLegKey(@event.Leg, @event.Cycle, @event.Lens));
+        SessionErrorRetryCount++;
+
+        if (@event.Leg == RunSessionLeg.ReviewPass)
+        {
+            ReviewLens lens = @event.Lens ?? ReviewLens.Unknown;
+            _inFlightReviewPasses.RemoveAll(pass => pass.Lens == lens);
+        }
+        else if (@event.Leg == RunSessionLeg.Fix)
+        {
+            ClearActiveFixSession();
+            ReviewPhase = ReviewPhase.FixNeeded;
+        }
+    }
+
+    /// <summary>Whether <paramref name="leg"/>/<paramref name="cycle"/>/<paramref name="lens"/> has already spent its one error-result retry — a second occurrence here fails the run.</summary>
+    public bool HasRetriedSessionError(RunSessionLeg leg, int? cycle, ReviewLens? lens) =>
+        _errorRetriedLegs.Contains(ErrorRetryLegKey(leg, cycle, lens));
+
+    private static string ErrorRetryLegKey(RunSessionLeg leg, int? cycle, ReviewLens? lens) =>
+        $"{leg.Value}:{cycle?.ToString() ?? "-"}:{lens?.Value ?? "-"}";
 
     public void Apply(RunFailed @event) => State = RunState.Failed;
 
