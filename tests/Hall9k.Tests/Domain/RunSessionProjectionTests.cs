@@ -346,4 +346,28 @@ public sealed class RunSessionProjectionTests
         view.RegisteredInteractiveSessionName.Should().NotBeNull(
             "distinct from nobody ever registering at all — InteractiveClaudeSessionId is set here");
     }
+
+    /// <summary>
+    /// <c>h9k task start</c> appends this identical event for its own headless build agent, never a
+    /// human, and it always turns interactive mode on — so without a discriminator this write would
+    /// tell every later review/fix prompt that agent's own exited session is "the human's own
+    /// registered session" (independent pre-PR review, cycle 1, both lenses). The build-role suffix
+    /// (<see cref="SessionRoleName.Build"/>) is what tells it apart from an operator's own
+    /// registration, the same discriminator <c>TaskPhaseComposer</c> already relies on.
+    /// </summary>
+    [Fact]
+    public void Registered_interactive_session_name_stays_null_for_h9k_task_starts_own_headless_build_agent()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = Dispatched(projection, id, sessionName: "abc12345-build");
+
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", SessionName: "abc12345-build")),
+            view);
+
+        view.RegisteredInteractiveSessionName.Should().BeNull(
+            "the build agent's own session name is not a human's — h9k task start dispatched this run headless "
+            + "and nobody has run h9k task register-session against it");
+    }
 }
