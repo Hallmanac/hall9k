@@ -31,6 +31,23 @@ public static class DaemonRuntime
     public static string LockFile => Path.Combine(RunPaths.Root, "h9kd.lock");
 
     /// <summary>
+    /// Written by <c>h9k daemon start</c> itself, the moment before it spawns — evidence
+    /// that a launch is in flight for the window between the spawn and the daemon's own
+    /// pid file appearing. That window is not always short: the single-instance guard
+    /// (and the pid file it writes) is the first statement in <c>Program.cs</c>, well
+    /// before <c>UseWolverine</c> ever runs — so it is not Wolverine's own handler-discovery
+    /// scan of every DLL in <see cref="BinDirectory"/> that stretches this window past 10s
+    /// on at least one real machine (the Arx Windows node, 2026-09-03, ~15s), but the
+    /// assembly resolution and JIT that even reaching that first statement waits on. Without
+    /// this marker, <c>h9k daemon status</c> asked during that window sees no pid file and
+    /// reports "not running" — indistinguishable from actually down, and an invitation to
+    /// start a second instance racing a guard that has not yet been observed to run, let
+    /// alone been confirmed to hold the lock. See <see cref="DaemonStartingMarker"/> for how
+    /// it is read.
+    /// </summary>
+    public static string StartingMarkerFile => Path.Combine(RunPaths.Root, "h9kd.starting");
+
+    /// <summary>
     /// The first token of the daemon's startup catch-up log line (what it adopted,
     /// swept, and closed out while down). h9k daemon start tails the log for this
     /// marker so "on demand" shows its latency cost the moment it is paid.
