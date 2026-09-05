@@ -193,7 +193,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // operator's interactive session exactly as they do a dispatched agent's.
         // The CLI cannot reference Hall9k.Daemon (Reference graph: Cli -> Domain + Connectors),
         // so there is no live VerifyGateTimeout to read here — DefaultCommandTimeout mirrors its
-        // default, held to it by ClaudeSettingsFileTests. That the same 15 minutes is written down
+        // default, held to it by ClaudeSettingsFileTests. That the same 30 minutes is written down
         // in more than one place is a choice about which project owns the number, not a reference
         // the compiler forbids; ClaudeSettingsFile.DefaultCommandTimeout's own doc has the why.
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);

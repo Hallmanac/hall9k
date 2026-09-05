@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
@@ -198,6 +199,18 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         return ExitCodes.Ok;
     }
 
+    // Mirrors DaemonOptions.VerifyGateTimeout's own default (30 minutes, PLAN.md §16 #132's
+    // follow-up review) — this project cannot reference Hall9k.Daemon (Reference graph:
+    // Cli -> Domain + Connectors), so there is no per-project override here.
+    private static readonly TimeSpan GateTimeout = TimeSpan.FromMinutes(30);
+
+    // Mirrors GateInfrastructureFailureClassifier.GateWaitEvidenceDirectoryEnvironmentVariable's
+    // literal value (Hall9k.Daemon) rather than referencing it, for the identical reason
+    // GateTimeout above duplicates DaemonOptions.VerifyGateTimeout instead of reading it.
+    private const string GateWaitEvidenceDirectoryEnvironmentVariable = "HALL9K_VERIFY_GATE_WAIT_DIR";
+
+    private static readonly Regex ElapsedSecondsPattern = new(@"\((?<seconds>\d+)s elapsed", RegexOptions.Compiled);
+
     private static async Task<(bool Passed, string Summary)> RunGateAsync(
         string worktreePath, VerifyCommand gate, CancellationToken cancellationToken)
     {
@@ -209,6 +222,18 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+
+        // Where CrossProcessContainerGate.AcquireAsync leaves durable evidence that a
+        // dotnet-test-shaped gate was still queued on the machine-wide container gate at the
+        // moment it was killed (PLAN.md §16 #132) — never the gate's own captured console output,
+        // which vstest.console buffers internally and only relays if it survives long enough to
+        // report the testhost's own death, which the entireProcessTree kill below never allows
+        // (the same reasoning VerificationRunner.RunGateAsync's own identical plumbing documents).
+        // Scoped to this one gate invocation and removed once it finishes, in the finally block
+        // below, so a directory from an earlier verify never lingers or is mistaken for this one's.
+        string gateWaitDirectory = Directory.CreateTempSubdirectory("hall9k-verify-gate-wait-").FullName;
+        process.StartInfo.Environment[GateWaitEvidenceDirectoryEnvironmentVariable] = gateWaitDirectory;
+
         if (OperatingSystem.IsWindows())
         {
             process.StartInfo.FileName = "cmd.exe";
@@ -257,64 +282,150 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
 
         try
         {
-            process.Start();
-        }
-        catch (Win32Exception exception)
-        {
-            // The worktree can vanish between h9k task work claiming it and this gate running
-            // (deleted by hand, or pruned) — TaskWorkCommand.ReenterAsync guards this exact state
-            // explicitly, and this is the one command in the interactive surface that would
-            // otherwise crash on it with a raw stack trace instead of the domain-shaped failure
-            // every other gate outcome here already returns (adversarial review, cycle 8).
-            return (false, $"Gate '{gate.Name}' could not start: {exception.Message}");
-        }
-
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        // Mirrors VerificationRunner.RunGateAsync's own kill-on-cancel and timeout: an operator's
-        // own Ctrl-C, or a gate that simply hangs, must not leave it writing into the claim's
-        // worktree after this command has already walked away from it, and must not block the
-        // command indefinitely either (adversarial review, cycle 1). 15 minutes mirrors
-        // DaemonOptions.VerifyGateTimeout's own default — the CLI cannot reference that type
-        // (Reference graph: Cli -> Domain + Connectors), so there is no per-project override here.
-        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMinutes(15));
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            if (!process.HasExited)
+            try
             {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (InvalidOperationException)
-                {
-                    // Already exited between the check and the kill — nothing left to do.
-                }
+                process.Start();
+            }
+            catch (Win32Exception exception)
+            {
+                // The worktree can vanish between h9k task work claiming it and this gate running
+                // (deleted by hand, or pruned) — TaskWorkCommand.ReenterAsync guards this exact
+                // state explicitly, and this is the one command in the interactive surface that
+                // would otherwise crash on it with a raw stack trace instead of the domain-shaped
+                // failure every other gate outcome here already returns (adversarial review,
+                // cycle 8).
+                return (false, $"Gate '{gate.Name}' could not start: {exception.Message}");
             }
 
-            if (cancellationToken.IsCancellationRequested)
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            // Mirrors VerificationRunner.RunGateAsync's own kill-on-cancel and timeout: an
+            // operator's own Ctrl-C, or a gate that simply hangs, must not leave it writing into
+            // the claim's worktree after this command has already walked away from it, and must
+            // not block the command indefinitely either (adversarial review, cycle 1).
+            using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(GateTimeout);
+            try
             {
-                throw;
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                if (!process.HasExited)
+                {
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Already exited between the check and the kill — nothing left to do.
+                    }
+                }
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                // Honest about which it was, rather than blaming a broken gate for what may be
+                // ordinary cross-process contention on CrossProcessContainerGate (PLAN.md §16
+                // #132) — an operator reading a plain "exceeded its timeout" here has no way to
+                // tell the two apart otherwise (independent pre-PR review, cycle 1). Never
+                // retried: this command is deliberately simpler than the daemon's own
+                // VerificationRunner (see this type's own doc comment) — an operator who reads
+                // "still queued" can just run h9k task verify again.
+                string? waitExcerpt = DescribeUnresolvedGateWait(gateWaitDirectory, GateTimeout);
+                string timeoutSummary = waitExcerpt is null
+                    ? $"Gate '{gate.Name}' exceeded its {GateTimeout.TotalMinutes:0}-minute timeout."
+                    : $"Gate '{gate.Name}' exceeded its {GateTimeout.TotalMinutes:0}-minute timeout while " +
+                      "still queued on the cross-process container gate (PLAN.md §16 #132) — it never even " +
+                      "reached its own tests. This is very likely contention from another concurrent " +
+                      "dotnet test invocation (a headless run, this project's own foreground suite, or " +
+                      $"another operator's own h9k task verify), not a broken gate; try again once it " +
+                      $"finishes. {waitExcerpt}";
+                return (false, timeoutSummary);
             }
 
-            return (false, $"Gate '{gate.Name}' exceeded its 15-minute timeout.");
-        }
+            string tail;
+            lock (outputLock)
+            {
+                tail = Tail(output.ToString());
+            }
 
-        string tail;
-        lock (outputLock)
+            return process.ExitCode == 0
+                ? (true, "ok")
+                : (false, $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {tail}");
+        }
+        finally
         {
-            tail = Tail(output.ToString());
+            try
+            {
+                Directory.Delete(gateWaitDirectory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort: a leftover scratch directory under the OS temp root is not this
+                // gate's problem to solve, the same convention CrossProcessContainerGate's own
+                // evidence-file cleanup follows.
+            }
+        }
+    }
+
+    // The evidence file this gate's own CrossProcessContainerGate.AcquireAsync writes is a short,
+    // fixed-shape diagnostic line, always well under this — HALL9K_VERIFY_GATE_WAIT_DIR is
+    // exported to the gate's whole process tree, i.e. to the agent's own test code too, so a file
+    // there is skipped rather than read unbounded into memory (independent pre-PR review, cycle 1,
+    // the same reasoning GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt now applies).
+    private const long MaxWaitEvidenceBytes = 4096;
+
+    /// <summary>
+    /// Whether some file in <paramref name="gateWaitDirectory"/> shows a wait that consumed most
+    /// of <paramref name="gateTimeout"/> — proof this gate's own process never got a permit for
+    /// nearly the whole run, not merely that a class happened to be one of the ordinarily several
+    /// queued behind CrossProcessContainerGate's fixed permit count at any given instant during a
+    /// busy tier. Mirrors GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt's own
+    /// fix for the identical false-positive (independent pre-PR review, cycle 1) rather than
+    /// referencing it — this project cannot reference Hall9k.Daemon.
+    /// </summary>
+    private static string? DescribeUnresolvedGateWait(string gateWaitDirectory, TimeSpan gateTimeout)
+    {
+        if (!Directory.Exists(gateWaitDirectory))
+        {
+            return null;
         }
 
-        return process.ExitCode == 0
-            ? (true, "ok")
-            : (false, $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {tail}");
+        TimeSpan threshold = gateTimeout * 0.8;
+        foreach (string file in Directory.EnumerateFiles(gateWaitDirectory))
+        {
+            string content;
+            try
+            {
+                if (new FileInfo(file).Length > MaxWaitEvidenceBytes)
+                {
+                    continue;
+                }
+
+                content = File.ReadAllText(file);
+            }
+            catch (IOException)
+            {
+                // Deleted or rewritten between the enumeration and the read by a class whose own
+                // wait just resolved — not this gate's own evidence to report; try the next file.
+                continue;
+            }
+
+            Match match = ElapsedSecondsPattern.Match(content);
+            if (match.Success
+                && int.TryParse(match.Groups["seconds"].Value, out int seconds)
+                && TimeSpan.FromSeconds(seconds) >= threshold)
+            {
+                return content.Trim();
+            }
+        }
+
+        return null;
     }
 
     private static string Tail(string content) =>
