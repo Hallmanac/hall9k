@@ -50,6 +50,7 @@ public sealed class UninstallCommandTests : IDisposable
         File.WriteAllText(Path.Combine(home, "h9kd.pid"), "1234\n");
         File.WriteAllText(Path.Combine(home, "h9kd.lock"), string.Empty);
         File.WriteAllText(Path.Combine(home, "h9kd.stop"), "1234\n");
+        File.WriteAllText(Path.Combine(home, "h9kd.starting"), "\"2026-09-05T00:00:00Z\"\n");
 
         List<string> stillPresent = [];
         stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
@@ -58,10 +59,22 @@ public sealed class UninstallCommandTests : IDisposable
 
         stillPresent.Should().BeEmpty();
         Directory.Exists(home).Should().BeFalse(
-            "bin/, postgres/, h9kd.log, h9kd.log.1, h9kd.pid, h9kd.lock, and h9kd.stop are all install-owned, "
-            + "and nothing else was ever there — this machine's install never had to write config.json (this "
-            + "test names none of the tiers that would have caused it to), and the canonical skill set is a "
-            + "separate removal path (SkillSeeder.RemovePublished) and is not part of this one.");
+            "bin/, postgres/, h9kd.log, h9kd.log.1, h9kd.pid, h9kd.lock, h9kd.stop, and h9kd.starting are all "
+            + "install-owned, and nothing else was ever there — this machine's install never had to write "
+            + "config.json (this test names none of the tiers that would have caused it to), and the canonical "
+            + "skill set is a separate removal path (SkillSeeder.RemovePublished) and is not part of this one.");
+    }
+
+    [Fact]
+    public void A_stale_starting_marker_is_swept_too()
+    {
+        // h9k daemon start deletes h9kd.starting once the launch it describes is either
+        // confirmed up or confirmed stopped, but a start that timed out waiting for the pid
+        // file and was never followed by a stop leaves it behind with nothing else on the
+        // machine left to clear it (task 92da629d, pre-PR review cycle 1).
+        string home = Path.Combine(directory, "home");
+
+        UninstallCommand.InstallOwnedEntries(home, []).Should().Contain(Path.Combine(home, "h9kd.starting"));
     }
 
     [Fact]
