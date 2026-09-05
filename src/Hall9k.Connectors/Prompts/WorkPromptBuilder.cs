@@ -918,6 +918,15 @@ public static class WorkPromptBuilder
     /// session to logging — called earlier in every caller's own prompt, not necessarily
     /// immediately above — restated here only for the parts that rule cannot know on its own —
     /// when to send, and who to address.
+    /// <para>
+    /// The build role's own address is null on every production path today (independent pre-PR
+    /// review, cycle 1, adversarial lens): every headless build dispatch under interactive mode
+    /// starts a fresh <c>RunAggregate</c> stream, and nothing yet carries a registration forward
+    /// from an earlier run of the same task, so a build session's milestones always take the
+    /// no-registered-session branch below and log a skip. The review and fix roles, dispatched
+    /// later on that same run once a human's own <c>h9k task work</c> claim registered against it,
+    /// are the roles this can actually reach.
+    /// </para>
     /// </summary>
     /// <param name="phaseLabel">Names the phase in the bound sentence ("build", "review", "fix") — cosmetic only.</param>
     /// <param name="milestones">
@@ -928,10 +937,16 @@ public static class WorkPromptBuilder
     /// The human's registered interactive session name for this run
     /// (<c>RunDetails.RegisteredInteractiveSessionName</c>), resolved by the caller at
     /// prompt-build time. Null when nobody has ever run <c>h9k task register-session</c> against
-    /// this run (a run dispatched headless from the start under interactive mode, or a handback
-    /// nobody re-attached to); blank when someone did but their own session carries no display
-    /// name to send to. Both are the honest "nothing to address" AGENTS.md's own "never guess at
-    /// unobserved facts" rule asks this method to degrade against rather than invent a name for.
+    /// this run — every fresh headless dispatch under interactive mode starts this way
+    /// (<c>h9k task start</c>, an ordinary dispatch carrying the flag forward from an earlier
+    /// <c>h9k task release --keep-interactive</c>, or a retry, reopen, or follow-up redispatch:
+    /// each one starts a new <c>RunAggregate</c> stream, and no registration carries forward from
+    /// an earlier one yet). A handback is never one of these cases: <c>TaskDecider.HandBack</c>
+    /// clears the interactive-mode flag unconditionally, so a handback-dispatched run never calls
+    /// this method at all. Blank when someone did register but their own session carries no
+    /// display name to send to. Both null and blank are the honest "nothing to address" AGENTS.md's
+    /// own "never guess at unobserved facts" rule asks this method to degrade against rather than
+    /// invent a name for.
     /// </param>
     /// <param name="parksAtBoundaryAfterward">
     /// True (the default, and the only case for the review and fix roles, which the review engine
@@ -968,9 +983,9 @@ public static class WorkPromptBuilder
                 prompt.AppendLine("  label), then end.");
                 if (parksAtBoundaryAfterward)
                 {
-                    prompt.AppendLine("  Slice 8's own boundary park holds from there until the human's");
-                    prompt.AppendLine("  `h9k review proceed` or `h9k review resolve`, whether or not the send");
-                    prompt.AppendLine("  below actually lands.");
+                    prompt.AppendLine("  This task's interactive-mode phase-boundary park holds from there until");
+                    prompt.AppendLine("  the human's `h9k review proceed` or `h9k review resolve`, whether or not");
+                    prompt.AppendLine("  the send below actually lands.");
                 }
                 else
                 {
@@ -996,8 +1011,11 @@ public static class WorkPromptBuilder
         else
         {
             prompt.AppendLine("No registered human session is on record for this run right now — nobody has run");
-            prompt.AppendLine("`h9k task register-session` against it (the honest case for a run dispatched");
-            prompt.AppendLine("headless from the start, or a handback nobody re-attached to). Skip sending these");
+            prompt.AppendLine("`h9k task register-session` against it. That is the ordinary case for a fresh");
+            prompt.AppendLine("headless dispatch under interactive mode (`h9k task start`, an ordinary dispatch");
+            prompt.AppendLine("carrying the flag forward from an earlier `h9k task release --keep-interactive`,");
+            prompt.AppendLine("or a retry, reopen, or follow-up redispatch) — each starts a new run, and no");
+            prompt.AppendLine("registration carries forward from an earlier one yet. Skip sending these");
             prompt.AppendLine(parksAtBoundaryAfterward
                 ? "milestones; the phase boundary still parks for the human's own proceed regardless."
                 : "milestones; nothing parks here either — h9k task deliver is still a human's to trigger by hand.");

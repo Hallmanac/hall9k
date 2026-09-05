@@ -115,18 +115,25 @@ fire-and-forget pipeline always has: no default changes.
 
 Under the flag, a dispatched build, review, or fix session also reports outbound, judiciously
 (design ruling R8): a small, fixed vocabulary per role — claimed and gates green for a headless
-build, findings drafted and verdict recorded for a review pass, and a report-ready send for every
-role's own end-of-phase report (a build's handoff, a review's verdict and findings, a fix
-session's summary) as its last act before it ends normally. The address is the human's own
-registered session (`h9k task register-session`, the same record the double-booking guards read),
-reached through the cross-session mesh's SendMessage tool. With no registered session at all (a run
-dispatched headless from the start, or a handback nobody re-attached to), the agent degrades
-honestly: it skips sending every milestone, logs that once for the whole phase rather than once per
-milestone, and the boundary still parks exactly as it would anyway. With a registered session
-SendMessage cannot reach (the session has since ended), the agent still attempts every send and
-logs each attempt individually through `h9k task log-interaction` — landed or not — rather than
+build, then its handoff; findings drafted then its verdict and findings for a review pass; its
+closing summary alone for a fix session. The last entry in every role's list is always that role's
+own end-of-phase report, not a separate send — a review pass sends two messages total, not three.
+The address is the human's own registered session (`h9k task register-session`, the same record
+the double-booking guards read), reached through the cross-session mesh's SendMessage tool. With no
+registered session at all, the agent degrades honestly: it skips sending every milestone, logs that
+once for the whole phase rather than once per milestone, and the boundary still parks exactly as it
+would anyway. That is the ordinary case for a fresh headless dispatch under interactive mode
+(`h9k task start`, an ordinary dispatch carrying the flag forward from an earlier `h9k task release
+--keep-interactive`, or a retry, reopen, or follow-up redispatch, each a new run with no
+registration carried forward from an earlier one) — so today the build role's own milestones always
+take this path; only the review and fix roles, dispatched later on the same run once a human's own
+`h9k task work` claim has registered against it, can actually reach a live address. A handback is
+never one of these no-registration cases either way: it clears the interactive-mode flag
+unconditionally, so a handback-dispatched run never reaches these rules at all. With a registered
+session SendMessage cannot reach (the session has since ended), the agent still attempts every send
+and logs each attempt individually through `h9k task log-interaction` — landed or not — rather than
 dropping it silently, and a failed send never blocks the agent from continuing its own work either
-way; nothing about slice 8's own park changes in either case.
+way; nothing about the interactive-mode phase-boundary park changes in either case.
 
 ### A deliberate human kick-off
 
