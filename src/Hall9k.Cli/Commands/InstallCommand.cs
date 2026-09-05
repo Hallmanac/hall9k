@@ -97,7 +97,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             {
                 string reason = described.FallbackReason ?? "unknown reason";
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[dim]Could not derive a version from git describe ({reason.EscapeMarkup()}) — publishing with the checked-in csproj version instead.[/]");
+                    $"[dim]Could not derive a version from git describe ({reason}) — publishing with the checked-in csproj version instead.[/]");
             }
 
             foreach (string project in new[] { "Hall9k.Cli", "Hall9k.Daemon" })
