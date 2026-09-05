@@ -351,6 +351,32 @@ public sealed class RunDetails
     public DateTimeOffset? FinishedAt { get; set; }
     /// <summary>The operator's Claude Code session id, from the most recent <see cref="InteractiveSessionStarted"/>; null for a headless run.</summary>
     public Guid? InteractiveClaudeSessionId { get; set; }
+    /// <summary>
+    /// The human's registered interactive session name for this run (task: agents on an
+    /// interactive-mode task report outbound), when one exists — the address a dispatched
+    /// agent's own outbound milestone messages (<see cref="OutboundMilestone"/>) reach. A
+    /// dedicated field rather than a read off <see cref="SessionName"/>: that field's own
+    /// <c>Apply(InteractiveSessionStarted)</c> writer only overwrites it when the event's
+    /// <see cref="Events.InteractiveSessionStarted.SessionName"/> is non-blank (a guard aimed at a
+    /// pre-field stream, <see cref="SessionName"/>'s own doc), so a live registration whose own
+    /// session genuinely carries no display name would otherwise leave <see cref="SessionName"/>
+    /// holding whatever agent name preceded it — the build session's own name, silently
+    /// masquerading as the human's address. This field always mirrors the event's own
+    /// <see cref="Events.InteractiveSessionStarted.SessionName"/> exactly, blank included, and
+    /// nothing else ever writes it, so it stays the human's own name (or honestly blank) through
+    /// the headless review/fix loop that follows a live `h9k task deliver`, not only during the
+    /// build itself.
+    /// <para>
+    /// Null when nobody has ever run <c>h9k task register-session</c> against this run (a run
+    /// dispatched headless from the start under interactive mode, or a handback nobody
+    /// re-attached to) — the honest "no registered session" case a dispatched agent's outbound
+    /// milestone rules degrade against. Empty when a human did register but their own session
+    /// carried no display name to send to (<c>TaskRegisterSessionCommand.ReadClaudeSessionName</c>
+    /// returning null) — a second, equally honest "nothing to address" case, told apart from the
+    /// first only by a caller that cares to (both read as "skip sending" to a dispatched prompt).
+    /// </para>
+    /// </summary>
+    public string? RegisteredInteractiveSessionName { get; set; }
     /// <summary>How many interactive attach/detach cycles this run has recorded (h9k task work, held and re-entered).</summary>
     public int InteractiveSessionCount { get; set; }
     /// <summary>
@@ -912,6 +938,11 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<InteractiveSessionStarted> @event, RunDetails view)
     {
         view.InteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
+        // Unconditional, unlike the SessionName write a few lines down: this field's whole
+        // contract (RunDetails.RegisteredInteractiveSessionName's own doc) is to mirror this
+        // event's own SessionName exactly, blank included, rather than fall back to whatever
+        // agent name preceded it.
+        view.RegisteredInteractiveSessionName = @event.Data.SessionName;
         view.InteractiveSessionCount++;
         // @event.Timestamp (when this event was actually appended), not @event.Data.StartedAt
         // (the claude process's own start time): a direct launch's StartedAt is ~milliseconds
