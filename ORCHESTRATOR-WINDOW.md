@@ -312,7 +312,25 @@ The checkpoints, in the order the window sees them:
    request body and counted on `h9k task show` rather than dropped silently. Which shape a
    cycle ran under — Discovery, Verify, or FinalFullPass — is a deterministic engine decision
    recorded on the run stream, so `h9k task show` and the daemon log say which one dispatched;
-   only the review content itself is agent judgment.
+   only the review content itself is agent judgment. Immediately before that mandatory
+   FinalFullPass — the same "nothing merges on scoped green alone" point, whether it is reached
+   from Settling or from Reverify — the run fetches the project's base branch and, if it moved
+   past what the branch already contains, rebases onto it right there in the run's own worktree
+   (idea fc85f609's before-push side, completing what 023f08bb's after-push mechanical rebase
+   started): the mandatory gate and pass that were already about to run then read the rebased
+   tree, so the pull request that opens afterward is mergeable on arrival rather than racing
+   whatever merged into the base while the run was still building. A no-op (the base had not
+   moved) and a clean git apply are both recorded on the run stream
+   (`RunRebasedOntoBase`, rendered by `h9k task show` as "Pre-final-pass rebase") and cost nothing
+   else — Brian's 2026-09-04 ruling: git applying every commit without a conflict is itself the
+   evidence that no judgment was exercised, so a clean rebase earns no extra Discovery cycle,
+   lens, or fix session. A conflict is handed to a narrow recovery session dispatched inside this
+   same run — the rebase-onto-main skill's own mechanics, never a task reopen — and only a
+   conflict that session cannot honestly resolve parks the run for a human, the same shape a
+   disputed rebase park takes today (`h9k review resolve --needs-fixes "<resolution>"` retries it
+   with their guidance; `--merge-ready` is refused, since nothing has been rebased yet). Main
+   moving again during the final pass itself, or after the push, is the residual case 023f08bb's
+   own closeout mechanical rebase and the Rebase follow-up path still cover exactly as before.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged". A **pr-review** task is the one exception
