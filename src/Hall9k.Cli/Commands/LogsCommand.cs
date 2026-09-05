@@ -110,9 +110,22 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
     /// still skipped, not just one reconstructed from here on (independent pre-PR review, cycle 1,
     /// both lenses).
     /// </summary>
-    internal static RunListItem? SelectRun(IReadOnlyList<RunListItem> runsNewestFirst, string? runOption) =>
-        runOption.IsBlank()
-            ? runsNewestFirst.FirstOrDefault(r => !r.LooksReconstructed) ?? runsNewestFirst[0]
-            : runsNewestFirst.FirstOrDefault(r => r.Id.ToString("N")
-                .EndsWith(runOption.Replace("-", ""), StringComparison.OrdinalIgnoreCase));
+    internal static RunListItem? SelectRun(IReadOnlyList<RunListItem> runsNewestFirst, string? runOption)
+    {
+        if (runOption.IsBlank())
+        {
+            return runsNewestFirst.FirstOrDefault(r => !r.LooksReconstructed) ?? runsNewestFirst[0];
+        }
+
+        string fragment = runOption.Replace("-", "");
+        if (fragment.Length == 0)
+        {
+            throw new DomainValidationException(
+                $"'{runOption}' has no characters to match a run by — pass a full id or a "
+                + "non-empty fragment of one.");
+        }
+
+        return runsNewestFirst.FirstOrDefault(r => r.Id.ToString("N")
+            .EndsWith(fragment, StringComparison.OrdinalIgnoreCase));
+    }
 }

@@ -3,6 +3,7 @@ using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -105,5 +106,19 @@ public sealed class LogsCommandRunSelectionTests
         RunListItem dispatched = Run(Now);
 
         LogsCommand.SelectRun([dispatched], "does-not-exist").Should().BeNull();
+    }
+
+    [Fact]
+    public void A_dashes_only_run_option_never_vacuously_matches_the_newest_run()
+    {
+        // Same shape as the TaskIdResolver/IdeaIdResolver hole: stripping dashes from "-" leaves
+        // an empty fragment, and EndsWith("") is true for every run, so this must be refused
+        // rather than silently resolving to runsNewestFirst[0].
+        RunListItem dispatched = Run(Now);
+
+        Action selectDashesOnly = () => LogsCommand.SelectRun([dispatched], "-");
+
+        selectDashesOnly.Should().Throw<DomainValidationException>()
+            .WithMessage("*no characters to match*");
     }
 }
