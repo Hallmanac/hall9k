@@ -1458,6 +1458,26 @@ public sealed class ReviewVerdictValidationTests
         ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
 
     /// <summary>
+    /// A semicolon-joined clause naming a location that has no `.ext` suffix at all — one of
+    /// <see cref="ReviewVerdictValidation.LocationPattern"/>'s other two alternatives, a
+    /// conventionally-extensionless filename or a dotfile — still names a finding, not only the
+    /// generic `word.ext[:line]` shape (cycle-6 verify finding, `ReviewVerdictValidation.cs:673`):
+    /// the semicolon disqualifier used to replicate only <see cref="ReviewVerdictValidation.LocationPattern"/>'s
+    /// first alternative, so a second clause naming `Dockerfile` or `.gitignore` was never
+    /// recognized as a location and the whole sentence was credited as a denial instead of a
+    /// finding, the exact defect class this test file exists to close.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "Nothing should be added; Dockerfile needs a HEALTHCHECK."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "Nothing should change; .gitignore already excludes it."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_semicolon_joined_location_with_no_extension_still_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
     /// A paragraph that only denies, but happens to carry the structured contract's own
     /// `Scenario:` label anyway, does not name a finding just because that label is present
     /// (independent pre-PR review, adversarial finding, cycle 1, task 29025f60): the forward walk

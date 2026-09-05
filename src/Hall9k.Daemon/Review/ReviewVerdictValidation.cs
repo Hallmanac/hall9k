@@ -661,6 +661,19 @@ public static partial class ReviewVerdictValidation
     /// do"); trading that rarer false credit for closing the far more common false discard above is
     /// the same precision/recall call the <see cref="LocationPattern"/> narrowing above made.
     /// </para>
+    /// <para>
+    /// Both semicolon-disqualifier lookaheads only ever replicated <see cref="LocationPattern"/>'s
+    /// generic `word.ext[:line]` alternative, not the other two (cycle-6 verify finding,
+    /// `ReviewVerdictValidation.cs:673`), despite this doc comment's own "same location shape
+    /// <see cref="LocationPattern"/> recognizes" claim: a second clause naming a bare-conventional
+    /// filename ("Nothing should be added; Dockerfile needs a HEALTHCHECK.") or a dotfile
+    /// ("Nothing should change; .gitignore already excludes it.") has no `.ext` suffix, so the old
+    /// disqualifier never recognized it as a location, and the whole sentence was credited as a
+    /// denial the same way the pre-fix `Store.cs:40` case was — a genuine finding discarded, not
+    /// the narrower false-credit trade-off the paragraph above discloses. <see cref="SemicolonLocationShape"/>
+    /// now shares the literal three-alternative shape with <see cref="LocationPattern"/> so the two
+    /// can no longer drift apart the way they did here.
+    /// </para>
     /// </summary>
     [GeneratedRegex(
         @"\b(?:nothing|none)\b(?:\s+\w+){0,4}?\s+(?:is|are|was|were|stands?|remains?|exists?|"
@@ -670,7 +683,7 @@ public static partial class ReviewVerdictValidation
         + @"\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
         + @"|\b(?:nothing|none)\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,30}?"
         + @"\b(?:wrong|broken|amiss)\b(?![^.!?]{0,20}(?:\bbut\b|\byet\b|\bhowever\b|"
-        + @";\s*(?:in\s+)?[`*]{0,3}[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(?::\d+)?))"
+        + @";\s*(?:in\s+)?[`*]{0,3}" + SemicolonLocationShape + @"))"
         + @"|\b(?:nothing|none)\b\s+of\s+the\s+(?:defects?|bugs?|issues?|problems?)\b"
         + @"|\bno\b[^.!?]{0,10}\b(?:defects?|bugs?|issues?|problems?)\s+(?:stands?|remains?|exists?|found)\b"
         + @"|\bno\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,30}?"
@@ -678,9 +691,23 @@ public static partial class ReviewVerdictValidation
         + @"\b(?:violat(?:es?|ed)|unmet)\b"
         + @"|\b(?:does|do|did)\s+not\b(?:(?!,|;|\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b))|\b(?:and|which|but)\b)[^.!?]){0,30}?\bdeparts?\b"
         + @"|\b(?:nothing|none)\b\s+should\b(?![^.!?]{0,40}(?:\bbut\b|\byet\b|\bhowever\b|"
-        + @";\s*(?:in\s+)?[`*]{0,3}[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(?::\d+)?))",
+        + @";\s*(?:in\s+)?[`*]{0,3}" + SemicolonLocationShape + @"))",
         RegexOptions.IgnoreCase)]
     private static partial Regex HeadingDenialPattern();
+
+    /// <summary>
+    /// The location shape the two semicolon-disqualifier lookaheads above require after the
+    /// semicolon, kept as one literal shared with <see cref="LocationPattern"/>'s own three
+    /// alternatives rather than a hand-copied duplicate of just the first one (cycle-6 verify
+    /// finding, `ReviewVerdictValidation.cs:673`): duplicating only the generic `word.ext[:line]`
+    /// alternative silently dropped the dotfile and bare-conventional-filename alternatives, so a
+    /// second clause naming `Dockerfile` or `.gitignore` was never recognized as a location and
+    /// the sentence was credited as a denial instead of a finding.
+    /// </summary>
+    private const string SemicolonLocationShape =
+        @"(?:[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(?::\d+)?"
+        + @"|\.(?:gitignore|gitattributes|gitmodules|dockerignore|editorconfig|env|npmrc|nvmrc)(?::\d+)?"
+        + @"|\b(?:Dockerfile|Makefile|Jenkinsfile|Gemfile|Rakefile|Procfile|Vagrantfile)(?::\d+)?)";
 
     /// <summary>
     /// Whether a needs-fixes pass's own output states at least one finding, once the verdict
