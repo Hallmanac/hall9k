@@ -30,11 +30,25 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         // A quiet queue must never be a mystery (Decisions Log #31): say up front when
-        // nothing is dispatching and what to do about it.
-        if (DaemonProcess.Probe() is null)
+        // nothing is dispatching and what to do about it. A daemon that h9k daemon start
+        // just spawned and that is still booting (assembly resolution and JIT for the
+        // entry point, before it ever reaches its own single-instance guard, has taken up
+        // to ~15s on at least one real machine, task 92da629d) is not "not running" — that
+        // reading is exactly what invited a second h9k daemon start into the first spawn's
+        // own singleton lock.
+        switch (DaemonProcess.ProbeBootStatus().State)
         {
-            AnsiConsole.MarkupLine(
-                "[red]daemon not running[/] — tasks queue but do not dispatch; start it with [bold]h9k daemon start[/]");
+            case DaemonBootState.Running:
+                break;
+            case DaemonBootState.Starting:
+                AnsiConsole.MarkupLine(
+                    "[yellow]daemon starting[/] — a launch from moments ago is still booting; "
+                    + "tasks queue and will dispatch once it is up. Check h9k daemon status shortly.");
+                break;
+            default:
+                AnsiConsole.MarkupLine(
+                    "[red]daemon not running[/] — tasks queue but do not dispatch; start it with [bold]h9k daemon start[/]");
+                break;
         }
 
         using var store = CliStore.Open();
