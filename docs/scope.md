@@ -95,8 +95,12 @@ back to the dispatch queue. See [PLAN.md Decisions Log #103, #122, #124, #126, #
 
 An interactive claim (`h9k task work` or a deliberate `h9k task start`) sets a recorded
 task-level flag — `InteractiveModeEnabled` — independent of who currently holds the claim: once
-on, it stays on across every later run and follow-up until an explicit `h9k task handback` clears
-it. Under the flag, the pre-PR review engine's own four phase boundaries — build done to review,
+on, it stays on across every later run and follow-up until `h9k task handback`, or a default
+`h9k task release`, clears it — both are the human's own explicit act of returning the task to the
+machine, so headless dispatch stops gating boundaries for a human who walked away.
+`h9k task release --keep-interactive` is the stated exception, for an operator who wants the next
+headless run to keep parking at each boundary. Under the flag, the pre-PR review engine's own four
+phase boundaries — build done to review,
 review verdict to fix, fix to re-review, and gates to pull request — each hold as a park-shaped
 needs-you row until `h9k review proceed <id>` records the human's go; `h9k review resolve
 --merge-ready`/`--needs-fixes` still applies at these same boundaries, for a human who wants to

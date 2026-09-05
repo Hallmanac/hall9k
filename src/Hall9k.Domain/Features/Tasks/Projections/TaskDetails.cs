@@ -493,6 +493,13 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
         // it mirrors and lets the ordinary Blocked-state dependency sweep pick it back up.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // The second exit door alongside Apply(TaskHandedBack) below — mirrors
+        // TaskAggregate.Apply(TaskRequeued) (design ruling R6, amended 2026-09-05): a default
+        // h9k task release clears interactive mode; --keep-interactive leaves it alone.
+        if (@event.Data.ClearInteractiveMode)
+        {
+            view.InteractiveModeEnabled = false;
+        }
     }
 
     public void Apply(IEvent<QuestionAsked> @event, TaskDetails view)

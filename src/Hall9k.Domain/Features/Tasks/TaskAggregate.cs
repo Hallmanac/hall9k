@@ -134,13 +134,18 @@ public sealed class TaskAggregate
     /// distinct from <see cref="IsInteractiveClaim"/>: that reads true only while the CURRENT
     /// claim carries the sentinel node id, and reverts on any give-back including
     /// <see cref="Apply(TaskRequeued)"/>/<see cref="Apply(TaskRetried)"/>/<see cref="Apply(TaskReopened)"/>;
-    /// this stays true across every one of those, surviving exactly as long as the human who
-    /// turned it on has not explicitly turned it off. Set true by <see cref="Apply(TaskClaimed)"/>
-    /// whenever <see cref="TaskClaimed.InteractiveMode"/> says so (h9k task work's claim always
-    /// does; h9k task start's does only when the human asked for it) and never unset by any other
-    /// claim — a plain node claim or an ordinary reclaim carries the flag false and leaves this
-    /// alone rather than clearing it. The one clearing act is <see cref="Apply(TaskHandedBack)"/>
-    /// (h9k task handback): the genuine exit door back to the fire-and-forget pipeline. Delivering
+    /// this stays true across <see cref="Apply(TaskRetried)"/>, <see cref="Apply(TaskReopened)"/>,
+    /// and a <see cref="Apply(TaskRequeued)"/> given <c>--keep-interactive</c>, surviving exactly
+    /// as long as the human who turned it on has not explicitly turned it off. Set true by
+    /// <see cref="Apply(TaskClaimed)"/> whenever <see cref="TaskClaimed.InteractiveMode"/> says so
+    /// (h9k task work's claim always does; h9k task start's does only when the human asked for it)
+    /// and never unset by any other claim — a plain node claim or an ordinary reclaim carries the
+    /// flag false and leaves this alone rather than clearing it. The clearing acts are
+    /// <see cref="Apply(TaskHandedBack)"/> (h9k task handback) and a default
+    /// <see cref="Apply(TaskRequeued)"/> (h9k task release, design ruling R6 amended 2026-09-05):
+    /// both are the human's own explicit act of returning the task to the machine, so headless
+    /// dispatch stops gating phase boundaries for a human who walked away —
+    /// <c>--keep-interactive</c> on release is the one stated exception. Delivering
     /// (h9k task deliver) never touches this field at all — that command appends no
     /// <see cref="TaskAggregate"/> event of its own — which is exactly what lets a delivered run's
     /// review/fix/re-review/pull-request boundaries keep parking for the human under this flag.
@@ -591,6 +596,15 @@ public sealed class TaskAggregate
         // instead preserves that invariant and lets TaskDependencyResolver's ordinary Blocked
         // sweep pick the task back up once the blocker actually clears.
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // The second exit door alongside Apply(TaskHandedBack) (design ruling R6, amended
+        // 2026-09-05): a default h9k task release is the human's own explicit act of returning
+        // the task to the machine, so it clears the flag exactly as handback does. Every other
+        // requeue caller — a node's lease expiring, or a release given --keep-interactive — leaves
+        // the flag alone by construction (TaskRequeued.ClearInteractiveMode's own doc).
+        if (@event.ClearInteractiveMode)
+        {
+            InteractiveModeEnabled = false;
+        }
     }
 
     public void Apply(QuestionAsked @event)

@@ -807,7 +807,8 @@ public static class TaskDecider
         return new TaskClaimed(task.Id, nodeId, ownerId, task.LeaseGeneration + 1, runId, claimedAt);
     }
 
-    public static TaskRequeued Requeue(TaskAggregate task, RequeueReason reason, DateTimeOffset requeuedAt)
+    public static TaskRequeued Requeue(
+        TaskAggregate task, RequeueReason reason, DateTimeOffset requeuedAt, bool clearInteractiveMode = false)
     {
         if (task.State != TaskState.Claimed && task.State != TaskState.NeedsHuman)
         {
@@ -815,7 +816,7 @@ public static class TaskDecider
                 $"Task {task.Id} is {task.State.Value} — only claimed or needs-human tasks requeue.");
         }
 
-        return new TaskRequeued(task.Id, reason, requeuedAt);
+        return new TaskRequeued(task.Id, reason, requeuedAt, clearInteractiveMode);
     }
 
     /// <summary>
@@ -945,8 +946,17 @@ public static class TaskDecider
     /// exactly as <see cref="Requeue"/> already does for any other claimed task — refused when
     /// the current claim is a node's (running headless work), which releases through its own
     /// levers (h9k task abandon, or letting the run finish) rather than through this one.
+    /// <para>
+    /// A release is itself the human's explicit act of returning the task to the machine, so by
+    /// default it clears <see cref="TaskAggregate.InteractiveModeEnabled"/> exactly as
+    /// <see cref="HandBack"/> does — headless dispatch must not gate phase boundaries for a human
+    /// who walked away (design ruling R6, amended 2026-09-05). <paramref name="keepInteractive"/>
+    /// is the stated exception: the operator who wants a headless run that still parks at each
+    /// boundary asks for it explicitly with <c>--keep-interactive</c>.
+    /// </para>
     /// </summary>
-    public static TaskRequeued ReleaseInteractiveClaim(TaskAggregate task, DateTimeOffset releasedAt)
+    public static TaskRequeued ReleaseInteractiveClaim(
+        TaskAggregate task, DateTimeOffset releasedAt, bool keepInteractive = false)
     {
         if (task.State != TaskState.Claimed || !task.IsInteractiveClaim)
         {
@@ -958,7 +968,7 @@ public static class TaskDecider
                     : string.Empty));
         }
 
-        return Requeue(task, RequeueReason.HumanRequested, releasedAt);
+        return Requeue(task, RequeueReason.HumanRequested, releasedAt, clearInteractiveMode: !keepInteractive);
     }
 
     /// <summary>

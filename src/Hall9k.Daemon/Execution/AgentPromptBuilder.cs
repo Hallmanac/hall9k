@@ -1284,8 +1284,9 @@ public static class AgentPromptBuilder
         // approvals are permanent, task-wide history, so their presence says a human reviewed a
         // boundary at some point in this task's past — never that interactive mode is on NOW.
         // TaskAggregate.InteractiveModeEnabled is the only current-state source, and it is not
-        // threaded into this prompt builder; a task can turn the flag off (h9k task handback)
-        // after these approvals were recorded, so asserting present tense here would tell a later,
+        // threaded into this prompt builder; a task can turn the flag off (h9k task handback, or a
+        // default h9k task release) after these approvals were recorded, so asserting present
+        // tense here would tell a later,
         // headless-dispatched agent that a human is "actively engaged" when nobody is watching
         // (independent pre-PR review, cycle 1, adversarial lens).
         if (priorBoundaryApprovals is { Count: > 0 })
@@ -1296,8 +1297,8 @@ public static class AgentPromptBuilder
             prompt.AppendLine("reviewed a phase boundary before the loop advanced. The date(s) below are when");
             prompt.AppendLine("they proceeded with no redirect of their own — nothing for you to check or avoid");
             prompt.AppendLine("re-raising. This does not mean interactive mode is on now, or that a human is");
-            prompt.AppendLine("watching this run: h9k task handback can turn it back off, and this task may be");
-            prompt.AppendLine("running fully headless today.");
+            prompt.AppendLine("watching this run: h9k task handback, or a default h9k task release, can turn it");
+            prompt.AppendLine("back off, and this task may be running fully headless today.");
             prompt.AppendLine();
             foreach (BoundaryApprovalRecord approval in priorBoundaryApprovals.TakeLast(MaxPriorRulings))
             {

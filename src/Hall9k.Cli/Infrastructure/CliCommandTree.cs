@@ -811,10 +811,14 @@ public static class CliCommandTree
                     + "handback or h9k task deliver instead). An untracked file outside src/ or tests/, or a known "
                     + "build/test byproduct inside them (bin/, obj/, TestResults/), only warns by name instead. "
                     + "The worktree and branch are left on disk untouched; nothing resumes them automatically "
-                    + "(h9k task handback is the lever for that). Refused when the claim's session was recorded on "
-                    + "another machine this one cannot check — --force attests you confirmed by hand that it has "
-                    + "exited.")
-                .WithExample("task", "release", "28b19893");
+                    + "(h9k task handback is the lever for that). Releasing is itself your explicit act of "
+                    + "returning the task to the machine, so by default it also clears the task's interactive-mode "
+                    + "flag exactly as h9k task handback does; --keep-interactive preserves it, so the next "
+                    + "headless run still parks at each phase boundary for a recorded h9k review proceed. Refused "
+                    + "when the claim's session was recorded on another machine this one cannot check — --force "
+                    + "attests you confirmed by hand that it has exited.")
+                .WithExample("task", "release", "28b19893")
+                .WithExample("task", "release", "28b19893", "--keep-interactive");
             task.AddCommand<TaskHandbackCommand>("handback")
                 .WithDescription(
                     "Hand an interactive claim to a headless agent partway through: refuses on uncommitted "

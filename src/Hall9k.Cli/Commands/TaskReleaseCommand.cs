@@ -26,6 +26,13 @@ namespace Hall9k.Cli.Commands;
 /// (adversarial review, cycle 1). h9k task handback is the lever for committed work; release is
 /// only for a claim nothing has been done in yet. The worktree and branch are left on disk exactly
 /// as they stood; nothing resumes them automatically.
+/// <para>
+/// Releasing is itself the human's explicit act of returning the task to the machine, so by
+/// default it also clears the task's interactive-mode flag exactly as h9k task handback does —
+/// headless dispatch must not gate every phase boundary for a human who walked away (design
+/// ruling R6, amended 2026-09-05). --keep-interactive is the stated exception, for an operator who
+/// wants the next headless run to keep parking at each boundary for a recorded go.
+/// </para>
 /// </summary>
 public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.Settings>
 {
@@ -38,6 +45,10 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         [CommandOption("--force")]
         [Description("Release even though the claim's interactive session was recorded on another machine this one cannot check — attests you confirmed by hand that it has exited")]
         public bool Force { get; init; }
+
+        [CommandOption("--keep-interactive")]
+        [Description("Preserve the task's interactive-mode flag across this release, instead of the default of clearing it — the next headless run still parks at each phase boundary for a recorded h9k review proceed")]
+        public bool KeepInteractive { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -115,7 +126,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         }
 
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseInteractiveClaim(
-            task, DateTimeOffset.UtcNow));
+            task, DateTimeOffset.UtcNow, settings.KeepInteractive));
 
         if (supersedeRun && releasedRunId is { } supersededRunId && releasedRun is { } supersededRun)
         {
