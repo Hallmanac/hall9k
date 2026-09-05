@@ -147,8 +147,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [Description(
             "This node's periodic token-spend budget (DaemonOptions.SpendBudgetTokens, backlog: spend-governor "
             + "step three) — once the current period's recorded spend reaches this many input tokens (fresh, "
-            + "cache-read and cache-creation combined, the same total TokensRecorded already prices, summed "
-            + "across every model), the dispatcher declines to claim further queued work until the period rolls. "
+            + "cache-read and cache-creation combined, the same total TokensRecorded and PublicationTokensRecorded "
+            + "already price between them, summed across every model), the dispatcher declines to claim further "
+            + "queued work until the period rolls. "
             + "Denominated in tokens, never dollars (Decisions Log #30: the platform holds no price list) — "
             + "calibrate it from h9k config show's own current-period spend line, not from a subscription's "
             + "published hour limits, which shift over time and are not published as token counts. Known v1 "

@@ -170,7 +170,7 @@ public sealed class CardPublicationEngine(
                     linkedAfterFailure is true,
                     $"The daemon could not run the publication session: {exception.Message}. "
                     + WhatTheLinkSays(linkedAfterFailure),
-                    cancellationToken);
+                    cancellationToken: cancellationToken);
             }
         }
 
@@ -229,9 +229,10 @@ public sealed class CardPublicationEngine(
                 continue;
             }
 
+            ResultCapture capture = new();
             try
             {
-                await AdoptAsync(task, cancellationToken);
+                await AdoptAsync(task, capture, cancellationToken);
                 adopted++;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -259,6 +260,11 @@ public sealed class CardPublicationEngine(
                     linked is true,
                     "The daemon stopped while this publication's session was running, and picking it "
                     + $"back up failed: {exception.Message}. {WhatTheLinkSays(linked)}",
+                    // A result WaitAsync had already parsed before this failed — the store read it
+                    // makes afterwards, to learn whether the task is linked, is exactly the kind of
+                    // failure that used to take a finished session's usage down with it.
+                    capture.Result,
+                    task.PublicationSessionModel,
                     cancellationToken);
                 adopted++;
             }
@@ -305,7 +311,7 @@ public sealed class CardPublicationEngine(
             + $"recorded for it. Only the node that spawned a session can judge it, and this one has stood for "
             + $"more than {_options.ForeignPublicationCeiling}, so the request is ended here rather than left "
             + $"hanging over the task forever. {WhatTheLinkSays(linked)}",
-            cancellationToken);
+            cancellationToken: cancellationToken);
         return true;
     }
 
@@ -328,7 +334,7 @@ public sealed class CardPublicationEngine(
             : $"{details.MachineName} (node {id})";
     }
 
-    private async Task AdoptAsync(TaskDetails task, CancellationToken cancellationToken)
+    private async Task AdoptAsync(TaskDetails task, ResultCapture capture, CancellationToken cancellationToken)
     {
         if (task.PublicationSessionId is not { } sessionId
             || task.PublicationSessionProcessId is not { } processId
@@ -346,7 +352,7 @@ public sealed class CardPublicationEngine(
                 "This publication's session was dispatched and no process was ever recorded beside it, "
                 + "so nothing can say whether it ran. "
                 + WhatTheLinkSays(linkedWithoutAProcess),
-                cancellationToken);
+                cancellationToken: cancellationToken);
             return;
         }
 
@@ -356,11 +362,11 @@ public sealed class CardPublicationEngine(
             task.Id, sessionId, processId, alive);
 
         (bool linked, string outcome, AgentResult? result) = await WaitAsync(
-            task.Id, sessionId, new SpawnedAgent(processId, startedAt), cancellationToken);
+            task.Id, sessionId, new SpawnedAgent(processId, startedAt), capture, cancellationToken);
 
         await CompleteAsync(
-            task.Id, linked, linked ? outcome : Stranded(alive, outcome), cancellationToken,
-            result, task.PublicationSessionModel);
+            task.Id, linked, linked ? outcome : Stranded(alive, outcome), result, task.PublicationSessionModel,
+            cancellationToken);
     }
 
     /// <summary>
@@ -453,7 +459,7 @@ public sealed class CardPublicationEngine(
                 $"This task was already linked to {already} by the time the daemon picked the request "
                 + "up, so no session was dispatched: a second session would have created a second card "
                 + "for work that already has one.",
-                cancellationToken);
+                cancellationToken: cancellationToken);
             return PublicationAttempt.Refused;
         }
 
@@ -472,14 +478,16 @@ public sealed class CardPublicationEngine(
                 "This task was abandoned before the daemon picked the request up, so no session was "
                 + "dispatched and nothing was put on a board: a card for abandoned work is work "
                 + "nobody here intends to do.",
-                cancellationToken);
+                cancellationToken: cancellationToken);
             return PublicationAttempt.Refused;
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(aggregate.ProjectId, cancellationToken);
         if (project is null)
         {
-            await CompleteAsync(task.Id, false, "The task's project is not registered on this node.", cancellationToken);
+            await CompleteAsync(
+                task.Id, false, "The task's project is not registered on this node.",
+                cancellationToken: cancellationToken);
             return PublicationAttempt.Refused;
         }
 
@@ -498,7 +506,7 @@ public sealed class CardPublicationEngine(
                 + "to read this project's card rules. Create the home's repo/dev worktree with "
                 + $"h9k project init {project.Name}, or point the project at an existing checkout with "
                 + $"h9k project set {project.Name} --repo <path>, then run h9k task push-to-jira again.",
-                cancellationToken);
+                cancellationToken: cancellationToken);
             return PublicationAttempt.Refused;
         }
 
@@ -533,7 +541,7 @@ public sealed class CardPublicationEngine(
                 false,
                 "No usable Jira connection is registered, so nothing could verify the card this session "
                 + "would create. Register one with h9k connection add jira and request it again.",
-                cancellationToken);
+                cancellationToken: cancellationToken);
             return PublicationAttempt.Refused;
         }
 
@@ -612,6 +620,7 @@ public sealed class CardPublicationEngine(
         // Whether the session has been handed to the wait yet, which is what decides who stops it
         // if the daemon is told to stop.
         bool waiting = false;
+        ResultCapture capture = new();
         try
         {
             await RecordProcessAsync(task.Id, sessionId, agent, cancellationToken);
@@ -622,8 +631,8 @@ public sealed class CardPublicationEngine(
 
             waiting = true;
             (bool linked, string outcome, AgentResult? result) = await WaitAsync(
-                task.Id, sessionId, agent, cancellationToken);
-            await CompleteAsync(task.Id, linked, outcome, cancellationToken, result, model);
+                task.Id, sessionId, agent, capture, cancellationToken);
+            await CompleteAsync(task.Id, linked, outcome, result, model, cancellationToken);
             return linked ? PublicationAttempt.CardLinked : PublicationAttempt.SessionRan;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -669,6 +678,11 @@ public sealed class CardPublicationEngine(
                 + $"stopped {(linked is true ? "after it reported its card key" : "without a verified card key")}. "
                 + $"Its prompt and transcript are in {RunPaths.GlobalDirectory(sessionId)}. "
                 + WhatTheLinkSays(linked),
+                // A result WaitAsync had already parsed before this failed — the store read it makes
+                // afterwards, to learn whether the task is linked, is exactly the kind of failure
+                // that used to take a finished session's usage down with it.
+                capture.Result,
+                model,
                 cancellationToken);
 
             // It ran, whatever became of watching it: this is the one place that knows the
@@ -710,6 +724,22 @@ public sealed class CardPublicationEngine(
     }
 
     /// <summary>
+    /// A mutable handle for the <see cref="AgentResult"/> <see cref="WaitAsync"/> parses off the
+    /// session's own stream, shared with whichever caller invoked it so a result already in hand
+    /// survives an exception thrown after it was parsed. <see cref="IsLinkedAsync"/> and
+    /// <see cref="PendingAuthFailureReasonAsync"/> both read the store after that point, and both
+    /// can fail on a transient error with the result already sitting in <see cref="WaitAsync"/>'s
+    /// own local scope — where it used to die with the frame the moment either of them threw.
+    /// Origin incident (independent pre-PR review, adversarial lens, cycle 1): a session that
+    /// finished and reported usage had that usage silently discarded whenever the very next read,
+    /// not the session itself, was what failed.
+    /// </summary>
+    private sealed class ResultCapture
+    {
+        public AgentResult? Result { get; set; }
+    }
+
+    /// <summary>
     /// Wait for the session, then ask the task — not the agent — whether a card was linked.
     /// <para>
     /// That order is the observation gate closing. The session's own last words are recorded as
@@ -719,9 +749,15 @@ public sealed class CardPublicationEngine(
     /// session that reported a beautiful success and never got a key past that command completed
     /// without a link, and the record says exactly that.
     /// </para>
+    /// <para>
+    /// <paramref name="capture"/> is handed the parsed <see cref="AgentResult"/> the moment it is
+    /// available, before anything that can still throw runs — so a caller whose catch block runs
+    /// because this method threw past that point still has the session's own usage to record,
+    /// rather than losing it with the frame this method returns from only on its happy path.
+    /// </para>
     /// </summary>
     private async Task<(bool Linked, string Outcome, AgentResult? Result)> WaitAsync(
-        Guid taskId, Guid sessionId, SpawnedAgent agent, CancellationToken cancellationToken)
+        Guid taskId, Guid sessionId, SpawnedAgent agent, ResultCapture capture, CancellationToken cancellationToken)
     {
         AgentResult? result;
         bool timedOut = false;
@@ -748,6 +784,7 @@ public sealed class CardPublicationEngine(
             throw;
         }
 
+        capture.Result = result;
         bool linked = await IsLinkedAsync(taskId, cancellationToken);
         if (linked)
         {
@@ -903,7 +940,7 @@ public sealed class CardPublicationEngine(
                 await IsLinkedAsync(taskId, shutdown.Token),
                 "The daemon stopped while this session was writing the card, so the session was "
                 + $"stopped with it. {CheckTheBoard}",
-                shutdown.Token);
+                cancellationToken: shutdown.Token);
         }
         catch (Exception recording)
         {
@@ -918,14 +955,17 @@ public sealed class CardPublicationEngine(
     /// Ends the publication errand, and — when a session actually reported usage — records it in
     /// the same transaction, the way <c>RunSupervisor.CompleteRunAsync</c> commits its own
     /// <c>TokensRecorded</c> alongside the run's terminal event. <paramref name="result"/> is null
-    /// on every path that never watched a session to an end (a refusal, a stopped-for-shutdown, a
-    /// caught dispatch failure): none of those observed any usage, so none of them have anything
-    /// to record — the gap this method closes is a session that finished and reported usage this
-    /// far only to have it discarded, never a session that never ran.
+    /// on every path that never watched a session to an end at all (a refusal, or a
+    /// stopped-for-shutdown before the wait ever began) — those never had anything to record. A
+    /// caught dispatch failure is not one of those: a failure reached after <see cref="WaitAsync"/>
+    /// has already parsed a result (the store read it makes afterwards, to learn whether the task
+    /// is linked, can itself throw) still passes that result through, via the caller's own
+    /// <see cref="ResultCapture"/>, precisely so a session that finished and reported usage this far
+    /// is not discarded merely because the read that came after it failed.
     /// </summary>
     private async Task CompleteAsync(
-        Guid taskId, bool linkedNow, string outcome, CancellationToken cancellationToken,
-        AgentResult? result = null, AgentModel? model = null)
+        Guid taskId, bool linkedNow, string outcome, AgentResult? result = null, AgentModel? model = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
