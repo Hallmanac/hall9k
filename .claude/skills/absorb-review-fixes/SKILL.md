@@ -39,16 +39,27 @@ style, do not use this skill; commit normally on top.
    GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/<base>
    ```
 
-3. **Verify tree identity** — required before anything else happens:
+3. **Verify tree identity — both of these, not just the first — required before anything
+   else happens:**
 
    ```bash
-   git diff "$old_tip" HEAD   # must print NOTHING
+   git diff "$old_tip" HEAD        # must print NOTHING
+   git status --porcelain          # must print NOTHING
    ```
 
    An empty diff proves the rebase reordered history without changing content, so test
    runs and verification gates that passed against `$old_tip` honestly describe the new
    tip. A non-empty diff means a fixup landed wrong (usually a mis-mapped owner);
    reconcile until the diff is empty — never push a tree that differs from the tested one.
+
+   **The diff alone is blind to a fixup that never got staged.** A fix left uncommitted or
+   only partially staged during step 1 does not show up as a difference between `$old_tip`
+   and `HEAD` — it was never in either tree to begin with — so the diff can read empty while
+   a review fix is sitting loose in the working tree, unabsorbed and about to be lost the
+   moment the branch is pushed. `git status --porcelain` is what actually catches this: it
+   inspects the working tree, not the commit graph. If it shows anything, stage the leftover
+   change and fold it into its owning commit the same way step 1 does, or discard it if it
+   was never meant to land, then re-run **both** checks again before moving on.
 
 4. Pushing the rewritten branch requires `--force-with-lease` (never plain `--force`; a
    failed lease means the branch moved on origin — stop and re-inspect, don't retry
