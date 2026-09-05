@@ -77,10 +77,13 @@ singleton lock. The `h9k daemon start` that hits that 20s wait returns exit code
 the launch is still in flight); a second `h9k daemon start` run while the state is still starting
 instead refuses outright, with exit code 69, rather than risk racing a guard that hasn't been
 observed to run yet. `h9k daemon stop` run during this window finds no pid to signal, reports
-"not running", and does nothing to the marker — it cannot confirm a launch back down that it
-never observed up. The starting state clears itself only two ways: the daemon's pid file lands,
-or the marker ages past its own 60s grace period with no pid file ever appearing, whichever comes
-first.
+"not running" — it cannot confirm a launch back down that it never observed up — but it does
+clear the marker: an explicit stop is the operator's own call that the spawn the marker describes
+is done with, whether it is still genuinely booting or already died before ever writing a pid
+file, so `h9k daemon start` no longer refuses the next launch as "already starting" for the rest of
+the window. Short of that explicit stop, the starting state clears itself only two ways: the
+daemon's pid file lands, or the marker ages past its own 60s grace period with no pid file ever
+appearing, whichever comes first.
 
 **A stopped daemon costs latency, never correctness.** Commands still land in Postgres while it
 is down, and startup catches up on everything that happened meanwhile, in a fixed order: adopt
