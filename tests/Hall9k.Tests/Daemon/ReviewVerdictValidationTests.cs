@@ -1720,6 +1720,34 @@ public sealed class ReviewVerdictValidationTests
         ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
 
     /// <summary>
+    /// The subject-copula alternative's own pre-copula gap — "nothing"/"none" followed by a few
+    /// descriptive words before its copula — also stops at a <see cref="ReviewVerdictValidation"/>
+    /// clause boundary rather than crossing it (independent pre-PR review, adversarial finding,
+    /// cycle 3, task 29025f60): before this fix, only the tails after the copula were tempered,
+    /// so "logs nothing when the request is dropped" walked the gap straight through "when the
+    /// request" and bound the negator to the following, unrelated subordinate clause's own
+    /// copula-plus-participle, discarding the located defect the same way the tails' own gaps
+    /// used to before cycle 1 closed that hole in them.
+    /// </summary>
+    [Theory]
+    [InlineData("`Http.cs:88` logs nothing when the request is dropped.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Store.cs:40` writes nothing while the row is overwritten."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData("`Auth.cs:42` retries nothing after the socket is dropped.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Foo.cs:9` checks nothing before the payload is deleted.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Bar.cs:7` returns none if the cache is stale.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "The sweep removes nothing when the lease is stale in `Sweep.cs:12`."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData("`Http.cs:88` logs nothing but the request is dropped.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Http.cs:88` logs nothing however the request is dropped.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Http.cs:88` logs nothing and the request is dropped.\n\nVERDICT: needs-fixes")]
+    public void A_located_defect_named_by_nothing_before_a_subordinate_clause_still_names_a_finding(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
     /// A genuine finding that restates an acceptance criterion's own wording still names a finding
     /// from the location the criterion and the finding share (cycle-10 adversarial finding,
     /// `ReviewVerdictValidation.cs:326`): the conformance lens's most ordinary phrasing restates

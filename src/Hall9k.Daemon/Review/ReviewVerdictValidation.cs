@@ -715,9 +715,28 @@ public static partial class ReviewVerdictValidation
     /// discarded after it without this guard. Both are drawn from this install's own recorded lens
     /// output, found by re-running the old and new patterns over all 2,042 of them.
     /// </para>
+    /// <para>
+    /// The subject-copula alternative's own pre-copula gap — the optional descriptive words
+    /// between "nothing"/"none" and its copula, letting "nothing else in the delta" still reach
+    /// "introduced" — was the one span in this whole alternative never tempered against
+    /// <see cref="ClauseBoundary"/> (independent pre-PR review, adversarial finding, cycle 3, task
+    /// 29025f60): built from bare <c>\w+</c> repeats rather than <see cref="DenialTailStep"/>, it
+    /// walked straight through "when", "while", "before", "after", "if", "until", "but", "however"
+    /// and "and" the same way the tempered tails used to before cycle 1 closed that gap in them.
+    /// "`Http.cs:88` logs nothing when the request is dropped." matched "nothing" then the gap
+    /// consuming "when the request", then the copula "is", then the now-widened participle
+    /// "dropped" — binding the sentence's one stated defect word to a denial subject three clauses
+    /// away and discarding the finding, even though "`Auth.cs:42` has no timeout when the socket is
+    /// dropped" (this same cycle's own conformance-verified case) already proved the *tails*
+    /// correctly stop there. The gap now requires each word to not itself open a
+    /// <see cref="ClauseBoundary"/>, so "nothing" directly abuts "when" here and the alternative
+    /// never reaches a copula at all, leaving "dropped" free for
+    /// <see cref="StatesDefectOutsideDenial"/> to credit — while "nothing else in the delta" above,
+    /// and every other recorded non-boundary gap, is untouched.
+    /// </para>
     /// </summary>
     [GeneratedRegex(
-        @"\b(?:nothing|none)\b(?:\s+\w+){0,4}?\s+(?:is|are|was|were|stands?|remains?|exists?|"
+        @"\b(?:nothing|none)\b" + SubjectCopulaGapStep + @"{0,4}?\s+(?:is|are|was|were|stands?|remains?|exists?|"
         + @"qualif(?:y|ies)(?:\s+as)?|amounts?\s+to|counts?\s+as|worth\s+calling|"
         + @"introduced|raised|survived)\b"
         + DenialTailStep + @"{0,40}"
@@ -791,9 +810,11 @@ public static partial class ReviewVerdictValidation
     /// </para>
     /// <para>
     /// "when", "while", "before", "after", "if" and "until" join the list for the same reason,
-    /// as subordinating conjunctions rather than coordinating ones (independent pre-PR review,
-    /// adversarial finding, cycle 1, task 29025f60): this list previously enumerated only
-    /// coordinating separators, so the participle-widened subject-copula alternative and the
+    /// as subordinating conjunctions (independent pre-PR review, adversarial finding, cycle 1,
+    /// task 29025f60): this list previously held punctuation (<c>;</c>, <c>:</c>, an em dash),
+    /// coordinating conjunctions ("but", "yet", "and"), a relative pronoun ("which") and a
+    /// conjunctive adverb ("however"), but no subordinating conjunction at all, so the
+    /// participle-widened subject-copula alternative and the
     /// "no … is/are …" alternative both let their tempered tails cross a subordinate clause
     /// boundary freely and bind the negator of one clause to the copula-plus-participle of a
     /// following, unrelated subordinate clause — "`Auth.cs:42` has no timeout when the socket is
@@ -846,12 +867,14 @@ public static partial class ReviewVerdictValidation
     /// only defect word this sentence states — into the denial's own span. The carve-out now also
     /// requires the adjective to actually complete the clause the way both recorded examples do
     /// ("so wrong here.", "so broken it matters."): immediately followed by end-of-sentence
-    /// punctuation, a comma, a semicolon, or a small set of clause-completing words ("here", "it",
-    /// "that", "this"). "so broken paths …" satisfies none of those — "paths" is neither punctuation
+    /// punctuation, a comma, a semicolon, a colon, or a small set of clause-completing words
+    /// ("here", "it", "that", "this"). "so broken paths …" satisfies none of those — "paths" is neither punctuation
     /// nor one of those words — so the adjective there is read as opening a fresh clause and the
     /// boundary fires, exactly as it does for any other participle. A "so" followed by anything
     /// else ("Nothing here is fine, so the bug is real, …", "nothing is retried, so dropped events
-    /// are lost forever.") still opens a boundary exactly as before.
+    /// are lost forever.") still opens a boundary — the second case is the same sentence the
+    /// paragraph above shows the pre-narrowing carve-out wrongly suppressing; narrowing the
+    /// vocabulary to the three adjectives is what makes its boundary fire correctly here.
     /// </para>
     /// </summary>
     private const string ClauseBoundary =
@@ -877,6 +900,18 @@ public static partial class ReviewVerdictValidation
     /// in the same commit, did not, which is the inconsistency that finding named.
     /// </summary>
     private const string StrictDenialTailStep = @"(?:(?!,|" + ClauseBoundary + @")[^.!?])";
+
+    /// <summary>
+    /// One word of the subject-copula alternative's pre-copula gap: any whitespace-led word that
+    /// does not itself open a <see cref="ClauseBoundary"/> (cycle-3 adversarial finding,
+    /// `ReviewVerdictValidation.cs:720`). Word-shaped rather than character-shaped like
+    /// <see cref="DenialTailStep"/>, because the gap it replaces (<c>(?:\s+\w+){0,4}?</c>) was
+    /// always word-repeat, not a character scan — but it was still an untempered one, so "nothing"
+    /// could reach a copula across "when the request" the same way a tempered tail used to reach
+    /// past "when" before cycle 1 closed that gap in <see cref="DenialTailStep"/> itself. See the
+    /// <see cref="HeadingDenialPattern"/> doc comment for the worked example.
+    /// </summary>
+    private const string SubjectCopulaGapStep = @"(?:\s+(?!" + ClauseBoundary + @")\w+)";
 
     /// <summary>
     /// What disqualifies a "nothing/none … wrong" or bare "nothing/none should" denial: an
