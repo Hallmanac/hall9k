@@ -322,8 +322,9 @@ public static class TaskDecider
     /// the task (independent pre-PR review, cycle 1, both lenses: the previous guard refused Done
     /// unconditionally and made the flag unreachable for the one window it matters). And a Draft
     /// refuses too — not for the same reason, but because <see cref="Publish"/> unconditionally
-    /// records <see cref="TaskPublished.PreApproved"/> (defaulting false, clamped exactly like
-    /// <see cref="TaskPublished.UntrackedAttested"/> is) the moment the draft is published: a value
+    /// records <see cref="TaskPublished.PreApproved"/> (defaulting false, passed straight through
+    /// with no clamp of its own — unlike <see cref="TaskPublished.UntrackedAttested"/>, which is
+    /// gated on the backlog-policy check) the moment the draft is published: a value
     /// set here on a still-Draft task would otherwise be silently clobbered back to false by an
     /// ordinary <c>h9k task publish</c> that forgot to repeat <c>--pre-approved</c>. The flag is
     /// part of the readiness contract at the moment of publish (the acceptance criteria's own
