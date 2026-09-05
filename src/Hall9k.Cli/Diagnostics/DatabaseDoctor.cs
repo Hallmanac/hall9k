@@ -69,7 +69,8 @@ public static class DatabaseDoctor
 
         if (!resolution.IsConfigured)
         {
-            resolution = await DiagnoseNotConfiguredAsync(offerFixes, assumeYes, runner, cancellationToken);
+            resolution = await DiagnoseNotConfiguredAsync(
+                offerFixes, assumeYes, runner, ProbeDefaultConnectionStringAsync, cancellationToken);
             if (resolution.Value is not { } configured)
             {
                 return null;
@@ -81,9 +82,21 @@ public static class DatabaseDoctor
         return await CheckReachabilityAndSchemaAsync(resolution.Value, resolution, offerFixes, assumeYes, runner, cancellationToken);
     }
 
-    /// <summary>Question 1 failed, so question 4 is what is left to say: what is available to point at.</summary>
-    private static async Task<ConnectionStringResolution> DiagnoseNotConfiguredAsync(
-        bool offerFixes, bool assumeYes, ProcessRunner runner, CancellationToken cancellationToken)
+    private static Task<ReachabilityReport> ProbeDefaultConnectionStringAsync(CancellationToken cancellationToken) =>
+        DatabaseReachability.ProbeAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);
+
+    /// <summary>
+    /// Question 1 failed, so question 4 is what is left to say: what is available to point at.
+    /// Takes <paramref name="alreadyRunningContainerProbe"/> rather than probing
+    /// <see cref="Hall9kDatabase.DefaultConnectionString"/> directly so a test can exercise this
+    /// routing decision — and confirm it actually records the connection string, not merely that
+    /// it avoids a docker mutation — with a fake answer instead of a real Postgres bound to the
+    /// exact host and port that constant names.
+    /// </summary>
+    internal static async Task<ConnectionStringResolution> DiagnoseNotConfiguredAsync(
+        bool offerFixes, bool assumeYes, ProcessRunner runner,
+        Func<CancellationToken, Task<ReachabilityReport>> alreadyRunningContainerProbe,
+        CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLine(
             "[yellow]No connection string is configured.[/] That is the whole problem — nothing else has been checked yet.");
@@ -105,7 +118,7 @@ public static class DatabaseDoctor
 
         if (offerFixes && containerConfirmed && container == PostgresContainerStatus.Running)
         {
-            if (await OfferAndRecordAlreadyRunningContainerAsync(assumeYes, cancellationToken) is { } recorded)
+            if (await OfferAndRecordAlreadyRunningContainerAsync(assumeYes, alreadyRunningContainerProbe, cancellationToken) is { } recorded)
             {
                 return recorded;
             }
@@ -313,20 +326,48 @@ public static class DatabaseDoctor
     /// bound to the exact host and port <see cref="Hall9kDatabase.DefaultConnectionString"/>
     /// names.
     /// </summary>
-    private static Task<ConnectionStringResolution?> OfferAndRecordAlreadyRunningContainerAsync(
-        bool assumeYes, CancellationToken cancellationToken) =>
-        OfferAndRecordAlreadyRunningContainerAsync(
-            assumeYes,
-            token => DatabaseReachability.ProbeAsync(Hall9kDatabase.DefaultConnectionString, token),
-            cancellationToken);
-
     internal static async Task<ConnectionStringResolution?> OfferAndRecordAlreadyRunningContainerAsync(
         bool assumeYes, Func<CancellationToken, Task<ReachabilityReport>> probe, CancellationToken cancellationToken)
     {
         ReachabilityReport report = await probe(cancellationToken);
-        if (report.Status != ReachabilityStatus.Reachable)
+        switch (report.Status)
         {
-            return null;
+            case ReachabilityStatus.Reachable:
+                break;
+
+            case ReachabilityStatus.AuthenticationFailed:
+                // The two facts observed here are independent (a running container by name,
+                // an address that answers) and neither one alone says whose credentials are
+                // wrong — naming both, rather than staying silent, is the most useful thing
+                // left to say once this path's own probe has already found something to report.
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{PostgresRuntime.ContainerName} is confirmed running, and something at "
+                    + $"{report.Host.EscapeMarkup()}:{report.Port} answered[/], but it rejected hall9k's default "
+                    + $"credentials: {report.Detail.EscapeMarkup()}. If that isn't the container's own Postgres, "
+                    + $"point {Hall9kDatabase.EnvironmentVariableName} at the right one directly instead.");
+                return null;
+
+            case ReachabilityStatus.DatabaseMissing:
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{PostgresRuntime.ContainerName} is confirmed running, and something at "
+                    + $"{report.Host.EscapeMarkup()}:{report.Port} answered[/], but the "
+                    + $"'{report.Database.EscapeMarkup()}' database does not exist there yet.");
+                return null;
+
+            case ReachabilityStatus.RefusedConnection:
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{PostgresRuntime.ContainerName} is confirmed running, but nothing answered at "
+                    + $"{report.Host.EscapeMarkup()}:{report.Port}[/] ({report.Detail.EscapeMarkup()}) — Postgres "
+                    + "inside the container may still be starting, or something else is bound to that port. "
+                    + "Retry in a moment, or check the container's own logs.");
+                return null;
+
+            default:
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{PostgresRuntime.ContainerName} is confirmed running, and something at "
+                    + $"{report.Host.EscapeMarkup()}:{report.Port} answered[/], but it reported: "
+                    + $"{report.Detail.EscapeMarkup()}.");
+                return null;
         }
 
         if (!assumeYes && !AnsiConsole.Profile.Capabilities.Interactive)
@@ -336,14 +377,15 @@ public static class DatabaseDoctor
             // nothing here could have been fixed automatically (origin: Windows install
             // friction log item 3).
             AnsiConsole.MarkupLine(
-                $"[dim]{PostgresRuntime.ContainerName} is already running and answering, but skipping the offer "
-                + "to point at it — stdin is not a terminal, so there is nobody to confirm this. Re-run with "
-                + "h9k doctor --yes to configure it automatically.[/]");
+                $"[dim]{PostgresRuntime.ContainerName} is confirmed running, and Postgres is answering at the "
+                + "default address, but skipping the offer to point at it — stdin is not a terminal, so there is "
+                + "nobody to confirm this. Re-run with h9k doctor --yes to configure it automatically.[/]");
             return null;
         }
 
         if (!assumeYes && !AnsiConsole.Confirm(
-            $"Found {PostgresRuntime.ContainerName} already running and answering. Configure h9k to use it?",
+            $"Found {PostgresRuntime.ContainerName} confirmed running, and Postgres answering at the default "
+            + "address. Configure h9k to use it?",
             defaultValue: true))
         {
             return null;

@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
+using Spectre.Console;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -17,24 +18,30 @@ namespace Hall9k.Tests.Cli;
 /// <see cref="Hall9kDatabase.DefaultConnectionString"/> names — the same seam
 /// <c>DatabaseDoctorReadinessTests</c> already uses for the readiness poll.
 /// </summary>
-// Writes the platform config file under HALL9K_HOME when it records a connection string;
-// sharing the collection serializes this against every other test that redirects the same
-// environment.
+// HALL9K_HOME and HALL9K_CONNECTION_STRING are process-wide state; sharing the collection
+// serializes this against every other test that redirects the same environment. Clearing the
+// connection string matters here specifically: it outranks the platform config file this class
+// writes to and reads back from, so leaving it set to whatever the ambient environment names
+// would let that value, not the code under test, decide what these tests observe.
 [Collection("Hall9kHome")]
 public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
 {
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-doctor-already-running-{Path.GetRandomFileName()}");
     private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly string? previousConnectionString =
+        Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
 
     public DatabaseDoctorAlreadyRunningContainerTests()
     {
         Directory.CreateDirectory(home);
         Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, null);
     }
 
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
         Directory.Delete(home, recursive: true);
     }
 
@@ -67,27 +74,44 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
         // This test process is never an interactive console (DatabaseDoctorNotConfiguredTests'
         // own tests already establish that), so this exercises the same skip-and-name-the-flag
         // rule the start and schema offers already use rather than hanging on a prompt.
-        ConnectionStringResolution? resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
-            assumeYes: false, _ => Task.FromResult(Reachable()), CancellationToken.None);
+        ConnectionStringResolution? resolution = null;
+        string output = await CaptureAsync(async () =>
+        {
+            resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
+                assumeYes: false, _ => Task.FromResult(Reachable()), CancellationToken.None);
+        });
 
         resolution.Should().BeNull("nobody was there to confirm it, and assumeYes was not set");
         File.Exists(Hall9kDatabase.ConfigFile).Should().BeFalse("a skipped offer must never write anything");
+        output.Should().Contain("h9k doctor --yes",
+            "a skipped prompt has to name the exact flag that answers it, not just advise trying again");
     }
 
     [Fact]
     public async Task The_full_doctor_run_never_asks_docker_to_start_an_already_running_container()
     {
         // "docker info" (Running) and "docker ps -a" both read the same fixed stdout;
-        // "running" is what a confirmed-Running hall9k-postgres reports.
+        // "running" is what a confirmed-Running hall9k-postgres reports. This exercises
+        // DiagnoseNotConfiguredAsync's own routing decision — not RunAsync's full path, which
+        // would also reach CheckReachabilityAndSchemaAsync's own unfaked probe of whatever
+        // connection string got recorded — with the same faked already-running-container probe
+        // the three tests above already use, so this never depends on a real Postgres bound to
+        // the exact host and port DefaultConnectionString names.
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("running\n");
 
-        await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None);
+        ConnectionStringResolution resolution = await DatabaseDoctor.DiagnoseNotConfiguredAsync(
+            offerFixes: true, assumeYes: true, runner.Runner, _ => Task.FromResult(Reachable()), CancellationToken.None);
 
         runner.Calls.Should().NotContain(
             call => call.Arguments.Count > 0
                 && (call.Arguments[0] == "start" || call.Arguments[0] == "volume" || call.Arguments[0] == "compose"),
             "a container already confirmed Running is never the one to restart or bring up — the fix here is "
             + "probing and recording the connection string directly, never another docker mutation");
+        resolution.Value.Should().Be(Hall9kDatabase.DefaultConnectionString,
+            "the routing has to actually reach OfferAndRecordAlreadyRunningContainerAsync and record the "
+            + "connection string, not merely avoid a docker mutation — reverting the routing fix would leave "
+            + "this unconfigured instead");
+        Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be(Hall9kDatabase.DefaultConnectionString);
     }
 
     private static ReachabilityReport Reachable() =>
@@ -95,4 +119,31 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
 
     private static ReachabilityReport RefusedConnection() =>
         new(ReachabilityStatus.RefusedConnection, "nothing listening", "localhost", 5432, "hall9k");
+
+    /// <summary>The global console, swapped for a writer so a skipped prompt's own
+    /// explanation can be asserted on, then put back — same shape as
+    /// DatabaseDoctorNotConfiguredTests' own CaptureAsync.</summary>
+    private static async Task<string> CaptureAsync(Func<Task> action)
+    {
+        IAnsiConsole original = AnsiConsole.Console;
+        StringWriter writer = new();
+        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Interactive = InteractionSupport.No,
+            Out = new AnsiConsoleOutput(writer),
+        });
+        captured.Profile.Width = 4096;
+        AnsiConsole.Console = captured;
+        try
+        {
+            await action();
+            return writer.ToString();
+        }
+        finally
+        {
+            AnsiConsole.Console = original;
+        }
+    }
 }

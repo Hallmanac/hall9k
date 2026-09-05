@@ -161,11 +161,15 @@ all. Four questions, answered in order, stopping at the first one that fails (De
 3. **Is the schema there?** Marten creates its own tables on first use, so this is mostly an
    offer: *shall I set that up now?*
 4. **Only if nothing was configured** — what is available: a running container runtime, a native
-   Postgres already on 5432, and, the nicest possible finding, a **stopped** `hall9k-postgres`
-   container from a previous session ("your database exists, it is just not running").
+   Postgres already on 5432, a **stopped** `hall9k-postgres` container from a previous session
+   ("your database exists, it is just not running"), or — the nicest possible finding — a
+   `hall9k-postgres` container already **running** and answering, where there is nothing to
+   start at all, only something to point at.
 
 When the check finds Postgres not running but a container runtime available, it offers to start
-it — offer-never-force, the same shape as the auto-assign prompt at publish — and offers to
+it; when `hall9k-postgres` is already running and answering, there is nothing left to start, so
+the offer instead is to record the connection string that points at it. Either way it is
+offer-never-force, the same shape as the auto-assign prompt at publish, and it offers to
 create the schema the same way once it can reach a server that does not have one yet. A
 non-interactive invocation (a script, a dispatched agent) with nobody there to answer names the
 skipped prompt and the flag that would have answered it, `h9k doctor --yes`, rather than falling
