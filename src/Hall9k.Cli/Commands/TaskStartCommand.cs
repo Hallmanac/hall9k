@@ -91,8 +91,13 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
+        // interactiveMode: true — a direct h9k task start invocation is the human's own
+        // deliberate kick-off (task: interactive mode becomes a recorded property of the task,
+        // design ruling R2), unlike h9k task handback --now's own call to this same method below,
+        // which is a handback's redispatch back to the machine and passes false.
         return await RunDeliberateStartAsync(
-            store, session, task, fence, context, settings.AcknowledgeUnmetDependencies, cancellationToken);
+            store, session, task, fence, context, settings.AcknowledgeUnmetDependencies, interactiveMode: true,
+            cancellationToken);
     }
 
     /// <summary>
@@ -102,11 +107,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// fcaded0b's R7 ruling) reuses this exact mechanism rather than a second implementation of
     /// it — after a handback lands its task Queued or Blocked, that command calls this the same
     /// way this command's own entry point does, on the freshly re-read aggregate the handback
-    /// just committed.
+    /// just committed. <paramref name="interactiveMode"/> lets the two callers disagree about
+    /// whether the resulting claim is the human's own hands-on-the-wheel act (task: interactive
+    /// mode becomes a recorded property of the task): true from <see cref="ExecuteAsync"/>, false
+    /// from a handback's own redispatch, since handback already ended interactive mode moments
+    /// before this call and immediately reinstating it here would silently undo that act.
     /// </summary>
     internal static async Task<int> RunDeliberateStartAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
-        bool acknowledgeUnmetDependencies, CancellationToken cancellationToken)
+        bool acknowledgeUnmetDependencies, bool interactiveMode, CancellationToken cancellationToken)
     {
         Guid taskId = task.Id;
 
@@ -125,7 +134,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, AgentModel model) =
             await ClaimAndCutAsync(
                 store, session, task, fence, context, claudeSessionId, sessionName,
-                acknowledgeUnmetDependencies, cancellationToken);
+                acknowledgeUnmetDependencies, interactiveMode, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -248,7 +257,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// </summary>
     internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, AgentModel Model)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
-        Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, CancellationToken cancellationToken)
+        Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, bool interactiveMode,
+        CancellationToken cancellationToken)
     {
         IReadOnlyList<TaskDependency>? dependencies = null;
         IReadOnlyList<TaskDependency>? unmetAtEntry = null;
@@ -353,18 +363,19 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         if (dependencies is not null)
         {
             (assigned, claimed, unmet) = PrepareDeliberateClaimFromPublished(
-                task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies);
+                task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies, interactiveMode);
         }
         else if (unmetAtEntry is not null)
         {
             (claimed, carriedForward) = PrepareDeliberateClaimFromBlocked(
-                task, context.OwnerId, unmetAtEntry, runId, claimedAt, acknowledgeUnmetDependencies);
+                task, context.OwnerId, unmetAtEntry, runId, claimedAt, acknowledgeUnmetDependencies, interactiveMode);
             unmet = unmetAtEntry;
         }
         else
         {
             claimed = TaskDecider.ClaimDeliberately(
-                task, context.OwnerId, runId, claimedAt, dependencyOverrideAcknowledged: false);
+                task, context.OwnerId, runId, claimedAt, dependencyOverrideAcknowledged: false,
+                interactiveMode: interactiveMode);
         }
 
         long claimedVersion = fence.Version + (assigned is null ? 1 : 2);
@@ -461,7 +472,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// </summary>
     internal static (TaskAssigned Assigned, TaskClaimed Claimed, IReadOnlyList<TaskDependency> UnmetDependencies) PrepareDeliberateClaimFromPublished(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> dependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies)
+        bool acknowledgeUnmetDependencies, bool interactiveMode = false)
     {
         TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId);
         IReadOnlyList<TaskDependency> unmet =
@@ -490,7 +501,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         }
 
         task.Apply(assigned);
-        TaskClaimed claimed = TaskDecider.ClaimDeliberately(task, ownerId, runId, now, unmet.Count > 0);
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, ownerId, runId, now, unmet.Count > 0, dependencyOverrideCarriedForward: false, interactiveMode);
         return (assigned, claimed, unmet);
     }
 
@@ -513,7 +525,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// </summary>
     internal static (TaskClaimed Claimed, bool CarriedForward) PrepareDeliberateClaimFromBlocked(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> unmetDependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies)
+        bool acknowledgeUnmetDependencies, bool interactiveMode = false)
     {
         bool carriedForward = !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
         if (!acknowledgeUnmetDependencies && !carriedForward)
@@ -531,7 +543,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         TaskClaimed claimed = TaskDecider.ClaimDeliberately(
             task, ownerId, runId, now, dependencyOverrideAcknowledged: true,
-            dependencyOverrideCarriedForward: carriedForward);
+            dependencyOverrideCarriedForward: carriedForward, interactiveMode: interactiveMode);
         return (claimed, carriedForward);
     }
 

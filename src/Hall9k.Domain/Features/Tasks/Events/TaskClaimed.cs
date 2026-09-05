@@ -17,6 +17,17 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// aggregate's own carried-forward record already covered the still-open set. False whenever
 /// DependencyOverrideAcknowledged is false.
 /// </summary>
+/// <param name="InteractiveMode">
+/// True when this claim is the human's own hands-on-the-wheel act (task: interactive mode
+/// becomes a recorded property of the task, design ruling R2) — set unconditionally by
+/// <see cref="Handlers.TaskDecider.ClaimInteractively"/> (h9k task work) and, only when the CLI
+/// caller says this is a human's own deliberate kick-off rather than an automated one, by
+/// <see cref="Handlers.TaskDecider.ClaimDeliberately"/> (h9k task start; false for
+/// <c>AutoPrReviewEngine</c>'s own automated "now"-speed claim on the identical decider method).
+/// It only ever turns <see cref="TaskAggregate.InteractiveModeEnabled"/> on — a plain node
+/// <see cref="Handlers.TaskDecider.Claim"/>, or a reclaim through either decider without this
+/// flag, never turns it back off; only <c>h9k task handback</c> does that (design ruling R9).
+/// </param>
 public sealed record TaskClaimed(
     Guid Id,
     Guid NodeId,
@@ -25,4 +36,5 @@ public sealed record TaskClaimed(
     Guid RunId,
     DateTimeOffset ClaimedAt,
     bool DependencyOverrideAcknowledged = false,
-    bool DependencyOverrideCarriedForward = false);
+    bool DependencyOverrideCarriedForward = false,
+    bool InteractiveMode = false);

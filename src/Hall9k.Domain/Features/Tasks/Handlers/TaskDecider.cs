@@ -804,9 +804,14 @@ public static class TaskDecider
                 $"not to this owner ({ownerId}) — an operator claims only their own owner's work.");
         }
 
+        // Always true, never a parameter: every claim this method produces IS the human's own
+        // hands-on-the-wheel act by construction — there is no automated caller of
+        // ClaimInteractively the way AutoPrReviewEngine calls ClaimDeliberately below (task:
+        // interactive mode becomes a recorded property of the task, design ruling R2).
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
-            dependencyOverrideAcknowledged, dependencyOverrideAcknowledged && dependencyOverrideCarriedForward);
+            dependencyOverrideAcknowledged, dependencyOverrideAcknowledged && dependencyOverrideCarriedForward,
+            InteractiveMode: true);
     }
 
     /// <summary>
@@ -833,10 +838,19 @@ public static class TaskDecider
     /// refuses — this is the defensive floor beneath the caller's own warn-and-ask flow, not a
     /// substitute for it, since this decider has no dependency descriptions to warn with itself.
     /// </para>
+    /// <para>
+    /// Unlike <see cref="ClaimInteractively"/>, this method has two callers with opposite
+    /// answers to "is this the human's own act" (task: interactive mode becomes a recorded
+    /// property of the task, design ruling R2): <c>h9k task start</c> passes
+    /// <paramref name="interactiveMode"/> true — a human deliberately took the wheel — while
+    /// <c>AutoPrReviewEngine</c>'s own automated "now"-speed claim on this identical method
+    /// leaves it at its default false, since nobody asked to arbitrate that dispatch's
+    /// boundaries by hand.
+    /// </para>
     /// </summary>
     public static TaskClaimed ClaimDeliberately(
         TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool dependencyOverrideAcknowledged,
-        bool dependencyOverrideCarriedForward = false)
+        bool dependencyOverrideCarriedForward = false, bool interactiveMode = false)
     {
         if (task.State == TaskState.Blocked)
         {
@@ -862,7 +876,7 @@ public static class TaskDecider
 
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt, dependencyOverrideAcknowledged,
-            dependencyOverrideAcknowledged && dependencyOverrideCarriedForward);
+            dependencyOverrideAcknowledged && dependencyOverrideCarriedForward, interactiveMode);
     }
 
     /// <summary>

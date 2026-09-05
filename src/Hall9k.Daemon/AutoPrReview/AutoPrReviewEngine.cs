@@ -399,6 +399,11 @@ public sealed class AutoPrReviewEngine(
         else if (launchImmediately)
         {
             deliberateRunId = DomainId.New();
+            // interactiveMode defaults false and stays there: this claim is the daemon's own
+            // automated "now"-speed dispatch, not a human at the wheel (task: interactive mode
+            // becomes a recorded property of the task) — nobody asked to arbitrate a pr-review
+            // task's boundaries by hand, and PrReviewEngine has no boundary this flag could gate
+            // anyway.
             TaskClaimed claimed = TaskDecider.ClaimDeliberately(
                 task, node.OwnerId, deliberateRunId.Value, now, dependencyOverrideAcknowledged: false);
             task.Apply(claimed);

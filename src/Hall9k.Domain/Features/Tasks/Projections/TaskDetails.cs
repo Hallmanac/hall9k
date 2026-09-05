@@ -140,6 +140,8 @@ public sealed class TaskDetails
     public Guid? ClaimedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
+    /// <summary>See <see cref="TaskAggregate.InteractiveModeEnabled"/>: same recorded, task-level fact, read off this projection.</summary>
+    public bool InteractiveModeEnabled { get; set; }
     /// <summary>
     /// Whether the current claim's <see cref="Events.TaskClaimed"/> recorded a human's deliberate
     /// override of unmet dependency edges — <c>h9k task start --acknowledge-unmet-dependencies</c>
@@ -450,6 +452,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RunIds.Add(@event.Data.RunId);
         view.DependencyOverrideAcknowledged = @event.Data.DependencyOverrideAcknowledged;
         view.DependencyOverrideCarriedForward = @event.Data.DependencyOverrideCarriedForward;
+        if (@event.Data.InteractiveMode)
+        {
+            view.InteractiveModeEnabled = true;
+        }
+
         view.State = TaskState.Claimed;
     }
 
@@ -582,6 +589,9 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.CurrentRunId = null;
         view.DependencyOverrideAcknowledged = false;
         view.DependencyOverrideCarriedForward = false;
+        // The one explicit human act that clears interactive mode — mirrors
+        // TaskAggregate.Apply(TaskHandedBack) (design ruling R9).
+        view.InteractiveModeEnabled = false;
         // Same invariant the TaskRequeued handler above restores: a handback out of a
         // deliberately-claimed Blocked task must not resurface as Queued while a dependency is
         // still on record unmet.
