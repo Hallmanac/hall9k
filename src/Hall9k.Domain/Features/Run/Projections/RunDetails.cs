@@ -361,19 +361,30 @@ public sealed class RunDetails
     /// pre-field stream, <see cref="SessionName"/>'s own doc), so a live registration whose own
     /// session genuinely carries no display name would otherwise leave <see cref="SessionName"/>
     /// holding whatever agent name preceded it — the build session's own name, silently
-    /// masquerading as the human's address. This field always mirrors the event's own
-    /// <see cref="Events.InteractiveSessionStarted.SessionName"/> exactly, blank included, and
-    /// nothing else ever writes it, so it stays the human's own name (or honestly blank) through
-    /// the headless review/fix loop that follows a live `h9k task deliver`, not only during the
-    /// build itself.
+    /// masquerading as the human's address. This field mirrors the event's own
+    /// <see cref="Events.InteractiveSessionStarted.SessionName"/>, blank included, for every
+    /// <em>attended</em> registration, so it stays the human's own name (or honestly blank)
+    /// through the headless review/fix loop that follows a live `h9k task deliver`, not only
+    /// during the build itself — except the one <see cref="InteractiveSessionStarted"/> that is
+    /// never a human's: <c>h9k task start</c> appends this same event carrying its own headless
+    /// build agent's session name (<see cref="SessionRoleName.Build"/>'s own suffix), and that
+    /// write is skipped rather than mirrored (independent pre-PR review, cycle 1, both lenses) —
+    /// the same build-role-suffix discriminator <c>TaskPhaseComposer</c> already relies on to
+    /// tell an attended claim from a start-it-mine one.
     /// <para>
     /// Null when nobody has ever run <c>h9k task register-session</c> against this run (a run
-    /// dispatched headless from the start under interactive mode, or a handback nobody
-    /// re-attached to) — the honest "no registered session" case a dispatched agent's outbound
-    /// milestone rules degrade against. Empty when a human did register but their own session
-    /// carried no display name to send to (<c>TaskRegisterSessionCommand.ReadClaudeSessionName</c>
-    /// returning null) — a second, equally honest "nothing to address" case, told apart from the
-    /// first only by a caller that cares to (both read as "skip sending" to a dispatched prompt).
+    /// dispatched headless from the start under interactive mode via <c>h9k task start</c>, or a
+    /// handback nobody re-attached to) — the honest "no registered session" case a dispatched
+    /// agent's outbound milestone rules degrade against. Empty when a human did register but their
+    /// own session carried no display name to send to
+    /// (<c>TaskRegisterSessionCommand.ReadClaudeSessionName</c> returning null) — a second,
+    /// equally honest "nothing to address" case, told apart from the first only by a caller that
+    /// cares to (both read as "skip sending" to a dispatched prompt). Also null, indistinguishably
+    /// from "nobody has registered yet", on a document written before this field existed even when
+    /// a live registration is on the stream: <see cref="RunDetailsProjection"/> is registered
+    /// Inline with no backfill for this field, the same gap <see cref="LastInteractiveActivityAt"/>'s
+    /// own doc describes for itself — self-healing on the next attach or detach, but stating an
+    /// unobserved fact rather than avoiding one until then.
     /// </para>
     /// </summary>
     public string? RegisteredInteractiveSessionName { get; set; }
@@ -938,11 +949,18 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<InteractiveSessionStarted> @event, RunDetails view)
     {
         view.InteractiveClaudeSessionId = @event.Data.ClaudeSessionId;
-        // Unconditional, unlike the SessionName write a few lines down: this field's whole
-        // contract (RunDetails.RegisteredInteractiveSessionName's own doc) is to mirror this
-        // event's own SessionName exactly, blank included, rather than fall back to whatever
-        // agent name preceded it.
-        view.RegisteredInteractiveSessionName = @event.Data.SessionName;
+        // Guarded, unlike the unconditional InteractiveClaudeSessionId write above: h9k task
+        // start appends this identical event for its own headless build agent (SessionRoleName.Build),
+        // not for a human, and mirroring that verbatim here told every later review/fix prompt that
+        // agent's own exited session was "the human's own registered session" (independent pre-PR
+        // review, cycle 1, both lenses). The build-role suffix is the same discriminator
+        // TaskPhaseComposer already relies on to tell an attended h9k task work claim from a
+        // start-it-mine one, since TaskAggregate.IsInteractiveClaim's own Guid.Empty sentinel does
+        // not tell them apart on its own.
+        if (!@event.Data.SessionName.EndsWith("-" + SessionRoleName.Build, StringComparison.Ordinal))
+        {
+            view.RegisteredInteractiveSessionName = @event.Data.SessionName;
+        }
         view.InteractiveSessionCount++;
         // @event.Timestamp (when this event was actually appended), not @event.Data.StartedAt
         // (the claude process's own start time): a direct launch's StartedAt is ~milliseconds
