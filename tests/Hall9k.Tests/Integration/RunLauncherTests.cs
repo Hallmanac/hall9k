@@ -933,9 +933,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
+        PrimarySessionResumer primarySessionResumer = new(
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())));
         return new RunSupervisor(store, node, processes, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
-            NullLogger<RunSupervisor>.Instance);
+            primarySessionResumer, Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
     }
 
     /// <summary>

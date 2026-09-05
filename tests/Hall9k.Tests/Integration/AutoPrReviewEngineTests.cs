@@ -186,9 +186,12 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
+        PrimarySessionResumer primarySessionResumer = new(
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())));
         RunSupervisor supervisor = new(
             store, node, processes, verification, review, prReview,
-            new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance), NullLogger<RunSupervisor>.Instance);
+            new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance), primarySessionResumer,
+            Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
         BlockerContextAssembler blockerContext = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())),
             processes, Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);

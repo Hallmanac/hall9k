@@ -4,6 +4,7 @@ using System.Text;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Events;
@@ -18,6 +19,7 @@ using JasperFx.Events;
 using Marten;
 using Marten.Events;
 using Marten.Linq.MatchesSql;
+using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -41,10 +43,14 @@ public sealed class RunSupervisor(
     ReviewEngine review,
     PrReviewEngine prReview,
     PullRequestOpener pullRequests,
+    PrimarySessionResumer primarySessionResumer,
+    IOptions<DaemonOptions> options,
     ILogger<RunSupervisor> logger)
 {
     private static readonly TimeSpan TailInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DeadProcessGrace = TimeSpan.FromSeconds(5);
+
+    private readonly DaemonOptions _options = options.Value;
 
     /// <summary>
     /// This run's very first gate pass, before any review cycle has dispatched — not a
@@ -328,7 +334,25 @@ public sealed class RunSupervisor(
 
                 if (sawResult)
                 {
-                    await CompleteRunAsync(runId, runDirectory, taskId, result!, cancellationToken);
+                    (int ProcessId, DateTimeOffset ProcessStartedAt)? retried =
+                        await CompleteRunAsync(runId, runDirectory, taskId, result!, cancellationToken);
+                    if (retried is { } resumed)
+                    {
+                        // A session that reports an error result is retried once in place
+                        // (task: a session that reports an error result is retried once in
+                        // place): the retry's stdout redirect truncated the stream file fresh
+                        // (log #2), so this same tracked monitor task just keeps tailing it
+                        // from byte zero rather than being torn down and re-registered —
+                        // re-adding this run's id to _monitors here would race this very
+                        // task's own finally block below and remove the entry it just added.
+                        processId = resumed.ProcessId;
+                        processStartedAt = resumed.ProcessStartedAt;
+                        cursor = 0;
+                        deadSince = null;
+                        partialLine.Clear();
+                        continue;
+                    }
+
                     return;
                 }
 
@@ -364,7 +388,13 @@ public sealed class RunSupervisor(
         }
     }
 
-    private async Task CompleteRunAsync(
+    /// <summary>
+    /// Non-null means the primary session's own error result was retried in place (task: a
+    /// session that reports an error result is retried once in place) — the new process
+    /// <see cref="MonitorAsync"/> should keep tailing instead of treating this as the run's
+    /// terminal completion.
+    /// </summary>
+    private async Task<(int ProcessId, DateTimeOffset ProcessStartedAt)?> CompleteRunAsync(
         Guid runId, string runDirectory, Guid taskId, AgentResult result, CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -381,6 +411,7 @@ public sealed class RunSupervisor(
         session.Events.Append(runId, new AgentSessionCompleted(runId, now));
         session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
 
+        SpawnedAgent? retriedAgent = null;
         if (result.IsError && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, not a machine or code fault (backlog 40): the run
@@ -390,6 +421,23 @@ public sealed class RunSupervisor(
             logger.LogWarning(
                 "Run {RunId}: token budget exhausted — parked rather than failed; the daemon retries hourly. {Message}",
                 runId, summary);
+        }
+        else if (result.IsError
+            && run is not null
+            && !run.HasRetriedSessionError(RunSessionLeg.Build, cycle: null, lens: null))
+        {
+            // The first error for the build session (task: a session that reports an error
+            // result is retried once in place — measured 2026-09-05: bursty across only 18
+            // distinct hours, the shape of a provider-side burst, not a code defect). A null
+            // return here — missing task/project docs, or the resumed spawn itself throwing —
+            // falls through to the ordinary failure below exactly as if no retry existed.
+            retriedAgent = await TryRetryBuildSessionAsync(
+                session, runId, taskId, result.Summary ?? "(no message)", now, cancellationToken);
+            if (retriedAgent is null)
+            {
+                session.Events.Append(runId, new RunFailed(runId, "Agent reported an error result.", now));
+                await AppendFencedTaskFailureAsync(session, runId, taskId, "Agent reported an error result.", now, cancellationToken);
+            }
         }
         else if (result.IsError)
         {
@@ -411,7 +459,7 @@ public sealed class RunSupervisor(
             logger.LogInformation(
                 "Task {TaskId}: lost the generation race recording {Transition} for run {RunId} — a newer claim committed first",
                 taskId, nameof(TaskFailed), runId);
-            return;
+            return null;
         }
 
         logger.LogInformation(
@@ -423,6 +471,14 @@ public sealed class RunSupervisor(
             result.CacheCreationInputTokens,
             result.OutputTokens,
             result.IsError);
+
+        if (retriedAgent is { } agent)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the primary session reported an error result — retried once in place (pid {ProcessId})",
+                runId, agent.ProcessId);
+            return (agent.ProcessId, agent.StartedAt);
+        }
 
         // A pr-review task's primary session IS the adversarial review lens: there is no
         // diff of its own to gate, re-review, or open a pull request over, so it never
@@ -436,7 +492,7 @@ public sealed class RunSupervisor(
                 await prReview.ReviewAsync(runId, taskId, cancellationToken);
             }
 
-            return;
+            return null;
         }
 
         if (!result.IsError)
@@ -444,12 +500,12 @@ public sealed class RunSupervisor(
             switch (await ParkedOnThreadDisputeAsync(runId, taskId, result, cancellationToken))
             {
                 case ThreadDisputeOutcome.Parked:
-                    return;
+                    return null;
                 case ThreadDisputeOutcome.Stale:
                     // The fence already rejected this lane (Copilot review, PR #30):
                     // stopping here instead of falling through saves a verification cycle
                     // the review loop's own fence would only reject one step later anyway.
-                    return;
+                    return null;
                 case ThreadDisputeOutcome.NoDispute:
                     break;
             }
@@ -462,6 +518,46 @@ public sealed class RunSupervisor(
             && await review.ReviewAsync(runId, taskId, cancellationToken))
         {
             await pullRequests.OpenAsync(runId, taskId, cancellationToken);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Spawns the build session's own error-result retry (task: a session that reports an error
+    /// result is retried once in place), on <paramref name="session"/> so
+    /// <see cref="RunSessionErrorRetried"/> lands atomically with the caller's other
+    /// events. Null means no retry happened — the docs this needs were missing, or the resumed
+    /// spawn itself threw — and the caller falls back to failing the run exactly as if this
+    /// leg had never retried.
+    /// </summary>
+    private async Task<SpawnedAgent?> TryRetryBuildSessionAsync(
+        IDocumentSession session, Guid runId, Guid taskId, string observedMessage, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        RunDetails? runDetails = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        ProjectDetails? project = task is null
+            ? null
+            : await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (runDetails is null || task is null || project is null)
+        {
+            return null;
+        }
+
+        session.Events.Append(
+            runId, new RunSessionErrorRetried(runId, RunSessionLeg.Build, Cycle: null, Lens: null, observedMessage, now));
+
+        try
+        {
+            await Task.Delay(_options.SessionErrorRetryBackoff, cancellationToken);
+            return await primarySessionResumer.ResumeAsync(
+                session, runDetails, task, project, AgentPromptBuilder.BuildSessionErrorRetry(), cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Run {RunId}: error-result retry spawn failed — failing the run instead", runId);
+            return null;
         }
     }
 
