@@ -790,6 +790,26 @@ public static partial class ReviewVerdictValidation
     /// one denial span covering the very defect its second clause states.
     /// </para>
     /// <para>
+    /// "when", "while", "before", "after", "if" and "until" join the list for the same reason,
+    /// as subordinating conjunctions rather than coordinating ones (independent pre-PR review,
+    /// adversarial finding, cycle 1, task 29025f60): this list previously enumerated only
+    /// coordinating separators, so the participle-widened subject-copula alternative and the
+    /// "no … is/are …" alternative both let their tempered tails cross a subordinate clause
+    /// boundary freely and bind the negator of one clause to the copula-plus-participle of a
+    /// following, unrelated subordinate clause — "`Auth.cs:42` has no timeout when the socket is
+    /// dropped." matched the whole span "no timeout when the socket is dropped" as one denial,
+    /// even though the located defect ("no timeout") and the participle ("dropped") belong to two
+    /// different clauses about two different things. "`Foo.cs:9` has no null check when the
+    /// payload is missing.", "`Http.cs:88` sets no header when the request is failing.",
+    /// "`Store.cs:40` writes with no lock while the row is overwritten." and, through the
+    /// participle-widened first alternative, "In `Store.cs:40` nothing is written to disk when
+    /// the token is dropped." and "Nothing is retried after the connection is lost in
+    /// `Http.cs:88`." are the same shape. A subordinating conjunction genuinely used inside a
+    /// denial's own single clause — "Nothing here is wrong when I check it carefully." — still
+    /// reads as a denial, because "wrong" now sits before the boundary rather than after it, the
+    /// same reasoning "but"/"yet"/"however"/"which" already rely on above.
+    /// </para>
+    /// <para>
     /// An em dash is blocked outright rather than only when it opens a fresh clause, which costs
     /// one recognized denial shape: an em-dash-bracketed aside ("Nothing here is — in my
     /// judgment — a defect.") now reads as a stated finding, where its comma-bracketed twin
@@ -802,21 +822,43 @@ public static partial class ReviewVerdictValidation
     /// finding that was stated plainly.
     /// </para>
     /// <para>
-    /// The bare "so" alternative also stays silent when "so" is immediately followed by one of
-    /// <see cref="DenialNouns"/> or <see cref="DenialParticiples"/> (PR #214 review, Copilot): "so"
+    /// The bare "so" alternative also stays silent when "so" is immediately followed by the
+    /// adjectival intensifier reading of "wrong", "broken" or "amiss" (PR #214 review, Copilot,
+    /// narrowed by the independent pre-PR review, conformance finding #1, task 29025f60): "so"
     /// there is an intensifier modifying the adjective ("Nothing is so wrong here.", "Nothing here
     /// is so broken it matters."), not a word opening a second clause, and treating it as one broke
     /// the tail's own reach to the vocabulary word the denial pattern needs to recognize the
     /// sentence as a denial at all — a pure denial phrased this way could then be misclassified as
-    /// a finding wherever a location happened to sit nearby. A "so" followed by anything else
-    /// ("Nothing here is fine, so the bug is real, …") still opens a boundary exactly as before.
+    /// a finding wherever a location happened to sit nearby. The carve-out was originally written
+    /// against the whole <see cref="DenialNouns"/>/<see cref="DenialParticiples"/> vocabulary, which
+    /// reopened the exact hole this task exists to close: "so" followed by a participle-led
+    /// consequence clause ("`Auth.cs:42` — nothing is retried, so dropped events are lost forever.")
+    /// suppressed the boundary too, so the tail walked straight through "so" into the second clause
+    /// and swallowed the real, located defect it states. Neither recorded intensifier example needs
+    /// more than the three adjectives, so the carve-out is narrowed to just those.
+    /// </para>
+    /// <para>
+    /// Narrowing the vocabulary alone is not enough (independent pre-PR review, conformance
+    /// finding #1's own fourth reproduction, task 29025f60): "broken" is itself both an intensifier
+    /// adjective and a word that can open a fresh noun phrase, so "`Auth.cs:42` — nothing is
+    /// escaped, so broken paths reach the shell." still had "so" immediately followed by "broken"
+    /// and the carve-out suppressed the boundary the same way, swallowing "broken" itself — the
+    /// only defect word this sentence states — into the denial's own span. The carve-out now also
+    /// requires the adjective to actually complete the clause the way both recorded examples do
+    /// ("so wrong here.", "so broken it matters."): immediately followed by end-of-sentence
+    /// punctuation, a comma, a semicolon, or a small set of clause-completing words ("here", "it",
+    /// "that", "this"). "so broken paths …" satisfies none of those — "paths" is neither punctuation
+    /// nor one of those words — so the adjective there is read as opening a fresh clause and the
+    /// boundary fires, exactly as it does for any other participle. A "so" followed by anything
+    /// else ("Nothing here is fine, so the bug is real, …", "nothing is retried, so dropped events
+    /// are lost forever.") still opens a boundary exactly as before.
     /// </para>
     /// </summary>
     private const string ClauseBoundary =
-        @";|:|\s*[—–]|\b(?:but|yet|however|which)\b"
+        @";|:|\s*[—–]|\b(?:but|yet|however|which|when|while|before|after|if|until)\b"
         + @"|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)"
         + @"|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b"
-        + @"|(?:" + DenialNouns + @"|" + DenialParticiples + @")\b))";
+        + @"|(?:wrong|broken|amiss)\b(?=[.!?,;:]|\s+(?:here|it|that|this)\b)))";
 
     /// <summary>
     /// One character of a denial's tempered tail: any character that neither ends the sentence nor
