@@ -135,6 +135,26 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         /// <summary>Whether each re-request addressed a bot — the [bot]-suffix decision downstream.</summary>
         public List<bool> RerequestedBots { get; } = [];
 
+        /// <summary>How many times MergeAsync was called — a pre-approved task's own auto-merge attempt.</summary>
+        public int MergeAttempts { get; private set; }
+
+        /// <summary>The head commit MergeAsync was told to match on each call, in call order.</summary>
+        public List<string?> MergeAttemptedHeadCommits { get; } = [];
+
+        /// <summary>Set to make MergeAsync fail mechanically, as GitHub itself would refuse a stale or blocked merge.</summary>
+        public string? MergeFailureMessage { get; set; }
+
+        public Task MergeAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken)
+        {
+            MergeAttempts++;
+            MergeAttemptedHeadCommits.Add(expectedHeadCommit);
+            return MergeFailureMessage is { } message
+                ? Task.FromException(new InvalidOperationException(message))
+                : Task.CompletedTask;
+        }
+
         public static PullRequestSnapshot Quiet() => new(
             IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
             FailingChecks: [], HasPendingChecks: false, UnresolvedReviewThreadCount: 0,

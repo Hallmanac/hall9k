@@ -17,10 +17,12 @@ public sealed class GitHubPullRequestInspectorTests
     // response readable in C# source; JSON has no apostrophes to lose to it.
     private static string Payload(
         string author, string headOid, string threads, string reviews,
-        string reviewRequests = "", string timelineItems = "", string? mergeable = null) =>
+        string reviewRequests = "", string timelineItems = "", string? mergeable = null,
+        string? reviewDecision = null) =>
         ("{'data':{'repository':{'pullRequest':{"
             + $"'author':{author},'headRefOid':'{headOid}',"
             + (mergeable is null ? "" : $"'mergeable':'{mergeable}',")
+            + (reviewDecision is null ? "" : $"'reviewDecision':'{reviewDecision}',")
             + $"'reviewThreads':{{'nodes':[{threads}]}},"
             + $"'reviewRequests':{{'nodes':[{reviewRequests}]}},"
             + $"'timelineItems':{{'nodes':[{timelineItems}]}},"
@@ -49,6 +51,9 @@ public sealed class GitHubPullRequestInspectorTests
     private static string RequestedReviewer(string login, string typeName) =>
         $"{{'requestedReviewer':{{'__typename':'{typeName}','login':'{login}'}}}}";
 
+    private static string RequestedTeamReviewer(string slug) =>
+        $"{{'requestedReviewer':{{'__typename':'Team','slug':'{slug}'}}}}";
+
     private static string ReviewRequestedEvent(string actorLogin, string actorTypeName, string reviewerLogin, string reviewerTypeName) =>
         "{'actor':" + Actor(actorLogin, actorTypeName)
             + $",'requestedReviewer':{{'__typename':'{reviewerTypeName}','login':'{reviewerLogin}'}}}}";
@@ -76,6 +81,68 @@ public sealed class GitHubPullRequestInspectorTests
             1, "the author's own thread is a self-note and counts as a person's (AGENTS.md invariant)");
         observation.UnresolvedThreadIds.Should().BeEquivalentTo(["thread-bot", "thread-self-note"]);
         observation.UnresolvedHumanThreadIds.Should().Equal("thread-self-note");
+    }
+
+    /// <summary>
+    /// The review decision is read verbatim off the provider (task: a task can be published
+    /// pre-approved) — a pre-approved merge gate's own "is the review decision satisfied" check.
+    /// </summary>
+    [Theory]
+    [InlineData("APPROVED")]
+    [InlineData("REVIEW_REQUIRED")]
+    [InlineData("CHANGES_REQUESTED")]
+    public void Review_decision_is_read_verbatim(string decision)
+    {
+        string json = Payload(Actor("hallmanac", "User"), "cafe1", "", "", reviewDecision: decision);
+
+        GitHubPullRequestInspector.ParseReviews(json).ReviewDecision.Should().Be(decision);
+    }
+
+    [Fact]
+    public void Review_decision_is_null_when_the_repository_has_no_branch_rule()
+    {
+        string json = Payload(Actor("hallmanac", "User"), "cafe1", "", "");
+
+        GitHubPullRequestInspector.ParseReviews(json).ReviewDecision.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Every requested reviewer's login, Copilot included and unfiltered — deliberately the raw
+    /// provider read, distinct from <c>PendingReviewRequestLogins</c>'s own human-engagement
+    /// filtering (task: a task can be published pre-approved).
+    /// </summary>
+    [Fact]
+    public void Outstanding_reviewer_logins_include_copilot_unfiltered()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: string.Join(",",
+                RequestedReviewer("copilot-pull-request-reviewer", "Bot"),
+                RequestedReviewer("teammate", "User")));
+
+        GitHubPullRequestInspector.ParseReviews(json).OutstandingReviewerLogins
+            .Should().BeEquivalentTo(["copilot-pull-request-reviewer", "teammate"]);
+    }
+
+    /// <summary>
+    /// A requested TEAM reviewer carries no login, unlike a user or a bot — dropping it here the
+    /// way <see cref="Pending_review_requests_are_read_by_login_teams_excluded"/> deliberately
+    /// drops one for the human-engagement filter would tell the pre-approved merge gate no
+    /// reviewer is outstanding while a team's review request genuinely still is: an unobserved
+    /// fact must read as unknown, never as absent, especially when an automatic merge is the
+    /// consequence (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void Outstanding_reviewer_logins_record_a_requested_team_by_slug_rather_than_dropping_it()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: string.Join(",",
+                RequestedReviewer("teammate", "User"),
+                RequestedTeamReviewer("platform-team")));
+
+        GitHubPullRequestInspector.ParseReviews(json).OutstandingReviewerLogins
+            .Should().BeEquivalentTo(["teammate", "team:platform-team"]);
     }
 
     /// <summary>

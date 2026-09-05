@@ -70,6 +70,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task RerequestReviewAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
             CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task MergeAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     /// <summary>The ordinary case: a pull request that is still open, so dispatch proceeds.</summary>
@@ -89,6 +93,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         public Task RerequestReviewAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task MergeAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
             CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
