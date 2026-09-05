@@ -9,7 +9,8 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// The current period's recorded spend against the node's own budget (backlog: spend-governor
 /// step three). <see cref="SpentTokens"/> is always summed live from every recorded
-/// <c>TokensRecorded</c> event since the period start, budget set or not, so the calibration loop
+/// <c>TokensRecorded</c> and <c>PublicationTokensRecorded</c> event since the period start, budget
+/// set or not, so the calibration loop
 /// (run, observe a week's real burn, set the budget under it, adjust) has something to look at
 /// from the day this merges rather than the day a number is chosen — that half is current even
 /// with no daemon running at all. <see cref="BudgetTokens"/>, <see cref="Period"/> and

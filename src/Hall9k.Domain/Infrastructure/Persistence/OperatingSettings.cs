@@ -151,8 +151,9 @@ public sealed class OperatingSettings
     /// <summary>
     /// This node's periodic token-spend budget (backlog: spend-governor step three, the
     /// 2026-09-01 architecture review's token-economics findings): once the current period's
-    /// recorded spend — every input token <c>TokensRecorded</c> already prices, fresh, cache-read
-    /// and cache-creation combined, summed across every model — meets or exceeds this many
+    /// recorded spend — every input token <c>TokensRecorded</c> and <c>PublicationTokensRecorded</c>
+    /// already price between them, fresh, cache-read and cache-creation combined, summed across
+    /// every model — meets or exceeds this many
     /// tokens, <c>DispatchEngine</c> declines to claim any further queued task until the period
     /// rolls. Null means no budget: dispatch is unbudgeted and behavior is byte-for-byte
     /// unchanged. Denominated in tokens, never dollars — Decisions Log #30 rules the platform

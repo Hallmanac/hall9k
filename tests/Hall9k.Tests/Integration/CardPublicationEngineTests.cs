@@ -617,6 +617,48 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
     }
 
     /// <summary>
+    /// The gap the adversarial lens found (routed from the pre-PR review of task
+    /// 01a0620c-5d2c-76e6-b013-e10b2bdc8846, cycle 1): <see cref="TaskDetails.PublicationSessionModel"/>
+    /// is the only thing standing between an adopted session's recorded spend and
+    /// <see cref="AgentModel.Unknown"/>, and nothing exercised it — the projection's own assignment
+    /// could be deleted and the rest of the suite would still be green.
+    /// </summary>
+    [Fact]
+    public async Task An_adopted_sessions_usage_is_recorded_under_the_model_it_actually_ran_on()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        Guid sessionId = await DispatchedAsync(
+            store, node, taskId, processId: 4242, cts.Token, model: AgentModel.Opus);
+        await WriteResultAsync(sessionId, "Created PROJ-123.", cts.Token);
+
+        // Nothing is marked alive: the session died with the daemon that spawned it, so adoption
+        // reads its result straight off the stream file this seeded rather than waiting on a live
+        // process.
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Adopted.Should().Be(1);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<PublicationTokensRecorded> recorded = await query.Events
+            .QueryRawEventDataOnly<PublicationTokensRecorded>()
+            .Where(e => e.Id == taskId)
+            .ToListAsync(cts.Token);
+        PublicationTokensRecorded tokens = recorded.Should().ContainSingle(
+            "the adopted session reported usage, and it must not be discarded").Subject;
+        tokens.Model.Should().Be(
+            AgentModel.Opus,
+            "TaskDetails.PublicationSessionModel is what AdoptAsync reads the model from — nothing "
+            + "in the adopted session's own result names which model it ran on");
+    }
+
+    /// <summary>
     /// The one stranding adoption cannot cover: a dispatch recorded against a node that never
     /// comes back. Adoption is scoped to the node that spawned the session because a pid means
     /// nothing off the machine that issued it, so a node identity that stops existing leaves the
@@ -1225,12 +1267,13 @@ public sealed class CardPublicationEngineTests(PostgresFixture postgres) : IClas
         int? processId,
         CancellationToken cancellationToken,
         Guid? nodeId = null,
-        DateTimeOffset? dispatchedAt = null)
+        DateTimeOffset? dispatchedAt = null,
+        AgentModel? model = null)
     {
         Guid sessionId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(taskId, new WorkItemPublicationDispatched(
-            taskId, sessionId, nodeId ?? node.NodeId, dispatchedAt ?? Now, AgentModel.Unknown));
+            taskId, sessionId, nodeId ?? node.NodeId, dispatchedAt ?? Now, model ?? AgentModel.Unknown));
         if (processId is { } pid)
         {
             session.Events.Append(taskId, new WorkItemPublicationSessionStarted(taskId, sessionId, pid, Now));
