@@ -28,8 +28,8 @@ namespace Hall9k.Tests.Integration;
 
 /// <summary>
 /// A pr-review task's primary session is the adversarial lens reading another contributor's
-/// pull-request head (adversarial review cycle-3 ride-along, `TokenBudgetRetryEngine.cs:113`):
-/// the resume spawn a budget-exhaustion retry issues for that same session must carry
+/// pull-request head (adversarial review cycle-3 ride-along, on <see cref="TokenBudgetRetryEngine.RetryParkedRunsAsync"/>'s
+/// own resume path): the resume spawn a budget-exhaustion retry issues for that same session must carry
 /// <see cref="AgentSpawnRequest.UntrustedWorkingDirectory"/> forward, exactly as the original
 /// dispatch did, so the retried process never loads the foreign checkout's own `.claude/`
 /// config or `.mcp.json` under the owner's credentials.
@@ -104,6 +104,73 @@ public sealed class TokenBudgetRetryEngineTests(PostgresFixture postgres) : ICla
         executor.Request.Should().NotBeNull();
         executor.Request!.UntrustedWorkingDirectory.Should().BeTrue(
             "the resumed session is the pr-review task's own adversarial lens over the same foreign checkout");
+    }
+
+    /// <summary>
+    /// The high finding from independent pre-PR review cycle 10: a Now-speed auto-pr-review
+    /// sentinel run (<see cref="Guid.Empty"/> on <c>NodeId</c>, the real node on
+    /// <c>DispatchingNodeId</c> — <c>AutoPrReviewEngine.CreateOneAsync</c>'s own claim shape,
+    /// mirrored here with <see cref="TaskDecider.ClaimDeliberately"/>) never matched
+    /// <c>RetryParkedRunsAsync</c>'s plain <c>NodeId == nodeId</c> filter, so it sat
+    /// <c>BudgetParked</c> forever — nothing else on the node ever clears that state
+    /// (<c>RunSupervisor.AdoptOrphansAsync</c> defers to this sweep for it by design). This pins
+    /// down that the widened query now finds it and resumes it exactly as an ordinarily-claimed
+    /// pr-review run does.
+    /// </summary>
+    [Fact]
+    public async Task Resuming_a_budget_parked_sentinel_pr_review_run_retries_it_too()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid sessionId = DomainId.New();
+        string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-budget-retry-sentinel-repo-{taskId:N}");
+        string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-budget-retry-sentinel-wt-{runId:N}");
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-budget-retry-sentinel-run-{runId:N}");
+        Directory.CreateDirectory(runDirectory);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"budget-retry-sentinel-{taskId:N}", repositoryPath,
+                new Uri("https://github.com/acme/web"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#43", ["every finding names a file and line"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#43"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+                task, node.OwnerId, runId, Now, dependencyOverrideAcknowledged: false);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            // Deliberately no TaskLease: a sentinel claim writes none (AutoPrReviewEngine.CreateOneAsync).
+
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, Guid.Empty, node.OwnerId, 1, sessionId, worktreePath, "pr/43",
+                ExecutorMode.Subscription, Now, RunDirectory: runDirectory, DispatchingNodeId: node.NodeId));
+            session.Events.Append(runId, new RunBudgetExhausted(runId, "usage limit reached", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        TokenBudgetRetryEngine engine = new(store, node, executor, NewSupervisor(store, node), NullLogger<TokenBudgetRetryEngine>.Instance);
+
+        int retried = await engine.RetryParkedRunsAsync(cts.Token);
+
+        retried.Should().Be(1, "the sentinel run's DispatchingNodeId names this node, so the widened query must find it");
+        executor.Request.Should().NotBeNull();
+        executor.Request!.UntrustedWorkingDirectory.Should().BeTrue(
+            "the resumed session is still the pr-review task's own adversarial lens over the same foreign checkout");
     }
 
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)

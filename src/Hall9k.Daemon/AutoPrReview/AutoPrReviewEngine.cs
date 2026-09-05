@@ -281,7 +281,7 @@ public sealed class AutoPrReviewEngine(
             // review ever being submitted). Minting again here on every later sweep is the
             // infinite re-mint loop both review lenses found (independent pre-PR review, cycle 1).
             logger.LogDebug(
-                "Auto-pr-review skipped {Repository}#{Number}: task {TaskId} already reviewed this same "
+                "Auto-pr-review skipped {Repository}#{Number}: task {TaskId} already exists for this same "
                 + "standing request", repository, candidate.Number, DomainId.Short(previousReview.Id));
             return 0;
         }
@@ -319,11 +319,16 @@ public sealed class AutoPrReviewEngine(
         // attestation with no findings report ever produced. TaskListItem carries no field that
         // says whether a review actually happened, only that the task existed and how it ended —
         // stating "reviewed" would be the same plausible-but-unobserved fill-in the AddedAt
-        // comment above already refuses to make.
+        // comment above already refuses to make. The Abandoned branch drops the "This is a
+        // re-review" framing outright, not only the word "reviewed" (independent pre-PR review,
+        // cycle 10, adversarial lens): the most common way there — the same pre-dispatch recall —
+        // never ran anything, so calling the new request a re-review still asserts the one fact
+        // this branch cannot observe. The Done branch keeps it: a Done pr-review task ordinarily
+        // did produce a report, so "re-review" is the honest word there.
         string? reReviewNote = previousReview is not null
             ? previousReview.State == TaskState.Abandoned
-                ? $"This is a re-review: an earlier auto-created task ({DomainId.Short(previousReview.Id)}) "
-                  + "existed for this pull request and was abandoned."
+                ? $"An earlier auto-created task ({DomainId.Short(previousReview.Id)}) existed for this "
+                  + "pull request and was abandoned — whether it reviewed anything before that is not recorded."
                 : $"This is a re-review: task {DomainId.Short(previousReview.Id)} existed for this "
                   + "pull request and closed Done."
             : null;

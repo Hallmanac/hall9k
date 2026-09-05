@@ -103,23 +103,29 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
         // (TaskWorkCommand and TaskStartCommand both refuse to create one) — it is auto-pr-review's
         // Now-speed deliberate claim (AutoPrReviewEngine.CreateOneAsync), which reads identically
         // to one on IsInteractiveClaim's own Guid.Empty discriminator. Gated on the run record
-        // actually existing and still being live, not on task state alone: the no-record check just
-        // above already recovers the one case where CreateOneAsync's own launch died before
-        // RunDispatched ever committed, and refusing that case here too — before ever loading the
-        // run — would misreport it as "already running headlessly" when nothing ever ran, closing
-        // off h9k task release's own recovery path with a claim that overclaims what was actually
-        // observed (independent pre-PR review, cycle 6, class sweep off TaskReleaseCommand.cs:61,
-        // the same shape adversarial cycle 6 found there). A live run is already being driven by
-        // this daemon's own RunSupervisor, exactly like an ordinary headless dispatch — superseding
-        // it here would requeue the task while the live run keeps going, dispatching a second run
-        // alongside it (independent pre-PR review, cycle 1, adversarial lens).
+        // actually existing, not on task state alone: the no-record check just above already
+        // recovers the one case where CreateOneAsync's own launch died before RunDispatched ever
+        // committed, and refusing that case here too — before ever loading the run — would
+        // misreport it as "already running headlessly" when nothing ever ran, closing off
+        // h9k task release's own recovery path with a claim that overclaims what was actually
+        // observed (independent pre-PR review, cycle 6, class sweep off TaskReleaseCommand.cs's own
+        // pr-review guard, the same shape adversarial cycle 6 found there). A live run is already
+        // being driven by this daemon's own RunSupervisor, exactly like an ordinary headless
+        // dispatch — superseding it here would requeue the task while the live run keeps going,
+        // dispatching a second run alongside it (independent pre-PR review, cycle 1, adversarial
+        // lens).
         //
-        // Non-terminal rather than RunState.IsLive, for the reason TaskReleaseCommand's identical
-        // guard records at length: a pr-review sentinel run also parks ReviewParked and
-        // BudgetParked while its task stays Claimed, and an IsLive gate let both fall through to
-        // the generic "handed off with h9k task deliver" refusal below, false for a task type that
-        // is never delivered (independent pre-PR review, cycles 7 and 8, adversarial lens).
-        if (task.Type == TaskType.PrReview && !run.State.IsTerminal)
+        // Unconditional on run.State, not RunState.IsLive and not merely non-terminal (independent
+        // pre-PR review, cycle 10, adversarial lens): a pr-review sentinel run also parks
+        // ReviewParked and BudgetParked while its task stays Claimed, and an IsLive gate let both
+        // fall through to the generic "handed off with h9k task deliver" refusal below, false for a
+        // task type that is never delivered (independent pre-PR review, cycles 7 and 8, adversarial
+        // lens) — and a terminal run is unreachable here anyway, since PrReviewEngine always
+        // completes or fails the task in the same transaction as the run's own terminal event, so
+        // task.CurrentRunId never keeps pointing at one once it lands. A pr-review task is never
+        // delivered, so it never has business past this point regardless of what state its run is
+        // observed in.
+        if (task.Type == TaskType.PrReview)
         {
             throw PrReviewSentinelClaim.Refuse(taskId, run.State, "hand back");
         }
