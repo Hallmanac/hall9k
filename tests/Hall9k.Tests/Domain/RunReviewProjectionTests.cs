@@ -361,6 +361,48 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// A disputed pre-final-pass rebase conflict (task: a run rebases its branch onto the current
+    /// base branch, independent pre-PR review, cycle 2, adversarial lens) is the identical case as
+    /// the thread-dispute tests above for the identical reason — the human decided the conflict,
+    /// not a review finding — but it cannot be discriminated by <c>ReviewCycle == 0</c> the way a
+    /// thread dispute always can: this dispute can land at any review cycle, mid-run, after
+    /// ordinary review passes have already run. <see cref="RunDetails.ParkedOnRebaseRecoveryDispute"/>
+    /// is what the fix keys on instead.
+    /// </summary>
+    [Fact]
+    public void Run_details_does_not_record_a_disputed_pre_final_pass_rebase_resolution_as_a_settled_ruling()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        // An ordinary cycle 1 review pass ran and converged before the mandatory final pass's own
+        // pre-flight rebase ever conflicted, so ReviewCycle is genuinely non-zero here — unlike a
+        // thread dispute, which always lands before ReviewCycle ever advances past 0.
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now)), view);
+        projection.Apply(new FakeEvent<ReviewCompleted>(
+            new ReviewCompleted(id, 1, ReviewVerdict.MergeReady, Now)), view);
+        view.ReviewCycle.Should().Be(1, "an ordinary review pass genuinely ran before the rebase conflict");
+
+        projection.Apply(new FakeEvent<PreFinalPassRebaseRecoveryCompleted>(
+            new PreFinalPassRebaseRecoveryCompleted(id, ReviewFixOutcome.Disputed, Now)), view);
+        view.ParkedOnRebaseRecoveryDispute.Should().BeTrue();
+
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "The mandatory final pass's own pre-flight rebase conflicted.", Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "take theirs for the ReviewEngine.cs hunk", Now, DomainId.New())), view);
+
+        view.ReviewCycle.Should().Be(1, "resolving the rebase dispute does not touch the ordinary cycle counter");
+        view.ReviewParkResolutions.Should().BeEmpty(
+            "the human decided the rebase conflict, not a review finding, even though an earlier " +
+            "ordinary cycle genuinely ran on this same run");
+        view.ParkedOnRebaseRecoveryDispute.Should().BeFalse("resolving the park clears the flag");
+    }
+
+    /// <summary>
     /// Escalation (task: a second fix round over the same findings) is a fact about the fix
     /// session that dispatched, so it rides on the same event the model does and reads back the
     /// same way — visible for a reader of <c>h9k task show</c> while the escalated round is the
