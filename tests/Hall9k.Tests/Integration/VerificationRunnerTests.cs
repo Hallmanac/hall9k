@@ -958,6 +958,102 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// Windows field report item 3 (ruled 2026-09-01): a gate spawned on Windows carries
+    /// MSBUILDDISABLENODEREUSE=1 in its own process environment, set by the platform at the
+    /// spawn rather than asked of each project's own verify command. Every other platform's
+    /// spawn is unchanged — the variable is never set at all there. `echo %VAR%` on cmd.exe
+    /// prints the literal token back when unset, and `echo $VAR` on sh prints nothing, so the
+    /// expected content genuinely differs by platform rather than this test special-casing one.
+    /// <para>
+    /// The ambient value on the machine running this test is cleared for the duration and
+    /// restored after, on both branches: <see cref="ProcessStartInfo.Environment"/> starts as a
+    /// copy of this test host's own environment, so a machine that already exports
+    /// MSBUILDDISABLENODEREUSE globally (a cross-platform variable some teams do set, to stop
+    /// stray MSBuild node processes) would otherwise decide either branch's assertion by ambient
+    /// state rather than by what the gate spawn under test actually did (conformance review,
+    /// cycle 1).
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_gate_spawned_on_windows_carries_MSBUILDDISABLENODEREUSE_and_other_platforms_do_not()
+    {
+        const string VariableName = "MSBUILDDISABLENODEREUSE";
+        string? previousValue = Environment.GetEnvironmentVariable(VariableName);
+        Environment.SetEnvironmentVariable(VariableName, null);
+        try
+        {
+            using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+            using DocumentStore store = NewStore();
+            (Guid taskId, Guid runId) = await SeedAsync(
+                store, [new VerifyCommand("envcheck", PrintEnvironmentVariableCommand(VariableName))], cts.Token);
+
+            bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+            passed.Should().BeTrue();
+            string log = File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-envcheck.log")).Trim();
+            if (OperatingSystem.IsWindows())
+            {
+                log.Should().Be("1", "the platform sets MSBUILDDISABLENODEREUSE=1 on every Windows gate spawn");
+            }
+            else
+            {
+                log.Should().BeEmpty("non-Windows gate spawns are unchanged and never set this variable, so $VAR expands to nothing");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(VariableName, previousValue);
+        }
+    }
+
+    /// <summary>
+    /// A project whose own verify command already sets the variable is unaffected: the inline
+    /// `set` runs inside the same shell session, after this process's environment was inherited,
+    /// so it simply overwrites the platform's own default for that gate. Windows-only — there is
+    /// nothing for a non-Windows spawn to override since it never sets the variable at all.
+    /// <para>
+    /// Observed through `cmd /c set VAR` (the query form, which reads the environment when it
+    /// runs) rather than any `%VAR%` readback, nested or not. cmd.exe expands `%VAR%` as a
+    /// textual substitution while parsing the whole raw line — the whole parenthesized block
+    /// here, since <see cref="VerificationRunner"/> wraps every gate command in `(…) > log` for
+    /// redirection — before any statement on it executes, `set` included. Nesting the readback
+    /// inside a second `cmd /c` does not escape that: the outer parse rewrites the nested
+    /// invocation's own argument text to `cmd /c echo 1` before the child is ever spawned, so
+    /// the child has no `%` left to expand and the log reads the platform's `1`. `set VAR`
+    /// carries no `%` at all, so nothing about it is decided at parse time, and running it in a
+    /// nested `cmd /c` makes it the same observation the production case rests on: a child
+    /// process spawned after the `set`, inheriting the environment at launch — OS-level
+    /// inheritance, which is exactly how `dotnet test` on that line would see the override too.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_verify_command_that_sets_the_variable_itself_still_wins_on_windows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId) = await SeedAsync(
+            store, [new VerifyCommand("envcheck", "set MSBUILDDISABLENODEREUSE=0 && cmd /c set MSBUILDDISABLENODEREUSE")], cts.Token);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeTrue();
+        // `set NAME=VALUE` keeps everything up to the line separator, so the assigned value here
+        // is "0 " (the space before `&&`) and the query form echoes it back the same way: the
+        // assertion matches the assignment rather than the whole line for that reason.
+        File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-envcheck.log"))
+            .Should().Contain("MSBUILDDISABLENODEREUSE=0",
+                "the project's own inline assignment overrides the platform default");
+    }
+
+    private static string PrintEnvironmentVariableCommand(string variableName) =>
+        OperatingSystem.IsWindows() ? $"echo %{variableName}%" : $"echo ${variableName}";
+
+    /// <summary>
     /// Seeds the worktree as a real repo shaped like this one — `main`, a task branch ahead of it
     /// (the same shape <see cref="InitGitWorktreeAsync"/> gives the uncommitted-files tests,
     /// needed here too: <see cref="VerificationRunner"/>'s own no-commit check would otherwise
