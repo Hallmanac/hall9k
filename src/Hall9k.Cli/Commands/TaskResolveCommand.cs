@@ -305,11 +305,19 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
     /// (routed defect fix, independent pre-PR review, cycle 1, adversarial, medium: resolving it
     /// once per guard could let a transient gh failure on only one of the two calls make them
     /// disagree about the same URL's safety), and gated on <paramref name="pullRequestUrl"/> being
-    /// present at all and parsing to a real pull request number, so a resolve with no <c>--pr</c>
-    /// or an unparsable one never shells out to <c>gh</c> or even loads <c>ProjectDetails</c> — both
-    /// downstream guards already refuse a URL <see cref="PullRequestUrls.ParseNumber"/> reads as 0
-    /// regardless of what this method returns, so resolving a repository for it first is pure waste
-    /// (independent pre-PR review, cycle 2, low). A pr-review task with no
+    /// present at all, so a resolve with no <c>--pr</c> never shells out to <c>gh</c> or even loads
+    /// <c>ProjectDetails</c>. Unlike <see cref="RecordPullRequestOnRunStreamAsync"/>'s own guard,
+    /// this one is <em>not</em> also gated on <see cref="PullRequestUrls.ParseNumber"/> succeeding:
+    /// <see cref="SafeTaskStreamPullRequestUrl"/> checks <see cref="PullRequestUrls.NamesForeignRepository"/>
+    /// against this method's return value for every <c>--pr</c> shape, pull-request-shaped or not (a
+    /// commit link, an issue link), so a URL that fails to parse as a pull request still needs the
+    /// project's repository resolved in order to be checked for a repository mismatch (routed defect
+    /// fix, independent pre-PR review, cycle 2, medium: an earlier version of this guard also
+    /// short-circuited on <see cref="PullRequestUrls.ParseNumber"/> failing, which starved
+    /// <see cref="SafeTaskStreamPullRequestUrl"/>'s own <c>NamesForeignRepository</c> check of the
+    /// repository it needed — <c>NamesForeignRepository</c> treats a null project repository as
+    /// "never a mismatch", so every non-pull-request-shaped foreign URL looked same-repo by
+    /// default). A pr-review task with no
     /// <see cref="TaskAggregate.CurrentRunId"/> at all is the identical waste for the same reason:
     /// <see cref="RecordPullRequestOnRunStreamAsync"/> returns
     /// <see cref="RunStreamPullRequestOutcome.NoRunStream"/> before ever touching this method's
@@ -326,8 +334,7 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         IDocumentSession session, TaskAggregate task, string? pullRequestUrl, CancellationToken cancellationToken,
         ProcessRunner? processRunner = null)
     {
-        if (pullRequestUrl.IsBlank() || PullRequestUrls.ParseNumber(pullRequestUrl) <= 0
-            || (task.Type == TaskType.PrReview && task.CurrentRunId is null))
+        if (pullRequestUrl.IsBlank() || (task.Type == TaskType.PrReview && task.CurrentRunId is null))
         {
             return null;
         }

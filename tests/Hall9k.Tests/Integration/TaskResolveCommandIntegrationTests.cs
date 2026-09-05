@@ -176,6 +176,53 @@ public sealed class TaskResolveCommandIntegrationTests(PostgresFixture postgres)
         run.PullRequestNumber.Should().BeNull();
     }
 
+    /// <summary>
+    /// The routed defect this fix closes (independent pre-PR review, cycle 2, adversarial, medium):
+    /// <see cref="TaskResolveCommand.ResolveProjectRepositoryUrlAsync"/> used to short-circuit on
+    /// <see cref="Hall9k.Connectors.WorkItems.PullRequestUrls.ParseNumber"/> returning zero or less,
+    /// which is exactly what a non-pull-request-shaped URL (a commit link) does — so it never
+    /// resolved the project's repository at all for this shape, and
+    /// <see cref="TaskResolveCommand.SafeTaskStreamPullRequestUrl"/>'s own
+    /// <see cref="Hall9k.Connectors.WorkItems.PullRequestUrls.NamesForeignRepository"/> check, fed a
+    /// null project repository, treated a foreign commit link as "no mismatch" and let it reach the
+    /// task stream verbatim. Exercised through the full pipeline exactly as <c>ExecuteAsync</c> calls
+    /// it (<c>ResolveProjectRepositoryUrlAsync</c> then <c>SafeTaskStreamPullRequestUrl</c>), not with
+    /// an explicit <c>Uri</c> handed to <c>SafeTaskStreamPullRequestUrl</c> directly, since that
+    /// shortcut is exactly what let the defect through the unit tier undetected.
+    /// </summary>
+    [Fact]
+    public async Task A_repo_only_project_observes_its_repository_through_gh_and_still_rejects_a_foreign_commit_link()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        TaskAggregate task = await SeedFailedDispatchedRunWithoutRepositoryUrlAsync(store, ownerId, runId, cts.Token);
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{\"url\":\"https://github.com/x/y\"}");
+        const string foreignCommitLink = "https://github.com/other-org/other-repo/commit/deadbeef";
+
+        await using IDocumentSession session = store.LightweightSession();
+        Uri? projectRepositoryUrl = await TaskResolveCommand.ResolveProjectRepositoryUrlAsync(
+            session, task, foreignCommitLink, cts.Token, gh.Runner);
+
+        projectRepositoryUrl.Should().Be(new Uri("https://github.com/x/y"),
+            "the project's repository must still be resolved through gh for a URL that is not " +
+            "pull-request-shaped, since SafeTaskStreamPullRequestUrl's own repository-mismatch check " +
+            "applies to every --pr shape, not only ones that parse to a pull request number");
+
+        TaskResolveCommand.RunStreamPullRequestOutcome runStreamOutcome =
+            await TaskResolveCommand.RecordPullRequestOnRunStreamAsync(
+                session, task, foreignCommitLink, Now, projectRepositoryUrl, cts.Token);
+        string? taskStreamPullRequestUrl = TaskResolveCommand.SafeTaskStreamPullRequestUrl(
+            task, foreignCommitLink, runStreamOutcome, projectRepositoryUrl);
+        await session.SaveChangesAsync(cts.Token);
+
+        taskStreamPullRequestUrl.Should().BeNull(
+            "a commit link naming a foreign repository must never reach the task stream, exactly like " +
+            "a foreign pull request — the class of defect this whole task exists to close");
+    }
+
     [Fact]
     public async Task A_repo_only_project_observes_its_repository_through_gh_and_still_accepts_its_own_pull_request()
     {
