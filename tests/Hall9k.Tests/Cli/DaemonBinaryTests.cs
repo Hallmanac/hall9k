@@ -19,7 +19,7 @@ public sealed class DaemonBinaryTests
         // The detach intermediary runs in ~/.hall9k, so an override left relative would
         // name a different file there. Origin incident: h9k daemon start --binary
         // ./src/Hall9k.Daemon/bin/Debug/net10.0/h9kd from the repo root blocked for the
-        // full 10s start timeout and then reported a startup failure, not a bad path.
+        // full 20s start timeout and then reported a startup failure, not a bad path.
         string resolved = DaemonBinary.ResolveOverride("./bin/Debug/h9kd", CallerDirectory)!;
 
         resolved.Should().Be(Path.Combine(CallerDirectory, "bin", "Debug", "h9kd"));
