@@ -597,7 +597,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         // Reverify-vs-ordinary-resolution branch on its own ParkedFromState field — a pre-existing
         // divergence this task did not introduce and is not fixing here; see the deferred draft
         // 5cd7917e.)
-        if (view.ReviewCycle != 0)
+        // ReviewCycle == 0 alone over-excludes, though (independent pre-PR review, cycle 1,
+        // conformance lens): interactive mode's own "build done to review" boundary also parks at
+        // cycle 0 with nothing disputed, and AGENTS.md's carry-forward rule (Decisions Log #88)
+        // names exactly one exception — a thread-dispute park (#62) — which an interactive-gate
+        // park is not. view.ParkedIsInteractiveGate (still true here; cleared just below) is what
+        // tells the two cycle-0 parks apart, the same discriminator ReviewResolveCommand.cs's own
+        // rebase-conflict refusal already uses for the identical collision.
+        if (view.ReviewCycle != 0 || view.ParkedIsInteractiveGate)
         {
             view.ReviewParkResolutions.Add(new ReviewParkResolution(
                 view.ReviewCycle, @event.Data.Verdict, @event.Data.Reason, @event.Data.ResolvedAt));

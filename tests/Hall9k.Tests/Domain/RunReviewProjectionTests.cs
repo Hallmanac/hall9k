@@ -326,6 +326,41 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// Unlike a thread-dispute park, interactive mode's own "build done to review" boundary park
+    /// (task: interactive mode becomes a recorded property of the task) also lands at
+    /// ReviewCycle == 0, but nothing there is disputed — AGENTS.md's carry-forward rule (Decisions
+    /// Log #88) names exactly one exception, a thread-dispute park (#62), and this is not one.
+    /// A human's verdict here has to reach the settled-rulings surface so a later fresh-context
+    /// reviewer is told the question was already answered (independent pre-PR review, cycle 1,
+    /// conformance lens) — ReviewCycle alone cannot tell the two cycle-0 parks apart, only
+    /// <see cref="RunDetails.ParkedIsInteractiveGate"/> can.
+    /// </summary>
+    [Fact]
+    public void Run_details_records_an_interactive_gate_resolution_at_cycle_zero_as_a_settled_ruling()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now)));
+        projection.Apply(new FakeEvent<RunProcessStarted>(new RunProcessStarted(id, 4484, Now)), view);
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "Interactive mode is on for this task.", Now, IsInteractiveGate: true)), view);
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
+            id, ReviewVerdict.MergeReady,
+            "The concurrency question here was already settled in the decisions log; don't re-raise it",
+            Now, DomainId.New())), view);
+
+        view.ReviewParkResolutions.Should().ContainSingle(
+                "the human's redirect at this boundary is a real settled ruling, not a dispute answer")
+            .Which.Reason.Should().Be(
+                "The concurrency question here was already settled in the decisions log; don't re-raise it");
+    }
+
+    /// <summary>
     /// Escalation (task: a second fix round over the same findings) is a fact about the fix
     /// session that dispatched, so it rides on the same event the model does and reads back the
     /// same way — visible for a reader of <c>h9k task show</c> while the escalated round is the
