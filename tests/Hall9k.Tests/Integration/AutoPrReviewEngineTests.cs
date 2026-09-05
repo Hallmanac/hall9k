@@ -226,6 +226,10 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
         public Task RerequestReviewAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
             CancellationToken cancellationToken) => throw new InvalidOperationException("Not reached by these tests.");
+
+        public Task MergeAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("Not reached by these tests.");
     }
 
     private sealed class RefusingWorktreeManager : IWorktreeManager

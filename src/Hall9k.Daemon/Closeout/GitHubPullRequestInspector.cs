@@ -56,11 +56,12 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
               author { login __typename }
               headRefOid
               mergeable
+              reviewDecision
               reviewThreads(first: 100) {
                 nodes { id isResolved comments(first: 1) { nodes { author { login __typename } pullRequestReview { id } } } }
               }
               reviewRequests(first: 20) {
-                nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } } }
+                nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { slug } } }
               }
               timelineItems(last: 20, itemTypes: [REVIEW_REQUESTED_EVENT]) {
                 nodes {
@@ -119,7 +120,9 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             UnresolvedHumanThreadIds: reviews.UnresolvedHumanThreadIds,
             PendingReviewRequestLogins: reviews.PendingReviewRequestLogins,
             IsConflicting: reviews.IsConflicting,
-            BaseRefName: baseRefName);
+            BaseRefName: baseRefName,
+            ReviewDecision: reviews.ReviewDecision,
+            OutstandingReviewerLogins: reviews.OutstandingReviewerLogins);
     }
 
     /// <summary>
@@ -169,6 +172,31 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             cancellationToken);
     }
 
+    /// <summary>
+    /// Rebase-merges through <c>gh pr merge --rebase</c> (design ruling 8: linear history, never a
+    /// squash or a plain merge commit) — never <c>--delete-branch</c>, since the platform's own
+    /// closeout cleanup (<c>IWorktreeManager.DeleteBranchEverywhereAsync</c>) owns removing the
+    /// branch once the merge is observed, exactly as it does for an operator's own by-hand merge.
+    /// <paramref name="expectedHeadCommit"/> is passed as <c>--match-head-commit</c> when known, so
+    /// GitHub itself refuses the merge rather than this call ever landing a commit the sweep never
+    /// actually inspected. Throws on any failure — a stale head mismatch, a re-evaluated required
+    /// check, a transient API error — which the caller (<c>CloseoutEngine</c>) treats as one unit
+    /// spent against the pre-approved task's own mechanical-resolution budget.
+    /// </summary>
+    public async Task MergeAsync(
+        string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+        CancellationToken cancellationToken)
+    {
+        List<string> arguments = ["pr", "merge", pullRequestNumber.ToString(), "--rebase"];
+        if (expectedHeadCommit.IsNotBlank())
+        {
+            arguments.Add("--match-head-commit");
+            arguments.Add(expectedHeadCommit);
+        }
+
+        await RunGhAsync(repositoryPath, arguments, cancellationToken);
+    }
+
     /// <summary>What one GraphQL call saw about a pull request's reviews.</summary>
     internal sealed record ReviewObservation(
         int UnresolvedThreads,
@@ -181,7 +209,9 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         IReadOnlyList<string> PendingReviewRequestLogins,
         ExternalReviewState CopilotReviewState,
         int CopilotReviewThreadCount,
-        bool IsConflicting = false)
+        bool IsConflicting = false,
+        string? ReviewDecision = null,
+        IReadOnlyList<string>? OutstandingReviewerLogins = null)
     {
         public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], [], ExternalReviewState.None, 0);
     }
@@ -277,7 +307,65 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             ReadPendingReviewRequestLogins(pullRequest),
             copilotReviewState,
             copilotThreadCount,
-            IsConflicting: ReadMergeable(pullRequest) == "CONFLICTING");
+            IsConflicting: ReadMergeable(pullRequest) == "CONFLICTING",
+            ReviewDecision: ReadReviewDecision(pullRequest),
+            OutstandingReviewerLogins: ReadOutstandingReviewerLogins(pullRequest));
+    }
+
+    /// <summary>GitHub's own branch-protection-aware verdict, or null when the repository has no rule requiring one.</summary>
+    private static string? ReadReviewDecision(JsonElement pullRequest) =>
+        pullRequest.TryGetProperty("reviewDecision", out JsonElement decision) && decision.ValueKind == JsonValueKind.String
+            ? decision.GetString()
+            : null;
+
+    /// <summary>
+    /// Every requested reviewer's login, raw and unfiltered — Copilot included, whoever asked for
+    /// it (task: a task can be published pre-approved). Deliberately not
+    /// <see cref="ReadPendingReviewRequestLogins"/>, which excludes a bot's own automatically
+    /// recreated request unless a human is shown to have re-asked for it: a pre-approved merge
+    /// gate needs "is anyone still asked to look" regardless of who asked.
+    /// <para>
+    /// A requested TEAM reviewer carries no <c>login</c> — GitHub exposes a team by
+    /// <c>slug</c>/<c>name</c> instead — so it is recorded as <c>team:&lt;slug&gt;</c> rather than
+    /// dropped the way <see cref="ReadPendingReviewRequestLogins"/>'s own human-engagement filter
+    /// deliberately drops one (Decisions Log #80, backlog 45). Dropping it here instead would tell
+    /// this gate no reviewer is outstanding while a team's review request genuinely still is,
+    /// which is the "never guess at an unobserved fact" rule inverted: an unrecorded reviewer read
+    /// as absent rather than as unknown, with an automatic merge as the consequence rather than
+    /// only a display gap (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> ReadOutstandingReviewerLogins(JsonElement pullRequest)
+    {
+        if (!pullRequest.TryGetProperty("reviewRequests", out JsonElement requests))
+        {
+            return [];
+        }
+
+        List<string> logins = [];
+        foreach (JsonElement request in requests.GetProperty("nodes").EnumerateArray())
+        {
+            if (!request.TryGetProperty("requestedReviewer", out JsonElement reviewer)
+                || reviewer.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (reviewer.TryGetProperty("login", out JsonElement login)
+                && login.ValueKind == JsonValueKind.String
+                && login.GetString() is { } loginValue)
+            {
+                logins.Add(loginValue);
+            }
+            else if (reviewer.TryGetProperty("slug", out JsonElement slug)
+                && slug.ValueKind == JsonValueKind.String
+                && slug.GetString() is { } slugValue)
+            {
+                logins.Add($"team:{slugValue}");
+            }
+        }
+
+        return logins;
     }
 
     /// <summary>
@@ -634,7 +722,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     // automatic closeout budget re-requesting reviews from an account that cannot answer.
     private static readonly string[] CopilotLogins = ["copilot", "copilot-pull-request-reviewer"];
 
-    private static bool IsCopilotLogin(string? login)
+    /// <summary>Internal so <see cref="PullRequestSnapshot.HasOutstandingHumanReviewer"/> can share the identical classification.</summary>
+    internal static bool IsCopilotLogin(string? login)
     {
         if (login is null)
         {

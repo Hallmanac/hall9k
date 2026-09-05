@@ -162,7 +162,9 @@ public sealed record PullRequestSnapshot(
     IReadOnlyList<string>? UnresolvedHumanThreadIds = null,
     IReadOnlyList<string>? PendingReviewRequestLogins = null,
     bool IsConflicting = false,
-    string? BaseRefName = null)
+    string? BaseRefName = null,
+    string? ReviewDecision = null,
+    IReadOnlyList<string>? OutstandingReviewerLogins = null)
 {
     /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
     public IReadOnlyList<string> ThreadIds => UnresolvedReviewThreadIds ?? [];
@@ -172,6 +174,36 @@ public sealed record PullRequestSnapshot(
 
     /// <summary>Reviewers with a pending review request right now.</summary>
     public IReadOnlyList<string> PendingReviewers => PendingReviewRequestLogins ?? [];
+
+    /// <summary>Every requested reviewer, Copilot included and unfiltered — see <see cref="Events.ExternalReviewObserved.OutstandingReviewerLogins"/>'s own doc.</summary>
+    public IReadOnlyList<string> OutstandingReviewers => OutstandingReviewerLogins ?? [];
+
+    /// <summary>
+    /// Every requested reviewer OTHER than Copilot — a pre-approved merge gate's own "no
+    /// outstanding requested reviewer" check (task: a task can be published pre-approved):
+    /// Copilot outstanding is handled separately, through <see cref="ExternalReviewState"/> and its
+    /// own bounded settle window, not folded into this list. Recorded on
+    /// <see cref="Events.ExternalReviewObserved.OutstandingHumanReviewerLogins"/> too, so the CLI's
+    /// display reads the identical filtered list rather than duplicating the classification.
+    /// </summary>
+    public IReadOnlyList<string> OutstandingHumanReviewers => [.. OutstandingReviewers.Where(
+        login => !GitHubPullRequestInspector.IsCopilotLogin(login))];
+
+    /// <summary>
+    /// Whether any requested reviewer other than Copilot is still outstanding — a pre-approved
+    /// merge gate's own "no outstanding requested reviewer" check (task: a task can be published
+    /// pre-approved).
+    /// </summary>
+    public bool HasOutstandingHumanReviewer => OutstandingHumanReviewers.Count > 0;
+
+    /// <summary>
+    /// Whether GitHub's own review-decision verdict (<see cref="ReviewDecision"/>) is satisfied —
+    /// null (no branch rule requires one) or <c>APPROVED</c>. <c>REVIEW_REQUIRED</c> and
+    /// <c>CHANGES_REQUESTED</c> both read as unsatisfied: either way a human's own approval is
+    /// still outstanding, which is exactly the "waiting on human approval" visible state (task: a
+    /// task can be published pre-approved).
+    /// </summary>
+    public bool ReviewDecisionSatisfied => ReviewDecision is null or "APPROVED";
 }
 
 /// <summary>
@@ -215,5 +247,20 @@ public interface IPullRequestInspector
     /// </summary>
     Task RerequestReviewAsync(
         string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Rebase-merges a pre-approved task's pull request (task: a task can be published
+    /// pre-approved, design ruling 8: rebase merge, linear history — never an agent). Throws on any
+    /// failure, mechanical or otherwise, the same convention <see cref="RerequestReviewAsync"/>'s
+    /// own implementation already uses for a refused call — the caller treats a thrown exception as
+    /// one unit spent against the pre-approved task's own mechanical-resolution budget, never as a
+    /// park-worthy human waypoint by itself. <paramref name="expectedHeadCommit"/>, when known, is
+    /// passed to the provider's own head-commit match so a merge never lands a commit this sweep
+    /// never actually inspected — the fourth gate ("head must postdate the last fix session's
+    /// completion") enforced by the provider itself rather than trusted to this sweep's own timing.
+    /// </summary>
+    Task MergeAsync(
+        string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
         CancellationToken cancellationToken);
 }
