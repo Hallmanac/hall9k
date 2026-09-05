@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Hall9k.Daemon.Execution;
 
 /// <summary>
@@ -52,45 +54,98 @@ public static class GateInfrastructureFailureClassifier
     public const string GateWaitEvidenceDirectoryEnvironmentVariable = "HALL9K_VERIFY_GATE_WAIT_DIR";
 
     /// <summary>
-    /// True when the directory named by <see cref="GateWaitEvidenceDirectoryEnvironmentVariable"/>
-    /// still holds a file at the moment a gate was killed — i.e. a class was genuinely queued on
-    /// the cross-process container gate (PLAN.md §16 #132) when the timeout landed, not stuck for
-    /// some other reason. The gate's own captured console output cannot answer this question: a
-    /// wait line written from inside a dotnet-test-shaped gate's testhost is buffered by
-    /// vstest.console and only ever relayed if vstest.console itself survives long enough to
-    /// report the testhost's death, which <c>VerificationRunner</c>'s own
-    /// <c>process.Kill(entireProcessTree: true)</c> does not allow (adversarial review, this
-    /// cycle: reproduced against this repo's own package versions — the marker line never once
-    /// reached the redirected log under a real entireProcessTree kill, only under a kill that left
-    /// vstest.console alive a moment longer than its own testhost, which this platform's kill
-    /// never does). A file written directly by the waiting process — created the moment
-    /// contention is genuinely observed, deleted the moment a permit is acquired — carries no
-    /// such gap: its mere presence after the kill needs no tail window or marker text, because
-    /// nothing but an unresolved wait ever leaves one behind.
+    /// Matches the elapsed-seconds figure <c>CrossProcessContainerGate.AcquireAsync</c>'s own
+    /// periodic diagnostic embeds, e.g. "(842s elapsed, 4 max concurrent)".
     /// </summary>
-    public static bool IsUnresolvedGateWaitTimeout(string? gateWaitEvidenceDirectory) =>
-        !string.IsNullOrEmpty(gateWaitEvidenceDirectory)
-        && Directory.Exists(gateWaitEvidenceDirectory)
-        && Directory.EnumerateFiles(gateWaitEvidenceDirectory).Any();
+    private static readonly Regex ElapsedSecondsPattern = new(@"\((?<seconds>\d+)s elapsed", RegexOptions.Compiled);
+
+    /// <summary>
+    /// The evidence file <c>CrossProcessContainerGate.AcquireAsync</c> writes is a short,
+    /// fixed-shape diagnostic line — always well under this. <c>GateWaitEvidenceDirectoryEnvironmentVariable</c>
+    /// is exported to the whole gate's process tree, i.e. to the agent's own test code too, so a
+    /// file found there is skipped rather than read unbounded into memory and, from there, onto
+    /// the durable <see cref="Hall9k.Domain.Features.Run.Events.GateRetried"/> event with no cap
+    /// (adversarial review, this cycle).
+    /// </summary>
+    private const long MaxWaitEvidenceBytes = 4096;
+
+    /// <summary>
+    /// True when some file in the directory named by
+    /// <see cref="GateWaitEvidenceDirectoryEnvironmentVariable"/> shows a wait that, at the
+    /// moment of the kill, had already consumed most of <paramref name="gateTimeout"/> — proof
+    /// that specific class never got a permit for nearly the whole run, not merely that
+    /// <em>a</em> class happened to be queued at the instant of the kill. The earlier form of
+    /// this check treated any file's mere presence as proof (conformance/adversarial review,
+    /// cycle 1 origin), but during a busy tier — up to 14 classes contending for 4 fixed permits —
+    /// several classes are queued behind the gate for most of the tier's own duration as pure
+    /// ordinary operation, so a timeout caused by something else entirely (the agent's own test
+    /// hanging, unrelated to the gate) would still find the directory non-empty and be
+    /// misclassified as infrastructure (independent pre-PR review, this cycle). The evidence
+    /// file's own embedded elapsed-seconds figure is the signal that actually discriminates the
+    /// two: an ordinary queued wait resolves in well under the gate's own multi-minute budget as
+    /// permits keep cycling, while only a wait that has consumed most of that budget — 80%,
+    /// chosen as a bar clearly above ordinary queuing depth's own typical wait and clearly below
+    /// the full timeout, so a kill landing a moment before the true full-budget mark is not missed
+    /// on a technicality — indicates this run genuinely never made progress against the gate. The
+    /// known gap this narrower bar accepts: a class whose own wait started only partway through
+    /// the run and never resolved for its own remaining minority of the budget is not caught
+    /// either, a deliberate trade against the far more common false positive above (never guess:
+    /// AGENTS.md) — the gate's own captured console output still cannot answer this question
+    /// either way, for the same buffering-and-entireProcessTree-kill reason
+    /// <see cref="UnresolvedGateWaitExcerpt"/> already documents.
+    /// </summary>
+    public static bool IsUnresolvedGateWaitTimeout(string? gateWaitEvidenceDirectory, TimeSpan gateTimeout) =>
+        UnresolvedGateWaitExcerpt(gateWaitEvidenceDirectory, gateTimeout) is not null;
 
     /// <summary>
     /// The excerpt to record alongside a true <see cref="IsUnresolvedGateWaitTimeout"/> result,
     /// the same reasoning as <see cref="MatchingExcerpt"/>: the caller records this next to the
     /// retry it explains, so the durable retry event says what triggered it rather than just that
-    /// something did. Reads whichever evidence file is first in enumeration order — under a
-    /// single dotnet-test-shaped gate's own process tree there is ordinarily just the one class
-    /// still genuinely contended at the moment of the kill, and any second one says the same
-    /// thing about the same gate.
+    /// something did. Reads every evidence file present — never trusting enumeration order alone,
+    /// since under a single dotnet-test-shaped gate's own process tree more than one class can be
+    /// genuinely contended at kill time — and returns the first one whose own elapsed figure
+    /// clears <paramref name="gateTimeout"/>'s own bar (see <see cref="IsUnresolvedGateWaitTimeout"/>).
+    /// A file that vanishes or is rewritten between this method's own enumeration and its read —
+    /// the class it belongs to acquired its permit and deleted it in the narrow window between the
+    /// two — is skipped rather than left to throw out of the daemon's own timeout handler
+    /// (adversarial review, this cycle), and a file over <see cref="MaxWaitEvidenceBytes"/> is
+    /// skipped outright, unread.
     /// </summary>
-    public static string? UnresolvedGateWaitExcerpt(string? gateWaitEvidenceDirectory)
+    public static string? UnresolvedGateWaitExcerpt(string? gateWaitEvidenceDirectory, TimeSpan gateTimeout)
     {
         if (string.IsNullOrEmpty(gateWaitEvidenceDirectory) || !Directory.Exists(gateWaitEvidenceDirectory))
         {
             return null;
         }
 
-        string? evidenceFile = Directory.EnumerateFiles(gateWaitEvidenceDirectory).FirstOrDefault();
-        return evidenceFile is null ? null : File.ReadAllText(evidenceFile).Trim();
+        TimeSpan threshold = gateTimeout * 0.8;
+        foreach (string evidenceFile in Directory.EnumerateFiles(gateWaitEvidenceDirectory))
+        {
+            string content;
+            try
+            {
+                if (new FileInfo(evidenceFile).Length > MaxWaitEvidenceBytes)
+                {
+                    continue;
+                }
+
+                content = File.ReadAllText(evidenceFile);
+            }
+            catch (IOException)
+            {
+                continue;
+            }
+
+            Match match = ElapsedSecondsPattern.Match(content);
+            if (match.Success
+                && int.TryParse(match.Groups["seconds"].Value, out int seconds)
+                && TimeSpan.FromSeconds(seconds) >= threshold)
+            {
+                return content.Trim();
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

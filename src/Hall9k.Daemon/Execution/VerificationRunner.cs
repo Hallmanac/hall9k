@@ -506,17 +506,18 @@ public sealed partial class VerificationRunner(
             // A gate whose own permit wait is still unresolved at the moment of the kill is a
             // second, distinct shape of infrastructure timeout: the process never got past
             // CrossProcessContainerGate.AcquireAsync's own unbounded wait (PLAN.md §16 #132), so
-            // it never even reached the agent's own tests, and VerifyGateTimeout's 15-minute
-            // budget — sized for one process's own tier duration — can legitimately be
+            // it never even reached the agent's own tests, and VerifyGateTimeout's budget — sized
+            // for one process's own tier duration — can legitimately be
             // outlasted by ordinary cross-process contention under a raised node ceiling or a
             // concurrent foreground run. Read from gateWaitDirectory, never the gate's own
             // captured console output (see GateInfrastructureFailureClassifier.
             // IsUnresolvedGateWaitTimeout's own comment for why that can never be relied on here).
             if (!timeoutIsInfrastructureFailure &&
-                GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(gateWaitDirectory))
+                GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(gateWaitDirectory, options.Value.VerifyGateTimeout))
             {
                 timeoutIsInfrastructureFailure = true;
-                timeoutExcerpt = GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(gateWaitDirectory);
+                timeoutExcerpt = GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(
+                    gateWaitDirectory, options.Value.VerifyGateTimeout);
             }
 
             return (false, timeoutFailure, timeoutIsInfrastructureFailure, timeoutExcerpt, false);
