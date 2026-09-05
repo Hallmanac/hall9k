@@ -30,9 +30,18 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// asked for, or one that would silently override an in-flight publication, is worth teaching
 /// about rather than swallowing.
 /// </param>
+/// <param name="PreApproved">
+/// True when the publisher gave standing pre-approval at publish time (task: a task can be
+/// published pre-approved): the owner stops being a synchronous gate at the pull request, and the
+/// daemon merges it on its own once GitHub's own gates are satisfied. Defaults false — an
+/// unflagged task's behaviour is entirely unchanged. Flippable afterward on any live non-terminal
+/// task via <c>h9k task set-pre-approved</c> (<see cref="TaskPreApprovedSet"/>) without the
+/// unassign-draft-revise-publish ceremony <see cref="TaskRevised"/> would otherwise require.
+/// </param>
 public sealed record TaskPublished(
     Guid Id,
     DateTimeOffset PublishedAt,
     Guid PublishedByOwnerId,
     bool NoExistingItemAttested = false,
-    bool UntrackedAttested = false);
+    bool UntrackedAttested = false,
+    bool PreApproved = false);

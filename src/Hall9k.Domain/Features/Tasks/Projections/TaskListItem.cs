@@ -53,6 +53,12 @@ public sealed class TaskListItem
     /// </summary>
     public bool QueuePriorityMarked { get; set; }
     /// <summary>
+    /// The owner's standing pre-approval, mirrored from <see cref="TaskAggregate.PreApproved"/>
+    /// (task: a task can be published pre-approved) — what <see cref="PublishedFacts"/> and
+    /// <see cref="AttentionComposer"/> read to render it on the board.
+    /// </summary>
+    public bool PreApproved { get; set; }
+    /// <summary>
     /// Mirrors <see cref="TaskAggregate.AutoPrReviewAssigneeLogin"/>: the login this task's own
     /// auto-created reviewer assignment currently believes is requested, or null when none is on
     /// record. What the auto-pr-review poll's unassignment check reads to tell an auto-created
@@ -142,7 +148,13 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         AddedAt = @event.Data.AddedAt,
     };
 
-    public void Apply(IEvent<TaskPublished> @event, TaskListItem view) => view.State = TaskState.Published;
+    public void Apply(IEvent<TaskPublished> @event, TaskListItem view)
+    {
+        view.State = TaskState.Published;
+        view.PreApproved = @event.Data.PreApproved;
+    }
+
+    public void Apply(IEvent<TaskPreApprovedSet> @event, TaskListItem view) => view.PreApproved = @event.Data.PreApproved;
 
     public void Apply(IEvent<TaskRevised> @event, TaskListItem view)
     {

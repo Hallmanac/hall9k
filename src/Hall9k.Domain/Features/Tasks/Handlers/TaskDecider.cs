@@ -165,7 +165,8 @@ public static class TaskDecider
         Guid publishedByOwnerId,
         BacklogPolicy? backlogPolicy = null,
         bool noExistingItemAttested = false,
-        bool untracked = false)
+        bool untracked = false,
+        bool preApproved = false)
     {
         if (task.State != TaskState.Draft)
         {
@@ -301,7 +302,66 @@ public static class TaskDecider
         bool noExistingItemRecorded = needsExistingItemCheck && noExistingItemAttested;
         bool untrackedRecorded = needsExistingItemCheck && untracked;
         return new TaskPublished(
-            task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded);
+            task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded, preApproved);
+    }
+
+    /// <summary>
+    /// Flips a task's standing pre-approval after publish (task: a task can be published
+    /// pre-approved) — deliberately settable "without the edit dance"
+    /// (unassign/draft/revise/publish) the acceptance criteria call for, the same reasoning
+    /// <see cref="OverrideSessionCap"/> and <see cref="OverrideReviewCaps"/> already give their own
+    /// settable-anytime facts. Unlike those two, though, this has two guards they do not carry.
+    /// A task whose pull request has actually merged, or an Abandoned one, refuses: there is no
+    /// future pull request left for the flag to govern once the story has truly ended, so setting
+    /// it there would record a fact nothing will ever read. <see cref="TaskState.Done"/> alone is
+    /// NOT that terminal state — it is also the state a task carries for the entire window its
+    /// pull request is open and <c>CloseoutEngine</c> is watching it (rendered as Delivered), which
+    /// is exactly the window this flag governs, so <paramref name="taskClosedOut"/> is how the
+    /// caller tells this decider whether Done means "still live" or "merge observed" — a
+    /// distinction the aggregate alone cannot answer, since closeout is recorded on the run, not
+    /// the task (independent pre-PR review, cycle 1, both lenses: the previous guard refused Done
+    /// unconditionally and made the flag unreachable for the one window it matters). And a Draft
+    /// refuses too — not for the same reason, but because <see cref="Publish"/> unconditionally
+    /// records <see cref="TaskPublished.PreApproved"/> (defaulting false, clamped exactly like
+    /// <see cref="TaskPublished.UntrackedAttested"/> is) the moment the draft is published: a value
+    /// set here on a still-Draft task would otherwise be silently clobbered back to false by an
+    /// ordinary <c>h9k task publish</c> that forgot to repeat <c>--pre-approved</c>. The flag is
+    /// part of the readiness contract at the moment of publish (the acceptance criteria's own
+    /// framing); this command is only for flipping it afterward.
+    /// </summary>
+    /// <param name="taskClosedOut">
+    /// Whether this task's pull request has actually merged (closeout observed the merge), the
+    /// same fact <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskDependencyQuery"/> computes
+    /// as "task is Done and its current run reached RunState.Completed". The caller sources this
+    /// from the task's current <c>RunDetails</c>, since the task aggregate itself never records
+    /// closeout; a caller with no run to check (task never reached Done) passes false.
+    /// </param>
+    public static TaskPreApprovedSet SetPreApproved(
+        TaskAggregate task, bool preApproved, DateTimeOffset setAt, Guid setByOwnerId, bool taskClosedOut)
+    {
+        if (task.State == TaskState.Abandoned)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — there is no future pull request left for "
+                + "pre-approval to govern, so it cannot be set on a task that has already ended.");
+        }
+
+        if (taskClosedOut)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id}'s pull request has already merged — closeout observed the merge, so "
+                + "there is no future pull request left for pre-approval to govern.");
+        }
+
+        if (task.State == TaskState.Draft)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a draft — pre-approval is part of the readiness contract set at "
+                + $"publish: h9k task publish {task.Id} --pre-approved. Setting it here first would be "
+                + "silently overwritten by an ordinary publish that omits the flag.");
+        }
+
+        return new TaskPreApprovedSet(task.Id, preApproved, setAt, setByOwnerId);
     }
 
     /// <summary>
