@@ -206,6 +206,17 @@ public sealed class ReviewEngine(
                         break;
                     }
 
+                    // Interactive mode's own "build done to review" boundary (task: interactive
+                    // mode becomes a recorded property of the task): the gates already passed
+                    // (VerificationRunner ran before this loop was ever entered) and cycle 1's
+                    // review is next; under the flag, that dispatch waits for a recorded proceed.
+                    if (!await EnsureInteractiveProceedAsync(
+                        context, run, "the verification gates just passed and cycle 1's review is ready to dispatch",
+                        cancellationToken))
+                    {
+                        return false;
+                    }
+
                     // Cycle 1 is always Discovery (task: review cycles after the first) — the
                     // adversarial lens's blindness design (log #63) stays intact where discovery
                     // actually happens.
@@ -415,7 +426,18 @@ public sealed class ReviewEngine(
                                 FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds);
                             await ParkAsync(
                                 context.RunId, context.TaskId, finalPassReason, finalPassNoProgress,
-                                cancellationToken);
+                                cancellationToken: cancellationToken);
+                            return false;
+                        }
+
+                        // Interactive mode's own "re-review" boundary, reached here rather than
+                        // through the Reverify case below (task: interactive mode becomes a
+                        // recorded property of the task): the mandatory FinalFullPass is one more
+                        // review dispatch, whichever code path decided it is next.
+                        if (!await EnsureInteractiveProceedAsync(
+                            context, run,
+                            "gates passed and the mandatory final review pass is ready to dispatch", cancellationToken))
+                        {
                             return false;
                         }
 
@@ -460,6 +482,21 @@ public sealed class ReviewEngine(
                     break;
 
                 case ReviewPhase.MergeReady:
+                    // Interactive mode's own "gates to pull request" boundary (task: interactive
+                    // mode becomes a recorded property of the task): review already settled
+                    // merge-ready — by a reviewer's clean pass or by a human's own prior
+                    // h9k review resolve --merge-ready, which already cleared this gate above —
+                    // and only opening the pull request is left. Checked here rather than by the
+                    // caller (RunSupervisor), so this run's own PullRequestOpener dispatch parks
+                    // exactly like every other boundary rather than living as a special case one
+                    // layer up.
+                    if (!await EnsureInteractiveProceedAsync(
+                        context, run, "review is merge-ready and the pull request is ready to open",
+                        cancellationToken))
+                    {
+                        return false;
+                    }
+
                     logger.LogInformation(
                         "Run {RunId}: review merge-ready ({Settlement}) after {Cycle} cycle(s) — the pull request may open",
                         context.RunId, SettlementLabel(run), run.ReviewCycle);
@@ -490,7 +527,21 @@ public sealed class ReviewEngine(
                     {
                         (string capReason, bool capNoProgress) = CapParkReason(run, capped, caps);
                         await ParkAsync(
-                            context.RunId, context.TaskId, capReason, capNoProgress, cancellationToken);
+                            context.RunId, context.TaskId, capReason, capNoProgress,
+                            cancellationToken: cancellationToken);
+                        return false;
+                    }
+
+                    // Interactive mode's own "review verdict to fix" boundary (task: interactive
+                    // mode becomes a recorded property of the task): checked after the cap so a
+                    // genuinely exhausted track still parks with its own actionable reason instead
+                    // of a routine gate that would only bounce right back to it. h9k review resolve
+                    // --needs-fixes "<redirect>" here keeps its exact existing meaning, and
+                    // --merge-ready still overrules the verdict outright — the proceed verb is only
+                    // for agreeing with the fix the reviewer already asked for.
+                    if (!await EnsureInteractiveProceedAsync(
+                        context, run, "the review verdict calls for a fix session", cancellationToken))
+                    {
                         return false;
                     }
 
@@ -639,7 +690,19 @@ public sealed class ReviewEngine(
                             FinalFullPassCapParkReason(run, caps.MaxFinalFullPassRounds);
                         await ParkAsync(
                             context.RunId, context.TaskId, reverifyFinalPassReason, reverifyFinalPassNoProgress,
-                            cancellationToken);
+                            cancellationToken: cancellationToken);
+                        return false;
+                    }
+
+                    // Interactive mode's own "fix to re-review" boundary (task: interactive mode
+                    // becomes a recorded property of the task): checked after every settle
+                    // short-circuit and cap above, so a run with nothing left to review or one
+                    // already at its final-full-pass cap still resolves through its own existing
+                    // path rather than a routine gate bouncing right back to it.
+                    if (!await EnsureInteractiveProceedAsync(
+                        context, run, "the fix's gates passed and the next review cycle is ready to dispatch",
+                        cancellationToken))
+                    {
                         return false;
                     }
 
@@ -1051,7 +1114,8 @@ public sealed class ReviewEngine(
         // reviewer is told the true bar rather than the ordinary cycle's.
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
-            priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions, sinceSha: sinceSha);
+            priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions, sinceSha: sinceSha,
+            priorBoundaryApprovals: context.PriorBoundaryApprovals);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) — except
         // the mandatory FinalFullPass, which resolves its own knob (task: completing the per-stage
@@ -1117,7 +1181,7 @@ public sealed class ReviewEngine(
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
             sinceSha, priorCycleMode, priorCycleSinceSha, context.PriorRulings,
-            context.PriorHumanDirectedInteractions);
+            context.PriorHumanDirectedInteractions, context.PriorBoundaryApprovals);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -2868,7 +2932,7 @@ public sealed class ReviewEngine(
     /// </summary>
     internal async Task ParkAsync(
         Guid runId, Guid taskId, string reason, bool needsFixesOffersNoProgress = false,
-        CancellationToken cancellationToken = default)
+        bool isInteractiveGate = false, CancellationToken cancellationToken = default)
     {
         await using IDocumentSession session = store.LightweightSession();
         RunAggregate run = await LoadRunAsync(runId, cancellationToken);
@@ -2898,9 +2962,38 @@ public sealed class ReviewEngine(
         // The task stays Claimed and the lease is retained: the worktree is the human's
         // workspace for resolving the park (the CloseoutParked pattern, pre-PR).
         session.Events.Append(
-            runId, new ReviewParked(runId, reason, DateTimeOffset.UtcNow, needsFixesOffersNoProgress));
+            runId,
+            new ReviewParked(runId, reason, DateTimeOffset.UtcNow, needsFixesOffersNoProgress, isInteractiveGate));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogWarning("Run {RunId}: review parked for the human — {Reason}", runId, reason);
+    }
+
+    /// <summary>
+    /// Interactive mode's own boundary gate (task: interactive mode becomes a recorded property
+    /// of the task, design rulings R2, R5, R9): under the flag, the four phase boundaries this
+    /// engine owns — dispatching a review, dispatching a fix, dispatching a re-review, and
+    /// handing the run on to <c>PullRequestOpener</c> — each hold for a recorded
+    /// <c>h9k review proceed</c> before the loop takes them, exactly the way a disputed or capped
+    /// run already parks; a boundary this run already has a fresh proceed (or an
+    /// <c>h9k review resolve</c> redirect — both clear <see cref="RunAggregate.InteractiveGateCleared"/>)
+    /// for is not asked twice. A task without the flag never reaches the park at all — byte-for-byte
+    /// today's fire-and-forget pipeline (this task's own sixth acceptance criterion). Returns true
+    /// when the caller may proceed with the dispatch it was about to make.
+    /// </summary>
+    private async Task<bool> EnsureInteractiveProceedAsync(
+        ReviewContext context, RunAggregate run, string boundaryDescription, CancellationToken cancellationToken)
+    {
+        if (!context.Task.InteractiveModeEnabled || run.InteractiveGateCleared)
+        {
+            return true;
+        }
+
+        await ParkAsync(
+            context.RunId, context.TaskId,
+            $"Interactive mode is on for this task: {boundaryDescription}. h9k review proceed {context.TaskId} " +
+            "to continue, or h9k review resolve to redirect it.",
+            isInteractiveGate: true, cancellationToken: cancellationToken);
+        return false;
     }
 
     /// <summary>
@@ -3032,9 +3125,11 @@ public sealed class ReviewEngine(
             return null;
         }
 
-        (IReadOnlyList<ReviewParkResolution> priorRulings, IReadOnlyList<ExternalInteractionRecord> priorHumanDirectedInteractions) =
+        (IReadOnlyList<ReviewParkResolution> priorRulings, IReadOnlyList<ExternalInteractionRecord> priorHumanDirectedInteractions,
+                IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals) =
             await LoadPriorRulingsAndInteractionsAsync(query, taskId, cancellationToken);
-        return new ReviewContext(runId, taskId, run, task, project, priorRulings, priorHumanDirectedInteractions);
+        return new ReviewContext(
+            runId, taskId, run, task, project, priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals);
     }
 
     /// <summary>
@@ -3076,7 +3171,7 @@ public sealed class ReviewEngine(
     /// <c>BlockerHandoffQuery.ClosedOutRunsAsync</c> already reads a task's run history, rather
     /// than looping <c>FetchStreamAsync</c> per run id or paying for the same query twice over.
     /// </summary>
-    private static async Task<(IReadOnlyList<ReviewParkResolution> PriorRulings, IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions)>
+    private static async Task<(IReadOnlyList<ReviewParkResolution> PriorRulings, IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions, IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals)>
         LoadPriorRulingsAndInteractionsAsync(IQuerySession query, Guid taskId, CancellationToken cancellationToken)
     {
         IReadOnlyList<RunDetails> taskRuns = await query.Query<RunDetails>()
@@ -3090,8 +3185,14 @@ public sealed class ReviewEngine(
             .SelectMany(run => run.ExternalInteractions)
             .Where(interaction => interaction.HumanDirected)
             .OrderBy(interaction => interaction.LoggedAt)];
+        // The settled-rulings surface's third source (task: interactive mode becomes a recorded
+        // property of the task, #88): every h9k review proceed this task's agents have ever had,
+        // oldest first, the same task-wide reach the two lists above already have.
+        IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals = [.. taskRuns
+            .SelectMany(run => run.BoundaryApprovals)
+            .OrderBy(approval => approval.ApprovedAt)];
 
-        return (priorRulings, priorHumanDirectedInteractions);
+        return (priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals);
     }
 
     private async Task<RunAggregate> LoadRunAsync(Guid runId, CancellationToken cancellationToken)
@@ -4045,5 +4146,6 @@ public sealed class ReviewEngine(
     private sealed record ReviewContext(
         Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project,
         IReadOnlyList<ReviewParkResolution> PriorRulings,
-        IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions);
+        IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions,
+        IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals);
 }

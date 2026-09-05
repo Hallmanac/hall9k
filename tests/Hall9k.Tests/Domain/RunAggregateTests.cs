@@ -828,6 +828,77 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// Task: interactive mode becomes a recorded property of the task, design rulings R2/R5/R9.
+    /// A bare h9k review proceed carries no verdict — unlike ReviewParkResolved's branches, which
+    /// derive a new phase from the human's verdict, ReviewBoundaryApproved restores exactly the
+    /// phase and state the park interrupted, and marks this run's own gate cleared for the very
+    /// next dispatch that consumes it.
+    /// </summary>
+    [Fact]
+    public void Review_boundary_approved_restores_the_exact_phase_and_state_the_park_interrupted()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded);
+
+        run.Apply(new ReviewParked(
+            id, "Interactive mode is on for this task: the review verdict calls for a fix session.", Now,
+            IsInteractiveGate: true));
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ReviewPhase.Should().Be(ReviewPhase.Parked);
+        run.ParkedFromReviewPhase.Should().Be(
+            ReviewPhase.FixNeeded, "captured before the park overwrote ReviewPhase, mirroring ParkedFromState");
+        run.ParkedIsInteractiveGate.Should().BeTrue();
+        run.InteractiveGateCleared.Should().BeFalse("nothing has approved this occurrence yet");
+
+        run.Apply(new ReviewBoundaryApproved(id, Now, DomainId.New()));
+
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded, "restored exactly where the park interrupted the loop");
+        run.State.Should().Be(RunState.UnderReview, "ParkedFromState restored — the daemon's resume sweep drives it from here");
+        run.InteractiveGateCleared.Should().BeTrue("the next dispatch of this exact boundary is now approved");
+        run.ParkedIsInteractiveGate.Should().BeFalse("the park is over");
+        run.LastReviewVerdict.Should().Be(
+            ReviewVerdict.NeedsFixes, "a bare proceed carries no verdict of its own — the reviewer's stands");
+
+        run.Apply(new ReviewFixDispatched(id, DomainId.New(), 1, 5002, Now, Now));
+        run.InteractiveGateCleared.Should().BeFalse(
+            "the approval is consumed the moment the dispatch it bought actually lands — the next boundary asks fresh");
+    }
+
+    /// <summary>
+    /// A verdict-bearing h9k review resolve engages an interactive-mode boundary exactly as a
+    /// bare proceed would (task: interactive mode becomes a recorded property of the task): the
+    /// redirect itself is the human's engagement, so the very next dispatch it authorizes must not
+    /// immediately re-park asking the identical question the human just answered.
+    /// </summary>
+    [Fact]
+    public void Review_park_resolved_also_clears_the_interactive_gate_for_a_redirect()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewParked(
+            id, "Interactive mode is on for this task: the review verdict calls for a fix session.", Now,
+            IsInteractiveGate: true));
+
+        run.Apply(new ReviewParkResolved(id, ReviewVerdict.NeedsFixes, "Also check the retry path.", Now, DomainId.New()));
+
+        run.ReviewPhase.Should().Be(ReviewPhase.FixNeeded);
+        run.InteractiveGateCleared.Should().BeTrue("the redirect is the human's own engagement with this boundary");
+        run.ParkedIsInteractiveGate.Should().BeFalse();
+        run.PendingHumanFindings.Should().Be("Also check the retry path.");
+    }
+
+    /// <summary>
     /// A run parked on <c>FinalFullPassCapReached</c> (ReviewEngine.cs) tells the human to
     /// resolve with `h9k review resolve --merge-ready`, exactly as `--needs-fixes` gives itself a
     /// fresh grant by re-measuring <see cref="RunAggregate.ReviewBudgetBaseCycle"/>

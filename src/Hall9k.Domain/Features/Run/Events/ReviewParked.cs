@@ -19,8 +19,19 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// the park — so every park that predates this field, and every other park site that never
 /// sets it, reads as the lever <c>h9k status</c> has always offered.
 /// </param>
+/// <param name="IsInteractiveGate">
+/// Whether this park is interactive mode's own routine boundary gate (task: interactive mode
+/// becomes a recorded property of the task, design rulings R2/R9) rather than the ordinary
+/// disputed-finding or cap/budget park this event otherwise records. True only when
+/// <see cref="Hall9k.Daemon.Review.ReviewEngine"/> parks because the task's own
+/// <c>InteractiveModeEnabled</c> flag is set and this specific boundary has not yet had a fresh
+/// <c>h9k review proceed</c> — never set for a dispute or a cap/budget park, which still take
+/// only <c>h9k review resolve</c>. <see cref="RunAggregate.ParkedIsInteractiveGate"/> is what
+/// <c>ReviewProceedCommand</c> checks before accepting a bare proceed.
+/// </param>
 public sealed record ReviewParked(
     Guid Id,
     string Reason,
     DateTimeOffset ParkedAt,
-    bool NeedsFixesOffersNoProgress = false);
+    bool NeedsFixesOffersNoProgress = false,
+    bool IsInteractiveGate = false);
