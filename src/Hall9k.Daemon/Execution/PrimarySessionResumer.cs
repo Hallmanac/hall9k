@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
 
 namespace Hall9k.Daemon.Execution;
@@ -56,6 +57,25 @@ public sealed class PrimarySessionResumer(IExecutor executor)
         string sessionName = run.SessionName.IsNotBlank()
             ? run.SessionName
             : SessionRoleName.For(DomainId.Short(run.TaskId), sessionRole);
+
+        // The spawn's own stdout redirect (ShellRedirection.Wrap's "> stream.jsonl") truncates
+        // this same path from inside the freshly spawned shell, asynchronously, well after
+        // Process.Start already returns — a monitor that reseeks to byte zero the moment this
+        // method returns can still read the errored session's own final result line back
+        // before that truncation actually lands (adversarial pre-PR review, cycle 1:
+        // RunSupervisor.MonitorAsync's in-place continue hit exactly this window and read a
+        // second, phantom error off pre-truncation content, failing a run whose retry had, in
+        // fact, already spawned successfully). Moving the old transcript aside first — rather
+        // than racing a fixed delay against the child shell's own exec+open — makes the
+        // handoff atomic from a reader's perspective: the path is either genuinely missing,
+        // which StreamTailReader already reads as "nothing new yet", or genuinely the new
+        // session's own fresh content, never the stale one.
+        string streamFile = RunPaths.StreamFile(run.RunDirectory);
+        if (File.Exists(streamFile))
+        {
+            File.Move(streamFile, $"{streamFile}.pre-resume-{DateTimeOffset.UtcNow.Ticks}");
+        }
+
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, prompt,
             run.ExecutorMode, run.Model, project.SkipPermissions,

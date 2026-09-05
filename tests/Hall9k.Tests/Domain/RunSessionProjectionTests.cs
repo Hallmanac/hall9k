@@ -233,6 +233,50 @@ public sealed class RunSessionProjectionTests
         view.ActiveSessions.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// AgentSessionCompleted moves the run to Verifying unconditionally, before RunSupervisor
+    /// has even decided whether to retry a build-session error, so a bare State check cannot
+    /// tell a retry still owed from a genuinely finished run. This flag is what
+    /// RunSupervisor.AdoptOrphansAsync checks instead, after a crash strands the run mid-backoff
+    /// (independent pre-PR review, cycle 1, conformance finding).
+    /// </summary>
+    [Fact]
+    public void A_build_session_error_retry_is_pending_until_the_resumed_session_actually_lands()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = Dispatched(projection, id);
+        projection.Apply(new FakeEvent<RunProcessStarted>(new RunProcessStarted(id, 4484, Now)), view);
+        projection.Apply(new FakeEvent<AgentSessionCompleted>(new AgentSessionCompleted(id, Now)), view);
+
+        projection.Apply(new FakeEvent<RunSessionErrorRetried>(
+            new RunSessionErrorRetried(id, RunSessionLeg.Build, Cycle: null, Lens: null, "Internal server error", Now)),
+            view);
+
+        view.PendingBuildSessionErrorRetry.Should().BeTrue(
+            "the retry was recorded but the resumed spawn has not landed yet");
+        view.State.Should().Be(RunState.Verifying, "AgentSessionCompleted already moved the state regardless");
+
+        projection.Apply(new FakeEvent<RunResumed>(new RunResumed(id, 5150, Now, Now, "abc12345-build")), view);
+
+        view.PendingBuildSessionErrorRetry.Should().BeFalse("the resumed session actually spawned");
+    }
+
+    /// <summary>A review-pass or fix-session retry is a different leg entirely and must not trip the build-only flag.</summary>
+    [Fact]
+    public void A_review_pass_error_retry_does_not_set_the_build_only_pending_flag()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = Dispatched(projection, id);
+
+        projection.Apply(new FakeEvent<RunSessionErrorRetried>(
+            new RunSessionErrorRetried(id, RunSessionLeg.ReviewPass, Cycle: 1, Lens: ReviewLens.Conformance, "Internal server error", Now)),
+            view);
+
+        view.PendingBuildSessionErrorRetry.Should().BeFalse("only the build leg's own retry sets this flag");
+    }
+
     private static RunDetails Dispatched(RunDetailsProjection projection, Guid id, string sessionName = "") =>
         projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
             id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
