@@ -890,12 +890,135 @@ public sealed class CloseoutEngine(
         // Nothing needs answering: the checks pass, every thread is resolved, and the
         // review that produced them was real. That is the moment a countersign is worth
         // asking for, and the only moment it is.
-        await RerequestReviewAfterFixesAsync(
+        bool reRequestedThisSweep = await RerequestReviewAfterFixesAsync(
             session, run, project, fence.Version, task.PullRequestUrl, run.PullRequestNumber.Value,
             snapshot, now, cancellationToken);
 
+        // The owner's standing pre-approval (task: a task can be published pre-approved) only
+        // ever reads as a green light here — after every obstruction above (conflicting, pending
+        // or failing checks, unresolved threads, an errored review) has already had its own say.
+        // Reaching this line with task.PreApproved true is the "nothing else needs a human, and
+        // nothing else needs an agent" moment the feature exists for — unless this same sweep
+        // just re-requested a countersign above: that request was issued against this exact
+        // snapshot, so merging on the snapshot's now-stale "no outstanding reviewer" reading
+        // would merge past the very review this sweep just asked for. The next sweep reads the
+        // request as an outstanding reviewer and decides fresh (independent pre-PR review,
+        // cycle 1, both lenses).
+        if (task.PreApproved && !reRequestedThisSweep)
+        {
+            return await TryAutoMergeAsync(
+                session, task, run, project, fence.Version, snapshot, now, cancellationToken);
+        }
+
         return InspectionOutcome.Inspected;
     }
+
+    /// <summary>
+    /// The pre-approved auto-merge gate (task: a task can be published pre-approved). Reached only
+    /// once every obstruction <see cref="InspectAndActAsync"/> checks ahead of it has already
+    /// cleared — CI green, no unresolved thread, no errored review, no conflict — so what remains
+    /// is exactly the four gates the acceptance criteria name: the review decision, outstanding
+    /// requested reviewers (Copilot handled on its own bounded settle window), and the fourth gate
+    /// enforced by construction rather than by a check written here — this method runs only when
+    /// <c>task.State</c> is Done (or the Blocked-behind-a-still-open-dependency edge case) with
+    /// <c>task.CurrentRunId == run.Id</c>, which is already "no follow-up live or queued for this
+    /// task", and the task-stream fence was revalidated moments ago against a snapshot read after
+    /// that fence, which is already "the head postdates the last observation this sweep trusts".
+    /// <para>
+    /// A required human approval or an outstanding human reviewer is a visible waiting state, never
+    /// a park (design ruling 3): the daemon does nothing but let <see cref="RecordExternalReviewObservationAsync"/>'s
+    /// own append (already run, above) keep <c>h9k status</c> honest, and returns to wait for the
+    /// next sweep. A requested Copilot review is the one case with a clock: it either lands (which
+    /// flows into the ordinary thread-triage path above on ITS OWN next sweep) or, past the bounded
+    /// settle window, parks with that reason instead of waiting forever (design ruling 2).
+    /// </para>
+    /// </summary>
+    private async Task<InspectionOutcome> TryAutoMergeAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        RunDetails run,
+        ProjectDetails project,
+        long taskFenceVersion,
+        PullRequestSnapshot snapshot,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.CopilotReviewState == ExternalReviewState.RequestedPending)
+        {
+            DateTimeOffset pendingSince = run.CopilotReviewRequestPendingSince ?? now;
+            if (now - pendingSince < _options.CopilotReviewSettleWindow)
+            {
+                // Still within the settle window: a visible wait, not a park — the next sweep
+                // checks again.
+                return InspectionOutcome.Inspected;
+            }
+
+            string parkReason =
+                $"Pre-approved, but Copilot's requested review never arrived within the "
+                + $"{_options.CopilotReviewSettleWindow.TotalHours:0.#}-hour settle window (requested "
+                + $"{pendingSince:u}). Re-request the review by hand, merge without it, or grant "
+                + "another attempt with h9k pr resolve.";
+            session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogWarning("Run {RunId}: closeout parked for the human — {Reason}", run.Id, parkReason);
+            return InspectionOutcome.Inspected;
+        }
+
+        if (!snapshot.ReviewDecisionSatisfied || snapshot.HasOutstandingHumanReviewer)
+        {
+            // Waiting on human approval — visible (AttentionComposer reads the ExternalReviewObserved
+            // already recorded above), never nudged, never parked (design ruling 3): the owner
+            // takes whatever social action they choose, on their own initiative.
+            return InspectionOutcome.Inspected;
+        }
+
+        if (task.MechanicalResolutionAttempts >= _options.MaxMechanicalResolutionAttempts)
+        {
+            string parkReason =
+                $"Pre-approved merge attempts spent ({task.MechanicalResolutionAttempts}/"
+                + $"{_options.MaxMechanicalResolutionAttempts}): {DescribeAutoMergeFailure(run)}. "
+                + "Merge it by hand, or grant another attempt with h9k pr resolve.";
+            session.Events.Append(run.Id, new CloseoutParked(run.Id, parkReason, now));
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogWarning("Run {RunId}: closeout parked for the human — {Reason}", run.Id, parkReason);
+            return InspectionOutcome.Inspected;
+        }
+
+        try
+        {
+            await inspector.MergeAsync(
+                project.RepositoryPath, task.PullRequestUrl!, run.PullRequestNumber!.Value, snapshot.HeadCommit,
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            session.Events.Append(run.Id, new PullRequestAutoMergeAttempted(run.Id, false, exception.Message, now));
+            session.Events.Append(task.Id, expectedVersion: taskFenceVersion + 1,
+                new TaskMechanicalResolutionAttempted(task.Id, exception.Message, now));
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Run {RunId}: pre-approved merge attempt failed ({Spent}/{Max}): {Reason}",
+                run.Id, task.MechanicalResolutionAttempts + 1, _options.MaxMechanicalResolutionAttempts,
+                exception.Message);
+            return InspectionOutcome.Inspected;
+        }
+
+        session.Events.Append(run.Id, new PullRequestAutoMergeAttempted(run.Id, true, null, now));
+        // The same deterministic transition an observed operator merge produces — Done on the
+        // observed merge, closeout comment only, GitHub issue never closed, Jira never transitioned
+        // (design ruling 8) — since this daemon code IS the merge, not an inspection of one that
+        // already happened elsewhere.
+        await CompleteCloseoutAsync(session, run, project, task, now, now, expectedVersion: null, cancellationToken);
+        logger.LogInformation(
+            "Task {TaskId}: pre-approved pull request {Url} merged automatically", task.Id, task.PullRequestUrl);
+        return InspectionOutcome.MergeObserved;
+    }
+
+    /// <summary>The itemized reason a mechanical-resolution park names — the last attempt's own failure, or an honest gap for a stream older than this field.</summary>
+    private static string DescribeAutoMergeFailure(RunDetails run) =>
+        run.LastAutoMergeFailureReason.IsNotBlank()
+            ? run.LastAutoMergeFailureReason
+            : "the last attempt's own reason was not recorded";
 
     /// <summary>
     /// One append per change: the post-PR review watcher's fact only lands on the run stream
@@ -909,6 +1032,13 @@ public sealed class CloseoutEngine(
     /// stop caveating a landed review, so it must land its own event even when nothing else
     /// changed.
     /// </para>
+    /// <para>
+    /// <c>ReviewDecision</c> and <c>OutstandingReviewerLogins</c> join the comparison for the
+    /// identical reason (task: a task can be published pre-approved): a pre-approved task's
+    /// "waiting on human approval" display reads these two off <see cref="RunDetails"/>, so a
+    /// change in either — a reviewer approving, a new one being requested — must land its own
+    /// event even when Copilot's own state is unchanged.
+    /// </para>
     /// </summary>
     private async Task RecordExternalReviewObservationAsync(
         IDocumentSession session,
@@ -919,14 +1049,17 @@ public sealed class CloseoutEngine(
     {
         if (snapshot.CopilotReviewState == run.ExternalReviewState
             && snapshot.CopilotReviewThreadCount == run.ExternalReviewThreadCount
-            && snapshot.HasPendingChecks == run.ExternalReviewChecksPending)
+            && snapshot.HasPendingChecks == run.ExternalReviewChecksPending
+            && snapshot.ReviewDecision == run.ExternalReviewDecision
+            && snapshot.OutstandingReviewers.SequenceEqual(run.ExternalOutstandingReviewerLogins))
         {
             return;
         }
 
         session.Events.Append(run.Id, new ExternalReviewObserved(
             run.Id, snapshot.CopilotReviewState, snapshot.CopilotReviewThreadCount,
-            snapshot.HasPendingChecks, now));
+            snapshot.HasPendingChecks, now, snapshot.ReviewDecision, snapshot.OutstandingReviewers,
+            snapshot.OutstandingHumanReviewers));
         await session.SaveChangesAsync(cancellationToken);
     }
 
@@ -974,8 +1107,15 @@ public sealed class CloseoutEngine(
     /// honest record; an unbounded loop is not. For the same reason a reviewer the provider
     /// refuses is logged and stepped over rather than allowed to abort the pass.
     /// </para>
+    /// <para>
+    /// Returns whether this call actually issued a countersign this sweep. The pre-approved
+    /// auto-merge gate (task: a task can be published pre-approved) reads this to defer a merge
+    /// to the next sweep rather than deciding it against the snapshot read before the request —
+    /// a request this call just issued would otherwise be evaluated as though it had never been
+    /// asked (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
     /// </summary>
-    private async Task RerequestReviewAfterFixesAsync(
+    private async Task<bool> RerequestReviewAfterFixesAsync(
         IDocumentSession session,
         RunDetails run,
         ProjectDetails project,
@@ -988,13 +1128,13 @@ public sealed class CloseoutEngine(
     {
         if (!run.IsFollowUp || run.ReviewRerequestsAfterFixes > 0)
         {
-            return;
+            return false;
         }
 
         IReadOnlyList<PullRequestReviewer> outstanding = ReviewersBehindTheHead(snapshot);
         if (outstanding.Count == 0)
         {
-            return;
+            return false;
         }
 
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(project.OwnerId, cancellationToken);
@@ -1002,7 +1142,7 @@ public sealed class CloseoutEngine(
             project.ReviewRerequest, owner?.ReviewRerequest, _options.DefaultReviewRerequest);
         if (policy != ReviewRerequestPolicy.Enabled)
         {
-            return;
+            return false;
         }
 
         // The fence, carried the way the reopen path carries it. Three parts, because the
@@ -1018,14 +1158,14 @@ public sealed class CloseoutEngine(
             logger.LogDebug(
                 "Task {TaskId} advanced before the countersign for {Url}; deferring to the next sweep",
                 run.TaskId, pullRequestUrl);
-            return;
+            return false;
         }
 
         StreamState? runFence = await session.Events.FetchStreamStateAsync(run.Id, cancellationToken);
         RunDetails? fresh = await session.LoadAsync<RunDetails>(run.Id, cancellationToken);
         if (runFence is null || fresh is null || fresh.ReviewRerequestsAfterFixes > 0)
         {
-            return;
+            return false;
         }
 
         int passesSpent = await ReviewRerequestPassesAsync(session, run.TaskId, cancellationToken);
@@ -1035,7 +1175,7 @@ public sealed class CloseoutEngine(
                 "Run {RunId}: review re-request cap reached ({Spent}/{Max}) — {Url} settles on the internal "
                 + "review, the thread replies, and CI",
                 run.Id, passesSpent, _options.MaxReviewRerequestsAfterFixes, pullRequestUrl);
-            return;
+            return false;
         }
 
         // Recorded before the requests are issued: see the note above — a pass that is only
@@ -1052,7 +1192,7 @@ public sealed class CloseoutEngine(
         {
             logger.LogDebug(
                 "Run {RunId} advanced while recording a countersign pass; another sweep got there first", run.Id);
-            return;
+            return false;
         }
 
         logger.LogInformation(
@@ -1077,6 +1217,8 @@ public sealed class CloseoutEngine(
                     run.Id, pullRequestUrl, reviewer.Login);
             }
         }
+
+        return true;
     }
 
     /// <summary>

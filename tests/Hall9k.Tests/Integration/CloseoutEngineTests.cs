@@ -527,6 +527,190 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The whole feature in its simplest case (task: a task can be published pre-approved, design
+    /// ruling 1): no branch rules, no Copilot, every gate clean — the daemon merges on its own,
+    /// deterministically, with no agent session, the moment it observes GitHub's own gates
+    /// satisfied.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_task_with_every_gate_clean_merges_itself()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe123" } };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1),
+            "every gate read clean, so the daemon merges it in the same sweep that observed that");
+        inspector.MergeAttempts.Should().Be(1, "the merge is deterministic daemon code, never an agent (design ruling 8)");
+        inspector.MergeAttemptedHeadCommits.Should().Equal(
+            ["cafe123"], "the merge call is told to match the head this sweep actually inspected");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+        run.LastAutoMergeSucceeded.Should().BeTrue();
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "Done on the observed merge, exactly as for an operator's own merge");
+
+        Directory.Exists(worktree.Path).Should().BeFalse("the same worktree/branch reclaim an observed merge always triggers");
+    }
+
+    /// <summary>
+    /// A required human approval, or an outstanding requested reviewer, is a visible waiting
+    /// state, never a park (design ruling 3) — the daemon does nothing, and the run stays exactly
+    /// where it was, watched, for the next sweep to check again.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_task_waiting_on_human_approval_neither_merges_nor_parks()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { ReviewDecision = "REVIEW_REQUIRED" },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(0, "nothing merges while a required approval is still outstanding");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview, "waiting on human approval is visible, never a park");
+        run.ExternalReviewDecision.Should().Be("REVIEW_REQUIRED");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "the task itself is untouched by the wait");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
+    /// Exhausting the pre-approved task's own mechanical-resolution budget parks the run with an
+    /// itemized reason, the same "matching the existing pr-resolve retry-budget pattern" shape
+    /// the acceptance criteria call for (design ruling 6).
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_merge_that_keeps_failing_mechanically_parks_once_the_budget_is_spent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet(),
+            MergeFailureMessage = "gh pr merge exited 1: Pull Request is not mergeable",
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees, maxMechanicalResolutionAttempts: 2);
+
+        await engine.PollOnceAsync(cts.Token);
+        await engine.PollOnceAsync(cts.Token);
+        CloseoutSweepResult third = await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(2, "the third sweep parks instead of spending a fourth attempt");
+        third.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 0));
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("2/2").And.Contain("Pull Request is not mergeable");
+
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        task.MechanicalResolutionAttempts.Should().Be(2);
+    }
+
+    /// <summary>
+    /// A requested Copilot review still within the bounded settle window is a visible wait, not a
+    /// park — <see cref="RunDetails.CopilotReviewRequestPendingSince"/> anchors to the sweep that
+    /// first observed it pending (design ruling 2).
+    /// </summary>
+    [Fact]
+    public async Task A_freshly_requested_copilot_review_waits_within_the_settle_window_without_parking()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { CopilotReviewState = ExternalReviewState.RequestedPending },
+        };
+        CloseoutEngine engine = NewEngine(
+            store, node, inspector, worktrees, copilotReviewSettleWindow: TimeSpan.FromHours(24));
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview, "still within the settle window");
+        run.CopilotReviewRequestPendingSince.Should().NotBeNull(
+            "the anchor is set the moment the request is first observed pending");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
+    /// A requested Copilot review that never arrives within the bounded settle window parks the
+    /// task with that reason instead of waiting forever (design ruling 2) — a zero-width window
+    /// makes the very first observation already overdue, without needing to fake elapsed wall-clock
+    /// time.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_task_parks_once_a_requested_copilot_review_outlasts_the_settle_window()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { CopilotReviewState = ExternalReviewState.RequestedPending },
+        };
+        CloseoutEngine engine = NewEngine(
+            store, node, inspector, worktrees, copilotReviewSettleWindow: TimeSpan.Zero);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails parked = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        parked.State.Should().Be(RunState.CloseoutParked);
+        parked.ParkedReason.Should().Contain("Copilot").And.Contain("settle window");
+    }
+
+    /// <summary>
     /// True closeout is the only completion signal a dependency chain accepts (Decisions Log
     /// #34), so the node that observes the merge is the node that unblocks the dependents.
     /// </summary>
@@ -2028,6 +2212,60 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// A pre-approved task's merge gate runs in the same sweep as the countersign re-request, and
+    /// against the snapshot read BEFORE that re-request was issued: merging on that stale reading
+    /// would let the daemon ask a reviewer to look again and then merge out from under them
+    /// milliseconds later, on a repository with no branch protection to catch it (independent
+    /// pre-PR review, cycle 1, both lenses). The fix defers the merge to the next sweep, which
+    /// reads the countersign as already spent (ReviewRerequestsAfterFixes > 0) and proceeds.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_merge_defers_to_the_sweep_after_a_countersign_it_just_issued()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true,
+            preApproved: true);
+        await EnableReviewRerequestAsync(store, node.OwnerId, onTheOwner: true, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                Reviewers = [new PullRequestReviewer("teammate", ReviewerKind.Human)],
+            },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().Equal(["teammate"], "the countersign this sweep is real");
+        inspector.MergeAttempts.Should().Be(0,
+            "the countersign was just issued against this exact snapshot — merging on it now would "
+            + "merge past the very review this sweep just asked for");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.State.Should().Be(RunState.AwaitingReview, "the run stays watched for the next sweep");
+        }
+
+        // The next sweep reads the countersign as already spent (the fake provider's snapshot is
+        // unchanged, but ReviewRerequestsAfterFixes > 0 now short-circuits a second request) and
+        // decides the merge fresh.
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().HaveCount(1, "one countersign per run, not one per sweep");
+        inspector.MergeAttempts.Should().Be(1, "nothing else is outstanding on the next sweep's own read");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+        await ClearOwnerReviewRerequestAsync(store, node.OwnerId, cts.Token);
+    }
+
+    /// <summary>
     /// A countersign asks the reviewers who have not seen the head. A reviewer whose latest
     /// review already sits on the pushed commit — a Copilot pass that recovered, a human who
     /// re-approved — has nothing left to countersign, and asking anyway would spend a pass,
@@ -3276,7 +3514,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         bool asFollowUp = false,
         ExternalReference? externalReference = null,
         string? priorObstructionKey = null,
-        string? priorObstructionSummary = null)
+        string? priorObstructionSummary = null,
+        bool preApproved = false)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -3298,6 +3537,15 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 externalReference, Now, ownerId),
             ownerId, Now);
         List<object> taskEvents = [.. lifecycle];
+
+        if (preApproved)
+        {
+            Hall9k.Domain.Features.Tasks.Events.TaskPreApprovedSet set =
+                TaskDecider.SetPreApproved(task, true, Now, ownerId, taskClosedOut: false);
+            task.Apply(set);
+            taskEvents.Add(set);
+        }
+
         Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
             TaskDecider.Claim(task, node.NodeId, ownerId, DomainId.New(), Now);
         task.Apply(claimed);
@@ -3471,7 +3719,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         RecordingProcessRunner? github = null,
         RecordingJiraRequester? jira = null,
         int maxAutomaticCloseoutRuns = 2,
-        int maxCloseoutLapsPerObstruction = 2) =>
+        int maxCloseoutLapsPerObstruction = 2,
+        int maxMechanicalResolutionAttempts = 3,
+        TimeSpan? copilotReviewSettleWindow = null) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
             (github ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
             (jira ?? RecordingJiraRequester.Succeeding(200, "{}")).Requester,
@@ -3480,6 +3730,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 MaxAutomaticCloseoutRuns = maxAutomaticCloseoutRuns,
                 MaxCloseoutLapsPerObstruction = maxCloseoutLapsPerObstruction,
                 MaxReviewRerequestsAfterFixes = maxReviewRerequests,
+                MaxMechanicalResolutionAttempts = maxMechanicalResolutionAttempts,
+                CopilotReviewSettleWindow = copilotReviewSettleWindow ?? TimeSpan.FromHours(24),
             }),
             NullLogger<CloseoutEngine>.Instance);
 
