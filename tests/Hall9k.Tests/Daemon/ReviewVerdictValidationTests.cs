@@ -520,6 +520,53 @@ public sealed class ReviewVerdictValidationTests
             .Should().BeTrue();
 
     /// <summary>
+    /// A defect stated in one clause of a sentence still names a finding even when a later clause
+    /// of that same sentence denies a second, unrelated defect (PR #99 post-merge triage, task
+    /// 29025f60): the old same-sentence check vetoed the whole sentence the instant
+    /// <c>HeadingDenialPattern</c> matched anywhere in it, so "nothing else is wrong" at the end of
+    /// the sentence discarded the limiter defect its own first clause already named.
+    /// </summary>
+    [Fact]
+    public void A_defect_stated_before_a_trailing_denial_clause_still_names_a_finding() =>
+        ReviewVerdictValidation.NamesAFinding(
+                "`Auth.cs:42` never resets the limiter; nothing else is wrong.\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+
+    /// <summary>
+    /// A defect stated with "nothing"/"none" vocabulary is still credited when a later, unrelated
+    /// clause happens to reuse defect vocabulary of its own (PR #99 post-merge triage, task
+    /// 29025f60): the subject-copula denial alternative's old unrestricted tail
+    /// (<c>[^.!?]{0,40}</c>) read past a comma into a fresh clause with its own subject and verb,
+    /// so "nothing is logged, so the bug is invisible" — which states a real defect, that nothing
+    /// is logged — was misread as the denial idiom "nothing is … bug" purely because "bug" fell
+    /// within the 40-character window, discarding the genuine finding.
+    /// </summary>
+    [Fact]
+    public void A_defect_stated_with_nothing_vocabulary_across_a_new_clause_still_names_a_finding() =>
+        ReviewVerdictValidation.NamesAFinding(
+                "`Auth.cs:42` — nothing is logged, so the bug is invisible when the token expires."
+                + "\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+
+    /// <summary>
+    /// The comma-bounded aside a genuine denial's own copula routinely carries ("nothing is, in my
+    /// judgment, a defect") and a plain "No issues found." both still read as denials, not
+    /// findings, after the clause-boundary fix above (PR #99 post-merge triage, task 29025f60): the
+    /// new exclusion only refuses to cross a comma immediately followed by a clause-opening
+    /// conjunction, so a comma-bounded parenthetical with no such conjunction is untouched, and the
+    /// fixed alternative is not the only one this pattern has — a bare "no issues found" never
+    /// reaches it at all.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing here is, in my judgment, a defect."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNo issues found.\n\nVERDICT: needs-fixes")]
+    public void A_comma_bounded_aside_and_a_plain_no_issues_denial_are_still_recognized_as_denials(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
     /// A denial that links "nothing"/"none" to its vocabulary word with a bridging verb phrase
     /// other than a bare copula, or with no verb at all (a partitive "none of the …"), is still
     /// recognized as a denial rather than a finding (cycle-8 adversarial finding,
@@ -1095,6 +1142,372 @@ public sealed class ReviewVerdictValidationTests
                 + "\n"
                 + "Nothing is wrong; no defect stands.\n"
                 + "\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A heading naming a real location, followed by a paragraph that states a real defect and
+    /// then denies a second, unrelated one in the same paragraph, still names a finding (PR #99
+    /// post-merge triage, task 29025f60): the heading branch's own forward walk shares
+    /// <see cref="NamesFindingInProse"/>'s whole-span veto shape — it used to stop at the first
+    /// paragraph <see cref="ReviewVerdictValidation"/>'s <c>HeadingDenialPattern</c> matched
+    /// anywhere in, discarding a real defect the same paragraph had already stated before its own
+    /// trailing denial clause.
+    /// </summary>
+    [Fact]
+    public void A_heading_followed_by_a_paragraph_stating_a_defect_before_a_denial_clause_names_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "### 1. `Auth.cs:42` — the limiter\n"
+                + "\n"
+                + "The limiter never resets after a failed login; nothing else about it is wrong.\n"
+                + "\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A lookahead sentence that states a real defect before denying a second, unrelated one still
+    /// names a finding (PR #99 post-merge triage, task 29025f60): the forward-lookahead branch
+    /// shares <see cref="ReviewVerdictValidation"/>'s <c>StatesDefectInLaterParagraph</c> and
+    /// same-sentence check's own whole-span veto shape — it used to stop the walk at the first
+    /// lookahead sentence <c>HeadingDenialPattern</c> matched anywhere in, discarding a real defect
+    /// that same sentence had already stated before its own trailing denial clause.
+    /// </summary>
+    [Fact]
+    public void A_lookahead_sentence_stating_a_defect_before_a_denial_clause_still_names_a_finding() =>
+        ReviewVerdictValidation.NamesAFinding(
+                "`Auth.cs:42` is where the check runs. It never validates the token, but nothing "
+                + "else is wrong here.\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+
+    /// <summary>
+    /// A hollow verdict whose denial paragraph pairs the recognized "nothing is wrong" idiom with
+    /// a second denial phrased differently — "no doctrine/rule is violated", "no criterion is
+    /// unmet", "does not depart from doctrine", "nothing should change" — does not name a finding
+    /// (independent pre-PR review, both lenses, task 29025f60): before this fix, the second
+    /// phrasing's own words (a bare "no"/"not"/"should", or the affirmative verb "violated") sat
+    /// outside <see cref="ReviewVerdictValidation.HeadingDenialPattern"/>'s only recognized match
+    /// and were wrongly credited by <see cref="ReviewVerdictValidation.StatesDefectOutsideDenial"/>
+    /// as a defect stated outside the denial.
+    /// </summary>
+    [Theory]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing is wrong; no doctrine is violated.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nI found nothing wrong. The diff does not depart from doctrine."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Adversarial review of `ReviewEngine.cs`\n\nI reviewed every branch carefully. I found nothing I "
+        + "could verify as broken, and no acceptance criterion is unmet.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing here is wrong. Nothing should change.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing is wrong; no criterion is unmet.\n\nVERDICT: needs-fixes")]
+    [InlineData("## Findings for `ReviewEngine.cs`\n\nNothing here is wrong, and no rule is violated.\n\nVERDICT: needs-fixes")]
+    public void A_denial_paired_with_a_second_denial_phrased_differently_does_not_name_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// A bullet whose own text pairs a "should stay as it is" affirmation with a trailing "nothing
+    /// is wrong" denial does not name a finding (independent pre-PR review, conformance finding,
+    /// task 29025f60): "should" is defect vocabulary (cycle-5, for prescriptive doctrine phrasing
+    /// like "should be sealed"), but here it affirms the status quo rather than prescribing a fix,
+    /// and it sat outside the trailing denial's own matched span — the exact scoped-veto shape
+    /// <see cref="A_defect_stated_before_a_trailing_denial_clause_still_names_a_finding"/> exists
+    /// to credit for a real defect, wrongly credited here for an affirming one instead.
+    /// </summary>
+    [Fact]
+    public void A_bullet_pairing_an_affirming_should_with_a_trailing_denial_does_not_name_a_finding()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "What I checked and cleared:\n"
+                + "- `Hall9kDatabase.cs:180` — the naming should stay as it is; nothing is wrong here.\n"
+                + "- `DatabaseDoctor.cs:54` — the message is accurate.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A "should remain"/"should continue" that goes on to prescribe something other than the
+    /// cycle-5 "stay as it is" status quo still names a finding (independent pre-PR review, both
+    /// lenses, cycle 4, task 29025f60): the cycle-5 exclusion stripped "should" from every
+    /// "should stay/remain/continue", not only the one recorded affirming idiom it was drawn from,
+    /// so a genuinely prescriptive finding phrased that way named nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "`Lease.cs:9` — the lease should remain held until the run ends; it is released at the "
+        + "first heartbeat gap.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Walker.cs:40` — the walk should continue past a project with special characters; it "
+        + "halts early instead.\n\nVERDICT: needs-fixes")]
+    public void A_prescriptive_should_remain_or_continue_still_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A defect stated in one clause of a sentence still names a finding when a second clause
+    /// states its doctrine consequence using the "no … is/are violated/unmet" or "does not …
+    /// depart" phrasing rather than the "nothing is wrong" idiom (independent pre-PR review, both
+    /// lenses, cycle 4, task 29025f60): those two denial alternatives read straight past a ", so"
+    /// clause boundary, or across an "and"/"which" conjunction, the same way the subject-copula
+    /// alternative's own tail once did, and discarded the genuine finding as a denial.
+    /// </summary>
+    [Theory]
+    [InlineData("`Sweep.cs:12` acquires no lock, so the invariant is violated.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Foo.cs:9` has no guard, so criterion 2 is unmet.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Foo.cs:12` does not seal the record, which departs from AGENTS.md.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Api.cs:7` does not validate the id and departs from the parameterize-identifiers rule."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_defect_and_its_doctrine_consequence_across_a_clause_boundary_still_names_a_finding(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A defect stated with a trailing "but" clause still names a finding even when the sentence
+    /// opens with the bare "nothing/none should" idiom (independent pre-PR review, adversarial
+    /// finding, cycle 4, task 29025f60): the bare idiom carried no "but"-contrastive guard, unlike
+    /// the sibling "nothing/none … wrong/broken/amiss" alternative, so it read straight past the
+    /// trailing clause naming the real, located defect.
+    /// </summary>
+    [Fact]
+    public void A_nothing_should_idiom_followed_by_a_but_clause_still_names_a_finding() =>
+        ReviewVerdictValidation.NamesAFinding(
+                "Nothing should be written before validation, but `Store.cs:40` writes first."
+                + "\n\nVERDICT: needs-fixes")
+            .Should().BeTrue();
+
+    /// <summary>
+    /// The subject-copula alternative's clause-boundary guard against a false denial ("nothing is
+    /// logged, so the bug is invisible") applies identically to the older, looser second
+    /// alternative (independent pre-PR review, both lenses, task 29025f60): before this fix, only
+    /// the first alternative refused to cross a ", so" clause boundary, so a defect phrased to
+    /// match the second alternative's own bare "nothing/none … wrong/broken/amiss" shape instead —
+    /// "nothing is escaped, so the path is broken", "nothing is set, so the flag is wrong" — still
+    /// had its real, located defect discarded as a denial.
+    /// </summary>
+    [Theory]
+    [InlineData("`Auth.cs:42` — nothing is escaped, so the path is broken.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Auth.cs:42` — nothing is set, so the flag is wrong.\n\nVERDICT: needs-fixes")]
+    public void A_defect_matching_the_looser_denial_alternative_before_a_clause_boundary_still_names_a_finding(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A defect and its doctrine consequence still name a finding when the two clauses are joined
+    /// by a semicolon, a bare "and", or a bare "so" with no leading comma, rather than the single
+    /// comma-"so" boundary the cycle-4 fix above guarded against (independent pre-PR review, both
+    /// lenses, cycle 1, task 29025f60): the "no … is/are violated/unmet" guard's <c>,\s*so\b</c>
+    /// only ever stopped at that one spelling, so a genuine finding phrased with any of these other
+    /// ordinary connectors read straight past the clause boundary and was discarded as a denial.
+    /// </summary>
+    [Theory]
+    [InlineData("`Sweep.cs:12` acquires no lock; the invariant is violated.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Foo.cs:9` has no guard and criterion 2 is unmet.\n\nVERDICT: needs-fixes")]
+    [InlineData("`Foo.cs:9` has no guard so criterion 2 is unmet.\n\nVERDICT: needs-fixes")]
+    public void A_defect_and_its_doctrine_consequence_across_a_semicolon_and_or_bare_so_still_names_a_finding(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A "does not … departs" finding still names a finding when the two clauses are joined by a
+    /// semicolon or a bare "so", not only the comma/"and"/"which"/"but" connectors the cycle-4 fix
+    /// above already guarded (independent pre-PR review, both lenses, cycle 1, task 29025f60).
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "`Foo.cs:12` does not seal the record; it departs from AGENTS.md.\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "`Foo.cs:12` does not seal the record so it departs from AGENTS.md.\n\nVERDICT: needs-fixes")]
+    public void A_does_not_depart_finding_across_a_semicolon_or_bare_so_still_names_a_finding(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A defect stated with a trailing contrastive clause still names a finding when that clause is
+    /// joined by a semicolon or "yet" rather than only the "but" the cycle-4 fix above guarded,
+    /// whether the sentence opens with the bare "nothing/none should" idiom or its sibling
+    /// "nothing/none … wrong/broken/amiss" alternative (independent pre-PR review, both lenses,
+    /// cycle 1, task 29025f60).
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "Nothing should be written before validation; `Store.cs:40` writes first."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "Nothing should be written before validation, yet `Store.cs:40` writes first."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_nothing_should_idiom_followed_by_a_semicolon_or_yet_clause_still_names_a_finding(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A compound denial that coordinates two negations with a bare "and" is still recognized as a
+    /// denial rather than a finding (independent pre-PR review, adversarial finding, cycle 3, task
+    /// 29025f60): the cycle-1 fix's bare "and" clause boundary was written to stop a genuine defect
+    /// and its doctrine consequence from being swallowed into one denial
+    /// (<see cref="A_defect_and_its_doctrine_consequence_across_a_semicolon_and_or_bare_so_still_names_a_finding"/>),
+    /// but applied unconditionally it also stopped at an "and" that merely joins two negations about
+    /// the same non-finding, drawn verbatim from this install's own recorded lens output, leaving
+    /// both "no" and "defect" uncovered and crediting a hollow verdict.
+    /// </summary>
+    [Fact]
+    public void A_compound_denial_joined_by_a_bare_and_is_not_credited() =>
+        ReviewVerdictValidation.NamesAFinding(
+                "## Findings for `ReviewEngine.cs`\n\n"
+                + "Nothing else in the delta introduced a regression, and I found no new defect in "
+                + "the surrounding code the fix touched.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+
+    /// <summary>
+    /// The bare "and"-carve-out's continued-negation alternative recognizes a second negation
+    /// spelled as a contraction, with or without a leading pronoun subject (independent pre-PR
+    /// review, both lenses, cycle 5, task 29025f60): the cycle-3 fix's own <c>n't</c> alternative
+    /// sat behind a shared <c>\s+</c>, so it could only ever match the literal text "and n't",
+    /// which no contraction produces — a real one ("doesn't", "isn't") attaches directly to the
+    /// word it negates with no space in between, so the alternative was unreachable and "and
+    /// doesn't"/"and it doesn't" still read as an impassable clause boundary, crediting the
+    /// trailing "wrong" as a stated defect.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing here is missing and it doesn't look wrong."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing here is missing and doesn't look wrong."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_compound_denial_joined_by_a_bare_and_reaching_a_contraction_is_not_credited(
+        string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// The bare-"so" clause-boundary guard does not truncate its own tail one character short of an
+    /// unrelated word merely ending in "so" (independent pre-PR review, conformance finding, cycle
+    /// 3, task 29025f60): written as <c>,?\s*so\b</c> with no leading word boundary, the guard
+    /// matched its own "so" inside "also" just as readily as a real clause-boundary "so", so
+    /// "nothing here is also a defect" — and the same shape with "wrong" — never reached the
+    /// vocabulary word past "also" and read as a stated defect rather than the denial it is.
+    /// </summary>
+    [Theory]
+    [InlineData("`ReviewEngine.cs:42` handles this correctly; nothing here is also a defect.\n\nVERDICT: needs-fixes")]
+    [InlineData("Nothing is also wrong in `Auth.cs`.\n\nVERDICT: needs-fixes")]
+    public void A_denial_using_also_before_the_vocabulary_word_is_not_credited(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// A semicolon-joined clause that merely restates the same denial, naming no concrete location
+    /// of its own, is still recognized as a denial rather than a finding (independent pre-PR
+    /// review, both lenses, cycle 3, task 29025f60): the cycle-3 fix that added a bare semicolon to
+    /// the "nothing/none … wrong/broken/amiss" and bare "nothing/none should" lookaheads treated any
+    /// semicolon as contrastive the way "but"/"yet"/"however" are, but an ordinary semicolon just as
+    /// often joins a denial to an elaboration that restates it as to a real second defect, and the
+    /// four shapes below all read as a stated "wrong" or "should" the moment any semicolon followed
+    /// within range. <see cref="A_nothing_should_idiom_followed_by_a_semicolon_or_yet_clause_still_names_a_finding"/>'s
+    /// own semicolon case — where the clause after the semicolon names a real location — still names
+    /// a finding, unaffected by this fix.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nI found nothing wrong; every path disposes correctly."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing wrong here; the ordering is intentional."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing should change; the existing sealing is already correct."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "## Findings for `ReviewEngine.cs`\n\nNothing should be reworked here; the naming is already right."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_semicolon_joined_restatement_of_the_same_denial_is_not_credited(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeFalse();
+
+    /// <summary>
+    /// A semicolon-joined clause naming only a bare, unextended symbol — not a real location —
+    /// is still recognized as a denial rather than a finding (independent pre-PR review, both
+    /// lenses, cycle 5, task 29025f60): the cycle-3 fix's own disqualifier fired on any
+    /// backtick-quoted token immediately after the semicolon, whether or not it was actually a
+    /// location, so "`Dispose`" — a bare symbol with no file extension or line number — read as a
+    /// concrete second clause and leaked "wrong" as a stated defect the same way a genuine finding
+    /// does.
+    /// </summary>
+    [Fact]
+    public void A_semicolon_joined_clause_naming_only_a_bare_symbol_is_still_a_denial() =>
+        ReviewVerdictValidation.NamesAFinding(
+                "## Findings for `ReviewEngine.cs`\n\n"
+                + "I found nothing wrong; `Dispose` runs on every path.\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+
+    /// <summary>
+    /// A semicolon-joined clause naming a real location still names a finding whether that
+    /// location is bare, preceded by a lead-in word, or bold-and-backticked, not only the exact
+    /// backtick-immediately-after-the-semicolon spelling the cycle-3 fix recognized (independent
+    /// pre-PR review, both lenses, cycle 5, task 29025f60): requiring the location to be the
+    /// literal next character after the semicolon missed every other spelling a real reviewer
+    /// actually writes, including the bare, unbackticked spelling the `at=` finding contract
+    /// itself uses, and each one was discarded as a denial instead.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "Nothing should be written before validation; Store.cs:40 writes first."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "Nothing should be written before validation; in `Store.cs:40` the write is first."
+        + "\n\nVERDICT: needs-fixes")]
+    [InlineData(
+        "Nothing should be reworked here; **`Store.cs:40`** writes first."
+        + "\n\nVERDICT: needs-fixes")]
+    public void A_semicolon_joined_location_in_any_spelling_still_names_a_finding(string output) =>
+        ReviewVerdictValidation.NamesAFinding(output).Should().BeTrue();
+
+    /// <summary>
+    /// A paragraph that only denies, but happens to carry the structured contract's own
+    /// `Scenario:` label anyway, does not name a finding just because that label is present
+    /// (independent pre-PR review, adversarial finding, cycle 1, task 29025f60): the forward walk
+    /// past a heading lead-in used to credit <see cref="ReviewVerdictValidation.StructuralMarkerPattern"/>
+    /// in the same disjunction as <see cref="ReviewVerdictValidation.StatesDefectOutsideDenial"/>,
+    /// so a candidate paragraph whose only content is a denial reached the label check before the
+    /// denial check ever ran and was wrongly credited as a hollow verdict. A `Defect:` label is not
+    /// this test's own shape: the bare word "defect" is itself defect vocabulary sitting before any
+    /// denial phrase that follows it, so it is already credited by <see cref="ReviewVerdictValidation.StatesDefectOutsideDenial"/>
+    /// regardless of this ordering — `Scenario:` carries no such word of its own, which is what lets
+    /// this test isolate the ordering bug.
+    /// </summary>
+    [Fact]
+    public void A_hollow_denial_paragraph_carrying_a_structural_marker_label_does_not_name_a_finding() =>
+        ReviewVerdictValidation.NamesAFinding(
+                "## Findings for `ReviewEngine.cs`\n\n"
+                + "Scenario: nothing is wrong; the loop is correct.\n\n"
+                + "VERDICT: needs-fixes")
+            .Should().BeFalse();
+
+    /// <summary>
+    /// The comma-"so" clause-boundary guard does not block a genuine denial's own idiomatic aside
+    /// that happens to open with "so" (independent pre-PR review, adversarial finding #3, task
+    /// 29025f60): "so far as I can tell" is the same kind of parenthetical as "in my judgment",
+    /// which <see cref="A_comma_bounded_aside_and_a_plain_no_issues_denial_are_still_recognized_as_denials"/>
+    /// already covers; before this fix the guard read its own comma-then-"so" as the false
+    /// positive it was written to exclude and refused to recognize the denial at all.
+    /// </summary>
+    [Fact]
+    public void A_so_far_as_i_can_tell_aside_is_still_recognized_as_a_denial()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "## Findings for `ReviewEngine.cs`\n\nNothing here is, so far as I can tell, a defect."
+                + "\n\nVERDICT: needs-fixes")
+            .Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The comma-"so" clause-boundary guard's carve-out also recognizes "so it seems" as the same
+    /// class of idiomatic aside (cycle-2 verify finding, task 29025f60): before this fix, only "so
+    /// far" and "so to speak" were carved out by name, so "Nothing here is, so it seems, a
+    /// defect." still read its own comma-then-"so" as a fresh independent clause rather than a
+    /// parenthetical, and the denial went unrecognized.
+    /// </summary>
+    [Fact]
+    public void A_so_it_seems_aside_is_still_recognized_as_a_denial()
+    {
+        ReviewVerdictValidation.NamesAFinding(
+                "## Findings for `ReviewEngine.cs`\n\nNothing here is, so it seems, a defect."
+                + "\n\nVERDICT: needs-fixes")
             .Should().BeFalse();
     }
 

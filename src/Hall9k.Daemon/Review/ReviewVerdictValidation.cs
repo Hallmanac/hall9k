@@ -147,6 +147,27 @@ public static partial class ReviewVerdictValidation
     /// reuses this exact vocabulary for its own human-restatement proximity scan, in the same
     /// assembly, rather than maintaining a second, driftable copy of the same opportunistically-grown list.
     /// </para>
+    /// <para>
+    /// The "should" entry cycle-5 added for prescriptive doctrine phrasing ("`RunPaths.cs:23`
+    /// should be sealed") also matches the affirming, status-quo sense of "should" (independent
+    /// pre-PR review, conformance finding, task 29025f60): "the naming should stay as it is" names
+    /// no defect at all, it affirms that nothing needs to change, but the bare word still credited
+    /// as defect language wherever it sat outside a denial's own matched span — including a
+    /// clause preceding an unrelated trailing denial, the exact shape <see cref="StatesDefectOutsideDenial"/>
+    /// exists to credit for a real defect. "should" followed immediately by "stay"/"remain"/"continue"
+    /// and then "as it is"/"as they are" is excluded as this one recorded affirming shape.
+    /// </para>
+    /// <para>
+    /// That exclusion was itself too wide (independent pre-PR review, both lenses, cycle 4, task
+    /// 29025f60): "should stay"/"should remain"/"should continue" are not exclusively the
+    /// status-quo idiom above — "the lease should remain held until the run ends; it is released
+    /// at the first heartbeat gap." and "the walk should continue past a project it cannot read"
+    /// are both prescriptive, naming what the code should do that it does not, yet the old
+    /// unconditional exclusion stripped "should" from both regardless. The exclusion now also
+    /// requires the trailing "as it is"/"as they are" the cycle-5 idiom is actually phrased with,
+    /// so it excludes that one recorded affirming shape without swallowing a "should
+    /// remain"/"should continue" that goes on to prescribe something else entirely.
+    /// </para>
     /// </summary>
     [GeneratedRegex(
         @"\b(not|no|never|missing|fails?|failing|failed|wrong|incorrect|broken|defect|bug|"
@@ -154,7 +175,7 @@ public static partial class ReviewVerdictValidation
         + @"crashes?|throws?|refuses?|silently|drops?|dropped|overwrit(?:ten|es)|duplicat(?:es?|ed)|double-counts?|"
         + @"stale|ignor(?:es|ed)|skips?|skipped|corrupts?|corrupted|loses|lost|mismatch(?:ed)?|inconsistent|"
         + @"deadlocks?|hangs?|stuck|overflows?|unmet|departs?|violat(?:es?|ed)|breaks?|lacks?|omits?|"
-        + @"should|delet(?:es?|ed))\b",
+        + @"should(?!\s+(?:stay|remain|continue)\s+as\s+(?:it|they)\s+(?:is|are)\b)|delet(?:es?|ed))\b",
         RegexOptions.IgnoreCase)]
     internal static partial Regex DefectLanguagePattern();
 
@@ -451,15 +472,213 @@ public static partial class ReviewVerdictValidation
     /// for headroom — and it does not reopen the object-of-verb false positives above, since a
     /// verb reached only by walking past four unrelated words is never one this list enumerates.
     /// </para>
+    /// <para>
+    /// The subject-copula alternative's tail used to admit any text at all between the copula and
+    /// its vocabulary word (PR #99 post-merge triage, task 29025f60): "nothing is logged, so the
+    /// bug is invisible" states a real, located defect — nothing is logged — and only happens to
+    /// use "bug" later, as the subject of an unrelated second clause describing the consequence,
+    /// not as this alternative's own predicate. The old unrestricted <c>[^.!?]{0,40}</c> could not
+    /// tell that from a genuine denial's own qualifying aside ("nothing is, in my judgment, a
+    /// defect"), so it credited the false positive as a denial and discarded a real finding. What
+    /// tells them apart is a comma introducing a fresh clause of its own: a genuine aside's commas
+    /// bracket a parenthetical with no clause-opening conjunction after them ("in my judgment"),
+    /// while the false positive's comma opens a new independent clause ("so the bug …") with its
+    /// own subject and verb, unrelated to what "nothing" denies. The tail now refuses to cross a
+    /// comma immediately followed by "so", the conjunction the recorded false positive actually
+    /// uses — narrowly, the same discipline every other entry in this vocabulary already follows
+    /// (drawn from an actual reported shape rather than a guessed-ahead list of every conjunction
+    /// that could plausibly open such a clause): "because", "since" and the rest of that class are
+    /// left as the same kind of accepted recall gap this file's other vocabulary lists already
+    /// disclose, to be added if a real reviewer's phrasing ever files one.
+    /// </para>
+    /// <para>
+    /// The comma-"so" exclusion above blocked a genuine denial's own comma-bounded aside that
+    /// happens to open with "so" (independent pre-PR review, adversarial finding #3, task
+    /// 29025f60): "Nothing here is, so far as I can tell, a defect." is the same kind of
+    /// parenthetical as "in my judgment", just spelled with the one conjunction the exclusion
+    /// blocks on. The exclusion now carves out "so far" and "so to speak" by name — the two
+    /// idiomatic asides that open with "so" without introducing a fresh independent clause —
+    /// rather than dropping the exclusion, which would reopen the false positive it exists for.
+    /// </para>
+    /// <para>
+    /// That carve-out was itself incomplete (cycle-2 verify finding, task 29025f60): the finding
+    /// it responded to named "so it seems" alongside "so far as I can tell" as the same class of
+    /// idiomatic aside, but only "so far" and "so to speak" were carved out by name, leaving "so
+    /// it seems" still read as a clause boundary and a defect like "Nothing here is, so it seems,
+    /// a defect." still misread as naming a finding. The carve-out now also names "so it seems".
+    /// </para>
+    /// <para>
+    /// The subject-copula tail's own clause-boundary guard was never applied to the older, looser
+    /// second alternative below (independent pre-PR review, both lenses, task 29025f60): "nothing
+    /// is escaped, so the path is broken" states a real, located defect — nothing is escaped — the
+    /// same shape the guard above exists for, but the second alternative's unrestricted
+    /// <c>[^.!?]{0,30}?</c> read straight past the ", so" clause boundary and matched the whole
+    /// span as a denial anyway, discarding the defect. The same guard now applies here too.
+    /// </para>
+    /// <para>
+    /// The screen was also narrower than the vocabulary it exists to guard (independent pre-PR
+    /// review, both lenses, task 29025f60): a hollow verdict's own denial paragraph or sentence
+    /// routinely uses a second negation phrased differently from every idiom above — "no doctrine
+    /// is violated", "no acceptance criterion is unmet", "the diff does not depart from doctrine",
+    /// "Nothing should change" — and <see cref="StatesDefectOutsideDenial"/> credits whatever of
+    /// that second phrasing's own words (a bare "no", "not", "should", or the affirmative verb
+    /// itself) happens to sit outside every alternative's matched span, reading a doubly-denied
+    /// non-finding as a stated one. Three narrow alternatives close the recorded shapes: "no
+    /// &lt;subject&gt; is/are violated/unmet", "does/do/did not depart", and a bare "nothing/none
+    /// should" (the same subject-as-denial-target shape the existing alternatives already use, for
+    /// the one recorded case where "should" itself is what a fixed vocabulary word would otherwise
+    /// be). Each is deliberately as narrow as the phrasing it was drawn from, the same discipline
+    /// this vocabulary's every other entry already follows; a denial phrased some other way is the
+    /// same kind of accepted recall gap already disclosed above.
+    /// </para>
+    /// <para>
+    /// All three of those new alternatives were themselves too wide (independent pre-PR review,
+    /// both lenses, cycle 4, task 29025f60): each was drawn from a single-clause example and
+    /// carried no guard against a real, located defect stated in one clause with its consequence,
+    /// or the doctrine it violates, stated in a second. "`Sweep.cs:12` acquires no lock, so the
+    /// invariant is violated." and "`Foo.cs:9` has no guard, so criterion 2 is unmet." are both
+    /// genuine findings, but the "no … is/are violated/unmet" alternative's unrestricted tails read
+    /// straight past the ", so" clause boundary the same way the subject-copula alternative's own
+    /// tail once did, and matched the whole span as a denial. The same clause-boundary guard used
+    /// there is applied here too, on both of this alternative's gaps. "`Foo.cs:12` does not seal
+    /// the record, which departs from AGENTS.md." and "`Api.cs:7` does not validate the id and
+    /// departs from the parameterize-identifiers rule." are also both genuine findings — "does not
+    /// depart" is only the intended target when "not" and "depart" belong to the same clause, not
+    /// when the reviewer's own sentence chains a second clause with "and" or "which" onto an
+    /// unrelated "not" earlier in it — so the "does/do/did not depart" alternative now refuses to
+    /// cross a comma or an "and"/"which"/"but" conjunction between them, the same discipline as the
+    /// clause-boundary guard just above rather than a bare character-count widening. And "Nothing
+    /// should be written before validation, but `Store.cs:40` writes first." is a genuine finding
+    /// whose trailing "but" clause names a real defect the bare "nothing/none should" alternative
+    /// otherwise reads straight past — the second alternative above already guards its own
+    /// "wrong"/"broken"/"amiss" idiom against exactly this shape
+    /// (<c>(?![^.!?]{0,20}\bbut\b)</c>), and this alternative gets the identical guard, widened to
+    /// 40 characters to reach the recorded example's own "but".
+    /// </para>
+    /// <para>
+    /// Every clause-boundary guard above named only the one connector its own recorded example
+    /// happened to use (independent pre-PR review, both lenses, cycle 1, task 29025f60): "`Sweep.cs:12`
+    /// acquires no lock; the invariant is violated.", "`Foo.cs:9` has no guard and criterion 2 is
+    /// unmet." and "has no guard so criterion 2 is unmet." (no comma) are all the identical genuine
+    /// finding the cycle-4 fix above already recognized for a comma-"so" boundary, just joined by a
+    /// semicolon, a bare "and", or a bare "so" with no leading comma instead — none of which the
+    /// "no … is/are violated/unmet" guard's <c>,\s*so\b</c> stopped at, so each read straight past the
+    /// clause boundary and swallowed the real defect the same way the pre-cycle-4 guard did. The
+    /// guard now also refuses to cross a semicolon or a bare "and", and treats "so" as a boundary
+    /// whether or not a comma precedes it (still carving out "so far"/"so to speak"/"so it seems").
+    /// The "does/do/did not depart" guard had the identical gap for a semicolon or a bare "so"
+    /// ("`Foo.cs:12` does not seal the record; it departs from AGENTS.md.", "…does not seal the
+    /// record so it departs…") despite already refusing a comma or "and"/"which"/"but", and gets the
+    /// same two additions. The bare "nothing/none should" guard and its sibling "nothing/none …
+    /// wrong/broken/amiss" alternative both named only "but" as a contrastive connector
+    /// ("Nothing should be written before validation; `Store.cs:40` writes first.", "…validation,
+    /// yet `Store.cs:40` writes first."), so both now also stop at "yet", "however", or a semicolon.
+    /// And the two oldest subject-copula alternatives — the ones the cycle-4 fix above never
+    /// touched — carried the original, narrower comma-"so" guard unchanged, the identical gap this
+    /// paragraph closes everywhere else, so they get the same semicolon/bare-"and"/bare-"so"
+    /// widening rather than being left one cycle behind the alternatives drawn from them.
+    /// </para>
+    /// <para>
+    /// The semicolon and bare "and" widening just above were themselves too wide (independent
+    /// pre-PR review, both lenses, cycle 3, task 29025f60): treating either as an impassable clause
+    /// boundary unconditionally swallows a genuine compound denial that merely coordinates two
+    /// negations rather than joining a defect to its consequence. "Nothing else in the delta
+    /// introduced a regression, and I found no new defect in the surrounding code the fix touched."
+    /// — a shape drawn from this install's own recorded lens output — uses "and" to join two
+    /// negations about the same non-finding, not a defect and its doctrine fallout, but the widened
+    /// guard's refusal to cross "and" left both "no" and "defect" uncovered, crediting the exact
+    /// hollow verdict this file exists to reject. "and" now stays a boundary — refusing the match,
+    /// exactly as before — only when it is not immediately followed by a continued negation
+    /// ("no"/"not"/"nothing"/"none"/"n't", optionally after a leading "I found"); a boundary that
+    /// genuinely joins two different clauses, like "`Foo.cs:9` has no guard and criterion 2 is
+    /// unmet.", still stops at "and" exactly as the cycle-1 fix above intended, since nothing there
+    /// continues the negation. The bare "so" addition carried an unrelated defect of its own:
+    /// written with no leading word boundary, <c>,?\s*so\b</c> matched just as readily on the
+    /// trailing "so" inside an unrelated word — "nothing here is also a defect" truncated its own
+    /// tail one character short of "also", losing "defect" to a word that only happens to end in
+    /// the same two letters. All four occurrences now anchor with <c>\bso\b</c>, matching the
+    /// "does/do/did not depart" guard's own sibling instance below, which never had the gap.
+    /// </para>
+    /// <para>
+    /// The trailing contrastive lookaheads on the "nothing/none … wrong/broken/amiss" and bare
+    /// "nothing/none should" alternatives gained a bare semicolon in the same widening (independent
+    /// pre-PR review, both lenses, cycle 3, task 29025f60), but unlike "but", "yet", and "however" —
+    /// each reliably contrastive on its own — a semicolon just as often joins a denial to a
+    /// restating elaboration as to a real second defect: "I found nothing wrong; every path
+    /// disposes correctly.", "Nothing wrong here; the ordering is intentional.", "Nothing should
+    /// change; the existing sealing is already correct.", and "Nothing should be reworked here; the
+    /// naming is already right." are all genuine denials whose own semicolon-joined clause merely
+    /// restates the same denial, and the bare semicolon check refused every one of them, crediting
+    /// "wrong" or "should" as a stated defect the moment any semicolon followed within range. But a
+    /// bare removal reopens the shape the semicolon was added for in the first place: "Nothing
+    /// should be written before validation; `Store.cs:40` writes first." is the recorded finding
+    /// that motivated adding it, and dropping the semicolon outright stops distinguishing it from
+    /// the four affirming examples above. What actually separates them is not the semicolon itself
+    /// but what follows it: the genuine finding's second clause names a location, the affirming
+    /// elaborations never do. Both lookaheads now disqualify a semicolon only when a backtick-quoted
+    /// reference follows it directly (<c>;\s*`</c>) — the same signal <see cref="CodeReferencePattern"/>
+    /// already treats as "still describing a concrete artifact" elsewhere in this file — leaving an
+    /// ordinary semicolon-joined restatement, which names nothing concrete, recognized as part of
+    /// the same denial.
+    /// </para>
+    /// <para>
+    /// The continued-negation carve-out's own "n't" alternative was unreachable (independent pre-PR
+    /// review, both lenses, cycle 5, task 29025f60): sitting behind the shared <c>\s+</c> that leads
+    /// every alternative in the list, it could only ever match the literal text "and n't", which no
+    /// contraction produces — a real one attaches "n't" directly to the verb it negates ("doesn't",
+    /// "isn't", "hasn't") with no space in between. "Nothing is wrong and it doesn't introduce a
+    /// defect." and "Nothing is wrong and doesn't depart from doctrine." are exactly the compound
+    /// denial this carve-out exists to recognize, but the "and" stayed an impassable boundary for
+    /// both, truncating the match before "wrong" and crediting the trailing "defect"/"depart" as a
+    /// stated finding. The alternative is now <c>\w*n't</c> rather than a bare <c>n't</c>, so it
+    /// matches the whole contraction rather than an impossible standalone token, and the optional
+    /// leading word before it grew from only "I found" to also allow a bare pronoun subject ("it"),
+    /// the other shape this install's own recorded lens output uses ahead of a contraction.
+    /// </para>
+    /// <para>
+    /// The backtick-immediately-after-semicolon spelling above was itself too narrow (independent
+    /// pre-PR review, both lenses, cycle 5, task 29025f60): requiring the location to be the literal
+    /// next character after the semicolon recognizes only one spelling of "the second clause names a
+    /// location" and misses every other one a real reviewer actually writes — "Nothing should be
+    /// written before validation; in `Store.cs:40` the write is first." (a lead-in word before the
+    /// backtick), "Nothing should be written before validation; Store.cs:40 writes first." (no
+    /// backticks at all, the exact spelling the `at=` finding contract itself uses), and "Nothing
+    /// should be reworked here; **`Store.cs:40`** writes first." (bold-and-backtick) all read as a
+    /// semicolon-joined restatement and were discarded as a denial. The other direction had the
+    /// opposite problem: any backtick-quoted token disqualified the semicolon, whether or not it was
+    /// actually a location, so "I found nothing wrong; `Dispose` runs on every path." — a bare
+    /// symbol with no extension or line number, naming nothing concrete — read as a real second
+    /// clause and leaked the denial as a stated defect. Both lookaheads now require the same
+    /// location shape <see cref="LocationPattern"/> recognizes (allowing an optional leading "in "
+    /// and up to three <c>`</c>/<c>*</c> decorators before it, since a real reviewer's location is
+    /// usually backticked or bolded rather than bare) immediately after the semicolon, rather than a
+    /// bare backtick: a match only disqualifies the semicolon when what follows it is actually a
+    /// file-shaped location, not merely quoted. This narrowing is not a closed classifier either —
+    /// an affirming elaboration that happens to name a real file, "Nothing wrong here;
+    /// `ReviewEngine.cs` orders the catch blocks intentionally.", now reads as a stated defect the
+    /// same way a genuine finding does, the same keyword-and-proximity limit this file's own doc
+    /// comments disclose elsewhere ("closing that gap needs reading comprehension a regex cannot
+    /// do"); trading that rarer false credit for closing the far more common false discard above is
+    /// the same precision/recall call the <see cref="LocationPattern"/> narrowing above made.
+    /// </para>
     /// </summary>
     [GeneratedRegex(
         @"\b(?:nothing|none)\b(?:\s+\w+){0,4}?\s+(?:is|are|was|were|stands?|remains?|exists?|"
         + @"qualif(?:y|ies)(?:\s+as)?|amounts?\s+to|counts?\s+as|worth\s+calling|"
-        + @"introduced|raised|survived)\b[^.!?]{0,40}"
+        + @"introduced|raised|survived)\b"
+        + @"(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,40}"
         + @"\b(?:wrong|broken|amiss|defects?|bugs?|issues?|problems?)\b"
-        + @"|\b(?:nothing|none)\b[^.!?]{0,30}?\b(?:wrong|broken|amiss)\b(?![^.!?]{0,20}\bbut\b)"
+        + @"|\b(?:nothing|none)\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,30}?"
+        + @"\b(?:wrong|broken|amiss)\b(?![^.!?]{0,20}(?:\bbut\b|\byet\b|\bhowever\b|"
+        + @";\s*(?:in\s+)?[`*]{0,3}[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(?::\d+)?))"
         + @"|\b(?:nothing|none)\b\s+of\s+the\s+(?:defects?|bugs?|issues?|problems?)\b"
-        + @"|\bno\b[^.!?]{0,10}\b(?:defects?|bugs?|issues?|problems?)\s+(?:stands?|remains?|exists?|found)\b",
+        + @"|\bno\b[^.!?]{0,10}\b(?:defects?|bugs?|issues?|problems?)\s+(?:stands?|remains?|exists?|found)\b"
+        + @"|\bno\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,30}?"
+        + @"\b(?:is|are)\b(?:(?!;|\band\b(?!\s+(?:i\s+found\s+|it\s+)?(?:no|not|nothing|none|\w*n't)\b)|,?\s*\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b)))[^.!?]){0,10}?"
+        + @"\b(?:violat(?:es?|ed)|unmet)\b"
+        + @"|\b(?:does|do|did)\s+not\b(?:(?!,|;|\bso\b(?!\s+(?:far\b|to\s+speak\b|it\s+seems\b))|\b(?:and|which|but)\b)[^.!?]){0,30}?\bdeparts?\b"
+        + @"|\b(?:nothing|none)\b\s+should\b(?![^.!?]{0,40}(?:\bbut\b|\byet\b|\bhowever\b|"
+        + @";\s*(?:in\s+)?[`*]{0,3}[\w/\\-]*[A-Za-z0-9_-]\.[a-z]{2,10}(?::\d+)?))",
         RegexOptions.IgnoreCase)]
     private static partial Regex HeadingDenialPattern();
 
@@ -682,6 +901,38 @@ public static partial class ReviewVerdictValidation
     /// <summary>
     /// The forward walk <see cref="NamesFindingAcrossParagraphs"/>'s heading branch runs past a
     /// lead-in, looking for the paragraph that actually states the defect it named.
+    /// <para>
+    /// Credits on <see cref="StatesDefectOutsideDenial"/> rather than a bare
+    /// <c>DefectLanguagePattern().IsMatch(candidate)</c>, and checks it before the denial check
+    /// stops the walk, not after (PR #99 post-merge triage, task 29025f60, found sweeping this
+    /// same-shaped defect's sibling sites): the same whole-span veto <see cref="NamesFindingInProse"/>'s
+    /// sentence-scoped check used to make — discarding an entire span the instant
+    /// <see cref="HeadingDenialPattern"/> matched anywhere in it — applied here at paragraph scope
+    /// too, so a candidate paragraph stating a real defect in one clause and denying a second,
+    /// unrelated one in another ("The limiter never resets after a failed login; nothing else about
+    /// it is wrong.") had its own denial phrase stop the walk before the real defect earlier in the
+    /// same paragraph was ever credited. A paragraph that denies and states nothing else still
+    /// stops the walk exactly as before, since <see cref="StatesDefectOutsideDenial"/> returns
+    /// false for it and the denial check below still fires.
+    /// </para>
+    /// <para>
+    /// <see cref="StructuralMarkerPattern"/> is checked after the denial check, not folded into the
+    /// same <c>||</c> as <see cref="StatesDefectOutsideDenial"/> above it (independent pre-PR
+    /// review, adversarial finding, cycle 1, task 29025f60): a candidate that only denies, but
+    /// happens to carry the structured contract's own `Scenario:` label anyway ("Scenario: nothing
+    /// is wrong; the loop is correct.") used to credit a hollow verdict the instant the label
+    /// matched, before the denial check on the next line ever ran — the identical whole-span-veto
+    /// class of bug the cycle-4 fix above closed for <see cref="StatesDefectOutsideDenial"/> itself,
+    /// reopened here for the structural marker by folding the two into the same disjunction. (A
+    /// `Defect:` label rather than `Scenario:` never actually reaches this gap, because the bare
+    /// word "defect" is itself in <see cref="DefectLanguagePattern"/>'s own vocabulary and sits
+    /// before any denial phrase that follows it, so <see cref="StatesDefectOutsideDenial"/> already
+    /// credits it on the line above regardless of this ordering — "Scenario:" carries no such word
+    /// of its own, which is what let this gap through.) The marker still credits a candidate that
+    /// carries no real defect language of its own but is not a denial either — the label alone is
+    /// still a signal worth trusting there — it just no longer overrides a denial this same
+    /// candidate already stated.
+    /// </para>
     /// </summary>
     private static bool StatesDefectInLaterParagraph(string[] paragraphs, int leadInIndex)
     {
@@ -698,12 +949,17 @@ public static partial class ReviewVerdictValidation
                 return false;
             }
 
+            if (StatesDefectOutsideDenial(candidate))
+            {
+                return true;
+            }
+
             if (HeadingDenialPattern().IsMatch(candidate))
             {
                 return false;
             }
 
-            if (StructuralMarkerPattern().IsMatch(candidate) || DefectLanguagePattern().IsMatch(candidate))
+            if (StructuralMarkerPattern().IsMatch(candidate))
             {
                 return true;
             }
@@ -1063,6 +1319,18 @@ public static partial class ReviewVerdictValidation
     /// sentence with the location — the same shape <see cref="HeadingDenialPattern"/> already
     /// screens for the heading branch and the backward-pointer branch just below.
     /// </para>
+    /// <para>
+    /// Both branches below veto on <see cref="StatesDefectOutsideDenial"/> rather than a bare
+    /// <c>!HeadingDenialPattern().IsMatch(...)</c> (PR #99 post-merge triage, task 29025f60): the
+    /// old whole-sentence veto discarded the entire sentence the instant
+    /// <see cref="HeadingDenialPattern"/> matched anywhere in it, even when the same sentence had
+    /// already stated a real, located defect before the denial clause — "`Auth.cs:42` never resets
+    /// the limiter; nothing else is wrong." names the limiter defect in its first clause and only
+    /// denies a second, unrelated one in its last few words, but the old check read the trailing
+    /// denial and threw the whole sentence away, defect included. Scoping the veto to the denial's
+    /// own matched span, rather than the whole sentence, lets a defect stated outside that span
+    /// still be credited.
+    /// </para>
     /// </summary>
     private static bool NamesFindingInProse(string paragraph)
     {
@@ -1075,9 +1343,7 @@ public static partial class ReviewVerdictValidation
                 continue;
             }
 
-            if ((DefectLanguagePattern().IsMatch(sentences[index])
-                    && !HeadingDenialPattern().IsMatch(sentences[index]))
-                || StatesDefectWithinLookahead(sentences, index))
+            if (StatesDefectOutsideDenial(sentences[index]) || StatesDefectWithinLookahead(sentences, index))
             {
                 return true;
             }
@@ -1085,8 +1351,43 @@ public static partial class ReviewVerdictValidation
             string? previous = index > 0 ? sentences[index - 1] : null;
             if (previous is not null
                 && BackwardPointerPattern().IsMatch(sentences[index])
-                && DefectLanguagePattern().IsMatch(previous)
-                && !HeadingDenialPattern().IsMatch(previous))
+                && StatesDefectOutsideDenial(previous))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="text"/> states a defect somewhere <see cref="HeadingDenialPattern"/>'s
+    /// own match does not cover, rather than only inside it (PR #99 post-merge triage, task
+    /// 29025f60): a bare <c>DefectLanguagePattern().IsMatch(text) &amp;&amp;
+    /// !HeadingDenialPattern().IsMatch(text)</c> vetoes the whole span — a sentence for
+    /// <see cref="NamesFindingInProse"/>'s two callers, a whole paragraph for
+    /// <see cref="StatesDefectInLaterParagraph"/>'s — the moment any denial idiom matches anywhere
+    /// in it, which is right for a span that denies and nothing else, but wrong for one that states
+    /// a real defect in one clause and denies a second, unrelated one in another — the denial match
+    /// covers only its own words, so defect language sitting outside that span (before it or after
+    /// it) still names something. This is still a keyword-and-proximity check, not a semantic one:
+    /// coverage is decided by the defect match's own start index falling inside a denial match's
+    /// span, not by any true overlap test, so a defect match that starts before a denial match and
+    /// only extends into it would not be caught by this check (independent pre-PR review,
+    /// adversarial finding, task 29025f60, correcting this comment's own prior overstatement of
+    /// what is implemented). No input reaches that gap today: every <see cref="HeadingDenialPattern"/>
+    /// alternative anchors at its own negator word, and every <see cref="DefectLanguagePattern"/>
+    /// match is word-bounded, so a defect match can never start before the denial match it would
+    /// need to overlap — but a future vocabulary addition to either pattern could change that.
+    /// </summary>
+    private static bool StatesDefectOutsideDenial(string text)
+    {
+        List<Match> denialMatches = [.. HeadingDenialPattern().Matches(text).Cast<Match>()];
+        foreach (Match defect in DefectLanguagePattern().Matches(text))
+        {
+            bool coveredByDenial = denialMatches.Any(
+                denial => defect.Index >= denial.Index && defect.Index < denial.Index + denial.Length);
+            if (!coveredByDenial)
             {
                 return true;
             }
@@ -1121,6 +1422,15 @@ public static partial class ReviewVerdictValidation
     /// sentence that uses defect vocabulary about something other than the located subject can
     /// still supply a false credit, the same class of gap the rest of this file's vocabulary
     /// already accepts.
+    /// <para>
+    /// Credits on <see cref="StatesDefectOutsideDenial"/>, checked before the denial check stops
+    /// the walk rather than after (PR #99 post-merge triage, task 29025f60, found sweeping this
+    /// same-shaped defect's sibling sites): a lookahead sentence that states a real defect in one
+    /// clause and denies a second, unrelated one in another used to have its own trailing denial
+    /// stop the walk before the real defect earlier in that same sentence was ever credited, the
+    /// identical whole-span veto <see cref="NamesFindingInProse"/>'s same-sentence check and
+    /// <see cref="StatesDefectInLaterParagraph"/>'s forward walk both made.
+    /// </para>
     /// </summary>
     private static bool StatesDefectWithinLookahead(string[] sentences, int locationIndex)
     {
@@ -1134,14 +1444,14 @@ public static partial class ReviewVerdictValidation
                 return false;
             }
 
+            if (StatesDefectOutsideDenial(candidate))
+            {
+                return true;
+            }
+
             if (HeadingDenialPattern().IsMatch(candidate))
             {
                 return false;
-            }
-
-            if (DefectLanguagePattern().IsMatch(candidate))
-            {
-                return true;
             }
         }
 
