@@ -68,11 +68,19 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // merge observed) is excluded the identical way: raw TaskState.Done alone does not say
         // so, since it is recorded the moment the pull request opens and never changes at the
         // later merge, so gating on it alone would claim a future merge for a pull request that
-        // has already merged (independent pre-PR review, cycle 2, both lenses). A row that could
-        // not be composed carries no closeout answer to gate on, so it falls back to the raw
-        // state's own Draft check rather than guessing.
+        // has already merged (independent pre-PR review, cycle 2, both lenses). An Abandoned task
+        // is excluded too: TaskAggregate.Apply(TaskAbandoned) leaves the flag untouched as well,
+        // but TaskDecider.SetPreApproved itself refuses to flip it on an abandoned task ("there is
+        // no future pull request left for pre-approval to govern"), so a stale true surviving
+        // abandonment must not go on claiming a merge the platform will never attempt (independent
+        // pre-PR review, cycle 1, adversarial lens). A row that could not be composed carries no
+        // closeout answer to gate on, so it falls back to the raw state's own Draft/Abandoned
+        // checks rather than guessing.
         bool trueCloseout = row is not null && row.State == LifecycleState.Done;
-        if (details.PreApproved && details.State != TaskState.Draft && !trueCloseout)
+        if (details.PreApproved
+            && details.State != TaskState.Draft
+            && details.State != TaskState.Abandoned
+            && !trueCloseout)
         {
             header.AddRow("Pre-approved",
                 "[green]yes[/] [dim]— the daemon merges this task's pull request on its own once GitHub's own "

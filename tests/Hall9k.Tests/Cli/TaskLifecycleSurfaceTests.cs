@@ -431,6 +431,25 @@ public sealed class TaskLifecycleSurfaceTests
     }
 
     /// <summary>
+    /// TaskAggregate.Apply(TaskAbandoned) leaves the pre-approval flag on the stream untouched too,
+    /// but TaskDecider.SetPreApproved itself refuses to flip it on an abandoned task ("there is no
+    /// future pull request left for pre-approval to govern") — so an abandoned row must not go on
+    /// claiming a merge the platform will never attempt (independent pre-PR review, cycle 1, both
+    /// lenses).
+    /// </summary>
+    [Fact]
+    public void An_abandoned_task_no_longer_states_a_stale_pre_approval()
+    {
+        TaskListItem task = StatusFixtures.Task(TaskState.Abandoned, preApproved: true);
+
+        TaskStatusRow row = StatusFixtures.Compose(task);
+
+        row.State.Should().Be(LifecycleState.Archived);
+        row.Facts.Should().BeEmpty(
+            "the platform will never merge an abandoned task's pull request, so it must not claim it will");
+    }
+
+    /// <summary>
     /// The blocker lists on h9k task show and h9k task assign name a dependency in the same
     /// vocabulary as its own row. Origin incident (pre-PR review, 2026-08-22): they interpolated
     /// the persisted state, so a blocker whose pull request was open printed "(Done)" beside the
