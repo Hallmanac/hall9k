@@ -259,9 +259,15 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // afterward (mirrors LogsCommand's identical preference; independent pre-PR review, cycle
         // 1, on h9k task delegate). Without this, a claim built entirely through delegation would
         // deliver with no recovered handoff at all, even though the last contractor wrote one.
+        // Falls back to headlessResult.Handoff, never discards it outright, when the delegation's
+        // own file carries no handoff of its own (the contractor was killed, or ended without one)
+        // — a run-level handoff a start-it-mine claim's own agent wrote before ever being
+        // delegated is still worth recovering rather than silently dropped for a later, emptier
+        // one (adversarial review, cycle 1, TaskDeliverCommand.cs:262).
         string? recoveredHandoff = run.PhaseDelegations is { Count: > 0 } delegations
             ? ReadHeadlessResultFromStreamFile(
                 RunPaths.SessionStreamFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory), delegations[^1].SessionFileKey)).Handoff
+              ?? headlessResult.Handoff
             : headlessResult.Handoff;
         string handoff = settings.Handoff ?? PromptForHandoff(recoveredHandoff);
         if (handoff.IsBlank() && settings.Handoff is null && !AnsiConsole.Profile.Capabilities.Interactive)
