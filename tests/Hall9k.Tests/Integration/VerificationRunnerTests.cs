@@ -842,6 +842,81 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
     /// <summary>
     /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
+    /// A recovery session that reverts the originally-stranded file instead of committing it
+    /// leaves `git status` clean — the shape the conformance finding described (independent
+    /// pre-PR review, cycle 1): discarding finished work was a fully valid way to pass a re-check
+    /// that only asked whether the tree looked clean. The re-check now also compares each
+    /// originally-stranded file's blob against what it held before the recovery ran, so a revert
+    /// is caught even though `git status` itself reports nothing left.
+    /// </summary>
+    [Fact]
+    public async Task Automatic_recovery_that_discards_the_stranded_file_still_fails_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+        DiscardingRecoveryExecutor recovery = new(_worktree, "half-done.cs");
+
+        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeFalse("the recovery session discarded the stranded work instead of committing it");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("half-done.cs", "the failure names the file that was discarded");
+        run.FailureReason.Should().Contain("reverted or deleted rather than committed");
+        run.FailureReason.Should().Contain("h9k task retry");
+        run.UncommittedWorkRecovery.Should().NotBeNull();
+        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeFalse(
+            "the tree looked clean, but the file's committed content never matched what it held before recovery");
+        run.UncommittedWorkRecovery!.DiscardedFiles.Should().Contain("half-done.cs");
+        run.FailedGates.Should().BeEmpty("no gate ever ran");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryCompleted>().Should().ContainSingle()
+            .Which.DiscardedFiles.Should().Contain("half-done.cs");
+    }
+
+    /// <summary>
+    /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
+    /// A recovery session that could not even be spawned still gets a real
+    /// <see cref="RunUncommittedWorkRecoveryCompleted"/> on the stream (independent pre-PR review,
+    /// cycle 1, conformance finding): the prior code returned straight from the spawn-failure
+    /// catch without ever recording a completion, leaving `h9k task show` reading "outcome not
+    /// yet recorded" for an outcome the daemon already knew for certain — nothing ever touched
+    /// the worktree, so it is exactly as dirty as it started.
+    /// </summary>
+    [Fact]
+    public async Task A_recovery_session_that_could_not_be_spawned_still_records_a_completion()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+
+        bool passed = await NewRunner(store, new SpawnFailureExecutor())
+            .VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeFalse();
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.FailureReason.Should().Contain("could not even be started");
+        run.UncommittedWorkRecovery.Should().NotBeNull();
+        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeFalse(
+            "nothing ever touched the worktree, so the re-check still finds it exactly as dirty as it started");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryCompleted>().Should().ContainSingle(
+            "a spawn failure is a known outcome, not an unrecorded one");
+    }
+
+    /// <summary>
+    /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
     /// A run that already carries an <see cref="RunUncommittedWorkRecoveryAttempted"/> record —
     /// whether this method's own earlier call spent it, or (as seeded directly here) a prior
     /// daemon lifetime already did — never spawns a second recovery session, however capable the
@@ -1382,6 +1457,18 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// reporting success — so the caller's own post-recovery re-check finds a clean tree and
     /// proceeds to the gates.
     /// </summary>
+    /// <summary>
+    /// A recovery session that never even starts (a bad <c>AgentModel</c>, `claude` missing from
+    /// PATH): <c>IExecutor.SpawnAsync</c> throws before a <see cref="SpawnedAgent"/> ever exists.
+    /// The worktree is never touched, so the completion event this now always records should
+    /// describe exactly the state <see cref="InitGitWorktreeAsync"/> left it in.
+    /// </summary>
+    private sealed class SpawnFailureExecutor : IExecutor
+    {
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("scripted: the recovery session could not be spawned");
+    }
+
     private sealed class CommittingRecoveryExecutor(string worktree) : IExecutor
     {
         private int _nextProcessId = 82_000;
@@ -1403,6 +1490,35 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             await File.WriteAllTextAsync(
                 streamFile,
                 """{"type":"result","subtype":"success","is_error":false,"result":"committed"}""" + "\n",
+                cancellationToken);
+            return new SpawnedAgent(_nextProcessId++, DateTimeOffset.UtcNow);
+        }
+    }
+
+    /// <summary>
+    /// The exact shape the conformance finding described (independent pre-PR review, cycle 1):
+    /// a recovery session that judges the stranded, modified tracked file to be abandoned
+    /// debugging and reverts it with `git checkout --` instead of committing it — leaving `git
+    /// status` clean while the finished work itself is gone. Stands in for a session that ignores
+    /// the prompt's own "never revert a listed file" rule, so the mechanical re-check is what has
+    /// to catch it.
+    /// </summary>
+    private sealed class DiscardingRecoveryExecutor(string worktree, string discardedFile) : IExecutor
+    {
+        private int _nextProcessId = 84_000;
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            await RunShellAsync(worktree, $"git checkout -- {discardedFile}", cancellationToken);
+
+            string runDirectory = RunPaths.ResolveCurrentDirectory(request.RunDirectory);
+            Directory.CreateDirectory(runDirectory);
+            string streamFile = request.SessionArtifactName is { } artifact
+                ? RunPaths.SessionStreamFile(runDirectory, artifact)
+                : RunPaths.StreamFile(runDirectory);
+            await File.WriteAllTextAsync(
+                streamFile,
+                """{"type":"result","subtype":"success","is_error":false,"result":"cleaned up"}""" + "\n",
                 cancellationToken);
             return new SpawnedAgent(_nextProcessId++, DateTimeOffset.UtcNow);
         }

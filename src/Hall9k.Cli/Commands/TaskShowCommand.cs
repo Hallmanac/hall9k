@@ -606,6 +606,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine(
             $"\n[bold]Uncommitted-work recovery[/]  attempted {recovery.AttemptedAt.ToLocalTime():g} "
             + $"({recovery.StrandedFiles.Count} file(s)) {outcome}");
+
+        if (recovery.DiscardedFiles.Count > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"  [red]discarded rather than committed:[/] {string.Join(", ", recovery.DiscardedFiles).EscapeMarkup()}");
+        }
     }
 
     private static string SessionErrorRetryLabel(SessionErrorRetryRecord retry)
