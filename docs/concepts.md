@@ -39,7 +39,8 @@ never correctness.
 
 Above all of it sits the **orchestrator window**: an interactive Claude Code session acting as
 the conversational surface over `h9k`. It is stateless and disposable, because every fact lives
-in Postgres. [AGENTS.md](../AGENTS.md) documents that role in full, and it is the role an
+in Postgres. [ORCHESTRATOR-WINDOW.md](../ORCHESTRATOR-WINDOW.md) documents that role in full — a
+dispatched headless session never loads it, only an interactive one, which is the role an
 interactive session in this repository is in.
 
 Architecture in depth: [PLAN.md §6](../PLAN.md).

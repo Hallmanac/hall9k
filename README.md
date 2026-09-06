@@ -263,9 +263,10 @@ autostarted daemon missing one starts fine and then fails every run.
 Install more command-line tools than you strictly need, and keep them on `PATH`. **CLIs are how
 an agent reaches a capability on demand**: they cost nothing while idle, they need no
 configuration to be discoverable, and every platform session to date has worked entirely through
-them rather than through an MCP server. That is also the direction of travel, since dispatched
-sessions are moving to a slim profile where MCP servers are declared per task rather than
-inherited wholesale ([`backlog/29-slim-agent-profile.md`](backlog/29-slim-agent-profile.md)).
+them rather than through an MCP server. Every dispatched session now spawns with
+`--strict-mcp-config`, connecting to none of the owner's MCP servers at all; a finer-grained
+per-task declaration is still future work
+([`backlog/29-slim-agent-profile.md`](backlog/29-slim-agent-profile.md)).
 
 Beyond `gh`, Docker, `git`, and the Claude Code CLI already covered above, stock whatever your own
 projects' workflows lean on. The rule of thumb: if you would reach for a tool at the terminal to
@@ -431,9 +432,13 @@ Below that sit the documents the new docs point into rather than replace:
   "log #66", that is where to look.
 - **[TASK-MODEL.md](TASK-MODEL.md)** is the domain reference: event streams, aggregates,
   projections, the state machines, and the type discipline.
-- **[AGENTS.md](AGENTS.md)** is the contributor and agent guide: coding standards, git rules, the
-  review rhythm, and the orchestrator-window role an interactive session takes on in this repo.
+- **[AGENTS.md](AGENTS.md)** is the contributor and agent guide: coding standards, git rules, and
+  the build/test/run commands, kept under 200 lines so a dispatched session's context stays cheap.
   `CLAUDE.md` defers to it so every agent runtime shares one source of truth.
+- **[ORCHESTRATOR-WINDOW.md](ORCHESTRATOR-WINDOW.md)** is the orchestrator-window role an
+  interactive session takes on in this repo — the review rhythm, the recovery levers, and the
+  needs-you relay. A headless dispatched session never loads it; `CLAUDE.md` points an interactive
+  one at it instead.
 - **[SLICE-1.md](SLICE-1.md)** is the current build breakdown and its acceptance criteria.
 - **[HALL9K-P2P-DESIGN.md](HALL9K-P2P-DESIGN.md)** is the peer-to-peer layer: identity,
   discovery, NAT traversal. Design only; nothing is built.
