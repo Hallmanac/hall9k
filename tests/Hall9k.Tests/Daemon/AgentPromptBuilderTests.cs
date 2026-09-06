@@ -2669,6 +2669,77 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// Task: agents on an interactive-mode task report outbound. A follow-up build session
+    /// (plain review-feedback follow-up, fix-checks, or rebase) dispatches under the same
+    /// build role a fresh headless dispatch does, so it teaches the identical milestone section
+    /// (independent pre-PR review, cycle 1, conformance lens — AGENTS.md and docs/scope.md both
+    /// state this as settled doctrine, and this closes the gap between the doctrine and the code).
+    /// </summary>
+    [Fact]
+    public void Follow_up_build_sessions_teach_outbound_milestones_when_interactive()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string followUpPrompt = AgentPromptBuilder.BuildFollowUp(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string fixChecksPrompt = AgentPromptBuilder.BuildFixChecks(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string rebasePrompt = AgentPromptBuilder.BuildRebase(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        foreach (string prompt in new[] { followUpPrompt, fixChecksPrompt, rebasePrompt })
+        {
+            prompt.Should().Contain("## Reporting to the human (interactive mode)");
+            prompt.Should().Contain("No registered human session is on record for this run right now",
+                "a follow-up starts a brand-new run, so nothing could have registered against it yet");
+        }
+    }
+
+    /// <summary>
+    /// A rebase session resuming a human-resolved dispute (<see cref="ReviewEngine"/>'s own
+    /// Fix-role dispatch, <c>humanResolution</c> non-blank) is not the Build-role follow-up
+    /// <see cref="RunLauncher"/> dispatches — it is applying a human's decision on findings, the
+    /// same shape of work <c>BuildReviewFix</c>'s own ordinary dispatch reports under "fix", so it
+    /// teaches the fix-role milestone vocabulary here directly rather than staying silent.
+    /// </summary>
+    [Fact]
+    public void Rebase_prompt_resuming_a_disputed_conflict_teaches_fix_role_milestones()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = AgentPromptBuilder.BuildRebase(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append,
+            humanResolution: "Keep the daemon side's retry policy.",
+            interactiveMilestoneAddress: "agent-01a06259-review");
+
+        prompt.Should().Contain("## Reporting to the human (interactive mode)");
+        prompt.Should().Contain("agent-01a06259-review");
+        prompt.Should().NotContain("**claimed**",
+            "this is a Fix-role dispatch (OutboundMilestone.Fix), which has nothing worth reporting until it is done, unlike the Build role");
+    }
+
+    /// <summary>
+    /// The same resumed-dispute dispatch with no registered session on record yet (the ordinary
+    /// case: no <c>h9k task register-session</c> call has landed against this run) states that
+    /// plainly rather than silently omitting the section.
+    /// </summary>
+    [Fact]
+    public void Rebase_prompt_resuming_a_disputed_conflict_states_no_registered_session_when_none_recorded()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = AgentPromptBuilder.BuildRebase(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append,
+            humanResolution: "Keep the daemon side's retry policy.");
+
+        prompt.Should().Contain("## Reporting to the human (interactive mode)");
+        prompt.Should().Contain("No registered human session is on record for this run right now");
+    }
+
+    /// <summary>
     /// The live-attended build (an operator's own `h9k task work`) is the human's own session —
     /// there is nobody else for it to report to, so the outbound-milestone section is specific to
     /// a headless dispatch (<see cref="WorkPromptBuilder.Build"/>'s own <c>isInteractive</c> flag)
