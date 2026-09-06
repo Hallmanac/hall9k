@@ -989,18 +989,20 @@ public static class WorkPromptBuilder
                 prompt.AppendLine("  is the only text the platform ever reads back for a verdict, resolution, or");
                 prompt.AppendLine("  handoff. Put the same report in your own final message too — closing with a");
                 prompt.AppendLine("  line like \"report sent\" and nothing else discards it.");
+                string sendCaveat = address.IsNotBlank()
+                    ? ", whether or not the send below actually lands"
+                    : " — see below for why there is no send to make on this run";
                 if (parksAtBoundaryAfterward)
                 {
                     prompt.AppendLine("  This task's interactive-mode phase-boundary park holds from there until");
-                    prompt.AppendLine("  the human's `h9k review proceed` or `h9k review resolve`, whether or not");
-                    prompt.AppendLine("  the send below actually lands.");
+                    prompt.AppendLine($"  the human's `h9k review proceed` or `h9k review resolve`{sendCaveat}.");
                 }
                 else
                 {
                     prompt.AppendLine("  Nothing supervises this run once you end: verification, delivery, and");
                     prompt.AppendLine("  the review loop's own first boundary are a human's to trigger by hand");
                     prompt.AppendLine("  with `h9k task deliver`, not something that starts on its own the moment");
-                    prompt.AppendLine("  you finish, whether or not the send below actually lands.");
+                    prompt.AppendLine($"  you finish{sendCaveat}.");
                 }
             }
         }
