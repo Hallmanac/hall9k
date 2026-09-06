@@ -121,9 +121,29 @@ internal static class InteractiveSessionLiveness
         // reads as "still attached" exactly like a second terminal would, but there is no second
         // terminal to exit (conformance review, cycle 1).
         bool selfInvocation = IsSelfInvocation(run);
+
+        // AgentRole.Interactive is recorded for three genuinely different shapes of process — an
+        // operator's own attached terminal (h9k task work, SessionRoleName.InteractiveClaim), and
+        // two headless, detached ones dispatched under the identical Guid.Empty sentinel
+        // (h9k task start, and h9k task delegate's own contractor — both SessionRoleName.Build) —
+        // so "exit it first (Ctrl+D or /exit)" is only ever true of the first. Matched positively
+        // on the one suffix both headless dispatchers actually use, rather than negatively on "not
+        // the interactive-claim suffix": a name this narrow scope cannot anticipate (a session
+        // recorded before the Name field existed, or one from a caller neither of the two current
+        // headless dispatchers) stays on the historical attached-terminal wording instead of a
+        // guess (adversarial review, cycle 1, TaskDelegateCommand.cs:166 — the contractor's own
+        // refusal message named a remedy that does not exist for a detached background process;
+        // h9k task start's identical headless session shares this exact same message today for
+        // the identical reason).
+        bool isHeadlessDispatch = session.Name.EndsWith($"-{SessionRoleName.Build}", StringComparison.Ordinal);
         throw new DomainConflictException(selfInvocation
             ? $"Task {taskId}'s interactive session (pid {session.ProcessId}) is this very session — you cannot "
               + $"{action} from inside it. Exit it first (Ctrl+D or /exit), then {action} from your own terminal."
+            : isHeadlessDispatch
+            ? $"Task {taskId}'s session (pid {session.ProcessId}, {session.Name}) is a headless, detached "
+              + $"dispatch — there is no terminal to exit. Wait for it to finish, reach it on the session mesh "
+              + $"(claude agents --json, or SendMessage) to check on it, or stop the process yourself, before "
+              + $"you {action} from here."
             : $"Task {taskId}'s interactive session (pid {session.ProcessId}) is still attached in another "
               + $"terminal — exit it first (Ctrl+D or /exit) before you {action} from here.");
     }
