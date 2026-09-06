@@ -312,8 +312,13 @@ public sealed partial class VerificationRunner(
     /// report it today. <see cref="StrandedFiles"/> is always the raw list — even when
     /// <see cref="FailureReason"/> is the no-commit variant that already folds them into its own
     /// text — so a caller deciding whether to recover never has to re-derive it from prose.
+    /// <see cref="Observed"/> is false only when `git status` itself could not be read — a null
+    /// <see cref="FailureReason"/> on an unobserved tree means "unknown", not "clean", so a caller
+    /// recording this check's own verdict never mistakes the one for the other (independent pre-PR
+    /// review, cycle 1, conformance finding).
     /// </summary>
-    private readonly record struct StrandedWorkCheck(string? FailureReason, IReadOnlyList<string> StrandedFiles);
+    private readonly record struct StrandedWorkCheck(
+        string? FailureReason, IReadOnlyList<string> StrandedFiles, bool Observed = true);
 
     /// <summary>
     /// Fail fast on an agent that left work behind uncommitted, before any gate runs against a
@@ -445,7 +450,7 @@ public sealed partial class VerificationRunner(
             return new StrandedWorkCheck(reason, strandedFiles);
         }
 
-        return new StrandedWorkCheck(null, strandedFiles ?? []);
+        return new StrandedWorkCheck(null, strandedFiles ?? [], Observed: strandedFiles is not null);
     }
 
     /// <summary>
@@ -485,6 +490,16 @@ public sealed partial class VerificationRunner(
     /// cycle 1, adversarial finding: an untracked orphan there could still be committing when a
     /// later <c>h9k task retry</c> resumes the same worktree).
     /// </para>
+    /// <para>
+    /// "Clean" is not enough on its own: a session that reverts or deletes an originally-stranded
+    /// file also leaves `git status` clean, so <see cref="RecordRecoveryOutcomeAsync"/>'s own
+    /// re-check additionally confirms every one of <paramref name="strandedFiles"/> actually
+    /// reached a commit, byte for byte, rather than merely stopping to appear as dirty
+    /// (independent pre-PR review, cycle 1, conformance finding). Every exit path — a spawn
+    /// failure, an abandoned wait, or the ordinary success path — funnels through that same
+    /// method, so the run's own recorded outcome is never left unrecorded just because the
+    /// session never got to run at all.
+    /// </para>
     /// </summary>
     private async Task<string?> RecoverUncommittedWorkOrExplainAsync(
         RunDetails run, TaskDetails task, ProjectDetails project, IReadOnlyList<string> strandedFiles,
@@ -504,6 +519,16 @@ public sealed partial class VerificationRunner(
                 run.Id, recoverySessionId, strandedFiles, originalReason, DateTimeOffset.UtcNow));
             await recordSession.SaveChangesAsync(cancellationToken);
         }
+
+        // Captured before the recovery session can touch anything, so a file that stops showing
+        // up in `git status` afterward can be told apart from a file that was actually committed:
+        // a `git checkout --` or a plain delete makes a stranded file vanish from status exactly
+        // the same way committing it does, and only comparing what actually reached HEAD against
+        // what the file held right here catches the difference (independent pre-PR review, cycle
+        // 1, conformance finding — the prior check asked only whether the tree looked clean,
+        // never whether the stranded work itself survived).
+        IReadOnlyDictionary<string, string?> beforeBlobHashes =
+            await HashStrandedFilesAsync(run.WorktreePath, strandedFiles, cancellationToken);
 
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         string streamFile = RunPaths.SessionStreamFile(runDirectory, SessionRoleName.CommitRecovery);
@@ -528,6 +553,8 @@ public sealed partial class VerificationRunner(
             {
                 logger.LogWarning(
                     exception, "Run {RunId}: the automatic uncommitted-work recovery session could not be spawned", run.Id);
+                await RecordRecoveryOutcomeAsync(
+                    run, task, project, strandedFiles, beforeBlobHashes, result: null, cancellationToken);
                 return $"{originalReason} An automatic commit-only recovery session could not even be started " +
                        $"({exception.Message}) — h9k task retry resumes this same worktree by hand.";
             }
@@ -587,6 +614,8 @@ public sealed partial class VerificationRunner(
 
             logger.LogWarning(exception,
                 "Run {RunId}: the automatic uncommitted-work recovery session failed before it could finish", run.Id);
+            await RecordRecoveryOutcomeAsync(
+                run, task, project, strandedFiles, beforeBlobHashes, result: null, cancellationToken);
             return $"{originalReason} An automatic commit-only recovery session failed before it could finish " +
                    $"({exception.Message}) — h9k task retry resumes this same worktree by hand.";
         }
@@ -596,31 +625,126 @@ public sealed partial class VerificationRunner(
             run.Id,
             result is null ? "no result" : result.IsError ? $"error: {result.Summary ?? "(no message)"}" : "ok");
 
-        // The objective ground truth, not the session's own self-report: even a session that
-        // errored out (hit its own turn cap right after committing everything, say) can have
-        // left the tree clean, and even one that reported success can still have left something
-        // behind. Re-running the identical detection this method's own caller already ran is
-        // what makes that an observation rather than a guess.
-        StrandedWorkCheck recheck = await DetectStrandedWorkAsync(run, task, project, cancellationToken);
-        bool recoveredCleanly = recheck.FailureReason is null;
+        RecoveryOutcome outcome = await RecordRecoveryOutcomeAsync(
+            run, task, project, strandedFiles, beforeBlobHashes, result, cancellationToken);
 
-        DateTimeOffset completedAt = DateTimeOffset.UtcNow;
-        await using (IDocumentSession completionSession = store.LightweightSession())
+        if (outcome.RecoveredCleanly != false)
         {
-            if (result is not null)
-            {
-                completionSession.Events.Append(run.Id, result.ToTokensRecorded(run.Id, completedAt, run.Model));
-            }
-
-            completionSession.Events.Append(
-                run.Id, new RunUncommittedWorkRecoveryCompleted(run.Id, recoveredCleanly, completedAt));
-            await completionSession.SaveChangesAsync(cancellationToken);
+            // True (an observed clean tree with nothing discarded) and null (the re-check itself
+            // was unobservable) both proceed to the gates — the same no-guess convention every
+            // other unobservable git read in this method already follows: an unread worktree is
+            // never treated as either clean or dirty, only as unknown.
+            return null;
         }
 
-        return recoveredCleanly
-            ? null
-            : $"{recheck.FailureReason} An automatic commit-only recovery session already ran once for this " +
-              "run and still did not leave the tree clean — h9k task retry resumes this same worktree by hand.";
+        if (outcome.DiscardedFiles.Count > 0)
+        {
+            return $"{originalReason} The recovery session left the tree looking clean, but " +
+                   $"{SummarizeFiles(outcome.DiscardedFiles)} no longer match(es) what was there before it ran " +
+                   "— reverted or deleted rather than committed. h9k task retry resumes this same worktree by hand.";
+        }
+
+        return $"{outcome.StillStrandedReason} An automatic commit-only recovery session already ran once for this " +
+               "run and still did not leave the tree clean — h9k task retry resumes this same worktree by hand.";
+    }
+
+    /// <summary>
+    /// The re-check and completion-event append shared by every exit
+    /// <see cref="RecoverUncommittedWorkOrExplainAsync"/> can take — not only its success path —
+    /// so a spawn failure or an abandoned wait leaves a real <see cref="RunUncommittedWorkRecoveryCompleted"/>
+    /// on the stream too, rather than leaving <c>h9k task show</c> reading "outcome not yet
+    /// recorded" for an outcome the daemon already knew for certain (independent pre-PR review,
+    /// cycle 1, conformance finding). The discarded-files comparison only runs when the re-check
+    /// itself found the tree fully clean and observable — a file still reported dirty, or a
+    /// worktree that could not be read at all, is already the honest story on its own.
+    /// </summary>
+    private async Task<RecoveryOutcome> RecordRecoveryOutcomeAsync(
+        RunDetails run, TaskDetails task, ProjectDetails project, IReadOnlyList<string> originalStrandedFiles,
+        IReadOnlyDictionary<string, string?> beforeBlobHashes, AgentResult? result, CancellationToken cancellationToken)
+    {
+        StrandedWorkCheck recheck = await DetectStrandedWorkAsync(run, task, project, cancellationToken);
+
+        IReadOnlyList<string> discardedFiles = recheck is { Observed: true, FailureReason: null }
+            ? await DetectDiscardedFilesAsync(run.WorktreePath, originalStrandedFiles, beforeBlobHashes, cancellationToken)
+            : [];
+
+        bool? recoveredCleanly = recheck.Observed ? recheck.FailureReason is null && discardedFiles.Count == 0 : null;
+
+        DateTimeOffset completedAt = DateTimeOffset.UtcNow;
+        await using IDocumentSession completionSession = store.LightweightSession();
+        if (result is not null)
+        {
+            completionSession.Events.Append(run.Id, result.ToTokensRecorded(run.Id, completedAt, run.Model));
+        }
+
+        completionSession.Events.Append(
+            run.Id, new RunUncommittedWorkRecoveryCompleted(run.Id, recoveredCleanly, discardedFiles, completedAt));
+        await completionSession.SaveChangesAsync(cancellationToken);
+
+        return new RecoveryOutcome(recoveredCleanly, recheck.FailureReason, discardedFiles);
+    }
+
+    private readonly record struct RecoveryOutcome(
+        bool? RecoveredCleanly, string? StillStrandedReason, IReadOnlyList<string> DiscardedFiles);
+
+    /// <summary>
+    /// Every originally-stranded file's blob hash exactly as it sits in the worktree before the
+    /// recovery session can touch it (`git hash-object`, which hashes a file's bytes the way git
+    /// would store them without needing the file to be tracked or staged first). The ground truth
+    /// <see cref="DetectDiscardedFilesAsync"/> later weighs the post-recovery commit against. Null
+    /// for a file this cannot hash — the same never-guess convention as every other git read in
+    /// this file: a file this method cannot account for is never later flagged as discarded, since
+    /// there would be nothing to compare it against.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<string, string?>> HashStrandedFilesAsync(
+        string worktreePath, IReadOnlyList<string> strandedFiles, CancellationToken cancellationToken)
+    {
+        Dictionary<string, string?> hashes = [];
+        foreach (string file in strandedFiles)
+        {
+            (int exitCode, string output) =
+                await RunGitAsync(worktreePath, ["hash-object", "--", file], cancellationToken);
+            hashes[file] = exitCode == 0 ? output.Trim() : null;
+        }
+
+        return hashes;
+    }
+
+    /// <summary>
+    /// Which originally-stranded files the recovery session discarded rather than committed
+    /// (independent pre-PR review, cycle 1, conformance finding): a file the post-recovery
+    /// <see cref="DetectStrandedWorkAsync"/> no longer reports as dirty has either been committed
+    /// as-is, or been made to vanish from `git status` some other way — reverted to whatever it
+    /// held at the prior commit, or deleted outright — and only comparing the blob actually
+    /// reachable at HEAD against the blob this file held before the recovery ran (<paramref
+    /// name="beforeBlobHashes"/>) tells the two apart. Only called once the tree is otherwise
+    /// fully clean, so every file this walks has already stopped being reported as stranded.
+    /// A file this cannot hash on either side of the comparison is never flagged: an unobservable
+    /// comparison is not evidence of a discard.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> DetectDiscardedFilesAsync(
+        string worktreePath, IReadOnlyList<string> originalStrandedFiles,
+        IReadOnlyDictionary<string, string?> beforeBlobHashes, CancellationToken cancellationToken)
+    {
+        List<string> discarded = [];
+        foreach (string file in originalStrandedFiles)
+        {
+            if (!beforeBlobHashes.TryGetValue(file, out string? before) || before is null)
+            {
+                continue;
+            }
+
+            (int exitCode, string output) =
+                await RunGitAsync(worktreePath, ["rev-parse", "-q", "--verify", $"HEAD:{file}"], cancellationToken);
+            string? committed = exitCode == 0 ? output.Trim() : null;
+
+            if (committed != before)
+            {
+                discarded.Add(file);
+            }
+        }
+
+        return discarded;
     }
 
     private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull)>

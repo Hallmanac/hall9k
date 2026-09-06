@@ -423,10 +423,16 @@ public sealed record SessionErrorRetryRecord(
 /// recorded on <see cref="RunDetails.UncommittedWorkRecovery"/>. <see cref="RecoveredCleanly"/> is
 /// null until <see cref="RunDetailsProjection.Apply(IEvent{RunUncommittedWorkRecoveryCompleted}, RunDetails)"/>
 /// records a fresh re-detection's own verdict — never guessed from the run's own later state, which is
-/// what a downstream gate failure unrelated to the recovery would otherwise be mistaken for.
+/// what a downstream gate failure unrelated to the recovery would otherwise be mistaken for — and stays
+/// null after that append too when the re-detection itself could not read the worktree (independent
+/// pre-PR review, cycle 1, conformance finding: an unobserved tree is not the same fact as an observed
+/// clean one). <see cref="DiscardedFiles"/> names every originally-stranded file the recovery session
+/// made vanish from `git status` without ever landing it in a commit — empty on a recovery that either
+/// has not completed yet or genuinely preserved everything.
 /// </summary>
 public sealed record UncommittedWorkRecoveryRecord(
-    IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt, bool? RecoveredCleanly = null);
+    IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt, bool? RecoveredCleanly,
+    IReadOnlyList<string> DiscardedFiles);
 
 public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
 {
@@ -909,14 +915,18 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<RunUncommittedWorkRecoveryAttempted> @event, RunDetails view)
     {
         view.UncommittedWorkRecovery = new UncommittedWorkRecoveryRecord(
-            @event.Data.StrandedFiles, @event.Data.Reason, @event.Data.AttemptedAt);
+            @event.Data.StrandedFiles, @event.Data.Reason, @event.Data.AttemptedAt, RecoveredCleanly: null, DiscardedFiles: []);
     }
 
     public void Apply(IEvent<RunUncommittedWorkRecoveryCompleted> @event, RunDetails view)
     {
         if (view.UncommittedWorkRecovery is { } recovery)
         {
-            view.UncommittedWorkRecovery = recovery with { RecoveredCleanly = @event.Data.RecoveredCleanly };
+            view.UncommittedWorkRecovery = recovery with
+            {
+                RecoveredCleanly = @event.Data.RecoveredCleanly,
+                DiscardedFiles = @event.Data.DiscardedFiles,
+            };
         }
     }
 

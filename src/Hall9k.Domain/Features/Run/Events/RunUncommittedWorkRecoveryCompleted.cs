@@ -11,8 +11,18 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// both lenses). Absent on <c>RunDetails.UncommittedWorkRecovery</c> until this appends — a
 /// daemon restart between the attempt and this completion leaves the outcome honestly unknown
 /// rather than guessed.
+/// <para>
+/// <see cref="RecoveredCleanly"/> is null, not a guessed <c>true</c>, when the re-detection
+/// itself could not read the worktree's `git status` — an unobserved tree is not the same fact as
+/// an observed clean one (independent pre-PR review, cycle 1, conformance finding).
+/// <see cref="DiscardedFiles"/> names every originally-stranded file that stopped showing up as
+/// dirty without ever actually landing in a commit — reverted, deleted, or silently rewritten
+/// instead of committed as-is — so a recovery that discarded finished work is recorded as exactly
+/// that rather than as a silent success (same finding).
+/// </para>
 /// </summary>
 public sealed record RunUncommittedWorkRecoveryCompleted(
     Guid Id,
-    bool RecoveredCleanly,
+    bool? RecoveredCleanly,
+    IReadOnlyList<string> DiscardedFiles,
     DateTimeOffset CompletedAt);
