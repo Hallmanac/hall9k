@@ -9,6 +9,7 @@ means, and how to get out of trouble.
 - [What lands on disk](#what-lands-on-disk)
 - [Configuration](#configuration)
 - [What "needs you" means](#what-needs-you-means)
+- [Taking the wheel](#taking-the-wheel)
 - [Working a task interactively](#working-a-task-interactively)
 - [A deliberate human kick-off](#a-deliberate-human-kick-off)
 - [The recovery levers](#the-recovery-levers)
@@ -632,6 +633,75 @@ exactly that.
 There is one more thing the pane can say, and it is not needs-you either: **waiting but handled**.
 A task whose blockers are all still alive, or a pull request the closeout monitor still owns the
 next move on, renders dim as its own level. It is there so you can consciously ignore it.
+
+## Taking the wheel
+
+Working a task interactively (below) is not a shortcut around the platform — it runs on a
+doctrine of its own, settled in one design session on 2026-09-02 (idea fcaded0b, Take the Wheel
+epic 9272e514) and worth knowing before the mechanics.
+
+**Hall9k records only what it performs or observes.** A lifecycle transition happening outside
+both — a human opening a plain Claude Code session in a worktree by hand, building, opening the
+pull request, and merging it, telling Hall9k only afterward — is explicitly unsupported today:
+that path is "at least not yet" rather than closed forever, so a future diligent-user mode is a
+door left open, not one bricked shut. `h9k task work` is not that bypass, even though a human's
+own hands do the build: the claim that starts it and the `deliver`/`handback`/`release` that ends
+it are both Hall9k acts, so the platform performs every transition even when a human types the
+code in between.
+
+**Two modes.** Hands on the code: the human builds, in their own interactive session. Hands on the
+judgment: agents build, review, and fix, and the human is only the arbiter at the boundaries.
+Which mode owns the build is a free choice, revisable at any boundary in either direction, but the
+choice only ever covers the build — review, fix, and closeout always run as headless agents,
+whichever mode built the code. Interactive mode itself is a property of the *task*, not of one
+claim, and it is `h9k task work` and a deliberate `h9k task start` (below) that turn it on, the
+moment either one claims the task — `start`'s own build is headless either way, but from that
+claim on the run still parks at every boundary below for a human's go. Once it turns on it stays
+on, across every later run, follow-up, retry, or reopen, until one of the two ordinary exit doors
+in the verb map below (`handback`, or a default `release`) turns it off. Both of those need an
+active interactive claim to act on, though, and a task can outlive one —
+a headless follow-up dispatched under a real node claim while the flag is still on, or the task
+already reached Done with its pull request open. `h9k task revise <id> --clear-interactive-mode`
+is the fallback that clears the flag directly in either case, with no active claim required.
+
+**The verb map:**
+
+| Verb | Command | Who's in charge afterward |
+|---|---|---|
+| **work** | `h9k task work <id>` | The human, on the build, and turns on the task's interactive-mode flag — see [Working a task interactively](#working-a-task-interactively) below. |
+| **dispatch-the-phase** | `h9k task delegate <id> --note "<text>"` | Still the human: this delegates one phase (today, the build) to a headless contractor without touching the claim, the assignment, or interactive mode — `h9k task work` resumes it once the contractor reports back (design ruling R6). |
+| **handback** | `h9k task handback <id> [--first \| --now]` | The machine: this always ends interactive mode. Three pickup speeds — the default (normal rotation by assignment age), `--first` (next free slot regardless of age), or `--now` (immediate, ceiling-exempt). |
+| **release** | `h9k task release <id> [--keep-interactive]` | The machine, same as `handback`, unless `--keep-interactive` is given — the one way to hand a task back headless while it still parks at every boundary. |
+
+**No resident agents.** An agent sends its report and ends normally rather than staying alive to
+wait on a human's answer; the human's reply resumes it on the session mesh's own mechanic (a
+message to a finished session wakes it from its transcript). A phase advances only on a recorded
+approval event — `h9k review proceed`, `h9k review resolve` — never on an agent process's own
+lifetime. This generalizes Decisions Log #5's ask-and-exit design (an agent calls `h9k ask` and
+exits; `h9k answer` resumes it) from a single question to a whole conversation, and it also avoids
+resident sessions accumulating — the 40-50GB memory morning is what that looks like.
+
+**Interaction rules by role.** Every dispatched role can be reached directly through the session
+mesh if a human chooses to — that is always allowed, never the default expectation. A build
+session is written for it: steering it mid-build is ordinary conversation. A review lens defaults
+to running untouched, but may be interacted with too — asking it "tell me what you're finding"
+changes how it reports, not what it judges. This doctrine states the cost of doing that rather than
+the platform refusing it: a human's presence shifts what a reviewer attends to (the observer
+effect), and that is a known, accepted trade for a human who chooses to make contact, not a reason
+to forbid contact. Messaging an already-completed session is the one universal hazard: it resumes
+that session from its own transcript, so a run the daemon already considers finished can wake up
+and act inside a worktree the daemon believes is done.
+
+**Every outside interaction is logged, regardless.** Whatever contact happens, Hall9k logs it
+unconditionally through `h9k task log-interaction`, even if the interacting party — the human
+steering the contact included — asks otherwise, and flags it `--human-directed` when a human's own
+call, not the agent's judgment, drove it — see Decisions Log #123 for the full mechanism. This is
+best-effort, not enforcement: there is nothing to verify an interaction's record against the way a
+Jira write is read back, but it keeps the record honest about who actually decided something.
+
+**The thesis.** Hall9k, not HAL 9000: the system that always opens the pod bay doors. The honest
+path is meant to be the easy path, and never the only one — advise rather than refuse, log rather
+than hide, park on a recorded human decision rather than trust a process to still be listening.
 
 ## Working a task interactively
 
