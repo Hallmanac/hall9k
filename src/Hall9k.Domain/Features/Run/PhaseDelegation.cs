@@ -1,3 +1,5 @@
+using Hall9k.Domain.Shared.ValueObjects;
+
 namespace Hall9k.Domain.Features.Run;
 
 /// <summary>
@@ -16,5 +18,12 @@ namespace Hall9k.Domain.Features.Run;
 /// <paramref name="SessionName"/> alone collides across a run delegated more than once
 /// (independent pre-PR review, cycle 1, both lenses).
 /// </param>
+/// <param name="Model">
+/// The contractor's own resolved build-role model, as <see cref="Events.RunPhaseDelegated.Model"/>
+/// recorded it — never this run's own <c>RunDetails.Model</c>, which is the interactive claim's
+/// human-interactive tier and says nothing about what this contractor ran on
+/// (independent pre-PR review, cycle 1, conformance lens).
+/// </param>
 public sealed record PhaseDelegation(
-    DateTimeOffset DelegatedAt, string Note, Guid DelegatedByOwnerId, string SessionName, string SessionFileKey);
+    DateTimeOffset DelegatedAt, string Note, Guid DelegatedByOwnerId, string SessionName, string SessionFileKey,
+    AgentModel Model);

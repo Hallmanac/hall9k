@@ -1866,7 +1866,7 @@ public sealed class RunAggregateTests
 
         Action act = () => run.Apply(new RunPhaseDelegated(
             id, "Drafted the migration; untested past the happy path.", Now, DomainId.New(), "abc12345-build",
-            "abc12345-build-11112222"));
+            "abc12345-build-11112222", AgentModel.Sonnet));
 
         act.Should().NotThrow();
         run.State.Should().Be(RunState.Dispatched, "delegating this run's own next session never advances its state");

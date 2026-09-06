@@ -195,7 +195,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // out there rather than losing track of it entirely.
             delegateSession.Events.Append(plan.RunId, expectedVersion: fence.Version + 1, new RunPhaseDelegated(
                 plan.RunId, settings.Note, DateTimeOffset.UtcNow, plan.OwnerId, plan.SessionName,
-                plan.SessionFileKey), new InteractiveSessionStarted(
+                plan.SessionFileKey, plan.Model), new InteractiveSessionStarted(
                 plan.RunId, plan.ClaudeSessionId, startedAt, processId, Environment.MachineName, plan.SessionName));
             try
             {

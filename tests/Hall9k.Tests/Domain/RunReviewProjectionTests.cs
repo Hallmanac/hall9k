@@ -492,10 +492,10 @@ public sealed class RunReviewProjectionTests
 
         projection.Apply(new FakeEvent<RunPhaseDelegated>(new RunPhaseDelegated(
             id, "Drafted the migration; untested past the happy path.", Now, DomainId.New(), "abc12345-build",
-            "abc12345-build-11112222")), view);
+            "abc12345-build-11112222", AgentModel.Sonnet)), view);
         projection.Apply(new FakeEvent<RunPhaseDelegated>(new RunPhaseDelegated(
             id, "Second phase: wire up the CLI command.", Now, DomainId.New(), "abc12345-build",
-            "abc12345-build-33334444")), view);
+            "abc12345-build-33334444", AgentModel.Sonnet)), view);
 
         view.PhaseDelegations.Should().HaveCount(2, "a claim can be delegated more than once across its lifetime");
         view.PhaseDelegations[0].Note.Should().Be("Drafted the migration; untested past the happy path.");
@@ -504,6 +504,8 @@ public sealed class RunReviewProjectionTests
             "the mesh-visible session name is documented as identical across every delegation on this run");
         view.PhaseDelegations[0].SessionFileKey.Should().NotBe(view.PhaseDelegations[1].SessionFileKey,
             "each delegation's own file key must be unique — two delegations sharing one would truncate the earlier contractor's transcript");
+        view.PhaseDelegations[0].Model.Should().Be(AgentModel.Sonnet,
+            "the contractor's own resolved build model must be carried forward, never the run's own interactive-claim model");
     }
 
     /// <summary>
