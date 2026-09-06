@@ -437,14 +437,22 @@ public sealed class ReviewEngine(
                     // a mismatch falls through to false before ever reaching its HEAD comparison),
                     // so this skips calling back into it and paying its store read a second time
                     // (Copilot review, PR #86 — the fingerprint-only trigger path re-queried the
-                    // same fingerprint it had just computed above). Deliberately still scoped to
-                    // needsFullGateBeforeSettling or a human-resolved park, exactly as before the
-                    // pre-final-pass rebase existed: the rebase's own effect on this decision is
-                    // PreFinalPassRebaseAwaitingGate below, an event-sourced fact rather than one
-                    // more live git HEAD comparison (see this case's own opening comment for why).
+                    // same fingerprint it had just computed above). PreFinalPassRebaseAwaitingGate
+                    // has to widen this ternary's own guard too, not just the outer if below
+                    // (independent pre-PR review, cycle 2, both lenses): without it, a run entering
+                    // this branch on the rebase flag alone — needsFullGateBeforeSettling and
+                    // HumanEndedTheLoop both false — left gateAlreadyRanFullOverCurrentHead
+                    // defaulted to true, so the "if (!gateAlreadyRanFullOverCurrentHead)" gate call
+                    // just below never fired and the flag was never cleared (it only clears on a
+                    // full-scope VerificationPassed — RunAggregate's own Apply). Calling into
+                    // GateAlreadyRanFullOverCurrentHeadAsync here rather than forcing false outright
+                    // costs nothing extra: by construction, whenever the flag is set, no full-scope
+                    // gate has landed since the rebase it was raised for, so the call always resolves
+                    // to false anyway — it just does so by reading the same event-sourced facts this
+                    // method already trusts, instead of duplicating that reasoning inline.
                     bool gateAlreadyRanFullOverCurrentHead = verifyCommandsFingerprintChanged
                         ? false
-                        : needsFullGateBeforeSettling || run.HumanEndedTheLoop
+                        : needsFullGateBeforeSettling || run.HumanEndedTheLoop || run.PreFinalPassRebaseAwaitingGate
                             ? await GateAlreadyRanFullOverCurrentHeadAsync(context, run, cancellationToken)
                             : true;
                     if (needsFullGateBeforeSettling
