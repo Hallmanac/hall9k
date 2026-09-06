@@ -145,7 +145,7 @@ guard working as intended, not a bug to route around. On a project tracked under
 
 ### Working a task interactively
 
-`h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver | handback | release`
+`h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session | verify | deliver | delegate | handback | release`
 
 An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
 headless (Decisions Log #122). On a Published task assigned to nobody, `work` assigns it to the
@@ -172,7 +172,10 @@ session, announced, only when the recorded one cannot be resumed). The claim is 
 not a process either way, so closing the terminal is a normal way to leave and re-running `work`
 re-enters the same worktree — by default with a fresh prompt. From there, `verify` runs the
 project's gates on demand, `deliver` pushes the branch and hands the claim into the standard
-delivery pipeline, `handback` releases the claim to a headless agent partway through (resuming the
+delivery pipeline, `delegate <id> --note "<text>"` dispatches a headless build contractor onto this
+same run, worktree and branch for one phase while the task stays claimed interactively (design
+ruling R6) — distinct from `handback`, which ends interactive mode outright — `handback` releases
+the claim to a headless agent partway through (resuming the
 branch), and `release` gives an untouched claim back to the queue. `handback`'s pickup speed is a
 three-way choice (Decisions Log #127): no flag is the normal rotation, unchanged; `--first` records
 the queue-first marker so the next free dispatch slot takes the task regardless of assignment age;

@@ -250,8 +250,13 @@ build contractor onto the operator's own live interactive claim — the same run
 branch, reused exactly as they stand, whether or not any work has been committed there yet — while
 the task stays the operator's, still in interactive mode. It shares `h9k task start`'s own
 ceiling-exempt mechanism (the claim's sentinel node id already exempts it) and its slice-1
-`<task-shortid>-build` name, and sets `ResumesPreviousWork` whenever the branch already carries a
-commit ahead of base, exactly as a resumed retry does. `--note` is required and carries the
+`<task-shortid>-build` mesh name — the contractor's own prompt, stream, settings and stderr files
+are instead keyed on a per-delegation discriminator, so a claim delegated more than once never has
+one contractor's transcript truncated by the next — and sets `ResumesPreviousWork` whenever the
+branch already carries a commit ahead of base, the worktree holds modified or untracked files, or
+its git status could not be read at all, exactly as a resumed retry does for the commit case and
+conservatively folds the other two into "assume this worktree already holds work." `--note` is
+required and carries the
 operator's own handoff into the contractor's starting prompt in the blocker-handoff mold (what was
 attempted, what is deliberate versus abandoned, what latitude is granted); the prompt's own default
 posture toward inherited work is conservative, and discard latitude exists only when the note

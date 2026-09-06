@@ -636,7 +636,7 @@ next move on, renders dim as its own level. It is there so you can consciously i
 ## Working a task interactively
 
 `h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies] | register-session |
-verify | deliver | handback | release` (Decisions Log #103, #122, #124, #126, #127)
+verify | deliver | delegate | handback | release` (Decisions Log #103, #122, #124, #126, #127)
 
 An operator can work a Published, Queued, or already-Blocked task in their own terminal instead of dispatching it
 headless (Decisions Log #122). On a Published task assigned to nobody, `h9k task work` assigns it
@@ -684,6 +684,7 @@ reclaim, only a question (Decisions Log #103).
 | `h9k task register-session <id>` | The pasted-in session's own first act: records its process identity (from `CLAUDE_PID`) against the claim, the way a direct launch's own launch-time recording always did. Refuses rather than guessing when `CLAUDE_PID` cannot be read. |
 | `h9k task verify <id>` | Runs the project's verification gates on demand against the claim's worktree, recording the outcome on the run's own stream exactly as a headless gate pass would. |
 | `h9k task deliver <id>` | Pushes the branch and hands the claim into the standard delivery pipeline — from here the run is indistinguishable from a headless one: gates, the pre-PR review loop, and the pull request all follow. |
+| `h9k task delegate <id> --note "<text>"` | Dispatches a headless build contractor onto this same run, worktree, and branch for one phase — the claim, the assignment, and the interactive-mode flag are all untouched, so the task stays yours. Distinct from `handback`, which ends interactive mode; `h9k task work <id>` re-enters the same worktree once the contractor reports back (design ruling R6). |
 | `h9k task handback <id>` | Releases the human claim and queues the task through normal dispatch, so a headless agent resumes the branch from wherever the operator left it. `--first` records the queue-first marker so the next free dispatch slot takes it regardless of assignment age; `--now` dispatches it immediately instead, ceiling-exempt, through the same mechanism `h9k task start` uses — refused together with `--first` (Decisions Log #127). |
 | `h9k task release <id>` | Gives an untouched claim back to the dispatch queue. Refused once the worktree holds uncommitted files, or once the branch holds commits beyond the base branch — `handback` (to a headless agent) or `deliver` (yourself) is the lever once there is committed work. Clears the task's interactive-mode flag by default, the same exit door `handback` is — `--keep-interactive` preserves it so a later headless run still parks at each boundary. |
 
