@@ -73,7 +73,8 @@ public static class AgentPromptBuilder
     /// </para>
     /// </summary>
     public static string BuildFollowUp(
-        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle)
+        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
+        string? interactiveMilestoneAddress = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: resolve review feedback on an existing pull request");
@@ -126,6 +127,19 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- End with a short summary: which threads you addressed, which you answered");
         prompt.AppendLine("  without a code change and why, which you dismissed and why, and any open");
         prompt.AppendLine("  questions.");
+        // R8's outbound milestones (task: agents on an interactive-mode task report outbound):
+        // this follow-up dispatches under SessionRoleName.Build (RunLauncher's own sessionRole
+        // split), so it is a dispatched build session by the same discriminator the rest of this
+        // feature keys on, exactly like the fresh-dispatch build prompt in WorkPromptBuilder.Build.
+        // Every follow-up starts a brand-new RunAggregate stream, so interactiveMilestoneAddress is
+        // null on every production path today — the same honest "nobody has registered yet" case
+        // WorkPromptBuilder.Build's own comment documents for a fresh headless build (independent
+        // pre-PR review, cycle 1, conformance lens).
+        if (task.InteractiveModeEnabled)
+        {
+            AppendOutboundMilestoneRules(prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress);
+        }
+
         // A reopened task's follow-up run is the run that reaches true closeout, so it is the
         // run whose handoff travels (Decisions Log #36) — it covers the whole task, not only
         // this leg's fixes.
@@ -141,7 +155,8 @@ public static class AgentPromptBuilder
     /// The platform re-verifies and pushes; the PR updates in place.
     /// </summary>
     public static string BuildFixChecks(
-        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle)
+        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
+        string? interactiveMilestoneAddress = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: fix the failing CI checks on an existing pull request");
@@ -191,6 +206,15 @@ public static class AgentPromptBuilder
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what was failing, what you changed, and any open");
         prompt.AppendLine("  questions.");
+        // R8's outbound milestones, on the identical terms BuildFollowUp's own comment states:
+        // this follow-up dispatches under SessionRoleName.Checks, still a build-role session, and
+        // starts a brand-new RunAggregate stream, so interactiveMilestoneAddress is null on every
+        // production path today (independent pre-PR review, cycle 1, conformance lens).
+        if (task.InteractiveModeEnabled)
+        {
+            AppendOutboundMilestoneRules(prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress);
+        }
+
         AppendHandoffRules(prompt);
 
         return prompt.ToString();
@@ -216,11 +240,23 @@ public static class AgentPromptBuilder
     /// Set when this session resumes a rebase whose previous attempt disputed a conflict and a
     /// human decided it (<c>h9k review resolve --needs-fixes</c>, <see cref="ReviewEngine"/>'s
     /// fix-session dispatch): their decision, inserted so the agent applies it rather than
-    /// re-litigating the same conflict.
+    /// re-litigating the same conflict. That resumed-dispute dispatch is a Fix-role session
+    /// (<c>SessionRoleName.Fix</c>), not the Build-role follow-up <see cref="RunLauncher"/>
+    /// dispatches for an ordinary <c>FollowUpKind.Rebase</c> — the two callers are told apart
+    /// below by this parameter's own presence, since a Build-role follow-up never carries one.
+    /// </param>
+    /// <param name="interactiveMilestoneAddress">
+    /// R8's outbound-milestone address (task: agents on an interactive-mode task report outbound).
+    /// <see cref="RunLauncher"/>'s own Build-role follow-up dispatch always passes null here (a
+    /// brand-new <c>RunDispatched</c> stream, so nothing could have registered against it yet).
+    /// <see cref="ReviewEngine"/>'s resumed-dispute dispatch is a Fix-role session instead — the two
+    /// callers are told apart below by <paramref name="humanResolution"/>'s own presence — and passes
+    /// its run's own <c>RegisteredInteractiveSessionName</c> here, the identical value
+    /// <c>BuildReviewFix</c>'s own ordinary review-fix dispatch forwards.
     /// </param>
     public static string BuildRebase(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? humanResolution = null)
+        string? humanResolution = null, string? interactiveMilestoneAddress = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: rebase an existing pull request onto its base branch");
@@ -304,6 +340,24 @@ public static class AgentPromptBuilder
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what conflicted, how you resolved each conflict and");
         prompt.AppendLine("  why, and the verification results.");
+        // R8's outbound milestones. humanResolution's own presence is the signal this method's
+        // doc already uses to tell the two callers apart: blank is RunLauncher's Build-role
+        // follow-up dispatch (Build milestones, the same terms BuildFollowUp's own comment
+        // states); non-blank is ReviewEngine's resumed-dispute Fix-role dispatch (Fix
+        // milestones — this session is applying a human's decision on findings, the identical
+        // shape of work BuildReviewFix's own ordinary dispatch reports under "fix").
+        if (task.InteractiveModeEnabled)
+        {
+            if (humanResolution.IsBlank())
+            {
+                AppendOutboundMilestoneRules(prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress);
+            }
+            else
+            {
+                AppendOutboundMilestoneRules(prompt, "fix", OutboundMilestone.Fix, interactiveMilestoneAddress);
+            }
+        }
+
         // A reopened task's follow-up run is the run that reaches true closeout, so it is the
         // run whose handoff travels (Decisions Log #36) — it covers the whole task, not only
         // this leg's rebase.
