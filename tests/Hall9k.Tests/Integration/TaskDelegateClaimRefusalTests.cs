@@ -206,6 +206,49 @@ public sealed class TaskDelegateClaimRefusalTests(PostgresFixture postgres) : IC
             .Where(exception => exception.Message.Contains("h9k task release"));
     }
 
+    /// <summary>
+    /// Orchestrator ruling on cycle 2's own medium finding: the refusal must not send the operator
+    /// to a command that cannot actually fix the problem it names. h9k task work re-enters this
+    /// exact claim (<see cref="Hall9k.Cli.Commands.TaskWorkCommand.ReenterAsync"/>) without
+    /// appending any event, so it can never turn <see cref="TaskAggregate.InteractiveModeEnabled"/>
+    /// back on — only a fresh <c>TaskClaimed</c> does that (<c>TaskRevised.ClearInteractiveMode</c>'s
+    /// own doc). The refusal instead has to name the release-then-reclaim path (only possible on an
+    /// untouched claim) and h9k task handback as the honest alternative once the branch holds work.
+    /// </summary>
+    [Fact]
+    public async Task A_claim_with_interactive_mode_cleared_is_refused_without_naming_task_work_as_the_fix()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        Guid taskId = DomainId.New();
+        Guid ownerId = await ResolveOwnerAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        string repositoryPath = CreateRepository();
+
+        await ClaimInteractivelyAsync(store, taskId, projectId, ownerId, repositoryPath, cts.Token);
+
+        await using (IDocumentSession clear = store.LightweightSession())
+        {
+            StreamState fence = (await clear.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+            TaskAggregate task = (await clear.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cts.Token))!;
+            TaskRevised revised = TaskDecider.Revise(
+                task, default, default, default, default, default, default, Now, ownerId,
+                clearInteractiveMode: true);
+            clear.Events.Append(taskId, expectedVersion: fence.Version + 1, revised);
+            await clear.SaveChangesAsync(cts.Token);
+        }
+
+        Func<Task> act = () => PrepareAsync(store, taskId, ownerId, cts.Token);
+
+        await act.Should().ThrowAsync<DomainConflictException>()
+            .WithMessage("*claim turned interactive mode off*")
+            .Where(exception =>
+                !exception.Message.Contains("re-enters it interactively, which turns the flag back on")
+                && exception.Message.Contains("h9k task release")
+                && exception.Message.Contains("h9k task handback"));
+    }
+
     [Fact]
     public async Task A_claim_already_handed_to_the_standard_pipeline_is_refused()
     {
