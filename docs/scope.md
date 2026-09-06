@@ -325,7 +325,16 @@ project's task branches are cut under, and the post-fix review re-request policy
 ceiling the dispatcher respects, counted directly in task runs (Decisions Log #111) — the retired
 session-denominated setting still converts when the new one is absent, and a per-run session cap
 (global default, overridable per task even mid-run) governs how many agent sessions one run may
-hold simultaneously. A node-level periodic token-spend budget (`h9k config set
+hold simultaneously. Each project has its own ceiling in the same denomination
+(`h9k project set --max-parallel-tasks <N>`, Decisions Log #140), enforced by the dispatcher: a
+ceiling rather than a reservation, with `0` as a deliberate pause that holds the project's ready
+tasks even on an idle node and that nothing but a human ever raises. A deferred claim stays
+`Queued` and names which limit held it — the project's cap or the node's ceiling — in the daemon
+log and in `h9k status`, which prints an unmissable line when a paused project is holding work
+while slots sit free. The old session-denominated `--max-parallel` value is retired rather than
+converted (nothing enforced it, so its number is not carried into a setting that is), with the
+retirement named in `h9k project show`/`h9k project set`; `--max-parallel` itself survives as a
+quiet alias for the new option. A node-level periodic token-spend budget (`h9k config set
 --spend-budget`/`--spend-period`, Decisions Log #120) paces dispatch the same way: once the
 current period's recorded spend, summed live from every session's own token usage rather than a
 stored counter, meets the budget, the dispatcher declines to claim further queued work until the

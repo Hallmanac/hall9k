@@ -453,6 +453,12 @@ the queue moves again. `show` resolves and names each setting's origin (environm
 config file, or built-in default); `set` merges a change into the file. See
 [operations.md](operations.md#daemon-operating-settings).
 
+The node ceiling has a per-project counterpart in the same denomination:
+`h9k project set <project> --max-parallel-tasks <N|default>` (Decisions Log #140) caps how many of
+one project's task runs may be live at once. It is a ceiling, never a reservation — nothing is
+held free for an idle project — `0` pauses the project, and it lives on the project's own stream
+rather than in the config file, so a change lands on the next dispatch cycle with no restart.
+
 ## Identifiers
 
 **Tasks and ideas** take the full identifier **or an unambiguous fragment of it**. A fragment is

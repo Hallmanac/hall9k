@@ -1300,14 +1300,18 @@ public sealed record ProjectSettingsChanged(   // Optional<T> pattern: absent â‰
     Guid Id,
     Optional<IReadOnlyList<VerifyCommand>> VerifyCommands,
     Optional<bool> SkipPermissions,            // log #9: per-project opt-in
-    Optional<int> MaxParallelAgents,
+    Optional<int> MaxParallelAgents,           // RETIRED (log #140): session-denominated, never enforced.
+                                               // Still on the event so old streams replay; nothing writes it.
     Optional<IReadOnlyList<ContextLink>> ContextLinks,
     DateTimeOffset ChangedAt,
     Guid ChangedByOwnerId,
     Optional<CommitStyle> CommitStyle = default,  // how follow-up runs land fixes on the PR branch (log #26)
-    Optional<AgentModel> Model = default);        // the project's model default (log #33). Unknown is a legal
+    Optional<AgentModel> Model = default,         // the project's model default (log #33). Unknown is a legal
                                                   // explicit value: it clears the override so the node's
                                                   // per-role and platform defaults decide again.
+    Optional<int?> MaxParallelTasks = default);   // this project's own run ceiling (log #140), in task runs
+                                                  // like the node's own. Present-with-null clears it back to
+                                                  // uncapped; 0 is the deliberate pause.
 
 public sealed record VerifyCommand(string Name, string Command);   // "test", "dotnet test"
 

@@ -178,7 +178,7 @@ daemon to run more at once
 81d8bca0  Published  hall9k  Brian Hall  The closeout sweep obse…    added 24m
 ago
     ↳ assigned and ready; the dispatcher has not claimed it yet · waiting for a
-slot — 1 of 1 running
+slot — node 1 of 1 running
 ```
 
 Three things are worth reading off that:
@@ -190,7 +190,7 @@ Three things are worth reading off that:
 - The **needs you** marker is followed by the cause and the command that clears it, both quoted
   from something the platform recorded.
 
-The "1 of 1 running" on that last row is the shipped default, not a stalled node: the ceiling is
+The "node 1 of 1 running" on that last row is the shipped default, not a stalled node: the ceiling is
 configured directly in task runs (`h9k config set --max-concurrent-task-runs <n>`), and the
 shipped default of 1 is what a fresh install has always dispatched at, no session arithmetic
 needed to read it. [docs/operations.md](docs/operations.md#configuration) has the full picture,
