@@ -433,7 +433,7 @@ applies, and point at setting `--max-concurrent-task-runs` directly to stop rely
 | 4 | 2 |
 | 6 | 3 |
 
-That is why a fresh-from-the-old-key board says `waiting for a slot — 1 of 1 running` until you set
+That is why a fresh-from-the-old-key board says `waiting for a slot — node 1 of 1 running` until you set
 the new key directly. A second, independent knob, `Hall9k__SessionCapPerRun` (default 3), caps how
 many agent sessions one run may hold simultaneously — the daemon knows exactly one activity that
 can overlap within a run today (the two review lenses), so effective concurrency there is 2 by
@@ -566,7 +566,7 @@ run.
 h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet test"
 h9k project set myproject --model claude-opus-5
 h9k project set myproject --commit-style narrative
-h9k project set myproject --max-parallel 2
+h9k project set myproject --max-parallel-tasks 2
 h9k project set myproject --skip-permissions true
 h9k project set myproject --link "api-conventions=https://…"
 h9k project set myproject --jira PROJ
@@ -579,6 +579,46 @@ h9k owner set --rerequest-review on
 
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.
+
+### A project's own run ceiling
+
+`--max-parallel-tasks <N|default>` caps how many of one project's **task runs** may be live at
+once — the same denomination as the node's own `--max-concurrent-task-runs`, so a run's review and
+fix sessions never count separately (they are that run's own sessions, bounded per run by
+`--session-cap-per-run`). Its motive is pacing token spend: a project capped at 1 serializes its
+work, so a week's allocation spreads across the week rather than burning down in a day. It is not
+a token reducer — the same work costs the same total — it is a token pacer (Decisions Log #140).
+
+It is a **ceiling, never a reservation**. Nothing is set aside for an idle project, and a project
+whose cap exceeds its share simply fills whatever the node ceiling and the other projects'
+activity leave free. Over the cap, the dispatcher defers a claim exactly as it defers one over the
+node ceiling: the task stays `Queued` — no error, no park — and both the daemon log and `h9k
+status` name which limit held it (`project cap 1 of 1` versus `node 2 of 2`), so a queue state
+never has to be reconstructed. Interactive claims (`h9k task work`, `h9k task start`) count
+against no project cap, the same zero-run rule they already have at the node level.
+
+`0` is **pause**: deliberate and sticky, for a project that is broken, budget-frozen, or shelved.
+Its ready tasks are held even while the node sits idle, runs already live finish normally, and
+**nothing raises the cap on its own** — the forgotten-pause footgun is answered with visibility
+rather than automation, so `h9k status` prints an unmissable line naming the project, how many
+ready tasks it is holding, the free slots they could be using, and the command that resumes them.
+`default` clears the cap so the node ceiling alone decides, which is what an untouched project
+does. A change lands on the next dispatch cycle: the cap lives on the project's own stream, so
+unlike the node's settings it needs no daemon restart.
+
+```bash
+h9k project set myproject --max-parallel-tasks 1        # serialize this project's runs
+h9k project set myproject --max-parallel-tasks 0        # pause it; nothing unpauses it but you
+h9k project set myproject --max-parallel-tasks default  # uncapped again
+```
+
+`--max-parallel` survives as a quiet alias of the same setting, so old muscle memory and scripts
+keep working; it now writes the runs-denominated cap, and the command says so when it is used. A
+value recorded under the old session-denominated `--max-parallel`, which nothing ever enforced, is
+**retired rather than converted** — carrying its number into a setting that *is* enforced would
+throttle a project on a number nobody chose under enforcement. `h9k project show` and
+`h9k project set` both name that retirement wherever a project still carries one, and such a
+project is uncapped until you set the new ceiling yourself.
 
 `--verify` does more than record the gates: each one is run once, right there, against a clean
 checkout of the project's own base branch, before it is ever attached to the project. A gate that
