@@ -1507,23 +1507,58 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The mechanical re-check that decides whether the recovery succeeded
-    /// (<c>VerificationRunner.DetectStrandedWorkAsync</c>) treats any remaining modified or
-    /// untracked file as still stranded, whatever the session says about its reasons for leaving
-    /// it — so the prompt cannot tell the session a stated exclusion is enough on its own; it has
-    /// to instruct the session to actually clear the file out of the tree (independent pre-PR
-    /// review, cycle 1, adversarial finding).
+    /// A fresh session with zero memory of the branch cannot reliably tell genuinely abandoned
+    /// scratch state apart from finished work someone is counting on — the earlier wording
+    /// authorized discarding a listed file it judged not to belong, which is a licensed way to
+    /// lose exactly the work this recovery exists to save (independent pre-PR review, cycle 1,
+    /// conformance finding: the platform's own re-check asked only whether `git status` was
+    /// clean, and a revert or a delete satisfies that just as well as a commit does). The prompt
+    /// now forbids discarding any listed file outright, and states that the platform's own
+    /// re-check confirms each one actually reached a commit rather than merely stopped appearing
+    /// in `git status`.
     /// </summary>
     [Fact]
-    public void Uncommitted_work_recovery_prompt_requires_clearing_excluded_files_rather_than_just_stating_intent()
+    public void Uncommitted_work_recovery_prompt_forbids_discarding_any_listed_file()
     {
         string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(SomeTask(), ["src/Feature.cs"]);
 
-        prompt.Should().Contain("git checkout --", "a modified tracked file the session excludes must be reverted");
-        prompt.Should().Contain("delete an untracked one", "an untracked file the session excludes must be removed");
-        prompt.Should().NotContain(
-            "or you have deliberately decided a file should not be committed and said so — stop",
-            "a stated exclusion alone is no longer accepted as a stopping condition");
+        prompt.Should().Contain("None of the files listed above may be reverted", "a listed file is never optional to discard");
+        prompt.Should().Contain("git checkout -- <file>", "the specific command the session must not run against a listed file");
+        prompt.Should().Contain("reached a commit", "the platform checks the file actually landed in a commit, not just silence from `git status`");
+    }
+
+    /// <summary>
+    /// <c>WorktreeGitStatus.SplitUntracked</c> only ever treats an untracked file under
+    /// <c>src/</c> or <c>tests/</c> as strandable — anything else (a build/test byproduct at the
+    /// repo root, say) is warn-only and never named in <paramref name="strandedFiles"/>-equivalent
+    /// lists. The earlier wording told the session the tree had to show nothing at all in
+    /// `git status`, which licensed deleting a file the platform's own detector never asked for
+    /// in the first place (independent pre-PR review, cycle 1, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void Uncommitted_work_recovery_prompt_does_not_ask_for_a_fully_empty_git_status()
+    {
+        string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(SomeTask(), ["src/Feature.cs"]);
+
+        prompt.Should().NotContain("git status` shows nothing left");
+        prompt.Should().Contain("Leave anything not listed above alone");
+    }
+
+    /// <summary>
+    /// The commit-plan skill's own step 4 verifies each commit builds in isolation via a
+    /// throwaway `git worktree add` plus `dotnet build` — directly contradicting this prompt's own
+    /// "do not run the build or test suite" if a session takes the skill invocation literally
+    /// (independent pre-PR review, cycle 1, adversarial finding). The prompt has to reconcile the
+    /// two explicitly rather than leave a session to discover the contradiction mid-recovery.
+    /// </summary>
+    [Fact]
+    public void Uncommitted_work_recovery_prompt_reconciles_the_commit_plan_skill_with_the_no_build_rule()
+    {
+        string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(SomeTask(), ["src/Feature.cs"]);
+
+        prompt.Should().Contain("Skip that skill's own build-verification step");
+        prompt.Should().Contain("must not run the");
+        prompt.Should().Contain("build or test suite");
     }
 
     /// <summary>
