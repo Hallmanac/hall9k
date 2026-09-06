@@ -276,8 +276,15 @@ The checkpoints, in the order the window sees them:
    assigned alone, with no parallel siblings queued beside it, exactly as *the judgment the window
    owns* above prescribes for any wide-footprint task.
    Only cycle 1 pays full two-lens discovery (Decisions Log #92, origin: 576M input tokens in one
-   day re-reading 12k-line diffs with two lenses to judge 40-line fixes): a middle cycle instead
-   dispatches one **Verify** reviewer, handed the prior cycle's own findings, each finding's fix
+   day re-reading 12k-line diffs with two lenses to judge 40-line fixes) — except that a
+   ReviewFeedback or FailingChecks follow-up's own opening cycle 1 no longer always reads the whole
+   branch either (Decisions Log #139, origin: a single five-cycle rebase lap that cost 109M input
+   tokens re-reading a branch its own reviewers had already cleared): both lenses read only the
+   lap's own change since the pull request head the previous run pushed, and a Rebase follow-up is
+   excluded and unchanged. The mandatory FinalFullPass below still runs at full scope regardless, so
+   "nothing merges on scoped green alone" holds for a scoped opening lap exactly as it does for
+   every other cycle; `h9k task show` renders the scope seed whenever one applied. A middle cycle
+   instead dispatches one **Verify** reviewer, handed the prior cycle's own findings, each finding's fix
    position, and the commits added since that cycle, whose job is to confirm the fix and check its
    blast radius rather than rediscover the diff — its rounds count against the same per-track caps
    a full cycle's would, and a dispute or cap-out parks exactly as before. A Verify pass resolves
