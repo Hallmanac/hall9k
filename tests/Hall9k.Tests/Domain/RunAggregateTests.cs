@@ -1395,6 +1395,94 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The aggregate's own mirror of RunDetailsProjection's trailing-no-op guard (independent
+    /// pre-PR review, cycle 1, adversarial lens): before this fix, the aggregate's own
+    /// <see cref="RunAggregate.LastPreFinalPassRebaseRecovered"/> flipped back to false the
+    /// instant Settling re-entered and its own unconditional rebase check found nothing left to
+    /// rebase — exactly the defect 50af2ff3 fixed for the projection but left standing on the
+    /// aggregate, which a future consumer (a decider guard, a new projection) would reach for
+    /// first.
+    /// </summary>
+    [Fact]
+    public void A_trailing_no_op_rebase_check_does_not_clobber_a_recovered_rebase_on_the_aggregate()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        run.Apply(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: true,
+            "Resolved by a narrow recovery session (rebase-onto-main skill), from abc1234567 to def7654321.", Now));
+        run.LastPreFinalPassRebaseRecovered.Should().BeTrue();
+
+        run.Apply(new RunRebasedOntoBase(
+            id, "def7654321", "def7654321", WasNoOp: true, RecoveredByAgentSession: false,
+            "origin/main has not moved since this branch's own merge base — nothing to rebase.", Now));
+
+        run.LastPreFinalPassRebaseWasNoOp.Should().BeFalse(
+            "the later no-op re-check carries no new information and must not overwrite the real recovery already on record");
+        run.LastPreFinalPassRebaseRecovered.Should().BeTrue(
+            "a future consumer reading the aggregate directly must still see the recovery, not the trailing no-op");
+    }
+
+    /// <summary>
+    /// Task: a run rebases its branch onto the current base branch, independent pre-PR review,
+    /// cycle 1, conformance lens finding: a recovery session resolves a real conflict with
+    /// judgment, not a mechanical apply, so — unlike a clean rebase — it must earn one more
+    /// fresh-context review pass before the run may settle, even on the ordinary "nothing owed"
+    /// path. <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/> is the flag
+    /// <c>ReviewEngine</c>'s Settling branch reads to force that pass; it is discharged the
+    /// moment any review pass actually dispatches.
+    /// </summary>
+    [Fact]
+    public void A_recovered_pre_final_pass_rebase_sets_awaiting_review_until_a_pass_is_dispatched()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        run.PreFinalPassRebaseAwaitingReview.Should().BeFalse();
+
+        run.Apply(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: true,
+            "Resolved by a narrow recovery session (rebase-onto-main skill), from abc1234567 to def7654321.", Now));
+        run.PreFinalPassRebaseAwaitingReview.Should().BeTrue(
+            "an agent resolved a real conflict with judgment, not a mechanical apply — a fresh-context reviewer has not read it yet");
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Conformance,
+            Mode: ReviewMode.FinalFullPass));
+        run.PreFinalPassRebaseAwaitingReview.Should().BeFalse(
+            "the mandatory final pass this flag exists to force has now actually dispatched");
+    }
+
+    /// <summary>
+    /// The mirror image: a clean git apply never sets <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/>
+    /// at all (Brian's 2026-09-04 ruling — git applying every commit without a conflict is itself
+    /// the evidence that no judgment was exercised), so it never forces the extra review pass a
+    /// recovered conflict does.
+    /// </summary>
+    [Fact]
+    public void A_clean_pre_final_pass_rebase_never_sets_awaiting_review()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        run.Apply(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: false,
+            "Rebased cleanly onto origin/main (from abc1234567 to def7654321).", Now));
+
+        run.PreFinalPassRebaseAwaitingReview.Should().BeFalse();
+    }
+
+    /// <summary>
     /// The pr-review conformance lens's own budget-exhaustion recovery: PrReviewEngine
     /// deliberately never touches ReviewPhase (it stays None throughout, asserted elsewhere), so
     /// TokenBudgetRetryEngine cannot tell a pr-review park apart from a primary-session park by

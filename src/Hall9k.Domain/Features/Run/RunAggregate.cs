@@ -117,6 +117,31 @@ public sealed class RunAggregate
     /// </summary>
     public bool PreFinalPassRebaseAwaitingGate { get; private set; }
 
+    /// <summary>
+    /// Whether a pre-final-pass rebase that needed the recovery session's own judgment has landed
+    /// since the last fresh-context review pass read this branch (independent pre-PR review, cycle
+    /// 1, conformance lens) — the mirror of <see cref="PreFinalPassRebaseAwaitingGate"/> for the
+    /// review guarantee rather than the gate one. A clean git apply never sets this: Brian's
+    /// 2026-09-04 ruling is that git applying every commit without a conflict is itself the
+    /// evidence that no judgment was exercised, so only a <see cref="Events.RunRebasedOntoBase"/>
+    /// whose <see cref="Events.RunRebasedOntoBase.RecoveredByAgentSession"/> is true — an agent
+    /// resolved a real conflict by hand — sets it. Without this flag, the Settling branch's
+    /// ordinary "nothing owed" settle (a clean Discovery-cycle-1 convergence with no fix dispatched)
+    /// let a recovery session's own conflict resolution reach the pull request having never been
+    /// read by any fresh-context reviewer, even though <see cref="PreFinalPassRebaseAwaitingGate"/>
+    /// forced a build/test gate over it. Cleared the moment any review pass is dispatched
+    /// (<see cref="Apply(Events.ReviewDispatched)"/>): for every composition that promises a review
+    /// at all, a pre-final-pass rebase can only land while <see cref="ReviewPhase"/> is
+    /// <see cref="Domain.Features.Run.ReviewPhase.Settling"/> or a
+    /// <see cref="Domain.Features.Run.ReviewPhase.Reverify"/> already bound for
+    /// <see cref="ReviewMode.FinalFullPass"/>, so the very next dispatch after it lands is always
+    /// the mandatory pass this flag exists to force — never a stale grant left over from an earlier,
+    /// unrelated cycle. Composition none never dispatches a review at all, by its own attestation
+    /// (<see cref="ReviewStageComposition.None"/>'s own doc), so this flag is simply never consulted
+    /// there; it may be set and never cleared for such a run, harmlessly.
+    /// </summary>
+    public bool PreFinalPassRebaseAwaitingReview { get; private set; }
+
     /// <summary>Whether the last non-no-op pre-final-pass rebase needed the recovery session rather than applying cleanly on its own.</summary>
     public bool LastPreFinalPassRebaseRecovered { get; private set; }
 
@@ -794,6 +819,12 @@ public sealed class RunAggregate
         // it bought actually lands — the very next boundary (review verdict to fix) asks fresh
         // (task: interactive mode becomes a recorded property of the task).
         InteractiveGateCleared = false;
+        // A pre-final-pass rebase can only land while ReviewPhase is Settling or a Reverify already
+        // bound for FinalFullPass (see PreFinalPassRebaseAwaitingReview's own doc), so any review
+        // dispatch reaching here is always the fresh-context read that flag exists to force —
+        // discharged the moment it is actually dispatched, not only once it concludes, the same as
+        // every other cap and gate in this file resets on the grant rather than the outcome.
+        PreFinalPassRebaseAwaitingReview = false;
     }
 
     public void Apply(ReviewPassCompleted @event)
@@ -1513,12 +1544,28 @@ public sealed class RunAggregate
     // PreFinalPassRebaseAwaitingGate below rather than trusting whatever runs next to notice it.
     public void Apply(RunRebasedOntoBase @event)
     {
-        LastPreFinalPassRebaseWasNoOp = @event.WasNoOp;
-        LastPreFinalPassRebaseRecovered = @event.RecoveredByAgentSession;
-        LastPreFinalPassRebaseFromCommit = @event.RebasedFromCommit;
-        LastPreFinalPassRebaseOntoCommit = @event.RebasedOntoCommit;
-        LastPreFinalPassRebaseDetail = @event.Detail;
-        LastPreFinalPassRebaseAt = @event.RebasedAt;
+        // Mirrors RunDetailsProjection.Apply(RunRebasedOntoBase)'s own guard (independent pre-PR
+        // review, cycle 1, adversarial lens): the pre-final-pass check re-runs on every Settling
+        // entry, so a real rebase or a recovery is routinely followed, moments later, by a no-op
+        // re-check that finds nothing left to do — that later no-op carries no new information and
+        // must not clobber the meaningful outcome already on record here, since this aggregate,
+        // not only the projection, is what a future consumer (a decider guard, a new projection)
+        // would reach for first. RebaseRecoveryRounds and PreFinalPassRebaseAwaitingGate/Review
+        // below are deliberately outside this guard: each of those observes every event on its own
+        // terms rather than only the last meaningful one.
+        bool isTrailingNoOpAfterRealRebase = @event.WasNoOp
+            && LastPreFinalPassRebaseAt is not null
+            && LastPreFinalPassRebaseWasNoOp == false;
+        if (!isTrailingNoOpAfterRealRebase)
+        {
+            LastPreFinalPassRebaseWasNoOp = @event.WasNoOp;
+            LastPreFinalPassRebaseRecovered = @event.RecoveredByAgentSession;
+            LastPreFinalPassRebaseFromCommit = @event.RebasedFromCommit;
+            LastPreFinalPassRebaseOntoCommit = @event.RebasedOntoCommit;
+            LastPreFinalPassRebaseDetail = @event.Detail;
+            LastPreFinalPassRebaseAt = @event.RebasedAt;
+        }
+
         // RebaseRecoveryRounds' own doc promises "in a row without ever landing cleanly", and a
         // confirmed no-op is the only fact here git itself observed rather than a session's own
         // claim: it means EnsureRebasedBeforeFinalPassAsync freshly compared origin/<base>'s tip
@@ -1545,6 +1592,14 @@ public sealed class RunAggregate
         if (!@event.WasNoOp)
         {
             PreFinalPassRebaseAwaitingGate = true;
+        }
+
+        // Only a recovery session's own judgment call earns this (see PreFinalPassRebaseAwaitingReview's
+        // own doc): a clean git apply never sets it, by the identical 2026-09-04 ruling
+        // PreFinalPassRebaseAwaitingGate's own comment above already rests on.
+        if (@event.RecoveredByAgentSession)
+        {
+            PreFinalPassRebaseAwaitingReview = true;
         }
     }
 
