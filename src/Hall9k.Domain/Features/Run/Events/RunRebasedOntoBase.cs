@@ -21,8 +21,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </summary>
 /// <param name="RebasedFromCommit">
 /// The base commit this branch was built against before this attempt — <c>git merge-base HEAD
-/// origin/&lt;base&gt;</c>, read after the fetch. Equal to <paramref name="RebasedOntoCommit"/>
-/// exactly when <paramref name="WasNoOp"/> is true.
+/// origin/&lt;base&gt;</c>, read after the fetch. Ordinarily equal to
+/// <paramref name="RebasedOntoCommit"/> only when <paramref name="WasNoOp"/> is true, but a
+/// recovery session's own trusted-at-face-value <c>RESOLUTION: fixed</c> claim (see
+/// <c>RecordRebaseRecoveryResultAsync</c>) can also produce an equal pair with
+/// <paramref name="WasNoOp"/> false and <see cref="RecoveredByAgentSession"/> true, when the
+/// worktree never actually moved despite the claim — the audit record then says "recovered" over
+/// a from/onto pair identical to a no-op's, which is the honest reflection of an unconfirmed claim
+/// rather than a violated invariant.
 /// </param>
 /// <param name="RebasedOntoCommit">The base branch's freshly fetched tip this branch is now built against.</param>
 /// <param name="WasNoOp">

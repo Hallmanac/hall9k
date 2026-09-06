@@ -1845,8 +1845,28 @@ public sealed class ReviewEngine(
         // unobserved fact (nothing actually conflicted) and spends a whole recovery session on a
         // false premise. Neither check needs the repository lock below: both read only this run's
         // own worktree, never the shared bare repository.
-        ProcessResult branchCheck = await git(
-            "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
+        ProcessResult branchCheck;
+        ProcessResult statusCheck;
+        try
+        {
+            branchCheck = await git(
+                "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
+            statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
+        }
+        // These two reads sit ahead of the repository lock and touch only this run's own
+        // worktree, so a stuck output pipe or an expired deadline here is exactly the "fetch or
+        // read failure" this method's own doc comment already promises is logged and treated as
+        // Proceed rather than left to escape and fail the run (independent pre-PR review, cycle 1,
+        // adversarial lens).
+        catch (TimeoutException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: a git call exceeded its deadline checking the worktree's own branch or status before the mandatory final pass — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
+                context.RunId);
+            return RebaseGateOutcome.Proceed;
+        }
+
         if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != context.Run.Branch)
         {
             logger.LogWarning(
@@ -1855,7 +1875,6 @@ public sealed class ReviewEngine(
             return RebaseGateOutcome.Proceed;
         }
 
-        ProcessResult statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
         if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
         {
             logger.LogWarning(
@@ -1884,6 +1903,7 @@ public sealed class ReviewEngine(
                 return RebaseGateOutcome.Stop;
             }
 
+            string? mergeBaseForStuckRebase = null;
             try
             {
                 ProcessResult fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
@@ -1908,6 +1928,7 @@ public sealed class ReviewEngine(
 
                 string originTip = originTipResult.StandardOutput.Trim();
                 string mergeBase = mergeBaseResult.StandardOutput.Trim();
+                mergeBaseForStuckRebase = mergeBase;
                 if (mergeBase == originTip)
                 {
                     // origin/<base> has not moved past what this branch already contains (task:
@@ -1936,6 +1957,36 @@ public sealed class ReviewEngine(
                 // scope: git conflicting is itself evidence that judgment IS required, unlike the
                 // clean-apply case above).
                 await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, cancellationToken);
+            }
+            // git itself can have exited 0 for whichever call was in flight — most importantly the
+            // `git rebase` call above, which actually mutates the worktree — while something it
+            // started (a post-rewrite/post-checkout hook, an fsmonitor daemon) still held the
+            // output pipe open past ExternalProcess.DrainGrace. Exit 0 alone does not say the
+            // rebase itself is the call that finished, so the worktree is read back rather than
+            // assumed — never guess at unobserved facts — before deciding whether to treat this as
+            // a clean rebase or an unchanged worktree (independent pre-PR review, cycle 1,
+            // adversarial lens; CloseoutEngine.TryMechanicalRebaseAsync already handles the
+            // identical exit-0-but-stuck case for its own `git rebase` call).
+            catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
+            {
+                if (mergeBaseForStuckRebase is { } mergeBase
+                    && await RebaseActuallyLandedAsync(worktreePath, context.Run.Branch, baseBranch, cancellationToken))
+                {
+                    string observedOntoCommit = await ResolveObservedOntoCommitAsync(worktreePath, baseBranch, cancellationToken);
+                    await RecordRebaseOutcomeAsync(
+                        context.RunId, mergeBase, observedOntoCommit, wasNoOp: false, recoveredByAgentSession: false,
+                        $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(observedOntoCommit)}) — "
+                        + "the rebase itself exited 0 before a background process's stuck output pipe timed the call out.",
+                        cancellationToken);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, cancellationToken);
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: a git call before the mandatory final pass exited 0 but its output pipe stuck past the drain grace, and the worktree does not confirm a rebase landed — proceeding unrebased",
+                    context.RunId);
+                return RebaseGateOutcome.Proceed;
             }
             catch (TimeoutException exception)
             {
@@ -2017,24 +2068,37 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        try
+        {
+            ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
-        ProcessResult branchCheck = await git(
-            "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
-        if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != branch)
+            ProcessResult branchCheck = await git(
+                "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
+            if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != branch)
+            {
+                return false;
+            }
+
+            ProcessResult statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
+            if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
+            {
+                return false;
+            }
+
+            ProcessResult isAncestor = await git(
+                "git", ["merge-base", "--is-ancestor", $"origin/{baseBranch}", "HEAD"], worktreePath, cancellationToken);
+            return isAncestor.ExitCode == 0;
+        }
+        // "Not confirmed" reads as false here, never as a thrown exception that fails the whole
+        // run — this method's own doc comment's contract, which its three git calls did not yet
+        // honor (independent pre-PR review, cycle 1, adversarial lens): the same background-process
+        // stuck-pipe or deadline failure EnsureRebasedBeforeFinalPassAsync's own calls can hit is
+        // exactly as possible here, and this is a confirmation read, not a mutation — there is
+        // nothing to restore either way.
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return false;
         }
-
-        ProcessResult statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
-        if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
-        {
-            return false;
-        }
-
-        ProcessResult isAncestor = await git(
-            "git", ["merge-base", "--is-ancestor", $"origin/{baseBranch}", "HEAD"], worktreePath, cancellationToken);
-        return isAncestor.ExitCode == 0;
     }
 
     /// <summary>
@@ -4559,12 +4623,22 @@ public sealed class ReviewEngine(
     /// <summary>
     /// The worktree's current commit, best-effort (task: review cycles after the first) — what a
     /// later Verify cycle's prompt points its "commits since the prior cycle" instruction at. This
-    /// and <see cref="HeadShaResolvesInWorktreeAsync"/> are the only places the review loop itself
-    /// touches git — they share one invocation shape on purpose, so a change to how the loop shells
-    /// out (a timeout, an added config flag) belongs in both; every other read is delegated to the
-    /// reviewer's own tool calls (<see cref="AgentPromptBuilder.AppendReviewMechanics"/>). Null on
-    /// any failure — the daemon never guesses at an unobserved fact, and the Verify prompt falls
-    /// back to a full-range diff instruction rather than pretending to know a boundary it does not.
+    /// and <see cref="HeadShaResolvesInWorktreeAsync"/> share one invocation shape on purpose (a raw
+    /// <see cref="Process"/>, not <see cref="ExternalProcess"/>'s own runner), so a change to how
+    /// this shape shells out (a timeout, an added config flag) belongs in both — but they are no
+    /// longer the only places the review loop touches git: the pre-final-pass rebase (task: a run
+    /// rebases its branch onto the current base branch) added its own git call sites —
+    /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>, <see cref="RebaseActuallyLandedAsync"/>,
+    /// <see cref="ResolveObservedOntoCommitAsync"/>, <see cref="IsRebaseInProgressAsync"/>,
+    /// <see cref="RestoreRebaseWorktreeBestEffortAsync"/> and
+    /// <see cref="DispatchRebaseRecoverySessionAsync"/> — all built on
+    /// <see cref="ExternalProcess.RunnerWithDeadline"/>'s different invocation shape instead, since
+    /// unlike a Verify cycle's best-effort commit read, a stuck or expired rebase call can leave the
+    /// worktree mid-mutation and needs the drain-grace/deadline handling that shape gives it.
+    /// Every other read is delegated to the reviewer's own tool calls
+    /// (<see cref="AgentPromptBuilder.AppendReviewMechanics"/>). Null on any failure — the daemon
+    /// never guesses at an unobserved fact, and the Verify prompt falls back to a full-range diff
+    /// instruction rather than pretending to know a boundary it does not.
     /// </summary>
     private static async Task<string?> GetWorktreeHeadShaAsync(string worktreePath, CancellationToken cancellationToken)
     {
