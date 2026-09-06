@@ -322,6 +322,41 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().Contain("a human's to trigger by hand");
     }
 
+    /// <summary>
+    /// When the contractor's own base commit could not be read (git was unreadable in the claim's
+    /// worktree at dispatch time), the reset/recompose step has no safe boundary and is skipped —
+    /// but the self-review phase and the project's own verification gates do not depend on that
+    /// boundary, and dropping them silently handed back ungated, unreviewed work (conformance and
+    /// adversarial review, cycle 1).
+    /// </summary>
+    [Fact]
+    public void A_delegated_contractor_with_no_readable_base_commit_still_gets_self_review_and_gates()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), project, "task/1-slug", _worktreePath, resumesPreviousWork: true,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Picking up midway.",
+            delegationBaseCommit: null);
+
+        prompt.Should().Contain("Self-review phase");
+        prompt.Should().Contain("`dotnet test`");
+    }
+
+    [Fact]
+    public void A_delegated_contractor_with_no_readable_base_commit_skips_only_the_reset_and_recompose()
+    {
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Picking up midway.",
+            delegationBaseCommit: null);
+
+        prompt.Should().Contain("there is no");
+        prompt.Should().Contain("boundary that is safe to reset to");
+        prompt.Should().NotContain("git reset --mixed");
+    }
+
     private string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
         WorkPromptBuilder.Build(
             SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing",

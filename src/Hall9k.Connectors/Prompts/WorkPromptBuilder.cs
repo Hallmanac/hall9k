@@ -784,8 +784,11 @@ public static class WorkPromptBuilder
     /// itself was unreadable, the same rare failure <c>InteractiveWorktreeGit</c>'s other callers
     /// already fold into "assume work exists" rather than a guess), there is no boundary left that
     /// is safe to reset to: guessing one risks rewriting exactly the inherited history this rule
-    /// exists to protect. This case skips the reset/recompose step entirely instead, and the
-    /// contractor's own checkpoint commits stand as its history unrecomposed.
+    /// exists to protect. This case skips only the reset/recompose step — the self-review phase and
+    /// the project's own verification gates still apply, since neither depends on being able to
+    /// name that boundary, and dropping them silently handed back ungated, unreviewed work
+    /// (conformance and adversarial review, cycle 1) — and the contractor's own checkpoint commits
+    /// stand as its history unrecomposed.
     /// </para>
     /// </summary>
     private static void AppendDelegatedContractorCommitRules(
@@ -796,22 +799,33 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
         prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
         prompt.AppendLine("  plainly; none of them are what ships.");
+        AppendSelfReviewPhaseRules(prompt, project, worktreePath);
 
         if (delegationBaseCommit is null)
         {
-            prompt.AppendLine("- **This worktree's own commit history could not be read before you were");
-            prompt.AppendLine("  dispatched, so there is no boundary that is safe to reset to.** Do not run a");
-            prompt.AppendLine("  mixed reset or otherwise recompose this branch's history: whatever is already");
-            prompt.AppendLine("  on it — including any commits the operator made before this delegation —");
-            prompt.AppendLine("  stays exactly as it is. Leave your own checkpoint commits as your history");
-            prompt.AppendLine("  rather than squashing or rewriting them.");
+            if (project.VerifyCommands.Count > 0)
+            {
+                prompt.AppendLine("- **The full verification suite the self-review phase above requires must be");
+                prompt.AppendLine("  green before you finish:**");
+                foreach (VerifyCommand gate in project.VerifyCommands)
+                {
+                    prompt.AppendLine($"  - `{gate.Command}`");
+                }
+            }
+
+            prompt.AppendLine("- **Once the self-review phase above has run its course, this worktree's own");
+            prompt.AppendLine("  commit history could not be read before you were dispatched, so there is no");
+            prompt.AppendLine("  boundary that is safe to reset to.** Do not run a mixed reset or otherwise");
+            prompt.AppendLine("  recompose this branch's history: whatever is already on it — including any");
+            prompt.AppendLine("  commits the operator made before this delegation — stays exactly as it is.");
+            prompt.AppendLine("  Leave your own checkpoint commits as your history rather than squashing or");
+            prompt.AppendLine("  rewriting them.");
             prompt.AppendLine("- **The session is not done while `git status` shows anything uncommitted or");
             prompt.AppendLine("  untracked.** Check it last and commit whatever it still shows before your");
             prompt.AppendLine("  final message.");
             return;
         }
 
-        AppendSelfReviewPhaseRules(prompt, project, worktreePath);
         prompt.AppendLine("- **Once all the work is done, the full verification suite is green, and the");
         prompt.AppendLine("  self-review phase above has run its course, recompose only your own");
         prompt.AppendLine("  checkpoints into real history — never anything that predates this delegation.**");
