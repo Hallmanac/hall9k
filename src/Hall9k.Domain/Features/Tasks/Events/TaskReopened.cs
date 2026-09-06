@@ -28,6 +28,15 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// slate is wiped rather than carried forward.
 /// </param>
 /// <param name="KnownPendingReviewRequestLogins">Reviewers with a pending review request observed at this dispatch — the comparison point for detecting a human's own re-request.</param>
+/// <param name="PullRequestHeadSha">
+/// The pull request head closeout observed at the moment it decided to reopen this task
+/// (task: a lap reviews only what it changed) — the seed for the follow-up run's opening
+/// Discovery cycle diff instruction. Set only for an automatic ReviewFeedback or FailingChecks
+/// reopen, where closeout's own remote inspection just read it; null for a Rebase reopen
+/// (excluded, unchanged — Brian's 2026-09-04 triage ruling governs that path), a manual
+/// h9k pr resolve reopen (no live pull-request inspection there to observe a head from), and
+/// events recorded before this field existed.
+/// </param>
 public sealed record TaskReopened(
     Guid Id,
     Guid PreviousRunId,
@@ -40,4 +49,5 @@ public sealed record TaskReopened(
     string? ObstructionKey = null,
     string? ObstructionSummary = null,
     IReadOnlyList<string>? KnownHumanReviewThreadIds = null,
-    IReadOnlyList<string>? KnownPendingReviewRequestLogins = null);
+    IReadOnlyList<string>? KnownPendingReviewRequestLogins = null,
+    string? PullRequestHeadSha = null);

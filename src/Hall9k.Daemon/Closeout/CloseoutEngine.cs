@@ -841,7 +841,10 @@ public sealed class CloseoutEngine(
                 snapshot,
                 $"The pull request's branch conflicts with its base branch. The mechanical rebase "
                 + $"fell back to a full review lap: {mechanical.Detail}",
-                now, cancellationToken);
+                // Rebase is excluded from the opening-cycle review scope seed (Brian's 2026-09-04
+                // triage ruling governs that path unchanged): the follow-up's own job is resolving
+                // the conflict, not a diff a reviewer would read against a prior push.
+                now, pullRequestHeadSha: null, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -861,7 +864,10 @@ public sealed class CloseoutEngine(
                 snapshot.FailingChecks,
                 snapshot,
                 $"CI checks failing on the pull request: {string.Join(", ", snapshot.FailingChecks)}.",
-                now, cancellationToken);
+                // The pull request head this sweep just observed — the follow-up's own opening
+                // Discovery cycle seeds its diff instruction from it (task: a lap reviews only what
+                // it changed), so the reviewer reads the fix rather than the whole branch again.
+                now, snapshot.HeadCommit, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -875,7 +881,9 @@ public sealed class CloseoutEngine(
                 snapshot.ThreadIds,
                 snapshot,
                 DescribeUnresolvedThreads(snapshot),
-                now, cancellationToken);
+                // Same reasoning as the FailingChecks branch above: seed the follow-up's own
+                // opening Discovery cycle from the pull request head this sweep just observed.
+                now, snapshot.HeadCommit, cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -2097,6 +2105,7 @@ public sealed class CloseoutEngine(
         PullRequestSnapshot snapshot,
         string reason,
         DateTimeOffset now,
+        string? pullRequestHeadSha,
         CancellationToken cancellationToken)
     {
         // TaskAggregate.Apply(TaskReopened) never clears _unmetDependencies (only Assign does),
@@ -2184,7 +2193,8 @@ public sealed class CloseoutEngine(
             obstructionKey: obstructionKey,
             obstructionSummary: obstructionSummary,
             knownHumanReviewThreadIds: snapshot.HumanThreadIds,
-            knownPendingReviewRequestLogins: snapshot.PendingReviewers));
+            knownPendingReviewRequestLogins: snapshot.PendingReviewers,
+            pullRequestHeadSha: pullRequestHeadSha));
 
         // The reopen hands the pull request to a successor, so this run's watch ends
         // with it — retire it in the same transaction (TASK-MODEL.md §2.2). A lost race
