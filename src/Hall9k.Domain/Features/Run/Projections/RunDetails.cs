@@ -380,6 +380,8 @@ public sealed class RunDetails
     public bool ContextSynthesized { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
     public bool IsFollowUp { get; set; }
+    /// <summary>See <see cref="RunDispatched"/>'s own doc — the seed for this run's opening Discovery cycle's diff instruction, rendered by <c>h9k task show</c>.</summary>
+    public string? OpeningReviewSinceSha { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
     /// <summary>The operator's Claude Code session id, from the most recent <see cref="InteractiveSessionStarted"/>; null for a headless run.</summary>
     public Guid? InteractiveClaudeSessionId { get; set; }
@@ -544,6 +546,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.DispatchedAt,
         IsFollowUp = @event.Data.IsFollowUp,
+        OpeningReviewSinceSha = @event.Data.OpeningReviewSinceSha,
     };
 
     /// <summary>See the event's own doc: a reconstructed stream for a run that never actually dispatched.</summary>

@@ -325,6 +325,76 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// The seed for a follow-up run's own opening Discovery cycle (task: a lap reviews only what it
+    /// changed): a ReviewFeedback reopen's own recorded pull request head lands on the follow-up
+    /// run's own RunDispatched, forwarded verbatim from TaskAggregate.FollowUpPullRequestHeadSha —
+    /// the fact CloseoutEngine observed and TaskDecider.Reopen carried.
+    /// </summary>
+    [Fact]
+    public async Task A_review_feedback_reopens_pull_request_head_seeds_the_follow_up_runs_opening_review_scope()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid previousRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string branch = "task/opening-seed";
+        const string pullRequestUrl = "https://github.com/x/y/pull/9";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            var registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"launcher-seed-{taskId:N}", "/tmp/launcher-seed-repo",
+                new Uri("https://github.com/x/y"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Seeds the opening review scope", ["carries the head sha"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                node.OwnerId, Now.AddHours(-1));
+            var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, previousRunId, Now.AddHours(-1));
+            aggregate.Apply(firstClaim);
+            var completed = TaskDecider.Complete(aggregate, previousRunId, pullRequestUrl, Now.AddMinutes(-40));
+            aggregate.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                aggregate, previousRunId, branch, "Unresolved review comments.", FollowUpKind.ReviewFeedback,
+                automatic: true, Now.AddMinutes(-30), node.OwnerId, pullRequestHeadSha: "cafe1234");
+            aggregate.Apply(reopened);
+            var claimed = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            aggregate.Apply(claimed);
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, firstClaim, completed, reopened, claimed]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.OpeningReviewSinceSha.Should().Be(
+            "cafe1234", "the follow-up's own RunDispatched carries the reopen's recorded pull request head");
+    }
+
+    /// <summary>
     /// The generation fence (backlog 39): a launch dispatched under a generation the task
     /// has already moved past — the shape a catch-up double-booking or a claim-then-
     /// requeue-then-reclaim race leaves behind — must not close the task out from under
