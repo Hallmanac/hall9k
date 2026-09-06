@@ -36,7 +36,8 @@ public static class WorkPromptBuilder
         bool requiresSelfRegistration = false,
         string? interactiveMilestoneAddress = null,
         bool isDelegatedContractor = false,
-        string? delegationNote = null)
+        string? delegationNote = null,
+        string? delegationBaseCommit = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
@@ -178,6 +179,27 @@ public static class WorkPromptBuilder
                 AppendFindLiveAgentsRule(prompt, task.Id);
                 AppendPlatformSettingsReminderRule(prompt, project);
             }
+        }
+        else if (isDelegatedContractor)
+        {
+            // The same unsupervised framing isDeliberateHeadlessStart's own branch below states,
+            // for the identical reason (this contractor's RunDispatched also carries the
+            // ceiling-exempt Guid.Empty NodeId) — but the commit rules that follow diverge from
+            // that branch's on purpose (adversarial review, cycle 1, TaskDelegateCommand.cs:367):
+            // this worktree can already hold the operator's own authored commits, made on their
+            // own live interactive claim before this delegation, and the generic recompose below
+            // resets to the branch's fork point against origin/{baseBranch} — which would treat
+            // those commits as fair game to rewrite right alongside this contractor's own, the
+            // opposite of "respect what is already here by default" two sections up.
+            prompt.AppendLine("  nothing supervises this run once it starts, and verification and delivery are");
+            prompt.AppendLine("  a human's to trigger by hand once you finish, not yours:");
+            prompt.AppendLine("  `h9k task deliver` pushes the branch and opens the pull request through the");
+            prompt.AppendLine("  ordinary review pipeline (`h9k task verify` checks the gates first if they want");
+            prompt.AppendLine("  to look before delivering). Both commands refuse when run from inside this very");
+            prompt.AppendLine("  session, so do not attempt them yourself — end with your summary once the work");
+            prompt.AppendLine("  below is done.");
+            AppendDelegatedContractorCommitRules(prompt, project, worktreePath, delegationBaseCommit);
+            AppendSessionEndsAtFinalMessageRule(prompt);
         }
         else if (isDeliberateHeadlessStart)
         {
@@ -742,6 +764,103 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  untracked.** Check it last, after the recompose above, and commit whatever");
         prompt.AppendLine("  it still shows before your final message. A clean tree is the contract, not");
         prompt.AppendLine("  a nice-to-have.");
+    }
+
+    /// <summary>
+    /// The delegated-contractor counterpart of <see cref="AppendCheckpointCommitRules"/>
+    /// (adversarial review, cycle 1, TaskDelegateCommand.cs:367). <c>h9k task delegate</c>'s own
+    /// contractor reuses an interactive claim's own worktree exactly as it stands, so unlike a
+    /// fresh <c>h9k task start</c> build, it can inherit real commits the operator
+    /// themselves authored before this delegation — those are not this contractor's history to
+    /// rewrite, whatever they contain, the same "respect what is already here by default" the
+    /// delegated-contractor framing above already states. <paramref name="delegationBaseCommit"/>
+    /// is the exact commit this branch held the moment the operator dispatched this contractor
+    /// (<c>TaskDelegateCommand.PrepareAsync</c>'s own <c>git rev-parse HEAD</c>, read before launch
+    /// and embedded here literally): resetting to it, rather than to the branch's fork point
+    /// against <c>origin/{baseBranch}</c> the way a fresh build does, recomposes only the
+    /// checkpoints this contractor adds from here on, never anything that predates it.
+    /// <para>
+    /// When that commit could not be read (<paramref name="delegationBaseCommit"/> is null — git
+    /// itself was unreadable, the same rare failure <c>InteractiveWorktreeGit</c>'s other callers
+    /// already fold into "assume work exists" rather than a guess), there is no boundary left that
+    /// is safe to reset to: guessing one risks rewriting exactly the inherited history this rule
+    /// exists to protect. This case skips the reset/recompose step entirely instead, and the
+    /// contractor's own checkpoint commits stand as its history unrecomposed.
+    /// </para>
+    /// </summary>
+    private static void AppendDelegatedContractorCommitRules(
+        StringBuilder prompt, ProjectDetails project, string worktreePath, string? delegationBaseCommit)
+    {
+        prompt.AppendLine("- **Commit as you go, one logical unit at a time.** Each commit here is");
+        prompt.AppendLine("  crash protection, not authored history: a checkpoint so that an abnormal");
+        prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
+        prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
+        prompt.AppendLine("  plainly; none of them are what ships.");
+
+        if (delegationBaseCommit is null)
+        {
+            prompt.AppendLine("- **This worktree's own commit history could not be read before you were");
+            prompt.AppendLine("  dispatched, so there is no boundary that is safe to reset to.** Do not run a");
+            prompt.AppendLine("  mixed reset or otherwise recompose this branch's history: whatever is already");
+            prompt.AppendLine("  on it — including any commits the operator made before this delegation —");
+            prompt.AppendLine("  stays exactly as it is. Leave your own checkpoint commits as your history");
+            prompt.AppendLine("  rather than squashing or rewriting them.");
+            prompt.AppendLine("- **The session is not done while `git status` shows anything uncommitted or");
+            prompt.AppendLine("  untracked.** Check it last and commit whatever it still shows before your");
+            prompt.AppendLine("  final message.");
+            return;
+        }
+
+        AppendSelfReviewPhaseRules(prompt, project, worktreePath);
+        prompt.AppendLine("- **Once all the work is done, the full verification suite is green, and the");
+        prompt.AppendLine("  self-review phase above has run its course, recompose only your own");
+        prompt.AppendLine("  checkpoints into real history — never anything that predates this delegation.**");
+        if (project.VerifyCommands.Count == 0)
+        {
+            prompt.AppendLine("  This project configures no verification gates, so the suite is");
+            prompt.AppendLine("  vacuously green — recompose once the work itself is done.");
+        }
+        else
+        {
+            prompt.AppendLine("  The gates that must pass first:");
+            foreach (VerifyCommand gate in project.VerifyCommands)
+            {
+                prompt.AppendLine($"  - `{gate.Command}`");
+            }
+        }
+
+        prompt.AppendLine("  0. With every last increment committed as a checkpoint — `git status` must show");
+        prompt.AppendLine("     nothing uncommitted or untracked before this step. Record the pre-reset tip:");
+        prompt.AppendLine("     `git rev-parse HEAD` — step 3 checks against it, so this is not optional");
+        prompt.AppendLine("     bookkeeping.");
+        prompt.AppendLine("  1. Reset to the exact commit this branch held when you were dispatched —");
+        prompt.AppendLine($"     `{delegationBaseCommit}` — never the branch's fork point against");
+        prompt.AppendLine($"     `origin/{project.BaseBranch}`. Everything at or before that commit is the");
+        prompt.AppendLine("     operator's own history, made on their own live interactive claim before this");
+        prompt.AppendLine("     delegation — not yours to rewrite, whatever it contains:");
+        prompt.AppendLine($"     `git reset --mixed {delegationBaseCommit}`");
+        prompt.AppendLine("     A mixed reset changes which commits exist and leaves the working tree exactly");
+        prompt.AppendLine("     as it is, so the tree itself does not move.");
+        prompt.AppendLine("  2. Immediately invoke the commit-plan skill, if this repo ships one, to compose");
+        prompt.AppendLine("     that tree into cohesive, buildable commits covering only your own new work —");
+        prompt.AppendLine("     or compose them yourself the same way if it does not.");
+        prompt.AppendLine("  3. REQUIRED before you finish: verify tree identity — `git diff <old-tip> HEAD`");
+        prompt.AppendLine("     (the tip recorded in step 0) must print nothing. A mixed reset changes only");
+        prompt.AppendLine("     which commits exist, never the tree, so an empty diff should be automatic —");
+        prompt.AppendLine("     but a file the commit-plan step forgot to stage lands as untracked rather");
+        prompt.AppendLine("     than modified, which this diff catches and a plain `git status` glance can");
+        prompt.AppendLine("     miss. Check `git status --porcelain` too, right here, and treat any untracked");
+        prompt.AppendLine("     file it shows as the same failure.");
+        prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
+        prompt.AppendLine("  That gap is exactly what the reset is for: because the tree never moves, the");
+        prompt.AppendLine("  commits composed in step 2 describe the identical tree that passed the suite");
+        prompt.AppendLine("  before step 1, and anything done in between would break that guarantee. If");
+        prompt.AppendLine("  something genuinely must change after the reset, commit everything as it stands");
+        prompt.AppendLine("  first, then make the change and recompose again.");
+        prompt.AppendLine("- **The session is not done while `git status` shows anything uncommitted or");
+        prompt.AppendLine("  untracked.** Check it last, after the recompose above, and commit whatever it");
+        prompt.AppendLine("  still shows before your final message. A clean tree is the contract, not a");
+        prompt.AppendLine("  nice-to-have.");
     }
 
     /// <summary>

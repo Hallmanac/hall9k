@@ -260,12 +260,15 @@ required and carries the
 operator's own handoff into the contractor's starting prompt in the blocker-handoff mold (what was
 attempted, what is deliberate versus abandoned, what latitude is granted); the prompt's own default
 posture toward inherited work is conservative, and discard latitude exists only when the note
-grants it explicitly. Refused on everything but that live claim — a headless claim, a different
-owner's claim, a pr-review sentinel claim, a run already handed to the standard pipeline, or a
-worktree another session is still attached to all refuse by name. The reverse move: once the
-contractor reports back, `h9k task work <id>` re-enters the same worktree interactively so the
-operator can finish the build themselves — the wheel changes hands in both directions, always at a
-boundary.
+grants it explicitly, and the contractor's own end-of-work recompose (below) never rewrites a
+commit that predates this delegation — only the checkpoints the contractor itself adds. Refused on
+everything but that live claim — a headless claim, a different owner's claim, a claim whose
+interactive-mode flag is off (`h9k task handback --now` turns it off deliberately; there is no
+boundary park left for a contractor's report to arrive at), a pr-review sentinel claim, a run
+already handed to the standard pipeline, or a worktree another session is still attached to all
+refuse by name. The reverse move: once the contractor reports back, `h9k task work <id>` re-enters
+the same worktree interactively so the operator can finish the build themselves — the wheel changes
+hands in both directions, always at a boundary.
 
 By default `h9k task work` claims and cuts as above, then prints the worktree path, the branch,
 and a starting prompt (assembled through `WorkPromptBuilder`, the same code every path already

@@ -264,6 +264,21 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
                 + "(h9k task work) can delegate this way.");
         }
 
+        // IsInteractiveClaim alone reads true for a h9k task handback --now claim too — that
+        // command deliberately turns interactive mode off (design ruling R2) while still minting
+        // its claim on the same Guid.Empty sentinel this command's own guard above keys on, so a
+        // claim it left behind is not actually an operator sitting on this task interactively —
+        // there is no boundary park left for a delegated contractor's report to arrive at, and the
+        // success message below promises one regardless (conformance review, cycle 1).
+        if (!task.InteractiveModeEnabled)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId}'s claim turned interactive mode off (h9k task handback --now, or "
+                + $"h9k task revise {taskId} --clear-interactive-mode) — only a task still in "
+                + $"interactive mode can delegate this way. h9k task work {taskId} re-enters it "
+                + "interactively, which turns the flag back on, if that is what you want.");
+        }
+
         // Saved immediately, unlike every other caller of NodeBootstrap.EnsureAsync, which lets a
         // fresh Owner/Node/Connection registration ride along with whatever business event that
         // caller appends to this same session right after: PrepareAsync appends nothing of its own
@@ -379,6 +394,17 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         bool resumesPreviousWork = commitsAheadOfBase != 0
             || modifiedFiles is null || modifiedFiles.Count > 0 || untrackedFiles.Count > 0;
 
+        // The contractor's own recompose boundary (adversarial review, cycle 1,
+        // TaskDelegateCommand.cs:367): whatever this branch already holds — including commits the
+        // operator authored on this same interactive claim before this delegation — is not the
+        // contractor's history to rewrite, so its own checkpoint/recompose protocol resets to this
+        // exact commit rather than the branch's fork point against the base branch. Null when git
+        // itself could not be read, the same unreadable-git case CountBranchCommitsAsync's own -1
+        // sentinel and ListUncommittedFilesAsync's own null both fold into "assume work exists"
+        // for the identical reason: WorkPromptBuilder treats a null here as "no safe boundary",
+        // never a guessed one.
+        string? delegationBaseCommit = await InteractiveWorktreeGit.GetHeadShaAsync(run.WorktreePath, cancellationToken);
+
         AgentModel model = await TaskStartCommand.ResolveBuildModelAsync(taskDetails, project, cancellationToken);
 
         // Minted once for this dispatch — the first (only, for this delegation) session records it
@@ -408,7 +434,8 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, run.Branch, run.WorktreePath, resumesPreviousWork, blockerContext,
             resumeReason: null, isInteractive: false, isHandback: false, isDeliberateHeadlessStart: true,
-            requiresSelfRegistration: false, isDelegatedContractor: true, delegationNote: note);
+            requiresSelfRegistration: false, isDelegatedContractor: true, delegationNote: note,
+            delegationBaseCommit: delegationBaseCommit);
 
         return new DelegationPlan(
             runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, prompt,
