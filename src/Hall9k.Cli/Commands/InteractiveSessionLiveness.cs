@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Spectre.Console;
 
@@ -126,16 +127,18 @@ internal static class InteractiveSessionLiveness
         // operator's own attached terminal (h9k task work, SessionRoleName.InteractiveClaim), and
         // two headless, detached ones dispatched under the identical Guid.Empty sentinel
         // (h9k task start, and h9k task delegate's own contractor — both SessionRoleName.Build) —
-        // so "exit it first (Ctrl+D or /exit)" is only ever true of the first. Matched positively
-        // on the one suffix both headless dispatchers actually use, rather than negatively on "not
-        // the interactive-claim suffix": a name this narrow scope cannot anticipate (a session
-        // recorded before the Name field existed, or one from a caller neither of the two current
-        // headless dispatchers) stays on the historical attached-terminal wording instead of a
-        // guess (adversarial review, cycle 1, TaskDelegateCommand.cs:166 — the contractor's own
-        // refusal message named a remedy that does not exist for a detached background process;
-        // h9k task start's identical headless session shares this exact same message today for
-        // the identical reason).
-        bool isHeadlessDispatch = session.Name.EndsWith($"-{SessionRoleName.Build}", StringComparison.Ordinal);
+        // so "exit it first (Ctrl+D or /exit)" is only ever true of the first. Matched against this
+        // run's own task's machine-composed build-session name exactly, not merely a "-build"
+        // suffix (independent pre-PR review, cycle 1, adversarial lens): a bare suffix check also
+        // catches a human's own freely chosen Claude Code session name whenever it happens to end
+        // that way (e.g. "nightly-build", self-registered via h9k task register-session — the exact
+        // false positive RunDetails.cs's own identical guard, Apply(InteractiveSessionStarted), was
+        // already hardened against) and would tell an operator attached in a second terminal there
+        // is no terminal to exit. Only the exact machine-composed name is unavailable to a human
+        // choosing their own, so a name that merely ends the same way falls through to the
+        // historical attached-terminal wording instead of a guess.
+        string buildSessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build);
+        bool isHeadlessDispatch = string.Equals(session.Name, buildSessionName, StringComparison.Ordinal);
         throw new DomainConflictException(selfInvocation
             ? $"Task {taskId}'s interactive session (pid {session.ProcessId}) is this very session — you cannot "
               + $"{action} from inside it. Exit it first (Ctrl+D or /exit), then {action} from your own terminal."

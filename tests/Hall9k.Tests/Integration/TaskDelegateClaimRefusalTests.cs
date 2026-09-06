@@ -146,7 +146,12 @@ public sealed class TaskDelegateClaimRefusalTests(PostgresFixture postgres) : IC
     /// <summary>
     /// A pr-review task's own Claimed+sentinel state (AutoPrReviewEngine.CreateOneAsync's Now
     /// speed) reads identically to a real interactive claim on IsInteractiveClaim's own
-    /// Guid.Empty discriminator — mirrors TaskHandbackCommand's identical guard.
+    /// Guid.Empty discriminator — mirrors TaskHandbackCommand's identical guard. Seeded with
+    /// interactiveMode: false, exactly as CreateOneAsync's own claim leaves it (it never turns
+    /// interactive mode on), so this test actually exercises the pr-review guard's ordering ahead
+    /// of the interactive-mode-off check rather than the interactive-mode-off check itself
+    /// (adversarial review, cycle 1: interactiveMode: true here made this test pass regardless of
+    /// which guard the command reached first).
     /// </summary>
     [Fact]
     public async Task A_pr_review_sentinel_claim_is_refused()
@@ -163,7 +168,7 @@ public sealed class TaskDelegateClaimRefusalTests(PostgresFixture postgres) : IC
                     TaskType.PrReview, null, null, null, Now, ownerId),
                 ownerId, Now);
             TaskClaimed claimed = TaskDecider.ClaimDeliberately(
-                task, ownerId, DomainId.New(), Now, dependencyOverrideAcknowledged: false, interactiveMode: true);
+                task, ownerId, DomainId.New(), Now, dependencyOverrideAcknowledged: false, interactiveMode: false);
 
             seed.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
             await seed.SaveChangesAsync(cts.Token);

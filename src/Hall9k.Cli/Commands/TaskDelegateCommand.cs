@@ -268,6 +268,24 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
                 + "(h9k task work) can delegate this way.");
         }
 
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+
+        // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
+        // (mirrors TaskHandbackCommand's identical guard, and for the identical reason —
+        // AutoPrReviewEngine.CreateOneAsync's Now-speed claim leaves InteractiveModeEnabled false
+        // and reads identically to one on IsInteractiveClaim's own Guid.Empty discriminator).
+        // Checked ahead of every other guard below, including the interactive-mode-off check right
+        // after it — a Now-speed claim is never interactive to begin with, so that check would
+        // otherwise fire first and misdiagnose this exact state as "the claim turned interactive
+        // mode off", naming h9k task handback --now and h9k task release/h9k task work as remedies
+        // that both refuse a pr-review task outright, the identical dead-end-hop defect the
+        // interactive-mode-off check's own cycle 2 ruling exists to prevent (adversarial review,
+        // cycle 1). Same ordering TaskHandbackCommand already settled on for its identical guard.
+        if (task.Type == TaskType.PrReview)
+        {
+            throw PrReviewSentinelClaim.Refuse(taskId, run?.State ?? RunState.Unknown, "delegate");
+        }
+
         // IsInteractiveClaim alone reads true for a h9k task handback --now claim too — that
         // command deliberately turns interactive mode off (design ruling R2) while still minting
         // its claim on the same Guid.Empty sentinel this command's own guard above keys on, so a
@@ -311,18 +329,6 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             throw new DomainConflictException(
                 $"Task {taskId} is claimed by {task.AssignedOwnerId} — you can only delegate your own "
                 + "interactive claim.");
-        }
-
-        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
-
-        // A pr-review task's own Claimed+sentinel state is never a human's own interactive claim
-        // (mirrors TaskHandbackCommand's identical guard, and for the identical reason —
-        // AutoPrReviewEngine.CreateOneAsync's Now-speed claim reads identically to one on
-        // IsInteractiveClaim's own Guid.Empty discriminator). Checked ahead of the run-null branch
-        // below, same ordering TaskHandbackCommand already settled on.
-        if (task.Type == TaskType.PrReview)
-        {
-            throw PrReviewSentinelClaim.Refuse(taskId, run?.State ?? RunState.Unknown, "delegate");
         }
 
         if (run is null)
