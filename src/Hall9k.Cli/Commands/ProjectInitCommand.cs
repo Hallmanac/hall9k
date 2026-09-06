@@ -159,7 +159,6 @@ public sealed class ProjectInitCommand : Hall9kAsyncCommand<ProjectInitCommand.S
             aggregate,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             DateTimeOffset.UtcNow,
             context.OwnerId,

@@ -310,7 +310,7 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             ProjectAggregate project = new();
             project.Apply(registered);
             ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
-                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
                 Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
                 autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Normal));
             session.Events.Append(projectId, optedIn);
@@ -489,7 +489,7 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             ProjectAggregate project = new();
             project.Apply(registered);
             ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
-                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
                 Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
                 autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Now));
             session.Events.Append(projectId, optedIn);
@@ -599,7 +599,7 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
         }
 
         ProjectSettingsChanged turnedOff = ProjectDecider.ChangeSettings(
-            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
             Optional<IReadOnlyList<ContextLink>>.None, DateTimeOffset.UtcNow, ownerId,
             autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off));
         session.Events.Append(projectId, turnedOff);
@@ -635,7 +635,7 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             ProjectAggregate project = new();
             project.Apply(registered);
             ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
-                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
                 Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
                 autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Normal));
             session.Events.Append(projectId, optedIn);
@@ -744,7 +744,7 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             ProjectAggregate project = new();
             project.Apply(registered);
             ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
-                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
                 Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
                 autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Normal));
             session.Events.Append(projectId, optedIn);
@@ -842,7 +842,7 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             ProjectAggregate project = new();
             project.Apply(registered);
             ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
-                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None, Optional<int>.None,
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
                 Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
                 autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Normal));
             session.Events.Append(projectId, optedIn);

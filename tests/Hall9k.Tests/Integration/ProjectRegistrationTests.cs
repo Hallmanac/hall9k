@@ -63,7 +63,6 @@ public sealed class ProjectRegistrationTests(PostgresFixture postgres) : IClassF
                 aggregate!,
                 verifyCommands: new List<VerifyCommand> { new("build", "dotnet build"), new("test", "dotnet test") },
                 skipPermissions: true,
-                maxParallelAgents: Optional<int>.None,
                 contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
                 changedAt: Now.AddMinutes(1), changedByOwnerId: ownerId);
             session.Events.Append(projectId, changed);

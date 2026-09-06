@@ -1183,7 +1183,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(
                 [new Hall9k.Domain.Features.Project.VerifyCommand("test", "dotnet test --help --verbosity quiet")]),
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
             Now, project!.OwnerId));
         await session.SaveChangesAsync(cancellationToken);
@@ -1256,7 +1255,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 project,
                 verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(verifyCommands),
                 skipPermissions: Optional<bool>.None,
-                maxParallelAgents: Optional<int>.None,
                 contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
                 Now, node.OwnerId));
 

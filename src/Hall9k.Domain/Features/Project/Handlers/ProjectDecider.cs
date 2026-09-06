@@ -51,7 +51,6 @@ public static class ProjectDecider
         ProjectAggregate project,
         Optional<IReadOnlyList<VerifyCommand>> verifyCommands,
         Optional<bool> skipPermissions,
-        Optional<int> maxParallelAgents,
         Optional<IReadOnlyList<ContextLink>> contextLinks,
         DateTimeOffset changedAt,
         Guid changedByOwnerId,
@@ -71,7 +70,8 @@ public static class ProjectDecider
         Optional<string?> reviewStageComposition = default,
         bool reviewStageCompositionAcknowledged = false,
         Optional<AutoPrReviewSpeed> autoPrReview = default,
-        bool acceptedBrokenGate = false)
+        bool acceptedBrokenGate = false,
+        Optional<int?> maxParallelTasks = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -85,9 +85,16 @@ public static class ProjectDecider
             RefuseRelativeRepositoryPath(repositoryPath.Value);
         }
 
-        if (maxParallelAgents.HasValue && maxParallelAgents.Value < 1)
+        // Zero is a legal value here, unlike every other cap in this decider: it is the
+        // deliberate pause (Decisions Log #140), which is why the floor is 0 rather than 1.
+        // Present-with-null clears the cap so the node ceiling alone decides again.
+        if (maxParallelTasks is { HasValue: true, Value: { } tasks } && tasks < 0)
         {
-            throw new DomainValidationException("MaxParallelAgents must be at least 1.");
+            throw new DomainValidationException(
+                $"MaxParallelTasks must be 0 or more, got {tasks}. It is a ceiling in task runs — how many "
+                + "of this project's runs may be live at once (Decisions Log #140); 0 pauses the project, "
+                + "and 'default' clears the cap so the node ceiling "
+                + "(h9k config set --max-concurrent-task-runs) alone decides.");
         }
 
         // Unknown is a legal explicit value: it clears the project override so the
@@ -206,7 +213,10 @@ public static class ProjectDecider
             project.Id,
             verifyCommands,
             skipPermissions,
-            maxParallelAgents,
+            // The retired session-denominated ceiling (Decisions Log #140): never written again,
+            // and there is no parameter left to write it with. Streams that recorded one replay
+            // it unchanged, which is what h9k project show reads to name the retirement.
+            Optional<int>.None,
             contextLinks,
             changedAt,
             changedByOwnerId,
@@ -232,7 +242,8 @@ public static class ProjectDecider
             // so a future second caller of ChangeSettings — or a refactor of this one — cannot
             // write an unobserved acceptance to the stream by passing true on a change that
             // recorded no gate at all.
-            AcceptedBrokenGate: acceptedBrokenGate && verifyCommands.HasValue);
+            AcceptedBrokenGate: acceptedBrokenGate && verifyCommands.HasValue,
+            MaxParallelTasks: maxParallelTasks);
     }
 
     /// <summary>

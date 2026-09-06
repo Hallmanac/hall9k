@@ -277,7 +277,7 @@ public sealed class ProjectHomeRenderEngineTests(PostgresFixture postgres) : ICl
                     ?? throw new InvalidOperationException("project not found");
                 ProjectSettingsChanged recased = ProjectDecider.ChangeSettings(
                     original, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-                    Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, ownerId,
+                    Optional<IReadOnlyList<ContextLink>>.None, Now, ownerId,
                     homeDirectory: ProjectHome.Parse(Recase(_home)));
                 session.Events.Append(originalProjectId, recased);
 

@@ -1695,7 +1695,6 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             Now, ownerId));
 

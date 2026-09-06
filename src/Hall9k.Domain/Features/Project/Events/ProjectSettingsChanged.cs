@@ -34,6 +34,16 @@ public sealed record ProjectSettingsChanged(
     Guid Id,
     Optional<IReadOnlyList<VerifyCommand>> VerifyCommands,
     Optional<bool> SkipPermissions,
+    /// <summary>
+    /// Retired (Decisions Log #140): the session-denominated per-project ceiling
+    /// <c>h9k project set --max-parallel</c> used to record. Nothing writes it any more —
+    /// <c>Handlers.ProjectDecider.ChangeSettings</c> has no parameter for it, so every event
+    /// appended from here on carries <c>Optional&lt;int&gt;.None</c> — and nothing ever enforced
+    /// it. The field stays because streams written before the retirement carry it and must replay
+    /// unchanged; <see cref="MaxParallelTasks"/> is the runs-denominated setting that replaced it,
+    /// and <c>h9k project show</c>/<c>h9k project set</c> name the retirement whenever a project
+    /// still carries a recorded value here.
+    /// </summary>
     Optional<int> MaxParallelAgents,
     Optional<IReadOnlyList<ContextLink>> ContextLinks,
     DateTimeOffset ChangedAt,
@@ -99,4 +109,21 @@ public sealed record ProjectSettingsChanged(
     /// 1, conformance lens: this override used to leave no durable record at all; a later cycle's
     /// own conformance lens found the clamp itself lived only in the CLI caller, not here).
     /// </summary>
-    bool AcceptedBrokenGate = false);
+    bool AcceptedBrokenGate = false,
+    /// <summary>
+    /// This project's own run ceiling (Decisions Log #140), denominated in task runs to match the
+    /// node's <c>DaemonOptions.MaxConcurrentTaskRuns</c> (#111): how many of this project's runs
+    /// the dispatcher may hold live at once. Present-with-null clears the cap so the node ceiling
+    /// alone decides again — the same idiom <see cref="MaxComplianceReviewCycles"/> uses — and 0
+    /// is the deliberate pause (<see cref="ProjectRunCeiling"/> carries the semantics).
+    /// <para>
+    /// It replaces the retired, session-denominated <see cref="MaxParallelAgents"/> rather than
+    /// converting it: that value was recorded and displayed only, never enforced by anything, so
+    /// carrying its number into a setting that IS enforced would newly throttle a project on a
+    /// number nobody chose under enforcement — the same reasoning that dropped the node's own
+    /// retired <c>MaxConcurrentRuns</c> key out loud instead of binding it quietly (AGENTS.md:
+    /// never guess at unobserved facts). Trailing and optional so every stream written before
+    /// this setting existed replays byte-for-byte unchanged.
+    /// </para>
+    /// </summary>
+    Optional<int?> MaxParallelTasks = default);

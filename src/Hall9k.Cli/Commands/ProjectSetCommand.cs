@@ -32,13 +32,31 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [Description("Agents run with --dangerously-skip-permissions (log #9)")]
         public bool? SkipPermissions { get; init; }
 
-        [CommandOption("--max-parallel <N>")]
+        [CommandOption("--max-parallel-tasks <N|default>")]
         [Description(
-            "How many of this project's agents may run at once (at least 1, default 3). The daemon "
-            + "currently enforces its node-wide cap (DaemonOptions.MaxConcurrentTaskRuns, "
-            + "h9k config set --max-concurrent-task-runs); this per-project ceiling is recorded "
-            + "and shown by h9k project show.")]
-        public int? MaxParallelAgents { get; init; }
+            "How many of this project's TASK RUNS the dispatcher may hold live at once — the same "
+            + "denomination as the node ceiling (h9k config set --max-concurrent-task-runs, Decisions "
+            + "Log #111), so a run's own review and fix sessions do not count separately: they are that "
+            + "run's sessions, bounded per run by --session-cap-per-run. It is a CEILING, never a "
+            + "reservation: nothing is set aside for an idle project, and a project capped above its "
+            + "share simply fills whatever the node ceiling and other projects' activity leave free. "
+            + "The dispatcher defers a claim over this cap exactly as it defers one over the node "
+            + "ceiling — the task stays Queued, nothing errors or parks, and both the daemon log and "
+            + "h9k status name which limit held it. 0 PAUSES the project: its ready tasks are held even "
+            + "when this node sits idle, runs already live finish normally, and nothing raises the cap "
+            + "on its own (h9k status says what is held and why). 'default' clears the cap so the node "
+            + "ceiling alone decides, which is what an untouched project does. Takes effect on the next "
+            + "dispatch cycle — no daemon restart, unlike the node's own settings.")]
+        public string? MaxParallelTasks { get; init; }
+
+        [CommandOption("--max-parallel <N|default>", IsHidden = true)]
+        [Description(
+            "Quiet alias for --max-parallel-tasks, kept so existing muscle memory and scripts keep "
+            + "working (Decisions Log #140). It now sets the runs-denominated cap: the value it used to "
+            + "record was denominated in agent sessions and was never enforced by anything, so the "
+            + "command says out loud which setting the alias wrote. Passing both names disagreeing "
+            + "values is refused rather than resolved.")]
+        public string? MaxParallelAlias { get; init; }
 
         [CommandOption("--verify <NAME=COMMAND>")]
         [Description("Verification gate, e.g. --verify \"test=dotnet test\"; repeat for more. Replaces the whole list.")]
@@ -214,8 +232,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "queue-first (Decisions Log #127), so it takes the next free dispatch slot regardless of "
             + "assignment age, ahead of everything unmarked. 'now' claims it immediately, ceiling-exempt, "
             + "through the same sentinel-node-id mechanism h9k task start uses — it starts alongside "
-            + "whatever else is already running on this node, outside the concurrency ceiling h9k config "
-            + "set --max-concurrent-task-runs enforces for everything else. No review-specific scheduling "
+            + "whatever else is already running on this node, outside both the node ceiling h9k config "
+            + "set --max-concurrent-task-runs enforces and this project's own --max-parallel-tasks cap. "
+            + "No review-specific scheduling "
             + "exists: a human re-speeds any auto-created task afterward with the same general levers "
             + "(h9k task revise --queue-first, h9k task start).")]
         public string? AutoPrReview { get; init; }
@@ -236,6 +255,21 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         {
             throw new DomainValidationException("--accept-broken-gate has nothing to acknowledge without --verify.");
         }
+
+        // The two names are one setting (Decisions Log #140), so two different values is a
+        // question only the caller can answer: resolving it silently would set a ceiling nobody
+        // asked for on a project whose whole point is pacing spend deliberately.
+        if (settings.MaxParallelTasks is { } capValue && settings.MaxParallelAlias is { } aliasValue
+            && !capValue.Trim().Equals(aliasValue.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainValidationException(
+                $"--max-parallel-tasks '{capValue}' and its quiet alias --max-parallel '{aliasValue}' disagree. "
+                + "They are one setting — this project's ceiling in task runs — so pass one of them.");
+        }
+
+        Optional<int?> maxParallelTasks = ClearableCapOption.Parse(
+            settings.MaxParallelTasks ?? settings.MaxParallelAlias,
+            settings.MaxParallelTasks is null ? "--max-parallel" : "--max-parallel-tasks");
 
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
@@ -318,7 +352,6 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             project,
             verifyCommands: verifyCommands,
             skipPermissions: settings.SkipPermissions is { } skip ? skip : Optional<bool>.None,
-            maxParallelAgents: settings.MaxParallelAgents is { } max ? max : Optional<int>.None,
             contextLinks: settings.Links.Length > 0
                 ? Optional<IReadOnlyList<ContextLink>>.Of([.. settings.Links.Select(ParseLink)])
                 : Optional<IReadOnlyList<ContextLink>>.None,
@@ -379,7 +412,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             autoPrReview: settings.AutoPrReview is { } autoPrReview
                 ? Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Parse(autoPrReview))
                 : Optional<AutoPrReviewSpeed>.None,
-            acceptedBrokenGate: acceptedBrokenGateValue);
+            acceptedBrokenGate: acceptedBrokenGateValue,
+            maxParallelTasks: maxParallelTasks);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 
@@ -430,6 +464,11 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // to fail a settings change that already landed.
         ProjectDetails updated = (await session.LoadAsync<ProjectDetails>(details.Id, cancellationToken))!;
 
+        foreach (string line in ParallelTasksNotes(settings, updated))
+        {
+            AnsiConsole.MarkupLine(line);
+        }
+
         // {key} resolves reliably only on a task that already carries its reference before
         // dispatch — adopted with --from-issue/--from-jira, or linked by hand with
         // link-jira/link-issue while still a Draft. A task the platform publishes and
@@ -469,6 +508,69 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     }
 
     /// <summary>
+    /// Everything this invocation has to say out loud about the per-project run ceiling
+    /// (Decisions Log #140), in the order an operator reads it: what the quiet alias just wrote,
+    /// what a pause now means, and — the migration itself — that a session-denominated value this
+    /// project recorded under the old setting is retired rather than converted.
+    /// <para>
+    /// The retirement is named here, in the command's own output, because the value is not
+    /// carried over: the old <c>--max-parallel</c> was recorded and displayed only, never
+    /// enforced, so converting its number into a setting that IS enforced would newly throttle a
+    /// project on a number nobody chose under enforcement. Naming it is how an operator who set
+    /// it learns their ceiling is uncapped until they say otherwise.
+    /// </para>
+    /// <para>
+    /// It is deliberately the one note here NOT gated on this invocation having touched the cap —
+    /// unlike the pause, which is a standing state <c>h9k project show</c> and <c>h9k status</c>
+    /// report. An unmigrated value is a nudge that self-clears the moment the new ceiling is set,
+    /// so repeating it on an unrelated change is the point rather than noise.
+    /// </para>
+    /// <para>
+    /// A recorded 3 is indistinguishable from the old default of 3
+    /// (<see cref="ProjectAggregate.LegacyMaxParallelAgentsDefault"/>), so that one value earns no
+    /// notice — retiring a 3 and retiring an absence come to the identical enforced behaviour
+    /// (uncapped), which is exactly the case where the notice would have nothing to add.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<string> ParallelTasksNotes(Settings settings, ProjectDetails project)
+    {
+        bool setTheCap = settings.MaxParallelTasks is not null || settings.MaxParallelAlias is not null;
+        List<string> notes = [];
+        if (settings.MaxParallelTasks is null && settings.MaxParallelAlias is not null)
+        {
+            notes.Add(
+                "[dim]--max-parallel is the quiet alias of --max-parallel-tasks now, and it set this project's "
+                + "ceiling in TASK RUNS rather than the agent sessions the old setting counted (Decisions Log "
+                + "#140).[/]");
+        }
+
+        // Said at the moment of consent and only then, the discipline the branch-template/backlog
+        // warning below already states: an unrelated h9k project set on a project that has been
+        // paused for a week must not repeat its standing consequence every time. h9k project show
+        // and h9k status are where that standing state is read.
+        if (setTheCap && project.MaxParallelTasks == 0)
+        {
+            notes.Add(
+                $"[yellow]Project '{project.Name.EscapeMarkup()}' is paused: a cap of 0 holds its ready tasks "
+                + "even when this node sits idle, and nothing raises it on its own. Runs already live finish "
+                + "normally; h9k status names what is held.[/]");
+        }
+
+        if (project.MaxParallelTasks is null
+            && project.MaxParallelAgents != ProjectAggregate.LegacyMaxParallelAgentsDefault)
+        {
+            notes.Add(
+                $"[yellow]Migration: this project recorded --max-parallel {project.MaxParallelAgents} under the "
+                + "retired session-denominated setting. That value is retired rather than converted — nothing "
+                + "ever enforced it, so its number is not carried into a ceiling that is enforced — and this "
+                + "project is uncapped until you set one:[/] "
+                + $"h9k project set {project.Name.EscapeMarkup()} --max-parallel-tasks <n>");
+        }
+
+        return notes;
+    }
+
+    /// <summary>
     /// What was just agreed to, and its cost — printed once, at the moment of consent, because
     /// this setting is the standing half of the #34 amendment's two human acts (PLAN.md §16):
     /// an assigner's GitHub click is the other, and it should not be a surprise what that click
@@ -490,8 +592,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             "[yellow]From now on, a pull request GitHub assigns to this install's own login in this "
             + "project's repo mints, publishes, and dispatches a pr-review task immediately, ceiling-exempt "
             + "— it starts alongside whatever else is already running on this node, at the cost of an "
-            + "extra concurrent agent session outside the ceiling h9k config set --max-concurrent-task-runs "
-            + "otherwise enforces.[/]",
+            + "extra concurrent agent session outside both the node ceiling h9k config set "
+            + "--max-concurrent-task-runs enforces and this project's own --max-parallel-tasks cap.[/]",
         _ => string.Empty,
     };
 
