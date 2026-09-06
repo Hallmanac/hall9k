@@ -15,12 +15,14 @@ namespace Hall9k.Tests.Daemon;
 
 /// <summary>
 /// A pr-review spawn's worktree is another contributor's pull-request head, not something this
-/// platform cut itself (adversarial review, cycle 1, `RunLauncher.cs:228`): the flags asserted
-/// here are what stop that checkout's own `.claude/settings.json` (hooks included), its
-/// project- and local-scoped `CLAUDE.md`/`AGENTS.md`, and its `.mcp.json` from being loaded as
-/// live configuration the moment the process starts, before its read-only prompt is ever read.
-/// <see cref="AgentSpawnRequest.UntrustedWorkingDirectory"/> is the one signal that turns them
-/// on; every other spawn keeps trusting its own worktree exactly as before.
+/// platform cut itself (adversarial review, cycle 1, `RunLauncher.cs:228`): <c>--setting-sources
+/// user</c> is what stops that checkout's own `.claude/settings.json` (hooks included) and its
+/// project- and local-scoped `CLAUDE.md`/`AGENTS.md` from being loaded as live configuration the
+/// moment the process starts, before its read-only prompt is ever read.
+/// <see cref="AgentSpawnRequest.UntrustedWorkingDirectory"/> is the one signal that turns that
+/// flag on. <c>--strict-mcp-config</c> is a separate, unconditional policy (task: dispatched
+/// sessions stop inheriting account MCP connectors): every spawn carries it, trusted or not, so
+/// no dispatched session ever connects to an account MCP server it has no reason to hold.
 /// </summary>
 public sealed class ClaudeExecutorIsolationTests
 {
@@ -46,7 +48,7 @@ public sealed class ClaudeExecutorIsolationTests
     }
 
     [Fact]
-    public void An_ordinary_trusted_worktree_never_gets_the_isolation_flags()
+    public void An_ordinary_trusted_worktree_never_gets_the_setting_sources_flag()
     {
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", "/tmp/run", "prompt",
@@ -59,7 +61,23 @@ public sealed class ClaudeExecutorIsolationTests
 
         arguments.Should().NotContain("--setting-sources user",
             "this platform's own worktrees are its own commits; nothing here needs isolating");
-        arguments.Should().NotContain("--strict-mcp-config");
+    }
+
+    [Fact]
+    public void Every_spawn_gets_strict_mcp_config_regardless_of_trust()
+    {
+        AgentSpawnRequest request = new(
+            DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", "/tmp/run", "prompt",
+            ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+        {
+            SessionName = "test-build",
+        };
+
+        string[] arguments = [.. ClaudeExecutor.Arguments(request)];
+
+        arguments.Should().Contain("--strict-mcp-config",
+            "a headless build session has no reason to carry the owner's account MCP connectors " +
+            "(Gmail, Slack, Drive, Calendar) either, so the flag is not conditioned on trust");
     }
 
     /// <summary>

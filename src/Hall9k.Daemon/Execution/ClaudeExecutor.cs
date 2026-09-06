@@ -145,23 +145,28 @@ public sealed class ClaudeExecutor(
             yield return "--dangerously-skip-permissions";
         }
 
+        // Every spawn connects to no MCP server (task: dispatched sessions stop inheriting
+        // account MCP connectors): given with no --mcp-config of its own, --strict-mcp-config
+        // means a headless agent never carries the owner's account-level write tools (Gmail,
+        // Slack, Drive, Calendar) it has no reason to hold, on a build session exactly as much
+        // as an untrusted one — and the schemas were deferred anyway, so the token saving is
+        // secondary to the blast-radius one.
+        yield return "--strict-mcp-config";
+
         // request.WorktreePath is another contributor's pull-request head for a pr-review
         // spawn (AgentSpawnRequest.UntrustedWorkingDirectory) — the first checkout this
         // platform ever hands an agent that it did not cut itself, so its own
-        // .claude/settings.json (hooks included), .mcp.json and CLAUDE.md/AGENTS.md cannot
-        // be trusted the way this platform's own worktrees are. --setting-sources user drops
-        // the checkout's project- and local-scoped settings.json AND its CLAUDE.md/AGENTS.md
-        // from the merge (verified empirically: a checkout's CLAUDE.md is not read into
-        // context under this flag), leaving only the owner's own ~/.claude/settings.json
-        // (still loaded — it is the owner's, not the pull request's); --strict-mcp-config,
-        // given with no --mcp-config of its own, connects to no MCP server at all rather than
-        // whatever the checkout's .mcp.json names. AgentPromptBuilder's own pr-review framing
+        // .claude/settings.json (hooks included) and CLAUDE.md/AGENTS.md cannot be trusted the
+        // way this platform's own worktrees are. --setting-sources user drops the checkout's
+        // project- and local-scoped settings.json AND its CLAUDE.md/AGENTS.md from the merge
+        // (verified empirically: a checkout's CLAUDE.md is not read into context under this
+        // flag), leaving only the owner's own ~/.claude/settings.json (still loaded — it is the
+        // owner's, not the pull request's). AgentPromptBuilder's own pr-review framing
         // (AppendSettledRulings' override) is defense in depth on top of this, not the only
         // thing standing between the session and the pull request author's doctrine files.
         if (request.UntrustedWorkingDirectory)
         {
             yield return "--setting-sources user";
-            yield return "--strict-mcp-config";
         }
     }
 }

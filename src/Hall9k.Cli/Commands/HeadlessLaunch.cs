@@ -51,22 +51,8 @@ internal static class HeadlessLaunch
         string worktreePath, Guid claudeSessionId, string sessionName, AgentModel model, string promptFile,
         string streamFile, string standardErrorFile, string settingsFile, bool skipPermissions)
     {
-        List<string> arguments =
-        [
-            "-p",
-            "--output-format stream-json",
-            "--verbose",
-            $"--name \"{sessionName}\"",
-            $"--session-id {claudeSessionId}",
-            $"--model \"{model.Value}\"",
-            $"--settings \"{settingsFile}\"",
-        ];
-        if (skipPermissions)
-        {
-            arguments.Add("--dangerously-skip-permissions");
-        }
-
-        string claudeCommand = $"\"{ClaudeBinary()}\" {string.Join(' ', arguments)}";
+        string claudeCommand =
+            $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(claudeSessionId, sessionName, model, settingsFile, skipPermissions))}";
         string redirected =
             $"{claudeCommand} < \"{promptFile}\" > \"{streamFile}\" 2> \"{standardErrorFile}\"";
 
@@ -236,6 +222,34 @@ internal static class HeadlessLaunch
         }
 
         return (process.Id, startedAt);
+    }
+
+    /// <summary>
+    /// Internal for the argument-policy tests, mirroring <c>ClaudeExecutor.Arguments</c>'s own
+    /// reasoning (Hall9k.Daemon): the flag set is the policy, worth asserting without spawning a
+    /// process. <c>--strict-mcp-config</c> is unconditional here too (task: dispatched sessions
+    /// stop inheriting account MCP connectors) — an <c>h9k task start</c>/<c>h9k task handback
+    /// --now</c> session is exactly the headless, unattended shape that decision exists for, and
+    /// this launch path never went through <c>ClaudeExecutor</c> at all (Reference graph: the CLI
+    /// cannot reference <c>Hall9k.Daemon</c>), so it needed its own copy of the flag rather than
+    /// inheriting one from that fix.
+    /// </summary>
+    internal static IEnumerable<string> Arguments(
+        Guid claudeSessionId, string sessionName, AgentModel model, string settingsFile, bool skipPermissions)
+    {
+        yield return "-p";
+        yield return "--output-format stream-json";
+        yield return "--verbose";
+        yield return $"--name \"{sessionName}\"";
+        yield return $"--session-id {claudeSessionId}";
+        yield return $"--model \"{model.Value}\"";
+        yield return $"--settings \"{settingsFile}\"";
+        yield return "--strict-mcp-config";
+
+        if (skipPermissions)
+        {
+            yield return "--dangerously-skip-permissions";
+        }
     }
 
     private static string ClaudeBinary() =>

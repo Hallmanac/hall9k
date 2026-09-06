@@ -116,6 +116,19 @@ public sealed class HeadlessLaunchTests : IDisposable
                 && exception.Message.Contains("claude binary could not be started"));
     }
 
+    [Fact]
+    public void Every_headless_start_spawn_gets_strict_mcp_config()
+    {
+        string[] arguments = [.. HeadlessLaunch.Arguments(
+            Guid.NewGuid(), "test-start-build", AgentModel.Sonnet, "/tmp/settings.json", skipPermissions: false)];
+
+        arguments.Should().Contain("--strict-mcp-config",
+            "an h9k task start / task handback --now session is headless and unattended — the same " +
+            "shape a headless build agent has no reason to hold the owner's account MCP connectors " +
+            "(Gmail, Slack, Drive, Calendar) for, and this launch path never goes through ClaudeExecutor " +
+            "to inherit that flag from there");
+    }
+
     private static void MakeExecutable(string path)
     {
         using Process chmod = new()
