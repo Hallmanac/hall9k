@@ -260,13 +260,19 @@ public sealed class RunLauncher(
                     : SessionRoleName.Build;
             string sessionName = SessionRoleName.For(DomainId.Short(taskId), sessionRole);
 
+            // The follow-up's own opening Discovery cycle scope seed (task: a lap reviews only what
+            // it changed): task.FollowUpPullRequestHeadSha already carries the kind-aware gate —
+            // CloseoutEngine only ever records one for an automatic ReviewFeedback or FailingChecks
+            // reopen, leaving it null for a Rebase reopen, a manual h9k pr resolve, and a fresh
+            // dispatch alike — so nothing here needs to re-check FollowUpKind.
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, taskId, nodeId, ownerId, leaseGeneration, sessionId,
                 worktree.Path, worktree.Branch, mode, DateTimeOffset.UtcNow,
                 IsFollowUp: followUp is not null, Model: model, RunDirectory: runDirectory,
                 PrReviewBaseRefName: prReviewFacts?.BaseRefName, SessionName: sessionName,
                 ReviewStageComposition: reviewStageComposition,
-                DispatchingNodeId: dispatchingNodeId ?? nodeId));
+                DispatchingNodeId: dispatchingNodeId ?? nodeId,
+                OpeningReviewSinceSha: followUp is not null ? task.FollowUpPullRequestHeadSha : null));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded

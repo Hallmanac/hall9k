@@ -43,6 +43,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// than re-checked live the way the review-cycle caps are. Null replays as
 /// <see cref="ReviewStageComposition.FullPipeline"/> — the shape every run had before this
 /// setting existed.
+/// OpeningReviewSinceSha is the seed for this run's own opening Discovery cycle's diff
+/// instruction (task: a lap reviews only what it changed) — the pull request head closeout
+/// observed when it reopened this run's task, carried forward from
+/// <see cref="Hall9k.Domain.Features.Tasks.TaskAggregate.FollowUpPullRequestHeadSha"/> at dispatch
+/// time. Null for a fresh run, a Rebase follow-up (excluded, unchanged), a manual
+/// h9k pr resolve reopen (no live pull-request inspection there to observe a head from), and any
+/// stream written before this field existed — Discovery reads the full base-branch diff in every
+/// one of those cases, exactly as it always has.
 /// DispatchingNodeId is the physical daemon process that actually spawned this run, distinct
 /// from <see cref="NodeId"/> whenever the latter carries the ceiling-exempt <see cref="Guid.Empty"/>
 /// sentinel (independent pre-PR review, cycle 1, conformance lens): an ordinary dispatch's
@@ -72,4 +80,5 @@ public sealed record RunDispatched(
     string? PrReviewBaseRefName = null,
     string SessionName = "",
     ReviewStageComposition? ReviewStageComposition = null,
-    Guid DispatchingNodeId = default);
+    Guid DispatchingNodeId = default,
+    string? OpeningReviewSinceSha = null);

@@ -1859,6 +1859,34 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// A ReviewFeedback or FailingChecks follow-up's own opening Discovery cycle (task: a lap
+    /// reviews only what it changed) reads only the lap's own change, not the whole branch, so it
+    /// must not latch LastFullScopeReviewHeadSha the way an ordinary, unscoped Discovery cycle
+    /// does — even once both lenses conclude merge-ready. Latching here would let the mandatory
+    /// FinalFullPass believe this cycle already covered commits it never actually read, breaking
+    /// "nothing merges on scoped green alone" for the one case this scoping introduces.
+    /// </summary>
+    [Fact]
+    public void A_scoped_opening_discovery_cycle_never_latches_the_full_scope_boundary()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Mode: ReviewMode.Discovery,
+            Lens: ReviewLens.Conformance, HeadSha: "sha-lap-head", SinceSha: "sha-seed"));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5011, Now, Now, Mode: ReviewMode.Discovery,
+            Lens: ReviewLens.Adversarial, HeadSha: "sha-lap-head", SinceSha: "sha-seed"));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Conformance, ReviewVerdict.MergeReady, Now));
+        run.Apply(new ReviewPassCompleted(id, 1, ReviewLens.Adversarial, ReviewVerdict.MergeReady, Now));
+
+        run.LastFullScopeReviewHeadSha.Should().BeNull(
+            "the opening cycle only read the lap's own change since sha-seed, never the whole branch, "
+                + "so it must not stand in for a full-scope read the mandatory FinalFullPass still owes");
+    }
+
+    /// <summary>
     /// A HeadSha that could not be read at dispatch time (best-effort, per
     /// <see cref="ReviewDispatched"/>'s own doc) must clear the full-scope boundary rather
     /// than leave a stale one standing: the daemon never guesses at an unobserved fact, and a

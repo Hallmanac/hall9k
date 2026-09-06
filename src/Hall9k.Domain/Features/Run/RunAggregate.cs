@@ -54,6 +54,8 @@ public sealed class RunAggregate
     public decimal? CostUsd { get; private set; }
     public DateTimeOffset DispatchedAt { get; private set; }
     public bool IsFollowUp { get; private set; }
+    /// <summary>See <see cref="Events.RunDispatched"/>'s own doc — the seed for this run's opening Discovery cycle's diff instruction.</summary>
+    public string? OpeningReviewSinceSha { get; private set; }
 
     public DateTimeOffset? PullRequestMergedAt { get; private set; }
     public int UnresolvedReviewThreads { get; private set; }
@@ -367,10 +369,13 @@ public sealed class RunAggregate
 
     /// <summary>
     /// The worktree HEAD of the most recent cycle that actually DELIVERED a readable full-scope
-    /// verdict from every lens it dispatched — a <see cref="ReviewMode.Discovery"/> or
-    /// <see cref="ReviewMode.FinalFullPass"/> cycle, never a <see cref="ReviewMode.Verify"/> one,
+    /// verdict from every lens it dispatched — a genuinely full-scope <see cref="ReviewMode.Discovery"/>
+    /// or <see cref="ReviewMode.FinalFullPass"/> cycle, never a <see cref="ReviewMode.Verify"/> one,
     /// which only ever reads a delta (task: the mandatory FinalFullPass reads only the commits no
-    /// full-scope pass has already read). This latches when <see cref="DeriveReviewPhase"/> first
+    /// full-scope pass has already read). A ReviewFeedback or FailingChecks follow-up's own opening
+    /// Discovery cycle does not count when it was itself scoped to the lap's own change (task: a lap
+    /// reviews only what it changed) — see <see cref="SetReviewPhaseAndLatchFullScopeBoundary"/>'s
+    /// own doc. This latches when <see cref="DeriveReviewPhase"/> first
     /// reports every current-cycle lens answered (<see cref="ReviewPhase.FixNeeded"/> or
     /// <see cref="ReviewPhase.Settling"/>), never at the cycle's own dispatch (independent pre-PR
     /// review, cycle 1 adversarial finding): a cycle dispatched at head H1 whose verdict never
@@ -731,6 +736,7 @@ public sealed class RunAggregate
         ReviewStageComposition = @event.ReviewStageComposition ?? ReviewStageComposition.FullPipeline;
         DispatchedAt = @event.DispatchedAt;
         IsFollowUp = @event.IsFollowUp;
+        OpeningReviewSinceSha = @event.OpeningReviewSinceSha;
         State = RunState.Dispatched;
     }
 
@@ -893,13 +899,24 @@ public sealed class RunAggregate
     /// cycle's own dispatch is what keeps a park — <see cref="ReviewPhase.VerdictMissing"/> past
     /// its one re-prompt, or a lens never even topped up before the run parked — from narrowing a
     /// later full-scope read past commits no reviewer was ever observed to have read.
+    /// <para>
+    /// A <see cref="ReviewMode.Discovery"/> cycle only counts when it was itself a full-scope read
+    /// — <see cref="CycleSinceSha"/> null (task: a lap reviews only what it changed). A
+    /// ReviewFeedback or FailingChecks follow-up's own opening cycle is scoped to the lap's own
+    /// change, never the whole branch, so it must not pretend to have read past commits it never
+    /// looked at — that is exactly what the mandatory <see cref="ReviewMode.FinalFullPass"/>
+    /// backstop exists to still cover; a scoped <see cref="ReviewMode.FinalFullPass"/> itself is the
+    /// one exception (its own doc: successive full-scope reads tile the branch with no gap), so it
+    /// always counts regardless of its own <see cref="CycleSinceSha"/>.
+    /// </para>
     /// </summary>
     private void SetReviewPhaseAndLatchFullScopeBoundary(ReviewPhase phase)
     {
         ReviewPhase = phase;
         bool confirmedFullScopeVerdict = phase is ReviewPhase.FixNeeded or ReviewPhase.Settling or ReviewPhase.MergeReady;
         if (confirmedFullScopeVerdict
-            && (CurrentCycleMode == ReviewMode.Discovery || CurrentCycleMode == ReviewMode.FinalFullPass))
+            && (CurrentCycleMode == ReviewMode.FinalFullPass
+                || (CurrentCycleMode == ReviewMode.Discovery && CycleSinceSha is null)))
         {
             LastFullScopeReviewHeadSha = CycleHeadSha;
         }
