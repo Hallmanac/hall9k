@@ -902,7 +902,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// clears it mid-flight, synchronously, the moment the cycle-1 review pass spawns — before the
     /// "review verdict to fix" boundary check that follows moments later in this same call — so
     /// the fix session dispatches instead of parking, and the whole run settles in one call with no
-    /// second <see cref="ReviewParked"/> ever recorded.
+    /// second <see cref="ReviewParked"/> ever recorded. The fix session's own dispatched prompt is
+    /// exposed to the identical staleness (independent pre-PR review, cycle 1, adversarial lens on
+    /// <c>DispatchFixSessionAsync</c> itself): built from the same stale <c>ReviewContext.Task</c>
+    /// snapshot, it would still tell the agent to report outbound milestones and assert a
+    /// phase-boundary park that the clear already made untrue, so this test's own assertion on the
+    /// fix session's prompt content covers that half too.
     /// </summary>
     [Fact]
     public async Task Clearing_interactive_mode_mid_flight_is_seen_at_the_very_next_boundary_in_the_same_call()
@@ -942,6 +947,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         executor.Spawns.Should().HaveCount(
             4, "review, fix, the cycle-2 verify pass, and the mandatory final full pass — none of the " +
                 "three later boundaries paused for a proceed that a stale InteractiveModeEnabled read would have asked for");
+        executor.Spawns[1].Prompt.Should().NotContain(
+            "## Reporting to the human (interactive mode)",
+            "the fix session (spawn index 1) dispatches after the flag was cleared mid-flight at spawn index 0 — " +
+                "its own prompt must read the flag fresh rather than off ReviewContext.Task, which was loaded " +
+                "before the clear and would otherwise still say this task reports outbound and parks for a proceed " +
+                "that will not happen (independent pre-PR review, cycle 1, adversarial lens)");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];

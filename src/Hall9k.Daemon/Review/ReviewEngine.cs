@@ -1155,11 +1155,17 @@ public sealed class ReviewEngine(
         // per every DispatchReviewPassesAsync caller) is inert. mode still changes the fix-bar
         // wording too (Decisions Log #119, AppendFindingContract and AppendVerdictContract), so the
         // reviewer is told the true bar rather than the ordinary cycle's.
+        // interactiveModeEnabledOverride is read fresh rather than off context.Task (independent
+        // pre-PR review, cycle 1, adversarial lens): ReviewContext is loaded once at the top of
+        // DriveAsync and held across a dispatch that can itself run for hours, the same staleness
+        // IsInteractiveModeEnabledAsync's own doc comment guards against for EnsureInteractiveProceedAsync.
+        bool interactiveModeEnabled = await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken);
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
             priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions, sinceSha: sinceSha,
             priorBoundaryApprovals: context.PriorBoundaryApprovals,
-            interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName);
+            interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName,
+            interactiveModeEnabledOverride: interactiveModeEnabled);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) — except
         // the mandatory FinalFullPass, which resolves its own knob (task: completing the per-stage
@@ -1222,11 +1228,16 @@ public sealed class ReviewEngine(
             RunPaths.ReviewFixPositionFile(runDirectory, previousCycle), cancellationToken);
 
         Guid sessionId = DomainId.New();
+        // Read fresh rather than off context.Task, the same staleness reasoning
+        // DispatchReviewPassAsync's own identical read documents (independent pre-PR review,
+        // cycle 1, adversarial lens).
+        bool interactiveModeEnabled = await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken);
         string prompt = AgentPromptBuilder.BuildReviewVerify(
             context.Task, context.Project, context.Run.Branch, cycle, tracks, priorFindings, priorFixPosition,
             sinceSha, priorCycleMode, priorCycleSinceSha, context.PriorRulings,
             context.PriorHumanDirectedInteractions, context.PriorBoundaryApprovals,
-            interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName);
+            interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName,
+            interactiveModeEnabledOverride: interactiveModeEnabled);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -1413,13 +1424,19 @@ public sealed class ReviewEngine(
             && cycle == 0
             && humanFindings.IsNotBlank()
             && !run.PendingHumanFindingsFromInteractiveGate;
+        // Read fresh rather than off context.Task, the same staleness reasoning
+        // DispatchReviewPassAsync's own identical read documents (independent pre-PR review,
+        // cycle 1, adversarial lens): this fix session's prompt can otherwise assert a
+        // phase-boundary park that a mid-flight `h9k task revise --clear-interactive-mode`
+        // has already made untrue.
+        bool interactiveModeEnabled = await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken);
         string prompt = resumesRebaseDispute
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings,
-                context.Run.RegisteredInteractiveSessionName)
+                context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled)
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
-                context.Run.RegisteredInteractiveSessionName);
+                context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled);
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking

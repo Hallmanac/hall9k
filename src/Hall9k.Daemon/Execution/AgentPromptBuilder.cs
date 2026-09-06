@@ -256,8 +256,10 @@ public static class AgentPromptBuilder
     /// </param>
     public static string BuildRebase(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? humanResolution = null, string? interactiveMilestoneAddress = null)
+        string? humanResolution = null, string? interactiveMilestoneAddress = null,
+        bool? interactiveModeEnabledOverride = null)
     {
+        bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: rebase an existing pull request onto its base branch");
         prompt.AppendLine();
@@ -346,7 +348,7 @@ public static class AgentPromptBuilder
         // states); non-blank is ReviewEngine's resumed-dispute Fix-role dispatch (Fix
         // milestones — this session is applying a human's decision on findings, the identical
         // shape of work BuildReviewFix's own ordinary dispatch reports under "fix").
-        if (task.InteractiveModeEnabled)
+        if (interactiveModeEnabled)
         {
             if (humanResolution.IsBlank())
             {
@@ -655,6 +657,14 @@ public static class AgentPromptBuilder
     /// base-branch diff instruction rather than guessing at a boundary. Ignored for every other
     /// mode, which always reads the full diff.
     /// </param>
+    /// <param name="interactiveModeEnabledOverride">
+    /// A freshly-read replacement for <c>task.InteractiveModeEnabled</c> (independent pre-PR
+    /// review, cycle 1, adversarial lens): null falls back to the snapshot on <paramref
+    /// name="task"/> itself, which is what every caller holding a short-lived task read (a
+    /// fresh dispatch, a test) still wants — only a caller holding <paramref name="task"/>
+    /// across a session that can run for hours, and so risks it going stale mid-flight (a
+    /// review pass's own dispatch out of <c>ReviewEngine</c>), passes a value here instead.
+    /// </param>
     public static string BuildReview(
         TaskDetails task, ProjectDetails project, string branch, int cycle, ReviewLens lens,
         ReviewMode? mode = null,
@@ -663,16 +673,20 @@ public static class AgentPromptBuilder
         ReviewMechanicsOverride? mechanicsOverride = null,
         string? sinceSha = null,
         IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
-        string? interactiveSessionAddress = null) =>
-        lens == ReviewLens.Adversarial
+        string? interactiveSessionAddress = null,
+        bool? interactiveModeEnabledOverride = null)
+    {
+        bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
+        return lens == ReviewLens.Adversarial
             ? BuildAdversarialReview(
                 task.Id, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
                 priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals,
-                task.InteractiveModeEnabled, interactiveSessionAddress)
+                interactiveModeEnabled, interactiveSessionAddress)
             : BuildConformanceReview(
                 task, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
                 priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals,
-                interactiveSessionAddress);
+                interactiveSessionAddress, interactiveModeEnabled);
+    }
 
     /// <summary>
     /// A pr-review task's one-shot lens (PrReviewEngine): delegates to <see cref="BuildReview"/>
@@ -777,8 +791,10 @@ public static class AgentPromptBuilder
         string? priorCycleSinceSha, IReadOnlyList<ReviewParkResolution>? priorRulings = null,
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
-        string? interactiveSessionAddress = null)
+        string? interactiveSessionAddress = null,
+        bool? interactiveModeEnabledOverride = null)
     {
+        bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         bool priorCycleReadFullBranch =
             priorCycleMode != ReviewMode.FinalFullPass || priorCycleSinceSha is null;
         string priorCycleDescription = priorCycleMode == ReviewMode.Verify
@@ -885,7 +901,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.**");
         AppendReviewGateStatus(prompt, project);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
-        if (task.InteractiveModeEnabled)
+        if (interactiveModeEnabled)
         {
             AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
         }
@@ -968,7 +984,8 @@ public static class AgentPromptBuilder
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         ReviewMechanicsOverride? mechanicsOverride = null, string? sinceSha = null,
         IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
-        string? interactiveSessionAddress = null)
+        string? interactiveSessionAddress = null,
+        bool interactiveModeEnabled = false)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1100,7 +1117,7 @@ public static class AgentPromptBuilder
         // Not for a pr-review task's own lens (DiffIsForeignPullRequest): that engine parks on its
         // own findings-report gate (§16 #99), never slice 8's boundaries, so there is no boundary
         // for a milestone message to precede.
-        if (task.InteractiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
+        if (interactiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
         {
             AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
         }
@@ -2028,8 +2045,10 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildReviewFix(
         TaskDetails task, ProjectDetails project, string branch, string findings, int cycle,
-        string? interactiveSessionAddress = null)
+        string? interactiveSessionAddress = null,
+        bool? interactiveModeEnabledOverride = null)
     {
+        bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         StringBuilder prompt = new();
         prompt.AppendLine("# Fix the verified findings from an independent pre-PR review");
         prompt.AppendLine();
@@ -2086,7 +2105,7 @@ public static class AgentPromptBuilder
         // mid-list nested every rule appended after it — the disposition contract, the dispute
         // rule, the self-check phase — under "Reporting to the human" instead of under
         // "## Working rules".
-        if (task.InteractiveModeEnabled)
+        if (interactiveModeEnabled)
         {
             AppendOutboundMilestoneRules(prompt, "fix", OutboundMilestone.Fix, interactiveSessionAddress);
         }
