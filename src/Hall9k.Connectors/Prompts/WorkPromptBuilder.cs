@@ -272,7 +272,7 @@ public static class WorkPromptBuilder
         {
             AppendOutboundMilestoneRules(
                 prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress,
-                parksAtBoundaryAfterward: !isDeliberateHeadlessStart);
+                parksAtBoundaryAfterward: !isDeliberateHeadlessStart, isDelegatedContractor: isDelegatedContractor);
         }
 
         if (!isInteractive)
@@ -492,7 +492,15 @@ public static class WorkPromptBuilder
     /// reviewers' job.
     /// </para>
     /// </summary>
-    public static void AppendSelfReviewPhaseRules(StringBuilder prompt, ProjectDetails project, string worktreePath)
+    /// <param name="recomposeFollows">
+    /// True (the default) when a recompose step immediately follows this phase, so the wording may
+    /// point ahead to it. <see cref="AppendDelegatedContractorCommitRules"/> passes false on its
+    /// unreadable-base-commit path, where no recompose ever runs: pointing this phase's own wording
+    /// at a step the caller then forbids reads as contradictory (independent pre-PR review, cycle
+    /// 1, both lenses).
+    /// </param>
+    public static void AppendSelfReviewPhaseRules(
+        StringBuilder prompt, ProjectDetails project, string worktreePath, bool recomposeFollows = true)
     {
         // Suffixed with the worktree's own directory name (unique per session, since a node
         // dispatches each concurrent session into its own worktree) so two build sessions
@@ -504,7 +512,7 @@ public static class WorkPromptBuilder
         // (independent pre-PR review, cycle 1, both lenses).
         string tipFile = Path.Combine(Path.GetTempPath(), $"self-review-round-one-tip-{Path.GetFileName(worktreePath)}")
             .Replace('\\', '/');
-        if (project.VerifyCommands.Count == 0)
+        if (project.VerifyCommands.Count == 0 && recomposeFollows)
         {
             prompt.AppendLine("- **Self-review phase.** This project configures no verification gates, so its");
             prompt.AppendLine("  suite is vacuously green already (the recompose step below states the same");
@@ -515,7 +523,18 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  uncommitted, and before the recompose, so the recompose composes the tree the");
             prompt.AppendLine("  hunt leaves behind rather than the tree that predates it.");
         }
-        else
+        else if (project.VerifyCommands.Count == 0)
+        {
+            prompt.AppendLine("- **Self-review phase.** This project configures no verification gates, so its");
+            prompt.AppendLine("  suite is vacuously green already; once the work itself is done and every");
+            prompt.AppendLine("  checkpoint is committed, and before you finish, hunt your own branch for");
+            prompt.AppendLine("  defects. It runs here — after the work is finished and the tree is clean, so");
+            prompt.AppendLine("  the hunt's diff actually shows the newest work rather than missing whatever");
+            prompt.AppendLine("  is still sitting uncommitted, and before you finish, so your own checkpoint");
+            prompt.AppendLine("  commits — left as this branch's own history, unrecomposed — are the ones the");
+            prompt.AppendLine("  hunt leaves behind rather than the ones that predate it.");
+        }
+        else if (recomposeFollows)
         {
             prompt.AppendLine("- **Self-review phase.** Once the full verification suite named below is");
             prompt.AppendLine("  green and every checkpoint is committed, and before the recompose below, hunt");
@@ -524,6 +543,16 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  missing whatever is still sitting uncommitted, and before the recompose, so");
             prompt.AppendLine("  the recompose composes the tree the hunt leaves behind rather than the tree");
             prompt.AppendLine("  that predates it.");
+        }
+        else
+        {
+            prompt.AppendLine("- **Self-review phase.** Once the full verification suite named below is");
+            prompt.AppendLine("  green and every checkpoint is committed, and before you finish, hunt your own");
+            prompt.AppendLine("  branch for defects. It runs here — after the suite passes and the tree is");
+            prompt.AppendLine("  clean, so the hunt's diff actually shows the newest work rather than missing");
+            prompt.AppendLine("  whatever is still sitting uncommitted, and before you finish, so your own");
+            prompt.AppendLine("  checkpoint commits — left as this branch's own history, unrecomposed — are");
+            prompt.AppendLine("  the ones the hunt leaves behind rather than the ones that predate it.");
         }
         prompt.AppendLine("  Change hats for this phase: you are no longer the author, you are the hunter.");
         prompt.AppendLine("  Assume the branch contains defects you wrote, and go looking for them the way");
@@ -600,14 +629,20 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  the audience for both is whatever task depends on this one and the human");
         prompt.AppendLine("  reading the run, not the review that follows.");
         prompt.AppendLine("  Whenever a fix does land,");
-        if (project.VerifyCommands.Count == 0)
+        if (project.VerifyCommands.Count == 0 && recomposeFollows)
         {
             prompt.AppendLine("  the loop continues or the recompose begins directly — this project");
             prompt.AppendLine("  configures no verification gates, so there is no suite to re-run, and the");
             prompt.AppendLine("  recompose downstream still holds its own guarantee (the tree it composes is");
             prompt.AppendLine("  the tree the fix left behind) regardless of gates.");
         }
-        else
+        else if (project.VerifyCommands.Count == 0)
+        {
+            prompt.AppendLine("  the loop simply continues — this project configures no verification gates,");
+            prompt.AppendLine("  so there is no suite to re-run, and your own checkpoint commits, left");
+            prompt.AppendLine("  unrecomposed, already are the tree the fix left behind regardless of gates.");
+        }
+        else if (recomposeFollows)
         {
             prompt.AppendLine("  the full verification suite runs again — after every fix this phase makes,");
             prompt.AppendLine("  style-only included, not only a correctness-or-behavior one — before the loop");
@@ -616,6 +651,15 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  recompose downstream only holds its own guarantee (the tree it composes is the");
             prompt.AppendLine("  tree that passed the suite) if the suite ran after this phase's last fix, not");
             prompt.AppendLine("  just before this phase started.");
+        }
+        else
+        {
+            prompt.AppendLine("  the full verification suite runs again — after every fix this phase makes,");
+            prompt.AppendLine("  style-only included, not only a correctness-or-behavior one — before the loop");
+            prompt.AppendLine("  continues. A fix that broke something is itself a defect regardless of how");
+            prompt.AppendLine("  the finding that prompted it was graded, and your own checkpoint commits,");
+            prompt.AppendLine("  left unrecomposed, only stand for a tree that actually passed the suite if it");
+            prompt.AppendLine("  ran after this phase's last fix, not just before this phase started.");
         }
         prompt.AppendLine("  A style-only finding never by itself earns a round two — that is not what the");
         prompt.AppendLine("  cap is for. A finding round one dismisses rather than fixes does not earn one");
@@ -799,7 +843,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
         prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
         prompt.AppendLine("  plainly; none of them are what ships.");
-        AppendSelfReviewPhaseRules(prompt, project, worktreePath);
+        AppendSelfReviewPhaseRules(prompt, project, worktreePath, recomposeFollows: delegationBaseCommit is not null);
 
         if (delegationBaseCommit is null)
         {
@@ -813,9 +857,9 @@ public static class WorkPromptBuilder
                 }
             }
 
-            prompt.AppendLine("- **Once the self-review phase above has run its course, this worktree's own");
-            prompt.AppendLine("  commit history could not be read before you were dispatched, so there is no");
-            prompt.AppendLine("  boundary that is safe to reset to.** Do not run a mixed reset or otherwise");
+            prompt.AppendLine("- **This worktree's own commit history could not be read before you were");
+            prompt.AppendLine("  dispatched, so once the self-review phase above has run its course there is");
+            prompt.AppendLine("  no boundary that is safe to reset to.** Do not run a mixed reset or otherwise");
             prompt.AppendLine("  recompose this branch's history: whatever is already on it — including any");
             prompt.AppendLine("  commits the operator made before this delegation — stays exactly as it is.");
             prompt.AppendLine("  Leave your own checkpoint commits as your history rather than squashing or");
@@ -1117,12 +1161,16 @@ public static class WorkPromptBuilder
     /// when to send, and who to address.
     /// <para>
     /// The build role's own address is null on every production path today (independent pre-PR
-    /// review, cycle 1, adversarial lens): every headless build dispatch under interactive mode
-    /// starts a fresh <c>RunAggregate</c> stream, and nothing yet carries a registration forward
-    /// from an earlier run of the same task, so a build session's milestones always take the
-    /// no-registered-session branch below and log a skip. The review and fix roles, dispatched
-    /// later on that same run once a human's own <c>h9k task work</c> claim registered against it,
-    /// are the roles this can actually reach.
+    /// review, cycle 1, adversarial lens): a fresh headless build dispatch under interactive mode
+    /// starts a brand-new <c>RunAggregate</c> stream, and nothing yet carries a registration
+    /// forward from an earlier run of the same task, so its milestones always take the
+    /// no-registered-session branch below and log a skip. <c>h9k task delegate</c>'s own contractor
+    /// is the one build dispatch that does not start a fresh stream — it reuses the operator's
+    /// existing run — but <c>TaskDelegateCommand</c> still never resolves that run's own
+    /// registration before calling this, so its address is null here too, for a different reason
+    /// (see <paramref name="isDelegatedContractor"/>). The review and fix roles, dispatched later on
+    /// that same run once a human's own <c>h9k task work</c> claim registered against it, are the
+    /// roles this can actually reach a real address for.
     /// </para>
     /// </summary>
     /// <param name="phaseLabel">Names the phase in the bound sentence ("build", "review", "fix") — cosmetic only.</param>
@@ -1138,7 +1186,10 @@ public static class WorkPromptBuilder
     /// (<c>h9k task start</c>, an ordinary dispatch carrying the flag forward from an earlier
     /// <c>h9k task release --keep-interactive</c>, or a retry, reopen, or follow-up redispatch:
     /// each one starts a new <c>RunAggregate</c> stream, and no registration carries forward from
-    /// an earlier one yet). A handback is never one of these cases: <c>TaskDecider.HandBack</c>
+    /// an earlier one yet) — or, for <c>h9k task delegate</c>'s own contractor
+    /// (<paramref name="isDelegatedContractor"/>), because <c>TaskDelegateCommand</c> never resolves
+    /// the reused run's own registration at all, so a null address there is not the same observed
+    /// fact it is everywhere else. A handback is never one of these cases: <c>TaskDecider.HandBack</c>
     /// clears the interactive-mode flag unconditionally, so a handback-dispatched run never calls
     /// this method at all. Blank (not null) when someone did register but their own session
     /// carries no display name to send to. Both skip sending, per AGENTS.md's own "never guess at
@@ -1157,9 +1208,19 @@ public static class WorkPromptBuilder
     /// rule this same prompt gives the session for that path (independent pre-PR review, cycle 1,
     /// both lenses).
     /// </param>
+    /// <param name="isDelegatedContractor">
+    /// True only for <c>h9k task delegate</c>'s own contractor. Every other build dispatch this
+    /// method's <paramref name="address"/> doc already enumerates starts a brand-new
+    /// <c>RunAggregate</c> stream, so a null address there really does mean nobody has ever
+    /// registered against it — but a delegated contractor reuses the operator's own existing run,
+    /// which may have carried a real registration earlier in the same claim (independent pre-PR
+    /// review, cycle 1, both lenses). <c>TaskDelegateCommand</c> never resolves that registration
+    /// before calling this, so a null address here does not mean "never registered" the way it does
+    /// everywhere else — this flag keeps the null-address branch from asserting that anyway.
+    /// </param>
     public static void AppendOutboundMilestoneRules(
         StringBuilder prompt, string phaseLabel, IReadOnlyList<string> milestones, string? address,
-        bool parksAtBoundaryAfterward = true)
+        bool parksAtBoundaryAfterward = true, bool isDelegatedContractor = false)
     {
         prompt.AppendLine();
         prompt.AppendLine("## Reporting to the human (interactive mode)");
@@ -1213,6 +1274,20 @@ public static class WorkPromptBuilder
             prompt.AppendLine("human was told lives on the run stream, not only in a transcript. A send that fails");
             prompt.AppendLine("(the session has ended, or SendMessage otherwise cannot reach it) is logged the same");
             prompt.AppendLine("way, rather than dropped silently, and never blocks you — keep working either way.");
+        }
+        else if (address is null && isDelegatedContractor)
+        {
+            prompt.AppendLine("No registered human session is on record for this run right now. Unlike a fresh");
+            prompt.AppendLine("headless build dispatch, this run is not necessarily new — `h9k task delegate`");
+            prompt.AppendLine("reuses the operator's own existing interactive claim, so an earlier");
+            prompt.AppendLine("`h9k task register-session` against it is possible. Either way there is nothing");
+            prompt.AppendLine("live to address: this contractor is only ever dispatched once any session recorded");
+            prompt.AppendLine("as attached to this run is no longer alive, so a prior registration, if any, is");
+            prompt.AppendLine("already stale. Skip sending these");
+            prompt.AppendLine(parksAtBoundaryAfterward
+                ? "milestones; the phase boundary still parks for the human's own proceed regardless."
+                : "milestones; nothing parks here either — h9k task deliver is still a human's to trigger by hand.");
+            prompt.AppendLine("Log this once for the phase, not once per milestone, through the rule above.");
         }
         else if (address is null)
         {
