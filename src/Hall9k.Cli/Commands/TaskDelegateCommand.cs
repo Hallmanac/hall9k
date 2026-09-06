@@ -185,15 +185,19 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // a real, detached claude process — a Ctrl-C landing in the window before this append
             // completes must not turn into a lost append.
             //
-            // expectedVersion: fence.Version + 1 fences both events in this one append against the
-            // stream state read above, mirroring h9k task register-session's own identical fence
-            // on this same event. It cannot stop a race that has already spawned two contractor
-            // processes into the same worktree by the time either append runs — the launch above
-            // already happened — but it stops the second append from silently winning and
-            // overwriting the first contractor's ActiveSessions record, surfacing the collision
+            // expectedVersion: fence.Version + 2 fences both events in this one append against the
+            // stream state read above — Marten's own expectedVersion is the stream's maximum
+            // version *after* the append, so two events appended together need +2, the same
+            // convention h9k task work (TaskWorkCommand.cs) and h9k task handback
+            // (TaskHandbackCommand.cs) already follow for their own two-event appends; h9k task
+            // register-session's fence.Version + 1 is not a mirror to follow here, since that
+            // command appends only one event. It cannot stop a race that has already spawned two
+            // contractor processes into the same worktree by the time either append runs — the
+            // launch above already happened — but it stops the second append from silently winning
+            // and overwriting the first contractor's ActiveSessions record, surfacing the collision
             // loudly instead (caught below) so the operator learns a second, untracked process is
             // out there rather than losing track of it entirely.
-            delegateSession.Events.Append(plan.RunId, expectedVersion: fence.Version + 1, new RunPhaseDelegated(
+            delegateSession.Events.Append(plan.RunId, expectedVersion: fence.Version + 2, new RunPhaseDelegated(
                 plan.RunId, settings.Note, DateTimeOffset.UtcNow, plan.OwnerId, plan.SessionName,
                 plan.SessionFileKey, plan.Model), new InteractiveSessionStarted(
                 plan.RunId, plan.ClaudeSessionId, startedAt, processId, Environment.MachineName, plan.SessionName));
