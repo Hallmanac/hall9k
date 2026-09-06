@@ -36,7 +36,6 @@ public sealed class ProjectJiraBindingTests
             project,
             Optional<IReadOnlyList<VerifyCommand>>.None,
             Optional<bool>.None,
-            Optional<int>.None,
             Optional<IReadOnlyList<ContextLink>>.None,
             Now,
             Owner,
@@ -78,7 +77,6 @@ public sealed class ProjectJiraBindingTests
             aggregate,
             Optional<IReadOnlyList<VerifyCommand>>.None,
             Optional<bool>.Of(true),
-            Optional<int>.None,
             Optional<IReadOnlyList<ContextLink>>.None,
             Now,
             Owner);

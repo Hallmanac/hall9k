@@ -4020,6 +4020,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 streamId,
                 Optional<IReadOnlyList<VerifyCommand>>.None,
                 Optional<bool>.None,
+                // The retired session-denominated ceiling: still on the event for replay, never
+                // written by anything again (Decisions Log #140).
                 Optional<int>.None,
                 Optional<IReadOnlyList<ContextLink>>.None,
                 Now,

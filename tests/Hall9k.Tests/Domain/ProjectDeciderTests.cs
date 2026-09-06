@@ -47,20 +47,85 @@ public sealed class ProjectDeciderTests
         act.Should().Throw<DomainValidationException>();
     }
 
+    /// <summary>
+    /// The per-project run ceiling's own floor is 0, not 1 (Decisions Log #140): 0 is the
+    /// deliberate pause, which is the one thing this cap can do that no other cap in this decider
+    /// can. Below that there is nothing to mean, so it is refused with the rule quoted.
+    /// </summary>
     [Fact]
-    public void ChangeSettings_with_zero_parallel_agents_fails_validation()
+    public void ChangeSettings_takes_a_parallel_task_cap_of_zero_as_a_pause_and_refuses_less()
     {
         ProjectAggregate project = RegisteredProject();
+
+        ProjectSettingsChanged paused = ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            maxParallelTasks: Optional<int?>.Of(0));
+        project.Apply(paused);
+        project.MaxParallelTasks.Should().Be(0, "0 is the pause, not an invalid ceiling");
 
         Action act = () => ProjectDecider.ChangeSettings(
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: 0,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
-            changedAt: Now, changedByOwnerId: DomainId.New());
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            maxParallelTasks: Optional<int?>.Of(-1));
 
-        act.Should().Throw<DomainValidationException>();
+        act.Should().Throw<DomainValidationException>().WithMessage("*must be 0 or more*");
+    }
+
+    /// <summary>
+    /// The clearing idiom the review caps already use, applied to this one: present-with-null
+    /// hands the decision back to the node ceiling, which is what an untouched project runs on.
+    /// </summary>
+    [Fact]
+    public void ChangeSettings_lets_a_cleared_parallel_task_cap_hand_the_decision_back_to_the_node()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.MaxParallelTasks.Should().BeNull("an untouched project is uncapped");
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            maxParallelTasks: Optional<int?>.Of(2)));
+        project.MaxParallelTasks.Should().Be(2);
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            maxParallelTasks: Optional<int?>.Of(null)));
+        project.MaxParallelTasks.Should().BeNull("'default' clears the cap so the node ceiling alone decides");
+    }
+
+    /// <summary>
+    /// The retired session-denominated ceiling is never written again (Decisions Log #140):
+    /// there is no parameter left to write it with, so every event this decider produces from
+    /// here on leaves the field absent and a project that recorded one keeps exactly what it
+    /// recorded — which is what h9k project show reads to name the retirement.
+    /// </summary>
+    [Fact]
+    public void ChangeSettings_never_writes_the_retired_session_denominated_ceiling_again()
+    {
+        ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
+            RegisteredProject(),
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            maxParallelTasks: Optional<int?>.Of(1));
+
+        changed.MaxParallelAgents.HasValue.Should().BeFalse();
+        changed.MaxParallelTasks.Value.Should().Be(1);
     }
 
     [Fact]
@@ -72,7 +137,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             maxAdversarialReviewCycles: Optional<int?>.Of(0));
@@ -88,7 +152,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             maxComplianceReviewCycles: Optional<int?>.Of(1)));
@@ -98,7 +161,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             maxComplianceReviewCycles: Optional<int?>.Of(null)));
@@ -115,7 +177,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             commitStyle: Optional<CommitStyle>.Of("Squash"));
@@ -141,7 +202,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             commitStyle: Optional<CommitStyle>.Of(CommitStyle.Unknown));
@@ -219,7 +279,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             branchNameTemplate: Optional<BranchNameTemplate>.Of(template));
@@ -246,21 +305,21 @@ public sealed class ProjectDeciderTests
 
         ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             model: Optional<AgentModel>.Of(AgentModel.FromInput("claude-sonnet-5")));
         project.Apply(set);
         project.Model.Value.Should().Be("claude-sonnet-5");
 
         ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             model: Optional<AgentModel>.Of(AgentModel.FromInput("default")));
         project.Apply(cleared);
         project.Model.Should().Be(AgentModel.Unknown, "'default' hands the decision back to the chain");
 
         ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
         untouched.Model.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
     }
 
@@ -269,7 +328,7 @@ public sealed class ProjectDeciderTests
     {
         Action act = () => ProjectDecider.ChangeSettings(
             Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             model: Optional<AgentModel>.Of(AgentModel.FromInput("$(id)")));
 
         act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
@@ -287,21 +346,21 @@ public sealed class ProjectDeciderTests
 
         ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             reviewStageComposition: Optional<string?>.Of("conformance-only"), reviewStageCompositionAcknowledged: true);
         project.Apply(set);
         project.ReviewStageComposition?.Value.Should().Be("ConformanceOnly");
 
         ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             reviewStageComposition: Optional<string?>.Of("default"));
         project.Apply(cleared);
         project.ReviewStageComposition.Should().BeNull("'default' hands the decision back to the node");
 
         ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
         untouched.ReviewStageComposition.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
     }
 
@@ -310,7 +369,7 @@ public sealed class ProjectDeciderTests
     {
         Action act = () => ProjectDecider.ChangeSettings(
             Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             reviewStageComposition: Optional<string?>.Of("none"));
 
         act.Should().Throw<DomainValidationException>()
@@ -323,7 +382,7 @@ public sealed class ProjectDeciderTests
     {
         ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
             Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             reviewStageComposition: Optional<string?>.Of("none"), reviewStageCompositionAcknowledged: true);
 
         changed.ReviewStageComposition.Value?.Value.Should().Be("None");
@@ -340,7 +399,7 @@ public sealed class ProjectDeciderTests
     {
         ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
             Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             reviewStageComposition: Optional<string?>.Of("full-pipeline"), reviewStageCompositionAcknowledged: true);
 
         changed.ReviewStageComposition.Value?.Value.Should().Be("FullPipeline");
@@ -357,7 +416,7 @@ public sealed class ProjectDeciderTests
     {
         ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
             Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             acceptedBrokenGate: true);
 
         changed.AcceptedBrokenGate.Should().BeFalse(
@@ -370,8 +429,9 @@ public sealed class ProjectDeciderTests
         ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
             Registered(),
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of([new VerifyCommand("test", "dotnet test")]),
-            skipPermissions: Optional<bool>.None, maxParallelAgents: Optional<int>.None,
-            contextLinks: Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
             acceptedBrokenGate: true);
 
         changed.AcceptedBrokenGate.Should().BeTrue();
@@ -392,7 +452,7 @@ public sealed class ProjectDeciderTests
     {
         Action act = () => ProjectDecider.ChangeSettings(
             Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             backlogPolicy: Optional<BacklogPolicy>.Of("trello"));
 
         act.Should().Throw<DomainValidationException>().WithMessage("*None*GitHubIssues*Jira*");
@@ -405,21 +465,21 @@ public sealed class ProjectDeciderTests
 
         ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             backlogPolicy: Optional<BacklogPolicy>.Of(BacklogPolicy.GitHubIssues));
         project.Apply(set);
         project.BacklogPolicy.Should().Be(BacklogPolicy.GitHubIssues);
 
         ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             backlogPolicy: Optional<BacklogPolicy>.Of(BacklogPolicy.None));
         project.Apply(cleared);
         project.BacklogPolicy.Should().Be(BacklogPolicy.None, "none is both the default and the explicit stop");
 
         ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
         untouched.BacklogPolicy.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
     }
 
@@ -428,7 +488,7 @@ public sealed class ProjectDeciderTests
     {
         Action act = () => ProjectDecider.ChangeSettings(
             Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             autoPrReview: Optional<AutoPrReviewSpeed>.Of("fast"));
 
         act.Should().Throw<DomainValidationException>().WithMessage("*Off*Normal*First*Now*");
@@ -442,21 +502,21 @@ public sealed class ProjectDeciderTests
 
         ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Now));
         project.Apply(set);
         project.AutoPrReview.Should().Be(AutoPrReviewSpeed.Now);
 
         ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off));
         project.Apply(cleared);
         project.AutoPrReview.Should().Be(AutoPrReviewSpeed.Off);
 
         ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
         untouched.AutoPrReview.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
     }
 
@@ -466,13 +526,13 @@ public sealed class ProjectDeciderTests
         ProjectAggregate project = Registered();
         project.Apply(ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             backlogRoutingGuidance: Optional<string>.Of("epic-first")));
         project.BacklogRoutingGuidance.Should().Be("epic-first");
 
         project.Apply(ProjectDecider.ChangeSettings(
             project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
-            Optional<int>.None, Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             backlogRoutingGuidance: Optional<string>.Of(string.Empty)));
         project.BacklogRoutingGuidance.Should().BeNull("present but empty clears it, the ContextLinks/JiraProjectKey idiom");
     }

@@ -16,7 +16,19 @@ public sealed class ProjectDetails
     public Uri? RepositoryUrl { get; set; }
     public string BaseBranch { get; set; } = string.Empty;
     public bool SkipPermissions { get; set; }
-    public int MaxParallelAgents { get; set; } = 3;
+    /// <summary>
+    /// The retired session-denominated per-project ceiling (Decisions Log #140) — read only to
+    /// name the retirement to whoever set it. Nothing appends it and nothing enforces it;
+    /// <see cref="MaxParallelTasks"/> is what the dispatcher reads.
+    /// </summary>
+    public int MaxParallelAgents { get; set; } = ProjectAggregate.LegacyMaxParallelAgentsDefault;
+    /// <summary>
+    /// This project's own run ceiling in task runs (Decisions Log #140); null is uncapped and 0
+    /// is the deliberate pause. <see cref="ProjectRunCeiling"/> owns the semantics, and the
+    /// dispatcher re-reads this document every sweep, so a change lands on the next dispatch
+    /// cycle with no daemon restart.
+    /// </summary>
+    public int? MaxParallelTasks { get; set; }
     public CommitStyle CommitStyle { get; set; } = CommitStyle.Unknown;
     /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
@@ -93,6 +105,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.MaxParallelAgents.HasValue)
         {
             view.MaxParallelAgents = @event.Data.MaxParallelAgents.Value;
+        }
+
+        if (@event.Data.MaxParallelTasks.HasValue)
+        {
+            view.MaxParallelTasks = @event.Data.MaxParallelTasks.Value;
         }
 
         if (@event.Data.ContextLinks.HasValue)

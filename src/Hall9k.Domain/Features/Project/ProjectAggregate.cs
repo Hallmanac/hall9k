@@ -14,7 +14,30 @@ public sealed class ProjectAggregate
     public Uri? RepositoryUrl { get; private set; }
     public string BaseBranch { get; private set; } = string.Empty;
     public bool SkipPermissions { get; private set; }
-    public int MaxParallelAgents { get; private set; } = 3;
+    /// <summary>
+    /// The retired session-denominated per-project ceiling (Decisions Log #140), replayed off
+    /// streams that recorded one so <c>h9k project show</c>/<c>h9k project set</c> can name the
+    /// retirement to whoever set it. Nothing appends it any more and nothing enforces it;
+    /// <see cref="MaxParallelTasks"/> is the setting the dispatcher reads.
+    /// <see cref="LegacyMaxParallelAgentsDefault"/> is what an untouched project reads, and the
+    /// one value a recorded setting is indistinguishable from.
+    /// </summary>
+    public int MaxParallelAgents { get; private set; } = LegacyMaxParallelAgentsDefault;
+    /// <summary>
+    /// This project's own run ceiling in task runs (Decisions Log #140): how many of its runs the
+    /// dispatcher may hold live at once. Null is uncapped — the node ceiling alone decides, the
+    /// behaviour every project had before this setting existed — and 0 is the deliberate pause.
+    /// <see cref="ProjectRunCeiling"/> owns what those values mean.
+    /// </summary>
+    public int? MaxParallelTasks { get; private set; }
+
+    /// <summary>
+    /// What <see cref="MaxParallelAgents"/> reads on a project that never recorded one. A
+    /// recorded 3 is indistinguishable from this default — deliberately not worked around,
+    /// because retiring a 3 and retiring an absence come to the same enforced behaviour
+    /// (uncapped), so the notice that would tell them apart has nothing to add.
+    /// </summary>
+    public const int LegacyMaxParallelAgentsDefault = 3;
     public CommitStyle CommitStyle { get; private set; } = CommitStyle.Unknown;
     /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
@@ -94,6 +117,11 @@ public sealed class ProjectAggregate
         if (@event.MaxParallelAgents.HasValue)
         {
             MaxParallelAgents = @event.MaxParallelAgents.Value;
+        }
+
+        if (@event.MaxParallelTasks.HasValue)
+        {
+            MaxParallelTasks = @event.MaxParallelTasks.Value;
         }
 
         if (@event.ContextLinks.HasValue)

@@ -569,7 +569,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 project,
                 Optional<IReadOnlyList<VerifyCommand>>.None,
                 Optional<bool>.None,
-                Optional<int>.None,
                 Optional<IReadOnlyList<ContextLink>>.None,
                 Now, node.OwnerId,
                 model: Optional<AgentModel>.Of(AgentModel.Sonnet));
@@ -722,7 +721,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 project,
                 Optional<IReadOnlyList<VerifyCommand>>.None,
                 Optional<bool>.None,
-                Optional<int>.None,
                 Optional<IReadOnlyList<ContextLink>>.None,
                 Now, node.OwnerId,
                 reviewStageComposition: Optional<string?>.Of("none"), reviewStageCompositionAcknowledged: true);

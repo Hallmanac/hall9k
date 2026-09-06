@@ -71,4 +71,75 @@ public sealed class ProjectDetailsProjectionTests
             ChangedAt: Now.AddMinutes(2), ChangedByOwnerId: DomainId.New())), view);
         view.CommitStyle.Should().Be(CommitStyle.Narrative, "an absent optional leaves the setting unchanged");
     }
+
+    /// <summary>
+    /// The per-project run ceiling the dispatcher reads (Decisions Log #140): absent leaves it
+    /// alone, 0 is the pause the projection must carry as a real value rather than lose to a
+    /// falsy reading, and present-with-null clears it back to uncapped.
+    /// </summary>
+    [Fact]
+    public void The_parallel_task_cap_carries_zero_as_a_pause_and_a_cleared_value_as_uncapped()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+        view.MaxParallelTasks.Should().BeNull("an untouched project is uncapped");
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: Optional<bool>.None,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(1), ChangedByOwnerId: DomainId.New(),
+            MaxParallelTasks: Optional<int?>.Of(0))), view);
+        view.MaxParallelTasks.Should().Be(0);
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: true,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(2), ChangedByOwnerId: DomainId.New())), view);
+        view.MaxParallelTasks.Should().Be(0, "an absent optional leaves the pause standing");
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: Optional<bool>.None,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(3), ChangedByOwnerId: DomainId.New(),
+            MaxParallelTasks: Optional<int?>.Of(null))), view);
+        view.MaxParallelTasks.Should().BeNull("present-with-null clears the cap so the node ceiling decides");
+    }
+
+    /// <summary>
+    /// A stream that recorded the retired session-denominated ceiling keeps exactly what it
+    /// recorded, and it does not become a run cap: that is the whole retirement (Decisions Log
+    /// #140) — the old number was never enforced, so it is named rather than converted.
+    /// </summary>
+    [Fact]
+    public void The_retired_session_denominated_ceiling_replays_without_becoming_a_run_cap()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: Optional<bool>.None,
+            MaxParallelAgents: 6,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(1), ChangedByOwnerId: DomainId.New())), view);
+
+        view.MaxParallelAgents.Should().Be(6);
+        view.MaxParallelTasks.Should().BeNull("the retired value is not carried into the enforced ceiling");
+    }
 }
