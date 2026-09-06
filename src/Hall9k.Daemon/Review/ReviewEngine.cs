@@ -1904,8 +1904,24 @@ public sealed class ReviewEngine(
             }
 
             string? mergeBaseForStuckRebase = null;
+            string? preRebaseHead = null;
             try
             {
+                // Captured before anything below can mutate the worktree, the same
+                // "preRebaseHead" shape CloseoutEngine.TryMechanicalRebaseAsync's own mechanical
+                // rebase already captures for the identical reason: a rebase can exit 0 while a
+                // background process still holds its output pipe open (the
+                // ProcessOutputStuckException case below), and when that happens the worktree is
+                // read back and, if the rebase is not confirmed to have landed, hard-reset here
+                // rather than left silently rewritten with nothing recorded and no gate ever run
+                // over it (independent pre-PR review, cycle 1, adversarial lens —
+                // RestoreRebaseWorktreeBestEffortAsync's own `git rebase --abort` is a no-op once
+                // a rebase has actually completed, so without this it could not undo one). Inside
+                // this try, not before it, so a stuck pipe or a deadline on this read itself is
+                // handled by the same catches below rather than escaping uncaught.
+                ProcessResult preRebaseHeadResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+                preRebaseHead = preRebaseHeadResult.ExitCode == 0 ? preRebaseHeadResult.StandardOutput.Trim() : null;
+
                 ProcessResult fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
                 if (fetch.ExitCode != 0)
                 {
@@ -1956,7 +1972,7 @@ public sealed class ReviewEngine(
                 // scope to dispatch the recovery session below (Brian's 2026-09-04 ruling on
                 // scope: git conflicting is itself evidence that judgment IS required, unlike the
                 // clean-apply case above).
-                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, cancellationToken);
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
             }
             // git itself can have exited 0 for whichever call was in flight — most importantly the
             // `git rebase` call above, which actually mutates the worktree — while something it
@@ -1981,7 +1997,7 @@ public sealed class ReviewEngine(
                     return RebaseGateOutcome.Proceed;
                 }
 
-                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, cancellationToken);
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
                 logger.LogWarning(
                     exception,
                     "Run {RunId}: a git call before the mandatory final pass exited 0 but its output pipe stuck past the drain grace, and the worktree does not confirm a rebase landed — proceeding unrebased",
@@ -1990,7 +2006,7 @@ public sealed class ReviewEngine(
             }
             catch (TimeoutException exception)
             {
-                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, cancellationToken);
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
                 logger.LogWarning(
                     exception,
                     "Run {RunId}: a git call exceeded its deadline checking origin/{Base} before the mandatory final pass — proceeding unrebased",
@@ -2156,22 +2172,40 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Restores the worktree to its own branch tip after a plain rebase attempt conflicted
-    /// (`git rebase --abort`, harmless when no rebase is in progress) — simpler than
-    /// <c>CloseoutEngine.RestoreWorktreeBestEffortAsync</c>'s own version because nothing here
-    /// ever pushes: there is no "the rebase completed but the push failed" case to also hard-reset
-    /// for, since <see cref="EnsureRebasedBeforeFinalPassAsync"/> never reaches a push at all.
+    /// Restores the worktree to its own branch tip after a plain rebase attempt did not cleanly
+    /// resolve: `git rebase --abort` first, harmless when no rebase is in progress, then — when
+    /// <paramref name="preRebaseHead"/> is known and the worktree no longer sits there — a hard
+    /// reset back to it. The abort alone used to be treated as enough, on the reasoning that
+    /// nothing here ever pushes so there was no "the rebase completed but the push failed" case
+    /// to also hard-reset for the way <c>CloseoutEngine.RestoreWorktreeBestEffortAsync</c> does —
+    /// but a rebase call itself can exit 0 while a background process still holds its output pipe
+    /// open, and `git rebase --abort` is a no-op once the rebase it would have aborted has already
+    /// finished (independent pre-PR review, cycle 1, adversarial lens): without this reset, a
+    /// caller that could not confirm the rebase landed was leaving a silently-rebased worktree in
+    /// place, ungated and unrecorded, rather than actually restoring it.
     /// </summary>
     private async Task RestoreRebaseWorktreeBestEffortAsync(
-        ProcessRunner git, string worktreePath, CancellationToken cancellationToken)
+        ProcessRunner git, string worktreePath, string? preRebaseHead, CancellationToken cancellationToken)
     {
         try
         {
             await git("git", ["rebase", "--abort"], worktreePath, cancellationToken);
+
+            if (preRebaseHead is not null)
+            {
+                ProcessResult headCheck = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+                if (headCheck.ExitCode != 0 || headCheck.StandardOutput.Trim() != preRebaseHead)
+                {
+                    await git("git", ["reset", "--hard", preRebaseHead], worktreePath, cancellationToken);
+                }
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            logger.LogWarning(exception, "Pre-final-pass rebase recovery failed to abort the in-progress rebase at {Path}", worktreePath);
+            logger.LogWarning(
+                exception,
+                "Pre-final-pass rebase recovery failed to restore {Path} back to {Head}",
+                worktreePath, preRebaseHead ?? "(unknown)");
         }
     }
 
