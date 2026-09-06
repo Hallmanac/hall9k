@@ -50,20 +50,9 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
         // whole directory relocated into or out of tasks/_archive/ by the render sweep, taking
         // this run's directory with it (backlog 51). Reading a merged task's transcript is
         // exactly when that recorded path is stale, so resolve where it actually is first.
-        //
-        // RunDetails is loaded unconditionally here (not only on a run-level miss, the way it
-        // used to be) because h9k task delegate spawns each contractor into its own
-        // session-scoped stream file (RunPaths.SessionStreamFile), never the run-level one — a
-        // delegation is always the newest activity on a run when it happens at all (delivering,
-        // handing back, releasing, retrying, or abandoning a claim all end the run outright, so
-        // nothing can delegate again afterward), so the latest recorded PhaseDelegation's own
-        // file is preferred outright rather than only as a fallback when the run-level file is
-        // absent (independent pre-PR review, cycle 1, on h9k task delegate).
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         RunDetails? runDetails = await session.LoadAsync<RunDetails>(run.Id, cancellationToken);
-        string streamFile = runDetails?.PhaseDelegations is { Count: > 0 } delegations
-            ? RunPaths.SessionStreamFile(resolvedRunDirectory, delegations[^1].SessionFileKey)
-            : RunPaths.StreamFile(resolvedRunDirectory);
+        string streamFile = ResolveStreamFile(resolvedRunDirectory, runDetails);
         if (!File.Exists(streamFile))
         {
             // An attached interactive session (h9k task work) never writes stream.jsonl on any
@@ -102,6 +91,36 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Picks which of a run's stream files this command actually reads, out of the run-level
+    /// <c>stream.jsonl</c> and the latest delegation's own session-scoped file. h9k task delegate
+    /// spawns each contractor into its own file (<see cref="RunPaths.SessionStreamFile"/>), never
+    /// the run-level one — a delegation is always the newest activity on a run when it happens at
+    /// all (delivering, handing back, releasing, retrying, or abandoning a claim all end the run
+    /// outright, so nothing can delegate again afterward), so the latest recorded
+    /// <c>PhaseDelegation</c>'s own file is preferred outright rather than only as a fallback when
+    /// the run-level file is absent (independent pre-PR review, cycle 1, on h9k task delegate).
+    /// <para>
+    /// Falls back to the run-level file, never throws outright, when the latest delegation's own
+    /// file does not exist or was never written to (the contractor was killed, or ended before its
+    /// first output line) — mirrors <c>TaskDeliverCommand</c>'s identical fallback for handoff text
+    /// (<c>TaskDeliverCommand.cs:262</c>): a run-level transcript a start-it-mine claim's own agent
+    /// wrote before ever being delegated is still worth showing rather than an honest-looking "no
+    /// stream file" hiding a transcript that does exist (adversarial review, cycle 1, ride-along).
+    /// </para>
+    /// </summary>
+    internal static string ResolveStreamFile(string resolvedRunDirectory, RunDetails? runDetails)
+    {
+        string runLevelStreamFile = RunPaths.StreamFile(resolvedRunDirectory);
+        string? delegationStreamFile = runDetails?.PhaseDelegations is { Count: > 0 } delegations
+            ? RunPaths.SessionStreamFile(resolvedRunDirectory, delegations[^1].SessionFileKey)
+            : null;
+        bool delegationStreamUsable = delegationStreamFile is not null
+            && File.Exists(delegationStreamFile)
+            && new FileInfo(delegationStreamFile).Length > 0;
+        return delegationStreamUsable ? delegationStreamFile! : runLevelStreamFile;
     }
 
     /// <summary>
