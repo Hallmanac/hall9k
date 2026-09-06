@@ -439,6 +439,93 @@ public sealed class RunReviewProjectionTests
         view.LastFixSessionEscalationCycle.Should().Be(2);
     }
 
+    /// <summary>
+    /// The pre-final-pass rebase check re-runs on every Settling entry (task: a run rebases its
+    /// branch onto the current base branch), so a real rebase or a recovery is routinely followed,
+    /// moments later, by a no-op re-check that finds nothing left to do — that later no-op must not
+    /// clobber the meaningful outcome already on record (independent pre-PR review, cycle 1, both
+    /// lenses: without this guard, <c>h9k task show</c> reported the last CHECK rather than the
+    /// last REBASE, including overwriting "recovered by a narrow session" the instant the loop
+    /// re-entered Settling after the recovery completed).
+    /// </summary>
+    [Fact]
+    public void Run_details_does_not_let_a_trailing_no_op_check_clobber_a_real_pre_final_pass_rebase()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunRebasedOntoBase>(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: false,
+            "Rebased cleanly onto origin/main (from abc1234567 to def7654321).", Now)), view);
+
+        view.LastPreFinalPassRebaseWasNoOp.Should().BeFalse();
+        view.LastPreFinalPassRebaseDetail.Should().Contain("Rebased cleanly");
+
+        // The FinalFullPass this real rebase earned runs and lands, the loop re-enters Settling,
+        // and the unconditional check runs again — this time finding nothing left to rebase.
+        projection.Apply(new FakeEvent<RunRebasedOntoBase>(new RunRebasedOntoBase(
+            id, "def7654321", "def7654321", WasNoOp: true, RecoveredByAgentSession: false,
+            "origin/main has not moved since this branch's own merge base — nothing to rebase.", Now)), view);
+
+        view.LastPreFinalPassRebaseWasNoOp.Should().BeFalse(
+            "the later no-op check carries no new information and must not overwrite the real rebase already on record");
+        view.LastPreFinalPassRebaseDetail.Should().Contain("Rebased cleanly");
+    }
+
+    /// <summary>
+    /// The identical clobbering risk for a recovery session's own outcome (independent pre-PR
+    /// review, cycle 1, adversarial lens): a conflict resolved by the narrow recovery session
+    /// records <c>RecoveredByAgentSession: true</c>, and the loop returns straight to Settling,
+    /// whose own rebase check runs again immediately and would otherwise overwrite "recovered by a
+    /// narrow session" with a no-op before any human ever saw it.
+    /// </summary>
+    [Fact]
+    public void Run_details_does_not_let_a_trailing_no_op_check_clobber_a_recovered_rebase()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunRebasedOntoBase>(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: true,
+            "Resolved by a narrow recovery session (rebase-onto-main skill), from abc1234567 to def7654321.", Now)), view);
+
+        view.LastPreFinalPassRebaseRecovered.Should().BeTrue();
+
+        projection.Apply(new FakeEvent<RunRebasedOntoBase>(new RunRebasedOntoBase(
+            id, "def7654321", "def7654321", WasNoOp: true, RecoveredByAgentSession: false,
+            "origin/main has not moved since this branch's own merge base — nothing to rebase.", Now)), view);
+
+        view.LastPreFinalPassRebaseWasNoOp.Should().BeFalse("the recovery's own outcome must survive the immediate re-check");
+        view.LastPreFinalPassRebaseRecovered.Should().BeTrue(
+            "the operator investigating why the branch's history was rewritten must still see the recovery, not a no-op");
+    }
+
+    /// <summary>
+    /// A second genuine rebase (origin/main moved again later in the same run) is meaningful new
+    /// information and must still overwrite the earlier record — the no-op guard above only
+    /// suppresses a no-op immediately re-confirming a rebase already on file, never a later
+    /// non-no-op event.
+    /// </summary>
+    [Fact]
+    public void Run_details_still_records_a_second_real_pre_final_pass_rebase()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunRebasedOntoBase>(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: false,
+            "Rebased cleanly onto origin/main (from abc1234567 to def7654321).", Now)), view);
+
+        projection.Apply(new FakeEvent<RunRebasedOntoBase>(new RunRebasedOntoBase(
+            id, "def7654321", "ghi0000000", WasNoOp: false, RecoveredByAgentSession: false,
+            "Rebased cleanly onto origin/main (from def7654321 to ghi0000000).", Now)), view);
+
+        view.LastPreFinalPassRebaseOntoCommit.Should().Be("ghi0000000", "a second genuine rebase is new information, not a stale re-check");
+    }
+
     [Fact]
     public void Run_list_item_walks_under_review_and_review_parked()
     {

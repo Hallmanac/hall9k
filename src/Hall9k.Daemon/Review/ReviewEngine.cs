@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Text;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -88,7 +89,8 @@ public sealed class ReviewEngine(
     VerificationRunner verification,
     IOptions<DaemonOptions> options,
     ILogger<ReviewEngine> logger,
-    IWorktreeManager worktrees)
+    IWorktreeManager worktrees,
+    ProcessRunner processRunner)
 {
     /// <summary>
     /// How long a single git call in the pre-final-pass rebase check gets (task: a run rebases
@@ -1789,15 +1791,51 @@ public sealed class ReviewEngine(
         string baseBranch = context.Project.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
-        // Checked before anything else touches the worktree, the same order and the same two
-        // checks CloseoutEngine.TryMechanicalRebaseAsync already runs in front of its own `git
-        // rebase` call (independent pre-PR review, cycle 1, conformance lens): a `git rebase` that
-        // exits non-zero without ever starting one — the worktree not on this run's own branch, or
-        // a tracked file left modified or untracked-but-staged in the working tree (the failure
-        // mode AppendRebaseVerificationRule warns fix sessions about) — is not a conflict, and
-        // treating it as one records an unobserved fact (nothing actually conflicted) and spends a
-        // whole recovery session on a false premise. Neither check needs the repository lock below:
-        // both read only this run's own worktree, never the shared bare repository.
+        // Checked before anything else touches the worktree — the same guard
+        // CloseoutEngine.TryMechanicalRebaseAsync runs first, for the same reason (independent
+        // pre-PR review, cycle 1, both lenses): the worktree cannot be read at all whenever a run
+        // is adopted onto a node that never checked it out, or the worktree is simply gone, and
+        // spawning `git` with a WorkingDirectory that does not exist throws rather than exiting
+        // non-zero — the ordinary "fetch/read failure" handling below never gets a chance to run.
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            logger.LogWarning(
+                "Run {RunId}: the run's retained worktree is missing before the mandatory final pass — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
+                context.RunId);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        // A follow-up run reuses whatever pull request the task already has open, and that pull
+        // request's base can have been retargeted away from the project's own base branch on
+        // GitHub itself (the stacked-PR shape AGENTS.md documents as current practice) — the same
+        // fact CloseoutEngine's own mechanical rebase checks before ever touching git, for the
+        // same reason (independent pre-PR review, cycle 1, both lenses): rebasing onto
+        // baseBranch in that case would silently rewrite the branch onto a base it was never
+        // meant to be on. A fresh run has no pull request yet, so there is nothing to retarget and
+        // this is skipped entirely; a read failure is treated the same as "no mismatch observed" —
+        // the identical fetch/read-failure stance every other git call in this method already
+        // takes.
+        if (context.Task.PullRequestUrl.IsNotBlank())
+        {
+            string? retargetedBase = await TryReadRetargetedPullRequestBaseAsync(context, baseBranch, cancellationToken);
+            if (retargetedBase is not null)
+            {
+                logger.LogWarning(
+                    "Run {RunId}: the pull request's actual base is {ActualBase}, not this project's own base branch {ProjectBase} — skipping the pre-final-pass rebase so it does not silently rewrite the branch onto a base it was never meant to be on; closeout's own mechanical rebase already refuses the identical mismatch",
+                    context.RunId, retargetedBase, baseBranch);
+                return RebaseGateOutcome.Proceed;
+            }
+        }
+
+        // Checked next, the same order and the same two checks CloseoutEngine.TryMechanicalRebaseAsync
+        // already runs in front of its own `git rebase` call (independent pre-PR review, cycle 1,
+        // conformance lens): a `git rebase` that exits non-zero without ever starting one — the
+        // worktree not on this run's own branch, or a tracked file left modified or
+        // untracked-but-staged in the working tree (the failure mode AppendRebaseVerificationRule
+        // warns fix sessions about) — is not a conflict, and treating it as one records an
+        // unobserved fact (nothing actually conflicted) and spends a whole recovery session on a
+        // false premise. Neither check needs the repository lock below: both read only this run's
+        // own worktree, never the shared bare repository.
         ProcessResult branchCheck = await git(
             "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
         if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != context.Run.Branch)
@@ -1908,6 +1946,40 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
+    /// A live <c>gh pr view</c> read of the task's own pull request's actual base — never the
+    /// task's adoption-time snapshot, since a human can retarget a pull request's base on GitHub
+    /// at any time, and never cached, for the identical reason
+    /// <see cref="Hall9k.Connectors.WorkItems.GitHubPullRequestProvider"/>'s own doc gives for
+    /// reading BaseRefName fresh at every dispatch. Returns the actual base only when it was read
+    /// successfully AND it differs from <paramref name="projectBaseBranch"/> — null otherwise,
+    /// which the caller treats identically whether that means "confirmed to match" or "could not
+    /// be confirmed at all": a transient gh failure here is not evidence of a mismatch, and the
+    /// ordinary post-push closeout mechanical rebase still refuses the identical mismatch later if
+    /// this read simply missed it (the same "fetch/read failure is not this run's fault" stance
+    /// every other git or gh call in this method already takes).
+    /// </summary>
+    private async Task<string?> TryReadRetargetedPullRequestBaseAsync(
+        ReviewContext context, string projectBaseBranch, CancellationToken cancellationToken)
+    {
+        try
+        {
+            PullRequestFacts facts = await new GitHubPullRequestProvider(processRunner).FetchFactsAsync(
+                context.Task.PullRequestUrl!, context.Project.RepositoryPath, cancellationToken);
+            return facts.BaseRefName.IsNotBlank() && facts.BaseRefName != projectBaseBranch
+                ? facts.BaseRefName
+                : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: could not read the pull request's actual base before the mandatory final pass — proceeding as though it still matches the project's own base branch",
+                context.RunId);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Whether the worktree itself, read fresh, shows a completed pre-final-pass rebase onto
     /// <paramref name="baseBranch"/>'s already-fetched tip — checked before trusting an
     /// <see cref="ReviewFixOutcome.Unknown"/> recovery-session outcome as a resolution (independent
@@ -1925,6 +1997,17 @@ public sealed class ReviewEngine(
     private static async Task<bool> RebaseActuallyLandedAsync(
         string worktreePath, string branch, string baseBranch, CancellationToken cancellationToken)
     {
+        // The identical guard EnsureRebasedBeforeFinalPassAsync itself checks first, for the
+        // identical reason (independent pre-PR review, cycle 1, both lenses): spawning `git` with
+        // a WorkingDirectory that does not exist throws rather than exiting non-zero, and this
+        // method's own contract — "not confirmed" reads as false, never as a thrown exception that
+        // fails the whole run — has to hold even when the worktree the recovery session was
+        // supposed to leave behind is missing.
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            return false;
+        }
+
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
         ProcessResult branchCheck = await git(
@@ -2034,6 +2117,25 @@ public sealed class ReviewEngine(
         }
 
         string worktreePath = context.Run.WorktreePath;
+
+        // Reachable with no prior worktree check when a human's own `h9k review resolve
+        // --needs-fixes` redispatches straight into ReviewPhase.RebaseRecoveryNeeded (independent
+        // pre-PR review, cycle 1, both lenses' own class sweep over this same guard): the caller
+        // that dispatches here from a fresh conflict (EnsureRebasedBeforeFinalPassAsync) already
+        // confirmed the worktree moments earlier in the same async flow, but this one has not.
+        // Spawning `git` below with a missing WorkingDirectory throws rather than exiting
+        // non-zero, and there is no worktree here for any agent session to work in regardless, so
+        // this fails the run with an actionable reason instead of letting a raw exception crash
+        // the loop.
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            await FailAsync(
+                context.RunId, context.TaskId,
+                "The pre-final-pass rebase-recovery session cannot dispatch: the run's retained worktree is missing.",
+                cancellationToken);
+            return false;
+        }
+
         string baseBranch = context.Project.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string rebasedFromCommit = "unknown";
@@ -2248,10 +2350,13 @@ public sealed class ReviewEngine(
     /// <c>h9k review resolve --needs-fixes</c> dispatches an ordinary fix session over their
     /// guidance into this same worktree, which can still finish the rebase by hand. A
     /// <c>--merge-ready</c> resolve is not refused here the way <see cref="RebaseRecoveryDisputedParkReason"/>'s
-    /// own park refuses it, but it is not a shortcut past this cap either: the Settling branch's
-    /// own rebase check runs unconditionally on every entry, so an unrebased branch immediately
-    /// re-trips this same cap and re-parks rather than ever reaching <c>PullRequestOpener</c>
-    /// unrebased.
+    /// own park refuses it, but it is not a free pass either: <see cref="RunAggregate.Apply(ReviewParkResolved)"/>'s
+    /// own MergeReady branch resets <see cref="RunAggregate.RebaseRecoveryRounds"/> to 0, the same
+    /// fresh grant a human's resolve already gives every other capped loop in this file — so an
+    /// unrebased branch does not immediately re-trip this same cap, but it does cost up to
+    /// <see cref="MaxRebaseRecoveryRounds"/> more recovery sessions before it can re-park, since
+    /// the Settling branch's own rebase check runs unconditionally on every entry and nothing
+    /// about the resolve itself rebased anything.
     /// </summary>
     private static string RebaseRecoveryCapParkReason(RunAggregate run) =>
         $"The mandatory final pass's own pre-flight rebase has needed a recovery session " +

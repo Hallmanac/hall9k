@@ -935,9 +935,21 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.LastMechanicalRebaseAt = @event.Data.AttemptedAt;
     }
 
-    // Informational only — see RunAggregate.Apply(RunRebasedOntoBase).
+    // Informational only — see RunAggregate.Apply(RunRebasedOntoBase). The pre-final-pass check
+    // re-runs on every Settling entry (task: a run rebases its branch onto the current base
+    // branch), so a real rebase or a recovery is routinely followed, moments later, by a no-op
+    // re-check that finds nothing left to do — that later no-op carries no new information and
+    // must not clobber the meaningful outcome already on record (independent pre-PR review,
+    // cycle 1, both lenses: without this guard, `h9k task show` reported the last *check* rather
+    // than the last *rebase*, including overwriting `recovered by a narrow session` the instant
+    // the loop re-entered Settling after the recovery completed).
     public void Apply(IEvent<RunRebasedOntoBase> @event, RunDetails view)
     {
+        if (@event.Data.WasNoOp && view.LastPreFinalPassRebaseAt is not null && view.LastPreFinalPassRebaseWasNoOp == false)
+        {
+            return;
+        }
+
         view.LastPreFinalPassRebaseWasNoOp = @event.Data.WasNoOp;
         view.LastPreFinalPassRebaseRecovered = @event.Data.RecoveredByAgentSession;
         view.LastPreFinalPassRebaseFromCommit = @event.Data.RebasedFromCommit;
