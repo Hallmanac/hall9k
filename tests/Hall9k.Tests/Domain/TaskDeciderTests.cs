@@ -1229,6 +1229,36 @@ public sealed class TaskDeciderTests
         task.FollowUpBranch.Should().BeNull("completion consumes the follow-up marker");
     }
 
+    /// <summary>
+    /// The seed for a follow-up run's own opening Discovery cycle (task: a lap reviews only what it
+    /// changed): a ReviewFeedback or FailingChecks reopen carries the pull request head closeout
+    /// just observed, while a Rebase reopen and a reopen that supplies none both leave it null.
+    /// </summary>
+    [Fact]
+    public void Reopen_carries_the_pull_request_head_sha_for_review_feedback_and_failing_checks()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+
+        TaskReopened reviewFeedback = TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc-branch", "Unresolved review comments",
+            FollowUpKind.ReviewFeedback, automatic: true, Now, DomainId.New(),
+            pullRequestHeadSha: "abc1234");
+        reviewFeedback.PullRequestHeadSha.Should().Be("abc1234");
+        task.Apply(reviewFeedback);
+        task.FollowUpPullRequestHeadSha.Should().Be(
+            "abc1234", "the launcher carries this onto the follow-up run's own opening Discovery cycle");
+
+        CompleteFollowUp(task);
+        task.FollowUpPullRequestHeadSha.Should().BeNull("completion consumes the follow-up marker like FollowUpKind");
+
+        TaskReopened rebase = TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc-branch", "The pull request's branch conflicts with its base.",
+            FollowUpKind.Rebase, automatic: true, Now, DomainId.New());
+        rebase.PullRequestHeadSha.Should().BeNull(
+            "Rebase is excluded from the opening-cycle review scope seed — unchanged, per Brian's "
+                + "2026-09-04 triage ruling");
+    }
+
     [Fact]
     public void Automatic_reopens_count_toward_the_closeout_budget_and_a_manual_reopen_resets_it()
     {

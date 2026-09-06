@@ -160,6 +160,14 @@ public sealed class TaskAggregate
     /// <summary>Why the pending follow-up run exists; the launcher picks the agent prompt from it.</summary>
     public FollowUpKind FollowUpKind { get; private set; } = FollowUpKind.Unknown;
     /// <summary>
+    /// The pull request head closeout observed when it reopened this task for a ReviewFeedback or
+    /// FailingChecks follow-up (task: a lap reviews only what it changed) — the launcher carries
+    /// this onto the follow-up run's own RunDispatched as the seed for its opening Discovery
+    /// cycle's diff instruction. Null for a Rebase follow-up, a manual reopen, or a task never
+    /// reopened at all; see <see cref="TaskReopened.PullRequestHeadSha"/>'s own doc.
+    /// </summary>
+    public string? FollowUpPullRequestHeadSha { get; private set; }
+    /// <summary>
     /// Set while a human-requested retry of a failed task is pending (Decisions Log #25):
     /// the failed run's branch, resumed by the next claim when it still exists — the
     /// launcher starts clean from the base branch when it is gone (or when this is null).
@@ -638,6 +646,7 @@ public sealed class TaskAggregate
         PullRequestUrl = @event.PullRequestUrl;
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
+        FollowUpPullRequestHeadSha = null;
         RetryBranch = null;
         State = TaskState.Done;
         // A marker set while this same claim was live (h9k task revise --queue-first on a
@@ -651,6 +660,7 @@ public sealed class TaskAggregate
     {
         FollowUpBranch = @event.Branch;
         FollowUpKind = @event.Kind ?? FollowUpKind.Unknown;
+        FollowUpPullRequestHeadSha = @event.PullRequestHeadSha;
 
         if (@event.Automatic)
         {
@@ -754,6 +764,7 @@ public sealed class TaskAggregate
         PullRequestUrl = @event.PullRequestUrl ?? PullRequestUrl;
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
+        FollowUpPullRequestHeadSha = null;
         RetryBranch = null;
         State = TaskState.Done;
         // Same reasoning as Apply(TaskCompleted): a resolved task reaches Done without ever
@@ -884,6 +895,7 @@ public sealed class TaskAggregate
         PendingQuestionId = null;
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
+        FollowUpPullRequestHeadSha = null;
         RetryBranch = null;
         State = TaskState.Abandoned;
         // Same reasoning as Apply(TaskCompleted): a marker set earlier in this task's life is a

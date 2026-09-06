@@ -1788,6 +1788,62 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The seed for the follow-up run's own opening Discovery cycle (task: a lap reviews only what
+    /// it changed): a FailingChecks reopen carries the pull request head this sweep's own inspection
+    /// just observed, so a later run's ReviewEngine can scope its opening cycle to it.
+    /// </summary>
+    [Fact]
+    public async Task Failing_checks_reopen_carries_the_observed_pull_request_head_as_the_review_scope_seed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build (windows-latest)"], HeadCommit = "cafe999" },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.FollowUpPullRequestHeadSha.Should().Be(
+            "cafe999", "the launcher carries this onto the follow-up run's own RunDispatched");
+    }
+
+    /// <summary>
+    /// The Rebase follow-up is excluded from the opening-cycle review scope seed (Brian's
+    /// 2026-09-04 triage ruling governs that path unchanged): a conflicting pull request's own
+    /// reopen never records a pull request head for a later Discovery cycle to scope against.
+    /// </summary>
+    [Fact]
+    public async Task A_rebase_reopen_never_carries_a_review_scope_seed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+        SeedGenuineConflictOnMain(repoPath);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true, HeadCommit = "deadbeef" },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.FollowUpKind.Should().Be(FollowUpKind.Rebase);
+        aggregate.FollowUpPullRequestHeadSha.Should().BeNull(
+            "Rebase is excluded from the opening-cycle review scope seed — unchanged");
+    }
+
+    /// <summary>
     /// A task claimed with <c>h9k task start --acknowledge-unmet-dependencies</c> can reach
     /// Done while its blocker is still open; <c>TaskAggregate.Apply(TaskReopened)</c> lands such
     /// a task Blocked, not Queued, on the very same reopen this monitor is about to dispatch.

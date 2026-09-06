@@ -177,6 +177,8 @@ public sealed class TaskDetails
     public string? PullRequestUrl { get; set; }
     public string? FollowUpBranch { get; set; }
     public FollowUpKind FollowUpKind { get; set; } = FollowUpKind.Unknown;
+    /// <summary>See <see cref="TaskReopened.PullRequestHeadSha"/>'s own doc — mirrors <see cref="TaskAggregate.FollowUpPullRequestHeadSha"/>.</summary>
+    public string? FollowUpPullRequestHeadSha { get; set; }
     public string? FollowUpReason { get; set; }
     public string? FailureReason { get; set; }
     /// <summary>
@@ -538,6 +540,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;
+        view.FollowUpPullRequestHeadSha = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.State = TaskState.Done;
@@ -558,6 +561,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     {
         view.FollowUpBranch = @event.Data.Branch;
         view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
+        view.FollowUpPullRequestHeadSha = @event.Data.PullRequestHeadSha;
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.DependencyOverrideAcknowledged = false;
@@ -630,6 +634,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PullRequestUrl = @event.Data.PullRequestUrl ?? view.PullRequestUrl;
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;
+        view.FollowUpPullRequestHeadSha = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.State = TaskState.Done;
@@ -645,6 +650,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.AbandonedReason = @event.Data.Reason;
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;
+        view.FollowUpPullRequestHeadSha = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.State = TaskState.Abandoned;
