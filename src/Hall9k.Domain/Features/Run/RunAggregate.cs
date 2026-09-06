@@ -163,9 +163,8 @@ public sealed class RunAggregate
     public DateTimeOffset? ActiveRebaseRecoveryProcessStartedAt { get; private set; }
     /// <summary>The model the in-flight rebase-recovery session was spawned on.</summary>
     public AgentModel ActiveRebaseRecoveryModel { get; private set; } = AgentModel.Unknown;
-    /// <summary>The base commits the in-flight (or most recently dispatched) recovery session is rebasing, carried from dispatch to completion.</summary>
+    /// <summary>The base commit the in-flight (or most recently dispatched) recovery session is rebasing from, carried from dispatch to completion.</summary>
     public string? ActiveRebaseRecoveryFromCommit { get; private set; }
-    public string? ActiveRebaseRecoveryOntoCommit { get; private set; }
 
     /// <summary>
     /// How many pre-final-pass rebase-recovery sessions this run has dispatched in a row without
@@ -1450,7 +1449,6 @@ public sealed class RunAggregate
         ActiveRebaseRecoveryProcessStartedAt = null;
         ActiveRebaseRecoveryModel = AgentModel.Unknown;
         ActiveRebaseRecoveryFromCommit = null;
-        ActiveRebaseRecoveryOntoCommit = null;
     }
 
     // No-op: a logged interaction never changes RunState or any field the write path fences on
@@ -1610,7 +1608,6 @@ public sealed class RunAggregate
         ActiveRebaseRecoveryProcessStartedAt = @event.ProcessStartedAt;
         ActiveRebaseRecoveryModel = @event.Model ?? AgentModel.Unknown;
         ActiveRebaseRecoveryFromCommit = @event.RebasedFromCommit;
-        ActiveRebaseRecoveryOntoCommit = @event.RebasedOntoCommit;
         ReviewPhase = ReviewPhase.AwaitingRebaseRecovery;
         State = RunState.UnderReview;
         RebaseRecoveryRounds++;
