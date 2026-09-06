@@ -195,9 +195,15 @@ internal static class TaskStatusComposer
         bool onThisMachine = run is not null
             && context.NodeMachines.GetValueOrDefault(run.NodeId) == context.MachineName;
         SessionLiveness session = Observe(run, onThisMachine, context.Sessions, context.MachineName);
-        DispatchPressure? heldByCeiling = HeldByCeiling(task, context.Pressure);
+        string project = context.Projects.GetValueOrDefault(task.ProjectId) ?? "?";
 
-        TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, heldByCeiling);
+        // Which measured limit is holding this row back, if either is (Decisions Log #64, #140).
+        // Null covers "the node and the project both have room" and "nothing current was
+        // measured" alike, and every surface reading it then says nothing about slots rather
+        // than inventing a contention nobody observed (AGENTS.md, the never-guess rule).
+        QueueHold? held = QueueHold.For(task, project, context.Pressure);
+
+        TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, held);
         (bool stalled, string activity) = Silence(task, run, state, session, context, now);
         TaskAttention attention = AttentionComposer.Compose(
             task, run, state, phase, stalled, now,
@@ -215,8 +221,8 @@ internal static class TaskStatusComposer
             phase,
             attention,
             group,
-            PublishedFacts.Compose(task, state, heldByCeiling),
-            context.Projects.GetValueOrDefault(task.ProjectId) ?? "?",
+            PublishedFacts.Compose(task, state, held),
+            project,
             task.Objective,
             task.Type.Value,
             activity,
@@ -227,23 +233,11 @@ internal static class TaskStatusComposer
             task.AssignedOwnerId is { } assignee ? context.Owners.GetValueOrDefault(assignee) ?? "?" : string.Empty,
             task.UnmetDependencies,
             task.DependencyFailureReason,
-            heldByCeiling is not null,
+            held,
             task.AssignedAt,
             task.QueuePriorityMarked);
     }
 
-    /// <summary>
-    /// Whether the reason this task is not moving is one the platform actually measured: the node
-    /// is at its concurrency ceiling and the task is in the queue that ceiling holds back
-    /// (Decisions Log #64). Null covers both "the node has room" and "nothing current was
-    /// measured", and every surface that reads it says nothing about slots in either case rather
-    /// than inventing a contention nobody observed (AGENTS.md, the never-guess rule).
-    /// <para>
-    /// Read off the task's persisted state rather than the composed group, because the dispatcher
-    /// reads that state too: every Queued task is deferred at the ceiling, including a closeout
-    /// follow-up the monitor reopened, which the display groups under Delivered.
-    /// </para>
-    /// </summary>
     /// <summary>
     /// How many of the loaded rows each project is holding on the exhausted subscription window
     /// (backlog 40). Grouped by project rather than totalled for the board, because a row states
@@ -258,11 +252,6 @@ internal static class TaskStatusComposer
                 && runs.GetValueOrDefault(runId)?.State == RunState.BudgetParked)
             .GroupBy(task => task.ProjectId)
             .ToDictionary(project => project.Key, project => project.Count());
-
-    private static DispatchPressure? HeldByCeiling(TaskListItem task, DispatchPressure? pressure) =>
-        task.State == TaskState.Queued && pressure is { AtCeiling: true }
-            ? pressure
-            : null;
 
     /// <summary>
     /// What can honestly be said about the sessions a run has in flight — plural, because a

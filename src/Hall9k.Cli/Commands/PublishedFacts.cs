@@ -35,14 +35,15 @@ internal static class PublishedFacts
     /// for the queue-first marker (task 45136b29), which is stated wherever it is set, Published
     /// or not, since the decider allows setting it on a currently-Claimed task too.
     /// </summary>
-    /// <param name="heldByCeiling">
-    /// The measurement that says this row is waiting on a dispatch slot, or null when nothing
-    /// measured one (<see cref="DispatchPressure"/>, Decisions Log #64). A queued row says it is
-    /// ready and stops there without it: the platform cannot see why the dispatcher has not
-    /// claimed it yet, and a daemon that is simply stopped is the commonest reason of all.
+    /// <param name="held">
+    /// The measured limit holding this row back — this node's own ceiling, or its project's own
+    /// cap (<see cref="QueueHold"/>, Decisions Log #64, #140) — or null when neither was measured
+    /// to be full. A queued row says it is ready and stops there without it: the platform cannot
+    /// see why the dispatcher has not claimed it yet, and a daemon that is simply stopped is the
+    /// commonest reason of all.
     /// </param>
     public static IReadOnlyList<string> Compose(
-        TaskListItem task, LifecycleState state, DispatchPressure? heldByCeiling = null)
+        TaskListItem task, LifecycleState state, QueueHold? held = null)
     {
         if (state != LifecycleState.Published)
         {
@@ -92,7 +93,7 @@ internal static class PublishedFacts
             "Queued" =>
             [
                 "assigned and ready; the dispatcher has not claimed it yet",
-                .. heldByCeiling is not null ? (string[])[heldByCeiling.ReasonLine] : [],
+                .. held is not null ? (string[])[held.ReasonLine] : [],
             ],
             // A blocker recorded dead is answered before the count, in the same words and the
             // same order its phase-line twin uses (TaskPhaseComposer.BlockedDetail). A death

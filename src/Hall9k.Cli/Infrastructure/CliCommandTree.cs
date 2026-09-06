@@ -100,14 +100,16 @@ public static class CliCommandTree
             project.AddCommand<ProjectShowCommand>("show")
                 .WithDescription(
                     "One project in one pane: how it is registered (repository, base branch, connection binding, "
-                    + "owner) and every setting the daemon runs it by (skip-permissions, verify gates, parallelism, "
-                    + "commit style, context links), plus its task rollup and newest tasks. Takes the project name, "
+                    + "owner) and every setting the daemon runs it by (skip-permissions, verify gates, its own run "
+                    + "ceiling in task runs, commit style, context links), plus its task rollup and newest tasks. "
+                    + "Takes the project name, "
                     + "an unambiguous fragment of it, or its id.")
                 .WithExample("project", "show", "hall9k")
                 .WithExample("project", "show", "hall");
             project.AddCommand<ProjectSetCommand>("set")
                 .WithDescription(
-                    "Change project settings: verify gates, skip-permissions, links, parallelism, "
+                    "Change project settings: verify gates, skip-permissions, links, this project's own "
+                    + "run ceiling (--max-parallel-tasks; 0 pauses the project), "
                     + "commit style, agent model, review re-requests, the Jira board, the backlog "
                     + "policy that tracks every published task (none, github-issues, jira) and its "
                     + "routing guidance, the branch-name template task branches are cut under, "
@@ -115,6 +117,8 @@ public static class CliCommandTree
                     + "a pr-review task and at what speed, and where the project lives on disk. Any "
                     + "change that the home's generated AGENTS.md renders rewrites that file.")
                 .WithExample("project", "set", "hall9k", "--commit-style", "narrative")
+                .WithExample("project", "set", "hall9k", "--max-parallel-tasks", "1")
+                .WithExample("project", "set", "hall9k", "--max-parallel-tasks", "0")
                 .WithExample("project", "set", "hall9k", "--home", "~/.hall9k/projects/hall9k")
                 .WithExample("project", "set", "hall9k", "--model", "claude-opus-5")
                 .WithExample("project", "set", "hall9k", "--rerequest-review", "on")

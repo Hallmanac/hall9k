@@ -134,7 +134,7 @@ public sealed class TaskLifecycleSurfaceTests
         IReadOnlyList<string> full = StatusFixtures
             .Compose(queued, pressure: new DispatchPressure(LiveRuns: 3, MaxConcurrentRuns: 3)).Facts;
         full.Should().HaveCount(2);
-        full[1].Should().Be("waiting for a slot — 3 of 3 running");
+        full[1].Should().Be("waiting for a slot — node 3 of 3 running");
     }
 
     [Fact]

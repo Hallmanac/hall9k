@@ -85,7 +85,12 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Skip permissions", project.SkipPermissions
             ? "[yellow]yes[/] [dim]— agents run with --dangerously-skip-permissions (log #9)[/]"
             : "[dim]no — agents stop for every permission prompt, which a detached run cannot answer (log #9)[/]");
-        table.AddRow("Max parallel agents", project.MaxParallelAgents.ToString());
+        table.AddRow("Max parallel tasks", MaxParallelTasksRow(project));
+        if (RetiredMaxParallelAgentsRow(project) is { } retired)
+        {
+            table.AddRow("Max parallel agents", retired);
+        }
+
         table.AddRow("Commit style", project.CommitStyle == CommitStyle.Unknown
             ? "[dim]platform default — DaemonOptions.DefaultCommitStyle, narrative unless configured otherwise (log #26)[/]"
             : project.CommitStyle.Value.EscapeMarkup());
@@ -156,6 +161,40 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         return $"[dim]none — publishing tracks nothing externally; set one: h9k project set "
             + $"{project.Name.EscapeMarkup()} --backlog github-issues|jira[/]{routing}";
     }
+
+    /// <summary>
+    /// This project's own run ceiling (Decisions Log #140), labelled for what it counts — task
+    /// runs, the node ceiling's own denomination (#111) — and stating the one thing a reader
+    /// would otherwise have to work out: a run's review sessions are that run's own, so they do
+    /// not count separately against this number. The pause reads as a pause, not as a zero.
+    /// </summary>
+    internal static string MaxParallelTasksRow(ProjectDetails project) => project.MaxParallelTasks switch
+    {
+        null => "[dim]not capped — this project fills whatever the node ceiling "
+            + "(h9k config show) and other projects' activity leave free. Cap it: "
+            + $"h9k project set {project.Name.EscapeMarkup()} --max-parallel-tasks 1[/]",
+        0 => "[yellow]0 — paused[/] [dim]— its ready tasks are held even while this node sits idle, and "
+            + "nothing raises the cap on its own. Runs already live finish normally. Resume it: "
+            + $"h9k project set {project.Name.EscapeMarkup()} --max-parallel-tasks <n>[/]",
+        int cap => $"{cap} [dim]— at most {cap} of this project's task runs are live at once; a ceiling, never a "
+            + "reservation, so nothing is held free for it. A run's own review sessions do not count "
+            + "separately (they are that run's, bounded by h9k config show's session cap per run)[/]",
+    };
+
+    /// <summary>
+    /// The retired session-denominated ceiling, shown only where there is a retirement to name:
+    /// a project that recorded a value under the old <c>--max-parallel</c> and has not set the
+    /// runs-denominated cap since. The old value is not carried over — nothing ever enforced it —
+    /// so this row is the migration, said where the operator who set it will read it.
+    /// </summary>
+    internal static string? RetiredMaxParallelAgentsRow(ProjectDetails project) =>
+        project.MaxParallelTasks is null
+        && project.MaxParallelAgents != ProjectAggregate.LegacyMaxParallelAgentsDefault
+            ? $"[yellow]{project.MaxParallelAgents} — retired[/] [dim]— recorded in agent sessions by the old "
+                + "--max-parallel, which nothing ever enforced. It is retired rather than converted, so this "
+                + "project is uncapped until you set the runs-denominated ceiling: "
+                + $"h9k project set {project.Name.EscapeMarkup()} --max-parallel-tasks <n>[/]"
+            : null;
 
     /// <summary>
     /// One of the four review-cycle caps (task: the review cycle caps become settable at three
