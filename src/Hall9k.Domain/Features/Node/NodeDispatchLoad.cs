@@ -56,4 +56,31 @@ public sealed class NodeDispatchLoad
 
     /// <summary>The window <see cref="SpendBudgetTokens"/> resets on ("day" or "week"), carried alongside it for the same reason.</summary>
     public string SpendPeriod { get; set; } = string.Empty;
+
+    /// <summary>
+    /// What the same sweep measured per project (Decisions Log #140): one row for every project
+    /// this node was carrying a run for, or had a queued candidate from, when it looked. Empty on
+    /// a record written before per-project ceilings existed, and on a sweep that saw neither —
+    /// which reads as "nothing measured about any project", never as "no project has a cap".
+    /// <para>
+    /// Published for the identical reason <see cref="MaxConcurrentRuns"/> is (Decisions Log #64):
+    /// a reader must not re-derive the dispatcher's own counting rule — which slots count, and
+    /// the claim-committed-but-run-not-yet-recorded handoff window a CLI cannot even see — from
+    /// documents it would have to join by hand. The cap on each row is the cap that sweep
+    /// actually admitted against, so a cap changed a moment ago reads as the old number until the
+    /// next sweep, exactly as the board and the dispatcher agreeing requires.
+    /// </para>
+    /// </summary>
+    public List<ProjectRunLoad> ProjectLoads { get; set; } = [];
 }
+
+/// <summary>
+/// One project's line in a sweep's own measurement (Decisions Log #140): how many of its runs the
+/// measuring node was carrying, and the ceiling it was admitting against.
+/// <see cref="Hall9k.Domain.Features.Project.ProjectRunCeiling"/> is what turns the pair into a
+/// decision; this is only the record of it.
+/// </summary>
+/// <param name="ProjectId">The project, as <c>ProjectDetails.Id</c> identifies it.</param>
+/// <param name="LiveRuns">Its live runs on the measuring node — interactive claims excluded, as at the node level.</param>
+/// <param name="Cap">Its <c>ProjectDetails.MaxParallelTasks</c> at measurement time; null is uncapped, 0 is paused.</param>
+public sealed record ProjectRunLoad(Guid ProjectId, int LiveRuns, int? Cap);
