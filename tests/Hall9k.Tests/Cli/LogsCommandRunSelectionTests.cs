@@ -3,7 +3,9 @@ using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -120,5 +122,94 @@ public sealed class LogsCommandRunSelectionTests
 
         selectDashesOnly.Should().Throw<DomainValidationException>()
             .WithMessage("*no characters to match*");
+    }
+}
+
+/// <summary>
+/// LogsCommand.ResolveStreamFile's own delegation-vs-run-level preference (adversarial review,
+/// cycle 1, ride-along): a delegated contractor's own transcript wins by default, but a run-level
+/// transcript that already exists is never hidden behind an honest-looking "no stream file" just
+/// because the run was later delegated and that contractor's own file turned out unusable.
+/// </summary>
+public sealed class LogsCommandStreamFileSelectionTests : IDisposable
+{
+    private readonly string _runDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-logs-{Guid.NewGuid():N}");
+
+    public LogsCommandStreamFileSelectionTests() => Directory.CreateDirectory(_runDirectory);
+
+    public void Dispose() => Directory.Delete(_runDirectory, recursive: true);
+
+    [Fact]
+    public void With_no_delegations_the_run_level_file_is_selected()
+    {
+        File.WriteAllText(RunPaths.StreamFile(_runDirectory), "{}\n");
+
+        string selected = LogsCommand.ResolveStreamFile(_runDirectory, runDetails: null);
+
+        selected.Should().Be(RunPaths.StreamFile(_runDirectory));
+    }
+
+    [Fact]
+    public void With_a_usable_delegation_file_the_latest_delegations_own_file_wins()
+    {
+        File.WriteAllText(RunPaths.StreamFile(_runDirectory), "{}\n");
+        string delegationFile = RunPaths.SessionStreamFile(_runDirectory, "delegation-2");
+        File.WriteAllText(delegationFile, "{}\n");
+        RunDetails runDetails = WithDelegations("delegation-1", "delegation-2");
+
+        string selected = LogsCommand.ResolveStreamFile(_runDirectory, runDetails);
+
+        selected.Should().Be(delegationFile, "the newest delegation's own transcript is preferred over the run-level one");
+    }
+
+    [Fact]
+    public void When_the_latest_delegations_file_does_not_exist_it_falls_back_to_the_run_level_file()
+    {
+        string runLevelFile = RunPaths.StreamFile(_runDirectory);
+        File.WriteAllText(runLevelFile, "{}\n");
+        RunDetails runDetails = WithDelegations("delegation-1");
+        // Deliberately never write RunPaths.SessionStreamFile(_runDirectory, "delegation-1"):
+        // the contractor was killed before it ever produced output.
+
+        string selected = LogsCommand.ResolveStreamFile(_runDirectory, runDetails);
+
+        selected.Should().Be(runLevelFile,
+            "a missing delegation transcript must not hide a run-level one that does exist");
+    }
+
+    [Fact]
+    public void When_the_latest_delegations_file_is_empty_it_falls_back_to_the_run_level_file()
+    {
+        string runLevelFile = RunPaths.StreamFile(_runDirectory);
+        File.WriteAllText(runLevelFile, "{}\n");
+        File.WriteAllText(RunPaths.SessionStreamFile(_runDirectory, "delegation-1"), string.Empty);
+        RunDetails runDetails = WithDelegations("delegation-1");
+
+        string selected = LogsCommand.ResolveStreamFile(_runDirectory, runDetails);
+
+        selected.Should().Be(runLevelFile,
+            "a delegation file that was created but never written to is not a usable transcript");
+    }
+
+    [Fact]
+    public void When_neither_file_exists_the_run_level_path_is_still_returned_for_the_honest_404()
+    {
+        RunDetails runDetails = WithDelegations("delegation-1");
+
+        string selected = LogsCommand.ResolveStreamFile(_runDirectory, runDetails);
+
+        selected.Should().Be(RunPaths.StreamFile(_runDirectory));
+    }
+
+    private RunDetails WithDelegations(params string[] sessionFileKeys)
+    {
+        RunDetails runDetails = new() { Id = DomainId.New() };
+        foreach (string key in sessionFileKeys)
+        {
+            runDetails.PhaseDelegations.Add(new PhaseDelegation(
+                DateTimeOffset.UtcNow, "note", Guid.NewGuid(), "session-name", key, AgentModel.Unknown));
+        }
+
+        return runDetails;
     }
 }
