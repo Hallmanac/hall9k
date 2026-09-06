@@ -460,7 +460,8 @@ public sealed class ReviewEngine(
                     if (needsFullGateBeforeSettling
                         || verifyCommandsFingerprintChanged
                         || (run.HumanEndedTheLoop && !gateAlreadyRanFullOverCurrentHead)
-                        || run.PreFinalPassRebaseAwaitingGate)
+                        || run.PreFinalPassRebaseAwaitingGate
+                        || run.PreFinalPassRebaseAwaitingReview)
                     {
                         // Full, unless the immediately preceding gate already ran full over this
                         // exact tip (cycle-3 finding — a "scoped" Verify cycle whose own reverify
@@ -508,25 +509,32 @@ public sealed class ReviewEngine(
                         // a Verify-mode cycle's own reverify was scoped, or a fix landed this cycle) —
                         // that is what "a moved HEAD or a dispatched fix earns another reviewer pass"
                         // actually means. A human's own resolution, a bare verify-commands change, or
-                        // a pre-final-pass rebase that left PreFinalPassRebaseAwaitingGate set — the
-                        // third way this branch can now be entered — never moved anything a reviewer
-                        // would read differently: the rebase replays this cycle's own already-reviewed
-                        // commits onto a new base rather than introducing any a fresh context has not
-                        // read, so the diff already converged clean under this very cycle's own
-                        // fresh-context passes (independent pre-PR review, cycle 3, adversarial lens —
-                        // dispatching a whole extra FinalFullPass here re-reads a byte-identical diff a
-                        // second time and spends it against MaxFinalFullPassRounds for nothing). The
-                        // gate above is what none of those three cases ever covered (a rebase changes
-                        // what the tree builds and runs against even when the diff it carries does
-                        // not), and it has now actually run, so the run may settle. This is
-                        // term-for-term MaySettleReason (the Reverify
-                        // branch's own settle check below calls it by name) rather than a second copy of
-                        // its logic, so the two branches cannot drift apart the next time either grows a
-                        // condition (independent pre-PR review, cycle 5, conformance lens). Because
-                        // MaySettleReason's own human clause takes this short-circuit unconditionally, a
-                        // human's merge-ready resolve now settles straight from here without ever
-                        // reaching FinalFullPassCapReached below — see RunAggregate.Apply(ReviewParkResolved)'s
-                        // own note on what that means for its FinalFullPassRounds reset.
+                        // a pre-final-pass rebase that left PreFinalPassRebaseAwaitingGate set but NOT
+                        // PreFinalPassRebaseAwaitingReview — a clean git apply, never a recovery —
+                        // never moved anything a reviewer would read differently: the rebase replays
+                        // this cycle's own already-reviewed commits onto a new base rather than
+                        // introducing any a fresh context has not read, so the diff already converged
+                        // clean under this very cycle's own fresh-context passes (independent pre-PR
+                        // review, cycle 3, adversarial lens — dispatching a whole extra FinalFullPass
+                        // here re-reads a byte-identical diff a second time and spends it against
+                        // MaxFinalFullPassRounds for nothing). A recovered rebase IS a reviewer-relevant
+                        // change (independent pre-PR review, cycle 1, conformance lens: a recovery
+                        // session resolves a real conflict with judgment, not a mechanical apply), so
+                        // MaySettleReason's own NothingOwed clause is gated on
+                        // PreFinalPassRebaseAwaitingReview being clear — its Human clause deliberately
+                        // is not (AGENTS.md documents a human's own merge-ready resolve as needing only
+                        // this mandatory gate, never a fresh automatic review). The gate above is what
+                        // none of the OTHER cases ever covered (a rebase changes what the tree builds
+                        // and runs against even when the diff it carries does not), and it has now
+                        // actually run, so the run may settle. This is term-for-term MaySettleReason
+                        // (the Reverify branch's own settle check below calls it by name) rather than a
+                        // second copy of its logic, so the two branches cannot drift apart the next
+                        // time either grows a condition (independent pre-PR review, cycle 5,
+                        // conformance lens). Because MaySettleReason's own human clause takes this
+                        // short-circuit unconditionally, a human's merge-ready resolve now settles
+                        // straight from here without ever reaching FinalFullPassCapReached below — see
+                        // RunAggregate.Apply(ReviewParkResolved)'s own note on what that means for its
+                        // FinalFullPassRounds reset.
                         if (MaySettleReason(run) is { } settlingReason)
                         {
                             if (await ParkIfLifetimeBudgetExceededAsync(
@@ -622,11 +630,12 @@ public sealed class ReviewEngine(
                     }
 
                     // Reached only when none of needsFullGateBeforeSettling, a fingerprint change, an
-                    // ungated human resolution, or a pre-final-pass rebase still awaiting its own gate
-                    // (RunAggregate.PreFinalPassRebaseAwaitingGate) held — which is exactly
-                    // NeedsFullGateBeforeSettling's own negation, so MaySettleReason is guaranteed
-                    // non-null here (its NothingOwed clause is that same negation restated) rather
-                    // than a fact this call site has to re-establish on its own.
+                    // ungated human resolution, a pre-final-pass rebase still awaiting its own gate
+                    // (RunAggregate.PreFinalPassRebaseAwaitingGate), or one still awaiting its own
+                    // review (RunAggregate.PreFinalPassRebaseAwaitingReview) held — which guarantees
+                    // MaySettleReason's own NothingOwed clause its extra conjunct too, so
+                    // MaySettleReason is guaranteed non-null here rather than a fact this call site
+                    // has to re-establish on its own.
                     SettleReason ordinarySettleReason = MaySettleReason(run) ?? throw new InvalidOperationException(
                         $"Run {run.Id}: reached the ordinary settle path with no settle reason — " +
                         "NeedsFullGateBeforeSettling's own negation should have guaranteed one.");
@@ -2028,6 +2037,44 @@ public sealed class ReviewEngine(
         return isAncestor.ExitCode == 0;
     }
 
+    /// <summary>
+    /// The base branch's actual tip once a recovery session has resolved (or a worktree read has
+    /// confirmed) the rebase — read fresh from the worktree's own local <c>origin/&lt;base&gt;</c>
+    /// ref rather than trusted from whatever <see cref="DispatchRebaseRecoverySessionAsync"/>
+    /// observed at dispatch time (independent pre-PR review, cycle 1, conformance lens): the
+    /// recovery session runs for real wall-clock minutes to hours and fetches again on its own, so
+    /// the base can have moved past the dispatch-time reading by the time this is called — recording
+    /// that stale value as <see cref="Events.RunRebasedOntoBase.RebasedOntoCommit"/> would name a
+    /// tip the branch was never actually rebased onto, exactly the unobserved-fact guess AGENTS.md's
+    /// "never guess at unobserved facts" rule forbids in an audit field. Deliberately without a
+    /// fresh fetch of its own, for the identical reason <see cref="RebaseActuallyLandedAsync"/> reads
+    /// without one: the recovery session's own skill already fetched before it attempted the
+    /// rebase, so this observes what that fetch left behind rather than racing a later one. Falls
+    /// back to "unknown" — the same sentinel <see cref="DispatchRebaseRecoverySessionAsync"/>'s own
+    /// best-effort read already uses — on any read failure, rather than the dispatch-time value,
+    /// which is exactly what this exists to stop being recorded as fact.
+    /// </summary>
+    private static async Task<string> ResolveObservedOntoCommitAsync(
+        string worktreePath, string baseBranch, CancellationToken cancellationToken)
+    {
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            return "unknown";
+        }
+
+        try
+        {
+            ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+            ProcessResult originTip = await git(
+                "git", ["rev-parse", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+            return originTip.ExitCode == 0 ? originTip.StandardOutput.Trim() : "unknown";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return "unknown";
+        }
+    }
+
     private async Task RecordRebaseOutcomeAsync(
         Guid runId, string rebasedFromCommit, string rebasedOntoCommit, bool wasNoOp, bool recoveredByAgentSession,
         string detail, CancellationToken cancellationToken)
@@ -2259,14 +2306,13 @@ public sealed class ReviewEngine(
 
         await RecordRebaseRecoveryResultAsync(
             context, CurrentRunDirectory(run), result, run.ActiveRebaseRecoveryModel,
-            run.ActiveRebaseRecoveryFromCommit ?? "unknown", run.ActiveRebaseRecoveryOntoCommit ?? "unknown",
-            cancellationToken);
+            run.ActiveRebaseRecoveryFromCommit ?? "unknown", cancellationToken);
         return true;
     }
 
     private async Task RecordRebaseRecoveryResultAsync(
         ReviewContext context, string runDirectory, AgentResult result, AgentModel model, string rebasedFromCommit,
-        string rebasedOntoCommit, CancellationToken cancellationToken)
+        CancellationToken cancellationToken)
     {
         Guid runId = context.RunId;
         string summary = result.Summary ?? string.Empty;
@@ -2302,12 +2348,18 @@ public sealed class ReviewEngine(
         session.Events.Append(runId, new PreFinalPassRebaseRecoveryCompleted(runId, outcome, now));
         if (recordAsResolved)
         {
+            // The base branch's tip as observed now, not the value DispatchRebaseRecoverySessionAsync
+            // read at dispatch time: the recovery session's own fetch can have picked up a later
+            // commit while it ran (ResolveObservedOntoCommitAsync's own doc).
+            string observedOntoCommit = await ResolveObservedOntoCommitAsync(
+                context.Run.WorktreePath, context.Project.BaseBranch, cancellationToken);
+
             // Records the resolution as a completed rebase, the same event a clean git-only apply
             // appends, so h9k task show renders one consistent outcome regardless of which path
             // resolved it.
             session.Events.Append(runId, new RunRebasedOntoBase(
-                runId, rebasedFromCommit, rebasedOntoCommit, WasNoOp: false, RecoveredByAgentSession: true,
-                $"Resolved by a narrow recovery session (rebase-onto-main skill), from {ShortSha(rebasedFromCommit)} to {ShortSha(rebasedOntoCommit)}.",
+                runId, rebasedFromCommit, observedOntoCommit, WasNoOp: false, RecoveredByAgentSession: true,
+                $"Resolved by a narrow recovery session (rebase-onto-main skill), from {ShortSha(rebasedFromCommit)} to {ShortSha(observedOntoCommit)}.",
                 now));
         }
 
@@ -2363,8 +2415,9 @@ public sealed class ReviewEngine(
         $"{run.RebaseRecoveryRounds} time(s) in a row without ever landing cleanly — worth a " +
         "human's look rather than another automatic round. Check the worktree yourself " +
         "(`git status`, `git log`), then resolve with h9k review resolve --needs-fixes " +
-        "\"<guidance>\" to dispatch a fresh attempt carrying it, or finish the rebase in the " +
-        "worktree by hand and describe what you did.";
+        "\"<guidance>\" to dispatch an ordinary fix session carrying your guidance into this " +
+        "worktree, which can still finish the rebase by hand, or finish the rebase yourself " +
+        "in the worktree and describe what you did.";
 
     private static string RebaseRecoveryArtifactName(Guid sessionId) => SessionRoleName.PreFinalPassRebase(Short(sessionId));
 
@@ -4239,7 +4292,15 @@ public sealed class ReviewEngine(
             && run.LastReviewVerdict == ReviewVerdict.MergeReady
             && run.CompletedReviewPasses.Any(pass => pass.Findings.Count > 0) =>
             SettleReason.Bar,
-        _ when run.CurrentCycleMode != ReviewMode.Verify && !run.FixDispatchedThisCycle => SettleReason.NothingOwed,
+        // Gated on PreFinalPassRebaseAwaitingReview being clear (independent pre-PR review, cycle
+        // 1, conformance lens): a recovered pre-final-pass rebase means an agent resolved a real
+        // conflict with judgment since the last fresh-context read, so "nothing owed" is not true
+        // yet even when no ordinary finding is outstanding — see that flag's own doc. Unlike the
+        // Human clause above, this one is automatic, so nothing has looked at the recovery at all
+        // without this gate.
+        _ when run.CurrentCycleMode != ReviewMode.Verify
+            && !run.FixDispatchedThisCycle
+            && !run.PreFinalPassRebaseAwaitingReview => SettleReason.NothingOwed,
         _ => null,
     };
 
