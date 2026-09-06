@@ -62,7 +62,7 @@ public sealed class LogsCommand : Hall9kAsyncCommand<LogsCommand.Settings>
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         RunDetails? runDetails = await session.LoadAsync<RunDetails>(run.Id, cancellationToken);
         string streamFile = runDetails?.PhaseDelegations is { Count: > 0 } delegations
-            ? RunPaths.SessionStreamFile(resolvedRunDirectory, delegations[^1].SessionName)
+            ? RunPaths.SessionStreamFile(resolvedRunDirectory, delegations[^1].SessionFileKey)
             : RunPaths.StreamFile(resolvedRunDirectory);
         if (!File.Exists(streamFile))
         {

@@ -491,13 +491,19 @@ public sealed class RunReviewProjectionTests
         RunDetails view = VerifiedRun(projection, id);
 
         projection.Apply(new FakeEvent<RunPhaseDelegated>(new RunPhaseDelegated(
-            id, "Drafted the migration; untested past the happy path.", Now, DomainId.New(), "abc12345-build")), view);
+            id, "Drafted the migration; untested past the happy path.", Now, DomainId.New(), "abc12345-build",
+            "abc12345-build-11112222")), view);
         projection.Apply(new FakeEvent<RunPhaseDelegated>(new RunPhaseDelegated(
-            id, "Second phase: wire up the CLI command.", Now, DomainId.New(), "abc12345-build")), view);
+            id, "Second phase: wire up the CLI command.", Now, DomainId.New(), "abc12345-build",
+            "abc12345-build-33334444")), view);
 
         view.PhaseDelegations.Should().HaveCount(2, "a claim can be delegated more than once across its lifetime");
         view.PhaseDelegations[0].Note.Should().Be("Drafted the migration; untested past the happy path.");
         view.PhaseDelegations[1].Note.Should().Be("Second phase: wire up the CLI command.");
+        view.PhaseDelegations[0].SessionName.Should().Be(view.PhaseDelegations[1].SessionName,
+            "the mesh-visible session name is documented as identical across every delegation on this run");
+        view.PhaseDelegations[0].SessionFileKey.Should().NotBe(view.PhaseDelegations[1].SessionFileKey,
+            "each delegation's own file key must be unique — two delegations sharing one would truncate the earlier contractor's transcript");
     }
 
     /// <summary>

@@ -97,21 +97,22 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // precisely to record "delegate, re-enter, delegate again"), and the run-level files are
         // truncate-on-open — a second delegation's spawn would otherwise destroy the first
         // contractor's transcript, handoff, and token usage before anything ever read them back
-        // (independent pre-PR review, cycle 1, both lenses). RunPaths.SessionStreamFile and its
-        // siblings are the existing mechanism for exactly this (introduced so a review cycle's
-        // own concurrent/successive sessions "never collide"); HeadlessTokenRecovery.AppendDelegatedPhaseTokens
-        // and LogsCommand both key off this same per-session naming to read a contractor's file
-        // back later.
-        string promptFile = RunPaths.SessionPromptFile(resolvedRunDirectory, plan.SessionName);
-        string streamFile = RunPaths.SessionStreamFile(resolvedRunDirectory, plan.SessionName);
-        string standardErrorFile = RunPaths.SessionStandardErrorFile(resolvedRunDirectory, plan.SessionName);
+        // (independent pre-PR review, cycle 1, both lenses). Keyed on plan.SessionFileKey, not
+        // plan.SessionName: the mesh name is documented as identical across every delegation on
+        // this run (AGENTS.md, "its slice-1 <task-shortid>-build name"), so it is SessionFileKey —
+        // unique per delegation — that RunPaths.SessionStreamFile and its siblings actually key
+        // on; HeadlessTokenRecovery.AppendDelegatedPhaseTokens and LogsCommand both read
+        // PhaseDelegation.SessionFileKey back later for the identical reason.
+        string promptFile = RunPaths.SessionPromptFile(resolvedRunDirectory, plan.SessionFileKey);
+        string streamFile = RunPaths.SessionStreamFile(resolvedRunDirectory, plan.SessionFileKey);
+        string standardErrorFile = RunPaths.SessionStandardErrorFile(resolvedRunDirectory, plan.SessionFileKey);
         await File.WriteAllTextAsync(promptFile, plan.Prompt, cancellationToken);
 
         // The same platform-imposed overrides every other spawn writes (ClaudeSettingsFile): no
         // co-authored-by trailers, and command-tool timeout headroom — mirrors h9k task start's
         // own settings file exactly. Session-scoped for the identical truncation reason as the
         // stream/prompt files above.
-        string settingsFile = RunPaths.SessionSettingsFile(resolvedRunDirectory, plan.SessionName);
+        string settingsFile = RunPaths.SessionSettingsFile(resolvedRunDirectory, plan.SessionFileKey);
         string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout);
         await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
@@ -193,7 +194,8 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // loudly instead (caught below) so the operator learns a second, untracked process is
             // out there rather than losing track of it entirely.
             delegateSession.Events.Append(plan.RunId, expectedVersion: fence.Version + 1, new RunPhaseDelegated(
-                plan.RunId, settings.Note, DateTimeOffset.UtcNow, plan.OwnerId, plan.SessionName), new InteractiveSessionStarted(
+                plan.RunId, settings.Note, DateTimeOffset.UtcNow, plan.OwnerId, plan.SessionName,
+                plan.SessionFileKey), new InteractiveSessionStarted(
                 plan.RunId, plan.ClaudeSessionId, startedAt, processId, Environment.MachineName, plan.SessionName));
             try
             {
@@ -387,8 +389,20 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // The build role (task: every dispatched agent session launches under a human-readable
         // id-and-role name): this session is a spawned, unattended contractor, the identical shape
         // h9k task start's own session already answers to — not h9k task work's own
-        // interactive-claim role, since the human is not attached to this process.
+        // interactive-claim role, since the human is not attached to this process. Documented as
+        // this run's mesh-visible name (AGENTS.md, "its slice-1 <task-shortid>-build name") and
+        // deliberately identical across every delegation on this run — it is sessionFileKey below,
+        // not this, that has to be unique per delegation.
         string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build);
+
+        // Unique per delegation (independent pre-PR review, cycle 1, both lenses): sessionName
+        // above is deliberately identical across every delegation on this run, so it cannot also
+        // be what RunPaths.Session*File keys its files on — a second delegation would then
+        // truncate the first contractor's own transcript, handoff, and recorded token usage the
+        // moment HeadlessLaunch.SpawnDetached opened its files for writing. claudeSessionId is
+        // already minted fresh per delegation just above, so its own short id makes a stable,
+        // collision-free suffix without needing to count this run's prior delegations.
+        string sessionFileKey = $"{sessionName}-{DomainId.Short(claudeSessionId)}";
 
         string? blockerContext = await TaskWorkCommand.LoadBlockerContextAsync(session, taskDetails, cancellationToken);
         string prompt = WorkPromptBuilder.Build(
@@ -398,12 +412,13 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
 
         return new DelegationPlan(
             runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, prompt,
-            claudeSessionId, sessionName, context.OwnerId, project.SkipPermissions, crossMachineNoticeShown);
+            claudeSessionId, sessionName, sessionFileKey, context.OwnerId, project.SkipPermissions,
+            crossMachineNoticeShown);
     }
 
     /// <summary>Everything <see cref="ExecuteAsync"/> needs to actually spawn the contractor, decided once by <see cref="PrepareAsync"/>.</summary>
     internal sealed record DelegationPlan(
         Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork,
-        AgentModel Model, string Prompt, Guid ClaudeSessionId, string SessionName, Guid OwnerId,
-        bool SkipPermissions, bool CrossMachineNoticeShown);
+        AgentModel Model, string Prompt, Guid ClaudeSessionId, string SessionName, string SessionFileKey,
+        Guid OwnerId, bool SkipPermissions, bool CrossMachineNoticeShown);
 }

@@ -14,5 +14,18 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// deliberate versus abandoned, what latitude is granted. Carried verbatim into the contractor's
 /// starting prompt and recorded here so the decision to delegate, and why, survives this session.
 /// </param>
+/// <param name="SessionName">
+/// The contractor's mesh-visible name (<c>--name</c>, <c>claude agents --json</c>) — the
+/// documented slice-1 <c>&lt;task-shortid&gt;-build</c> shape, identical across every delegation
+/// on this run.
+/// </param>
+/// <param name="SessionFileKey">
+/// Unique per delegation (independent pre-PR review, cycle 1, both lenses): this run's prompt,
+/// stream, settings and stderr files are named from this, never <paramref name="SessionName"/>,
+/// because a second delegation sharing <paramref name="SessionName"/>'s own value would truncate
+/// the first contractor's transcript, handoff and recorded token usage the moment
+/// <c>HeadlessLaunch.SpawnDetached</c> opened its own files for writing.
+/// </param>
 public sealed record RunPhaseDelegated(
-    Guid Id, string Note, DateTimeOffset DelegatedAt, Guid DelegatedByOwnerId, string SessionName);
+    Guid Id, string Note, DateTimeOffset DelegatedAt, Guid DelegatedByOwnerId, string SessionName,
+    string SessionFileKey);
