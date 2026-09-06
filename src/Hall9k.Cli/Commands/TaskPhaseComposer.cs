@@ -26,16 +26,17 @@ internal static class TaskPhaseComposer
     /// <param name="run">Its current run, or null when the claim's run document has not appeared yet.</param>
     /// <param name="state">The composed lifecycle state, which decides whether a phase applies at all.</param>
     /// <param name="session">What was observed of the run's recorded session.</param>
-    /// <param name="heldByCeiling">
-    /// The measurement that says a queued follow-up is waiting on a dispatch slot, or null when
-    /// nothing measured one (<see cref="DispatchPressure"/>, Decisions Log #64).
+    /// <param name="held">
+    /// The measured limit holding a queued follow-up back — this node's own ceiling, or its
+    /// project's own cap (<see cref="QueueHold"/>, Decisions Log #64, #140) — or null when
+    /// neither was measured to be full.
     /// </param>
     public static TaskPhase Compose(
         TaskListItem task,
         RunDetails? run,
         LifecycleState state,
         SessionLiveness session,
-        DispatchPressure? heldByCeiling = null)
+        QueueHold? held = null)
     {
         if (state == LifecycleState.Working)
         {
@@ -43,7 +44,7 @@ internal static class TaskPhaseComposer
         }
 
         return state == LifecycleState.Delivered
-            ? Delivered(task, run, session, heldByCeiling)
+            ? Delivered(task, run, session, held)
             : TaskPhase.None;
     }
 
@@ -274,19 +275,20 @@ internal static class TaskPhaseComposer
     /// but a human's merge.
     /// </summary>
     private static TaskPhase Delivered(
-        TaskListItem task, RunDetails? run, SessionLiveness session, DispatchPressure? heldByCeiling)
+        TaskListItem task, RunDetails? run, SessionLiveness session, QueueHold? held)
     {
         string pullRequest = PullRequestLabel(task, run);
 
         // A reopened task is a follow-up in flight (or about to be): the machinery owns the
         // next move, not the reader. What it is waiting on is a measurement or nothing — the
-        // ceiling line when this node's last sweep reported itself full, and silence otherwise,
-        // because a queue that is not moving has many causes and the display observed none of
-        // them (Decisions Log #64, AGENTS.md's never-guess rule).
+        // hold's own line when this node's last sweep reported either its ceiling or this
+        // project's cap full, and silence otherwise, because a queue that is not moving has many
+        // causes and the display observed none of them (Decisions Log #64, #140, AGENTS.md's
+        // never-guess rule).
         if (task.State == TaskState.Queued)
         {
             return new TaskPhase($"follow-up queued for {pullRequest}", SessionLiveness.NotApplicable,
-                heldByCeiling?.ReasonLine ?? "not claimed yet");
+                held?.ReasonLine ?? "not claimed yet");
         }
 
         // A reopened follow-up held by a dependency: nothing is dispatching it and no run is

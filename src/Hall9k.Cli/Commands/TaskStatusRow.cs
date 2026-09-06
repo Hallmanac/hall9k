@@ -39,13 +39,14 @@ internal sealed record TaskStatusRow(
     IReadOnlyList<Guid>? UnmetDependencies = null,
     string? DependencyFailureReason = null,
     /// <summary>
-    /// Queued with nowhere to go: this node is at its concurrency ceiling and the numbers that
-    /// say so are already on the row's second line (Decisions Log #64) — the derived facts where
-    /// the row is Published, the phase line where a pushed follow-up is what is queued. Carried
-    /// as its own flag so the attention pane can decide whether the queue is worth a section at
-    /// all without reading a sentence back out of a display string.
+    /// Queued with nowhere to go, and which measured limit is why: this node's own concurrency
+    /// ceiling, or the row's project's own cap (Decisions Log #64, #140). The sentence is already
+    /// on the row's second line — the derived facts where the row is Published, the phase line
+    /// where a pushed follow-up is what is queued — so this is carried as the hold itself rather
+    /// than a bare flag, which is what lets the attention pane group and count by cause without
+    /// reading a sentence back out of a display string.
     /// </summary>
-    bool WaitingForSlot = false,
+    QueueHold? Held = null,
     /// <summary>
     /// When a human assigned the task, null while nothing is assigned. The key the dispatcher
     /// queues on (Decisions Log #64), carried here so a pane listing a deferred queue can list
@@ -68,6 +69,15 @@ internal sealed record TaskStatusRow(
 
     /// <summary>Past this the eye stops scanning a column and starts reading a paragraph.</summary>
     private const int MaxObjective = 72;
+
+    /// <summary>
+    /// Whether a measured limit — either one — is holding this row back at all: the question
+    /// every surface asked before the two limits were told apart, kept as the shorthand for
+    /// "held by something the sweep counted". <c>h9k status</c> reads the kinds themselves now,
+    /// because it also has to name the spend budget, which no row's own numbers can state
+    /// (StatusCommand.QueuedHeading).
+    /// </summary>
+    public bool WaitingForSlot => Held is not null;
 
     public string ShortId => TaskListCommand.ShortId(TaskId);
 

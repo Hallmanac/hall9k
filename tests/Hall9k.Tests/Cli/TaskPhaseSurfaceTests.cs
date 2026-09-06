@@ -719,13 +719,13 @@ public sealed class TaskPhaseSurfaceTests
             reopened, superseded, pressure: new DispatchPressure(LiveRuns: 3, MaxConcurrentRuns: 3));
 
         held.State.Should().Be(LifecycleState.Delivered, "the work is pushed; only the follow-up is queued");
-        held.Phase.Detail.Should().Be("waiting for a slot — 3 of 3 running");
+        held.Phase.Detail.Should().Be("waiting for a slot — node 3 of 3 running");
         held.WaitingForSlot.Should().BeTrue();
 
         // A node past its ceiling is holding the queue harder, not less, and says what it is
         // rather than reading as broken arithmetic (Decisions Log #64).
         StatusFixtures.Compose(reopened, superseded, pressure: new DispatchPressure(LiveRuns: 4, MaxConcurrentRuns: 3))
-            .Phase.Detail.Should().Be("waiting for a slot — 4 running, over a ceiling of 3");
+            .Phase.Detail.Should().Be("waiting for a slot — node 4 running, over a ceiling of 3");
     }
 
     [Fact]
