@@ -1643,8 +1643,11 @@ public sealed class RunAggregate
                 // current base branch): the exhausted recovery session's process is gone, so the
                 // leg is cleared here rather than left for the budget retry sweep to "resume" a
                 // dead process. RebaseRecoveryNeeded re-enters DispatchRebaseRecoverySessionAsync
-                // fresh, with no human guidance attached (this was never a dispute), the same way
-                // an ordinary conflict's own first attempt does.
+                // fresh — PendingRebaseRecoveryGuidance is left untouched here, mirroring
+                // PendingHumanFindings' own doc just above, so a retry after a human's own
+                // --needs-fixes resolution still carries their guidance into the fresh attempt;
+                // it reads as no guidance only when this exhaustion's own attempt genuinely never
+                // had any (an ordinary conflict's own first attempt, which never set the field).
                 ClearActiveRebaseRecoverySession();
                 ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
                 break;

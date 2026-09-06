@@ -637,9 +637,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             ? "build session"
             : retry.Leg == RunSessionLeg.Fix
                 ? "fix session"
-                : retry.Lens is { } lens && lens != ReviewLens.Unknown
-                    ? $"{lens.Value.ToLowerInvariant()} review pass"
-                    : "review pass";
+                : retry.Leg == RunSessionLeg.RebaseRecovery
+                    ? "rebase-recovery session"
+                    : retry.Lens is { } lens && lens != ReviewLens.Unknown
+                        ? $"{lens.Value.ToLowerInvariant()} review pass"
+                        : "review pass";
         return retry.Cycle is { } cycle ? $"{label} (cycle {cycle})" : label;
     }
 

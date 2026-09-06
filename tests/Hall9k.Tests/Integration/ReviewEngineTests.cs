@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
@@ -1248,7 +1249,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// conflicting (or genuinely clean) history is what decides the outcome.
     /// </summary>
     private async Task<(Guid TaskId, Guid RunId, string WorktreePath, string OriginPath)> SeedVerifiedRunWithOriginAsync(
-        DocumentStore store, CancellationToken cancellationToken)
+        DocumentStore store, CancellationToken cancellationToken, string? pullRequestUrl = null)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -1284,6 +1285,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
         session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        // A follow-up run's own task already carries the pull request its predecessor opened
+        // (task: a run rebases its branch onto the current base branch — the retargeted-base
+        // guard only ever has anything to check once a pull request already exists).
+        if (!string.IsNullOrWhiteSpace(pullRequestUrl))
+        {
+            session.Events.Append(taskId, new TaskCompleted(taskId, DomainId.New(), pullRequestUrl, Now));
+        }
 
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
@@ -1346,6 +1355,46 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Task: a run rebases its branch onto the current base branch (independent pre-PR review,
+    /// cycle 1, both lenses). A follow-up run reuses whatever pull request the task already has
+    /// open, and that pull request's base can have been retargeted away from the project's own
+    /// base branch on GitHub itself (the stacked-PR shape AGENTS.md documents as current
+    /// practice) — CloseoutEngine's own mechanical rebase already refuses the identical mismatch
+    /// for the identical reason, and this check must too, rather than silently rewriting the
+    /// branch onto a base it was never meant to be on.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_final_pass_rebase_skips_when_the_pull_request_was_retargeted_off_the_project_base()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) = await SeedVerifiedRunWithOriginAsync(
+            store, cts.Token, pullRequestUrl: "https://github.com/acme/widgets/pull/42");
+
+        PushToOrigin(originPath, "unrelated.txt", "merged while this run was building\n", "unrelated merge");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            """{"number":42,"title":"x","body":null,"state":"OPEN","url":"https://github.com/acme/widgets/pull/42","baseRefName":"release/1.0"}""");
+
+        bool mergeReady = await NewEngine(
+                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, gh.Runner)
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        File.Exists(Path.Combine(worktreePath, "unrelated.txt")).Should().BeFalse(
+            "the pull request's actual base (release/1.0) is not this project's own base branch (main) — " +
+            "rebasing onto main would silently rewrite the branch onto a base it was never meant to be on");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().BeEmpty("the mismatch is caught before any git fetch or rebase is attempted");
+    }
+
+    /// <summary>
     /// Task: a run rebases its branch onto the current base branch. A clean rebase (no
     /// conflict) is folded into the mandatory final pass with no extra Discovery cycle, lens,
     /// or fix session — Brian's 2026-09-04 ruling: git applying every commit cleanly is itself
@@ -1381,6 +1430,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<RunRebasedOntoBase>().Should().ContainSingle(
             e => !e.WasNoOp && !e.RecoveredByAgentSession, "git applied every commit without a conflict");
+
+        // The mandatory final pass this real rebase earns re-enters Settling afterward, whose own
+        // rebase check runs again and finds nothing left to do — that trailing no-op must not
+        // clobber the read model's own record of the real rebase (independent pre-PR review,
+        // cycle 1, both lenses).
+        RunDetails? run = await query.LoadAsync<RunDetails>(runId, cts.Token);
+        run.Should().NotBeNull();
+        run!.LastPreFinalPassRebaseWasNoOp.Should().BeFalse(
+            "h9k task show must report the real rebase, not the trailing no-op re-check that followed it");
     }
 
     /// <summary>
@@ -1471,6 +1529,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             e => e.Outcome == ReviewFixOutcome.Fixed);
         events.OfType<RunRebasedOntoBase>().Should().ContainSingle(
             e => e.RecoveredByAgentSession && !e.WasNoOp);
+
+        // The loop returns straight to Settling once the recovery completes, whose own rebase
+        // check runs again immediately and finds nothing left to do — that trailing no-op must not
+        // overwrite "recovered by a narrow session" before any human ever sees it (independent
+        // pre-PR review, cycle 1, adversarial lens).
+        RunDetails? run = await query.LoadAsync<RunDetails>(runId, cts.Token);
+        run.Should().NotBeNull();
+        run!.LastPreFinalPassRebaseRecovered.Should().BeTrue(
+            "the operator investigating why the branch's history was rewritten must still see the recovery, not a trailing no-op");
+        run.LastPreFinalPassRebaseWasNoOp.Should().BeFalse();
     }
 
     /// <summary>
@@ -3400,7 +3468,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -3466,7 +3534,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -6017,7 +6085,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -6088,7 +6156,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
 
         await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
 
@@ -6119,13 +6187,26 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         NewEngine(store, executor, new DaemonOptions());
 
     private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor, DaemonOptions options) =>
+        NewEngine(store, executor, options, RecordingProcessRunner.NeverInvoked());
+
+    /// <summary>
+    /// <paramref name="ghRunner"/> answers the pre-final-pass rebase's own retargeted-base check
+    /// (task: a run rebases its branch onto the current base branch) — never gh itself, since no
+    /// test here has a real pull request to ask. Every other test passes no task PullRequestUrl at
+    /// all, so <see cref="RecordingProcessRunner.NeverInvoked"/> is the right default: if a future
+    /// edit makes that check run unexpectedly, the test fails loudly here instead of quietly
+    /// shelling out to the real gh CLI and the real network.
+    /// </summary>
+    private static ReviewEngine NewEngine(
+        DocumentStore store, ScriptedExecutor executor, DaemonOptions options, ProcessRunner ghRunner) =>
         new(store, executor, executor.Processes,
             new VerificationRunner(
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(options),
             NullLogger<ReviewEngine>.Instance,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance));
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            ghRunner);
 
     /// <summary>Writes a terminal result for a session this test seeded rather than spawned.</summary>
     private static async Task WriteScriptedResultAsync(
