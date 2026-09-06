@@ -277,9 +277,10 @@ public sealed class RunSessionProjectionTests
         view.PendingBuildSessionErrorRetry.Should().BeFalse("only the build leg's own retry sets this flag");
     }
 
-    private static RunDetails Dispatched(RunDetailsProjection projection, Guid id, string sessionName = "") =>
+    private static RunDetails Dispatched(
+        RunDetailsProjection projection, Guid id, string sessionName = "", Guid taskId = default) =>
         projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
-            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            id, taskId == default ? DomainId.New() : taskId, DomainId.New(), DomainId.New(), 1, DomainId.New(),
             "/wt/x", "task/x", ExecutorMode.Subscription, Now, SessionName: sessionName)));
 
     /// <summary>
@@ -351,23 +352,52 @@ public sealed class RunSessionProjectionTests
     /// <c>h9k task start</c> appends this identical event for its own headless build agent, never a
     /// human, and it always turns interactive mode on — so without a discriminator this write would
     /// tell every later review/fix prompt that agent's own exited session is "the human's own
-    /// registered session" (independent pre-PR review, cycle 1, both lenses). The build-role suffix
-    /// (<see cref="SessionRoleName.Build"/>) is what tells it apart from an operator's own
-    /// registration, the same discriminator <c>TaskPhaseComposer</c> already relies on.
+    /// registered session" (independent pre-PR review, cycle 1, both lenses). Matched by exact
+    /// equality against this run's own task's <see cref="SessionRoleName.Build"/> name, not a bare
+    /// "-build" suffix (independent pre-PR review, cycle 1, adversarial lens on
+    /// <see cref="RunDetails"/>'s own discriminator) — see the next test for the human-session
+    /// collision a suffix match alone would miss.
     /// </summary>
     [Fact]
     public void Registered_interactive_session_name_stays_null_for_h9k_task_starts_own_headless_build_agent()
     {
         RunDetailsProjection projection = new();
         Guid id = DomainId.New();
-        RunDetails view = Dispatched(projection, id, sessionName: "abc12345-build");
+        Guid taskId = DomainId.New();
+        string buildSessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build);
+        RunDetails view = Dispatched(projection, id, sessionName: buildSessionName, taskId: taskId);
 
         projection.Apply(new FakeEvent<InteractiveSessionStarted>(
-            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", SessionName: "abc12345-build")),
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", SessionName: buildSessionName)),
             view);
 
         view.RegisteredInteractiveSessionName.Should().BeNull(
             "the build agent's own session name is not a human's — h9k task start dispatched this run headless "
             + "and nobody has run h9k task register-session against it");
+    }
+
+    /// <summary>
+    /// The discriminator matches THIS run's own task's machine-composed build-session name exactly
+    /// (independent pre-PR review, cycle 1, adversarial lens), not merely a "-build" suffix: a
+    /// human's own freely chosen Claude Code session name can end the same way without being the
+    /// platform's own build agent, and a bare suffix match wrongly discarded that registration.
+    /// </summary>
+    [Fact]
+    public void Registered_interactive_session_name_is_kept_for_a_human_session_that_merely_ends_in_build()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        Guid taskId = DomainId.New();
+        RunDetails view = Dispatched(
+            projection, id, sessionName: SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build), taskId: taskId);
+
+        projection.Apply(new FakeEvent<InteractiveSessionStarted>(
+            new InteractiveSessionStarted(id, DomainId.New(), Now, 9001, "operator-mac", SessionName: "nightly-build")),
+            view);
+
+        view.RegisteredInteractiveSessionName.Should().Be(
+            "nightly-build",
+            "a human's own session name merely happening to end in \"-build\" is not this run's own task's "
+            + "machine-composed build-agent name, so it is still a genuine registration");
     }
 }
