@@ -881,6 +881,47 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// A stranded file that is an uncommitted deletion has no blob to hash — `git hash-object`
+    /// fails outright when the file no longer exists on disk — so the before-snapshot used to
+    /// record it as unobservable (null), and <c>DetectDiscardedFilesAsync</c> skips every
+    /// unobservable entry rather than flagging it. A recovery session that restores the file
+    /// instead of committing its removal therefore used to pass as "recovered cleanly" (independent
+    /// pre-PR review, cycle 2, medium finding). The before-snapshot now records a deletion marker
+    /// instead of null, and the post-recovery check treats the file as discarded whenever HEAD
+    /// still holds it — exactly what a restore (rather than a committed deletion) leaves behind.
+    /// </summary>
+    [Fact]
+    public async Task Automatic_recovery_that_restores_a_stranded_deletion_still_fails_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        File.Delete(Path.Combine(_worktree, "half-done.cs"));
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+        DiscardingRecoveryExecutor recovery = new(_worktree, "half-done.cs");
+
+        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+        passed.Should().BeFalse("the recovery session restored the deleted file instead of committing its removal");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("half-done.cs", "the failure names the file that was discarded");
+        run.FailureReason.Should().Contain("reverted or deleted rather than committed");
+        run.FailureReason.Should().Contain("h9k task retry");
+        run.UncommittedWorkRecovery.Should().NotBeNull();
+        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeFalse(
+            "the tree looked clean, but the deletion itself never actually reached HEAD");
+        run.UncommittedWorkRecovery!.DiscardedFiles.Should().Contain("half-done.cs");
+        run.FailedGates.Should().BeEmpty("no gate ever ran");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunUncommittedWorkRecoveryCompleted>().Should().ContainSingle()
+            .Which.DiscardedFiles.Should().Contain("half-done.cs");
+    }
+
+    /// <summary>
     /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
     /// A recovery session that could not even be spawned still gets a real
     /// <see cref="RunUncommittedWorkRecoveryCompleted"/> on the stream (independent pre-PR review,
