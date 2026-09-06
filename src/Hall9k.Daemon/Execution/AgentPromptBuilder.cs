@@ -2039,18 +2039,22 @@ public static class AgentPromptBuilder
     /// carry whatever review findings or fix instructions the prior session was working from,
     /// and this session's entire job is committing what is already finished, not reasoning about
     /// any of that again. No task or project context beyond the objective is restated —
-    /// deliberately narrow, so it stays cheap by construction — but unlike a `--resume`, this
-    /// session starts with zero memory of the branch, so it needs enough orientation to tell
-    /// genuinely finished work apart from something the prior session may have left half-written
-    /// on purpose.
+    /// deliberately narrow, so it stays cheap by construction. Unlike a `--resume`, this session
+    /// starts with zero memory of the branch, which is exactly why it is never asked to judge
+    /// whether a listed file belongs: with no memory of why the prior session left it that way, a
+    /// fresh session guessing "abandoned debugging" and discarding real work is indistinguishable
+    /// from a fresh session guessing right, so every listed file is committed, unconditionally,
+    /// and no file is ever reverted or deleted.
     /// <para>
-    /// Whatever is judged not to belong has to actually leave the tree (reverted or deleted), not
-    /// merely be left sitting there with a stated reason: the mechanical re-check that decides
-    /// whether this recovery succeeded (<c>VerificationRunner.DetectStrandedWorkAsync</c>) counts
-    /// any remaining modified or untracked file as still stranded regardless of what the session
-    /// said about it, so the two have to agree on the same bar — a clean tree, by commit or by
-    /// removal — rather than one asking for a stated exclusion the other has no way to honor
-    /// (independent pre-PR review, cycle 1, adversarial finding).
+    /// None of the files named below may be reverted or deleted, even when one of them looks like
+    /// scratch state: the platform's own re-check (<c>VerificationRunner.RecordRecoveryOutcomeAsync</c>)
+    /// verifies afterward that each one actually reached a commit, byte for byte — not merely that
+    /// it stopped showing up in `git status` — so discarding one does not pass this check either,
+    /// it only loses the work while still failing the run. Earlier wording here authorized exactly
+    /// that discard, and separately claimed the tree had to show nothing at all in `git status`,
+    /// which is a wider bar than what the platform's own detector (`WorktreeGitStatus.SplitUntracked`)
+    /// actually enforces — a build/test byproduct outside <c>src/</c> or <c>tests/</c> is warn-only
+    /// there and was never anyone's to delete (independent pre-PR review, cycle 1, both lenses).
     /// </para>
     /// </summary>
     public static string BuildUncommittedWorkRecovery(TaskDetails task, IReadOnlyList<string> strandedFiles)
@@ -2063,24 +2067,31 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine($"The task's objective, for orientation: {task.Objective}");
         prompt.AppendLine();
-        prompt.AppendLine("Your only job is turning this into well-formed commits, then stopping. If this repo");
-        prompt.AppendLine("ships a commit-plan skill, invoke it now — that is exactly the judgment call it exists");
-        prompt.AppendLine("for: organize what is genuinely finished work into cohesive, buildable commits. If");
-        prompt.AppendLine("this repo ships no such skill, use the same judgment by hand: `git add` and");
-        prompt.AppendLine("`git commit` what belongs, in as many commits as the change actually needs.");
+        prompt.AppendLine("Your only job is turning every file listed above into well-formed commits, then");
+        prompt.AppendLine("stopping. If this repo ships a commit-plan skill, invoke it now — that is exactly the");
+        prompt.AppendLine("judgment call it exists for: organize what is genuinely finished work into cohesive,");
+        prompt.AppendLine("buildable commits. Skip that skill's own build-verification step (the throwaway");
+        prompt.AppendLine("`git worktree add` plus `dotnet build` per commit) — this session must not run the");
+        prompt.AppendLine("build or test suite, below. If this repo ships no such skill, use the same judgment by");
+        prompt.AppendLine("hand: `git add` and `git commit` what belongs, in as many commits as the change");
+        prompt.AppendLine("actually needs.");
         prompt.AppendLine();
-        prompt.AppendLine("Anything you decide does NOT belong — scratch state, something left uncommitted on");
-        prompt.AppendLine("purpose — must not simply be left sitting there: revert a modified tracked file back");
-        prompt.AppendLine("to its committed state (`git checkout -- <file>`) or delete an untracked one. Stating");
-        prompt.AppendLine("your reasoning is not enough on its own — the tree has to actually be clean, because");
-        prompt.AppendLine("whatever a plain `git status` still shows afterward is treated as still stranded,");
-        prompt.AppendLine("whatever you decided about it.");
+        prompt.AppendLine("None of the files listed above may be reverted (`git checkout -- <file>`) or deleted.");
+        prompt.AppendLine("Every one of them is finished work someone is counting on, even a file that looks like");
+        prompt.AppendLine("scratch or leftover debugging — commit it rather than guessing it does not belong. The");
+        prompt.AppendLine("platform verifies afterward that each listed file actually reached a commit, not");
+        prompt.AppendLine("merely that it stopped appearing in `git status`, so discarding one does not pass this");
+        prompt.AppendLine("check either — it only loses the work while the run still fails.");
+        prompt.AppendLine();
+        prompt.AppendLine("`git status` may still show other files once you are done — a build or test byproduct");
+        prompt.AppendLine("an earlier session left behind, unrelated to the list above.");
+        prompt.AppendLine("Leave anything not listed above alone: it is not this recovery's concern, and deleting");
+        prompt.AppendLine("a file you do not recognize risks losing work of its own.");
         prompt.AppendLine();
         prompt.AppendLine("Do not read or act on any review findings. Do not fix bugs, add tests, or change any");
         prompt.AppendLine("file's content beyond what committing requires. Do not run the build or test suite.");
         prompt.AppendLine("Do not open a pull request — the platform does that once this run reaches its gates on");
-        prompt.AppendLine("its own. Stop once `git status` shows nothing left: everything that belongs is");
-        prompt.AppendLine("committed, and everything else is cleared rather than sitting uncommitted.");
+        prompt.AppendLine("its own. Stop once every file listed above is committed.");
         prompt.AppendLine();
         prompt.AppendLine("## Working rules");
         prompt.AppendLine();
