@@ -688,13 +688,29 @@ public sealed partial class VerificationRunner(
         bool? RecoveredCleanly, string? StillStrandedReason, IReadOnlyList<string> DiscardedFiles);
 
     /// <summary>
+    /// The before-snapshot marker for a stranded file that is an uncommitted deletion (independent
+    /// pre-PR review, cycle 2, medium finding): such a file has no bytes left to hash, so
+    /// <see cref="HashStrandedFilesAsync"/> cannot record a blob for it the way it does for every
+    /// other stranded shape. Recorded instead of null so <see cref="DetectDiscardedFilesAsync"/>
+    /// still has something to weigh a recovery session's outcome against — a null entry there is
+    /// skipped outright, which is exactly how a recovery session that restored the file instead of
+    /// committing its removal used to pass as "recovered cleanly".
+    /// </summary>
+    private const string DeletedBeforeRecoveryMarker = "<deleted>";
+
+    /// <summary>
     /// Every originally-stranded file's blob hash exactly as it sits in the worktree before the
     /// recovery session can touch it (`git hash-object`, which hashes a file's bytes the way git
     /// would store them without needing the file to be tracked or staged first). The ground truth
-    /// <see cref="DetectDiscardedFilesAsync"/> later weighs the post-recovery commit against. Null
-    /// for a file this cannot hash — the same never-guess convention as every other git read in
-    /// this file: a file this method cannot account for is never later flagged as discarded, since
-    /// there would be nothing to compare it against.
+    /// <see cref="DetectDiscardedFilesAsync"/> later weighs the post-recovery commit against.
+    /// A stranded file that no longer exists on disk — the shape a stranded deletion takes, since
+    /// `git status` reported it as stranded (so it was tracked, or newly added) yet it is
+    /// nonetheless absent — is recorded as <see cref="DeletedBeforeRecoveryMarker"/> rather than
+    /// null: there is no blob to hash, but the fact that a deletion is what was stranded is itself
+    /// still observed and worth recording. Null is reserved for a file this genuinely cannot
+    /// account for (it exists on disk but `git hash-object` still failed) — the same never-guess
+    /// convention as every other git read in this file: a file this method cannot account for is
+    /// never later flagged as discarded, since there would be nothing to compare it against.
     /// </summary>
     private static async Task<IReadOnlyDictionary<string, string?>> HashStrandedFilesAsync(
         string worktreePath, IReadOnlyList<string> strandedFiles, CancellationToken cancellationToken)
@@ -704,7 +720,13 @@ public sealed partial class VerificationRunner(
         {
             (int exitCode, string output) =
                 await RunGitAsync(worktreePath, ["hash-object", "--", file], cancellationToken);
-            hashes[file] = exitCode == 0 ? output.Trim() : null;
+            if (exitCode == 0)
+            {
+                hashes[file] = output.Trim();
+                continue;
+            }
+
+            hashes[file] = File.Exists(Path.Combine(worktreePath, file)) ? null : DeletedBeforeRecoveryMarker;
         }
 
         return hashes;
@@ -721,6 +743,14 @@ public sealed partial class VerificationRunner(
     /// fully clean, so every file this walks has already stopped being reported as stranded.
     /// A file this cannot hash on either side of the comparison is never flagged: an unobservable
     /// comparison is not evidence of a discard.
+    /// <para>
+    /// A file whose before-snapshot is <see cref="DeletedBeforeRecoveryMarker"/> (independent
+    /// pre-PR review, cycle 2, medium finding) has no blob to compare — the check instead asks
+    /// whether the deletion itself actually reached HEAD. A recovery session that restores the
+    /// file rather than committing its removal leaves HEAD still holding it, which is the
+    /// discard; a recovery session that commits the deletion leaves HEAD without it, which is
+    /// success.
+    /// </para>
     /// </summary>
     private static async Task<IReadOnlyList<string>> DetectDiscardedFilesAsync(
         string worktreePath, IReadOnlyList<string> originalStrandedFiles,
@@ -736,6 +766,17 @@ public sealed partial class VerificationRunner(
 
             (int exitCode, string output) =
                 await RunGitAsync(worktreePath, ["rev-parse", "-q", "--verify", $"HEAD:{file}"], cancellationToken);
+
+            if (before == DeletedBeforeRecoveryMarker)
+            {
+                if (exitCode == 0)
+                {
+                    discarded.Add(file);
+                }
+
+                continue;
+            }
+
             string? committed = exitCode == 0 ? output.Trim() : null;
 
             if (committed != before)
