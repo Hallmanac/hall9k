@@ -1,6 +1,8 @@
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -52,6 +54,15 @@ public sealed class DispatchEngine(
     /// a task that gets claimed and later queues behind the ceiling again is announced again.
     /// </summary>
     private readonly HashSet<Guid> _deferredClaims = [];
+
+    /// <summary>
+    /// Tasks already reported as deferred by their own project's cap (Decisions Log #140) — a
+    /// separate set from <see cref="_deferredClaims"/>, because the two are independent limits
+    /// and a task turned away by one must not be silently folded into the other's log line. Same
+    /// rebuilt-every-sweep discipline: a task that gets claimed and later queues behind the cap
+    /// again is announced again.
+    /// </summary>
+    private readonly HashSet<Guid> _deferredByProjectCap = [];
 
     /// <summary>
     /// Whether the last measurement found this node over its ceiling, so the overshoot is stated
@@ -336,30 +347,128 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
-    /// Claim this owner's queued tasks while the node is under its concurrency ceiling. The
-    /// claim is the lock: appends race on the stream version and the database picks the winner
-    /// (TASK-MODEL.md §2). Draft, Published and Blocked tasks are structurally invisible here —
-    /// a task becomes claimable only through an explicit human assignment (Decisions Log #34).
+    /// Claim this owner's queued tasks while the node is under its concurrency ceiling and each
+    /// task's own project is under its (Decisions Log #64, #111, #140). The claim is the lock:
+    /// appends race on the stream version and the database picks the winner (TASK-MODEL.md §2).
+    /// Draft, Published and Blocked tasks are structurally invisible here — a task becomes
+    /// claimable only through an explicit human assignment (Decisions Log #34).
     /// <para>
-    /// Everything the ceiling turns away simply stays Queued, which already honestly means
+    /// Everything either ceiling turns away simply stays Queued, which already honestly means
     /// waiting, and is claimed as slots free up in the same order the queue always had. There
     /// is no throttled state and no reservation: nothing is written about a deferral beyond the
-    /// load measurement <see cref="NodeDispatchLoad"/> carries for the attention pane.
+    /// load measurement <see cref="NodeDispatchLoad"/> carries for the attention pane. A project
+    /// cap is a ceiling in exactly that sense — nothing is set aside for an idle project, so a
+    /// project capped above its share simply fills whatever the node and the other projects'
+    /// activity leave free.
     /// </para>
     /// </summary>
     public async Task<IReadOnlyList<ClaimedWork>> ClaimEligibleAsync(CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
-        NodeLoad load = await MeasureLoadAsync(session, cancellationToken);
+        IReadOnlyList<QueuedCandidate> queued = await ReadQueueAsync(session, cancellationToken);
 
+        // Measured after the queue is read rather than before it, because a project cap can only
+        // be measured against the projects that actually have a candidate this sweep — a paused
+        // project with queued work has to publish its own row even though it is carrying nothing.
+        Guid[] queuedProjects = [.. queued.Select(candidate => candidate.ProjectId).Distinct()];
+        DispatchLoad load = await MeasureLoadAsync(session, queuedProjects, cancellationToken);
+
+        // Worth the scan only when something could actually be claimed: an idle sweep with
+        // nothing queued, a node already at its concurrency ceiling, or a sweep where every
+        // queued candidate's own project is full or paused, would otherwise materialize a full
+        // period's worth of TokensRecorded events for a decision that changes nothing about this
+        // sweep's outcome — paid every PollInterval regardless (independent pre-PR review,
+        // cycle 1, adversarial lens; the project clause, PR review round 1, for the paused
+        // project on an otherwise idle node). Skipping the scan costs nothing in honesty: the
+        // rows are then reported against the cap that actually holds them, which is the truer
+        // cause anyway, since a bigger spend budget would not release a task its own project is
+        // holding back. This guard alone does not bound the steady state a spent budget
+        // produces — all three conditions stay true for as long as the gate holds tasks Queued
+        // rather than claiming them — so SpendBudgetExhaustedAsync's own cache (independent
+        // pre-PR review, cycle 7, adversarial lens) is what actually keeps that case cheap.
+        bool anyProjectAdmits = queued.Any(
+            candidate => load.Project(candidate.ProjectId).Ceiling.Admits(claimedThisSweep: 0));
+        bool spendExhausted = queued.Count > 0 && load.Node.Capacity > 0 && anyProjectAdmits
+            && await SpendBudgetExhaustedAsync(session, cancellationToken);
+
+        List<ClaimedWork> claimed = [];
+        Dictionary<Guid, int> claimedByProject = [];
+        List<Guid> deferredByCeiling = [];
+        List<QueuedCandidate> deferredByProjectCap = [];
+        List<Guid> deferredBySpend = [];
+        foreach (QueuedCandidate candidate in queued)
+        {
+            // The project's own cap is asked before either of this node's limits, so a task its
+            // project is holding back is never reported against a node-level lever that would not
+            // release it: neither a raised ceiling nor a rolled-over period starts a paused
+            // project's work, and the cap is the lever that owns those rows. Both surfaces resolve
+            // the limits in this same order (Hall9k.Cli.Commands.QueueHold), so the daemon log and
+            // h9k status can never name different causes for one row. Asked per candidate, because
+            // this sweep's own claims fill the cap as it goes.
+            //
+            // Asked ahead of the spend gate specifically for the mixed sweep the anyProjectAdmits
+            // guard above cannot cover: one project paused (or full) while another admits, on a
+            // spent budget. That guard reads such a sweep as worth scanning — correctly, since the
+            // admitting project's rows really are held by the budget — and gating on spend first
+            // would then sweep the paused project's rows into the same log line, promising they
+            // are "claimed once the period rolls" when the rollover releases nothing, while
+            // h9k status went on naming the pause for the very same row (independent pre-PR
+            // review, cycle 1, adversarial lens). Nothing about what gets claimed changes: a
+            // candidate past this check still faces the spend gate below.
+            if (!load.Project(candidate.ProjectId).Ceiling
+                .Admits(claimedByProject.GetValueOrDefault(candidate.ProjectId)))
+            {
+                deferredByProjectCap.Add(candidate);
+                continue;
+            }
+
+            // The spend budget gates claiming only (AGENTS.md #11's never-auto-kill restraint):
+            // it never touches a run already claimed, and a task it turns away simply stays
+            // Queued, exactly as the ceiling's own turned-away tasks do.
+            if (spendExhausted)
+            {
+                deferredBySpend.Add(candidate.TaskId);
+                continue;
+            }
+
+            if (claimed.Count >= load.Node.Capacity)
+            {
+                deferredByCeiling.Add(candidate.TaskId);
+                continue;
+            }
+
+            if (await TryClaimAsync(candidate.TaskId, cancellationToken) is { } work)
+            {
+                claimed.Add(work);
+                claimedByProject[candidate.ProjectId] =
+                    claimedByProject.GetValueOrDefault(candidate.ProjectId) + 1;
+            }
+        }
+
+        await PublishLoadAsync(
+            session, load, queuedProjects, claimed.Count, deferredByCeiling, deferredByProjectCap, cancellationToken);
+        ReportSpendExhausted(spendExhausted, deferredBySpend);
+        return claimed;
+    }
+
+    /// <summary>One queued task as the claim loop needs it: the task, and the project whose cap it answers to.</summary>
+    private sealed record QueuedCandidate(Guid TaskId, Guid ProjectId);
+
+    /// <summary>
+    /// This owner's queue, in the order the dispatcher serves it.
+    /// <para>
+    /// The whole claim rule, as one indexed-friendly filter (Decisions Log #34): Queued
+    /// means a human assigned it and every dependency has closed out, and the owner match
+    /// means those were this node's owner's decisions. The ceilings shape how much of this
+    /// set is taken, never which end of it (Decisions Log #64).
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<QueuedCandidate>> ReadQueueAsync(
+        IQuerySession session, CancellationToken cancellationToken)
+    {
         Guid ownerId = node.OwnerId;
 
-        // The whole claim rule, as one indexed-friendly filter (Decisions Log #34): Queued
-        // means a human assigned it and every dependency has closed out, and the owner match
-        // means those were this node's owner's decisions. The ceiling shapes how much of this
-        // set is taken, never which end of it (Decisions Log #64).
-        //
         // Marker first (task 45136b29, idea fcaded0b's R7 ruling): a task a human recorded as
         // queue-first (h9k task revise --queue-first, or h9k task handback --first) takes the
         // next free slot regardless of assignment age, ahead of every unmarked row — the marker
@@ -377,62 +486,21 @@ public sealed class DispatchEngine(
         // first under Postgres's default DESC ordering, ahead of a genuinely marked row, so the
         // same startup backfill rebuilds it before this query runs.
         //
-        // Ids only, never the documents: nothing below reads a projection field. TryClaimAsync
-        // decides from the task's own stream and a deferral is logged by id, so every document
-        // body fetched here would be deserialized and dropped. It is worth saying because of
-        // what follows — the whole queue is read rather than just the claimable head, so that
-        // every task the ceiling defers can be named in the log exactly once, which makes this
-        // the one read here whose size grows with the backlog rather than with the ceiling.
-        IReadOnlyList<Guid> queued = await session.Query<TaskListItem>()
+        // Two fields, never the documents: nothing below reads any other projection field.
+        // TryClaimAsync decides from the task's own stream, and a deferral is logged by id and by
+        // the project whose cap held it, so every other document body fetched here would be
+        // deserialized and dropped. It is worth saying because of what follows — the whole queue
+        // is read rather than just the claimable head, so that every task either ceiling defers
+        // can be named in the log exactly once, which makes this the one read here whose size
+        // grows with the backlog rather than with the ceiling.
+        return await session.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
             .Where(t => t.AssignedOwnerId == ownerId)
             .OrderByDescending(t => t.QueuePriorityMarked)
             .ThenBy(t => t.AssignedAt)
             .ThenBy(t => t.AddedAt)
-            .Select(t => t.Id)
+            .Select(t => new QueuedCandidate(t.Id, t.ProjectId))
             .ToListAsync(cancellationToken);
-
-        // Worth the scan only when something could actually be claimed: an idle sweep with
-        // nothing queued, or a node already at its concurrency ceiling, would otherwise
-        // materialize a full period's worth of TokensRecorded events for a decision that changes
-        // nothing about this sweep's outcome — paid every PollInterval regardless (independent
-        // pre-PR review, cycle 1, adversarial lens). This guard alone does not bound the steady
-        // state a spent budget produces — queued.Count > 0 and load.Capacity > 0 both stay true
-        // for as long as the gate holds tasks Queued rather than claiming them — so
-        // SpendBudgetExhaustedAsync's own cache (independent pre-PR review, cycle 7, adversarial
-        // lens) is what actually keeps that case cheap.
-        bool spendExhausted = queued.Count > 0 && load.Capacity > 0
-            && await SpendBudgetExhaustedAsync(session, cancellationToken);
-
-        List<ClaimedWork> claimed = [];
-        List<Guid> deferredByCeiling = [];
-        List<Guid> deferredBySpend = [];
-        foreach (Guid candidateId in queued)
-        {
-            // The spend budget gates claiming only (AGENTS.md #11's never-auto-kill restraint):
-            // it never touches a run already claimed, and a task it turns away simply stays
-            // Queued, exactly as the ceiling's own turned-away tasks do.
-            if (spendExhausted)
-            {
-                deferredBySpend.Add(candidateId);
-                continue;
-            }
-
-            if (claimed.Count >= load.Capacity)
-            {
-                deferredByCeiling.Add(candidateId);
-                continue;
-            }
-
-            if (await TryClaimAsync(candidateId, cancellationToken) is { } work)
-            {
-                claimed.Add(work);
-            }
-        }
-
-        await PublishLoadAsync(session, load, claimed.Count, deferredByCeiling, cancellationToken);
-        ReportSpendExhausted(spendExhausted, deferredBySpend);
-        return claimed;
     }
 
     /// <summary>
@@ -526,19 +594,22 @@ public sealed class DispatchEngine(
     /// </summary>
     private async Task PublishLoadAsync(
         IDocumentSession session,
-        NodeLoad measured,
+        DispatchLoad measured,
+        IReadOnlyCollection<Guid> queuedProjects,
         int claimedCount,
         IReadOnlyCollection<Guid> deferred,
+        IReadOnlyCollection<QueuedCandidate> deferredByProjectCap,
         CancellationToken cancellationToken)
     {
         try
         {
-            NodeLoad carried = claimedCount == 0
+            DispatchLoad carried = claimedCount == 0
                 ? measured
-                : await MeasureLoadAsync(session, cancellationToken);
+                : await MeasureLoadAsync(session, queuedProjects, cancellationToken);
             await RecordLoadAsync(session, carried, DateTimeOffset.UtcNow, cancellationToken);
-            ReportOverCeiling(carried);
-            ReportDeferrals(deferred, carried);
+            ReportOverCeiling(carried.Node);
+            ReportDeferrals(deferred, carried.Node);
+            ReportProjectCapDeferrals(deferredByProjectCap, carried);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -554,11 +625,19 @@ public sealed class DispatchEngine(
 
     /// <summary>
     /// The live-run count this node claims against, and the run ceiling it is measured against
-    /// (Decisions Log #64, #111). The counting rule itself is <see cref="NodeLoad.LiveSlots"/>;
-    /// the two queries here are just what it needs: this node's leases, and the runs that could
-    /// answer for them.
+    /// (Decisions Log #64, #111), plus the same count and cap per interested project (#140). The
+    /// counting rule itself is <see cref="NodeLoad.LiveSlots"/>; the queries here are just what it
+    /// needs: this node's leases, the runs that could answer for them, and — for the per-project
+    /// split — which project each of those live slots belongs to.
     /// </summary>
-    private async Task<NodeLoad> MeasureLoadAsync(IQuerySession session, CancellationToken cancellationToken)
+    /// <param name="queuedProjects">
+    /// The projects this sweep has candidates from, so a project carrying nothing still gets a
+    /// measured row: a paused project's whole point is that it is holding work while idle, and a
+    /// row absent from the published measurement would leave <c>h9k status</c> with nothing to
+    /// say about it.
+    /// </param>
+    private async Task<DispatchLoad> MeasureLoadAsync(
+        IQuerySession session, IReadOnlyCollection<Guid> queuedProjects, CancellationToken cancellationToken)
     {
         Guid nodeId = node.NodeId;
         IReadOnlyList<TaskLease> leases = await session.Query<TaskLease>()
@@ -584,7 +663,71 @@ public sealed class DispatchEngine(
                 .ToListAsync(cancellationToken);
 
         List<RunListItem> runs = [.. live, .. leaseRuns.Where(run => live.All(other => other.Id != run.Id))];
-        return new NodeLoad(NodeLoad.LiveSlots(nodeId, leases, runs).Count, _options.MaxConcurrentTaskRuns);
+        IReadOnlyCollection<LiveSlot> slots = NodeLoad.LiveSlots(nodeId, leases, runs);
+
+        return new DispatchLoad(
+            new NodeLoad(slots.Count, _options.MaxConcurrentTaskRuns),
+            await MeasureProjectLoadsAsync(session, slots, queuedProjects, cancellationToken));
+    }
+
+    /// <summary>
+    /// The same live slots, split by the project each one belongs to, against each project's own
+    /// cap (Decisions Log #140). The split is read off the slots' own task documents rather than
+    /// counted from a second query, so the per-project numbers and the node number can never
+    /// disagree about which slots are live — one measurement, two denominators.
+    /// <para>
+    /// A slot whose task document cannot be read counts toward the node's number (the machine is
+    /// holding it either way) and toward no project's, because which project it belongs to is
+    /// then genuinely unobserved. The load stays bounded by the ceiling rather than by the
+    /// backlog: only live slots' tasks are fetched, never the queue's.
+    /// </para>
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<Guid, ProjectLoad>> MeasureProjectLoadsAsync(
+        IQuerySession session,
+        IReadOnlyCollection<LiveSlot> slots,
+        IReadOnlyCollection<Guid> queuedProjects,
+        CancellationToken cancellationToken)
+    {
+        Guid[] slotTasks = [.. slots.Select(slot => slot.TaskId).Distinct()];
+        IReadOnlyList<TaskListItem> slotTaskRows = slotTasks.Length == 0
+            ? []
+            : await session.Query<TaskListItem>()
+                .Where(task => task.Id.IsOneOf(slotTasks))
+                .ToListAsync(cancellationToken);
+
+        Dictionary<Guid, Guid> projectByTask = slotTaskRows.ToDictionary(task => task.Id, task => task.ProjectId);
+        Dictionary<Guid, int> liveByProject = [];
+        foreach (LiveSlot slot in slots)
+        {
+            if (projectByTask.TryGetValue(slot.TaskId, out Guid projectId))
+            {
+                liveByProject[projectId] = liveByProject.GetValueOrDefault(projectId) + 1;
+            }
+        }
+
+        // Every project this sweep could have to decide about: one it is carrying a run for, or
+        // one a queued candidate belongs to.
+        Guid[] measured = [.. new HashSet<Guid>([.. liveByProject.Keys, .. queuedProjects])];
+        if (measured.Length == 0)
+        {
+            return new Dictionary<Guid, ProjectLoad>();
+        }
+
+        IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>()
+            .Where(project => project.Id.IsOneOf(measured))
+            .ToListAsync(cancellationToken);
+        Dictionary<Guid, ProjectDetails> byId = projects.ToDictionary(project => project.Id);
+
+        return measured.ToDictionary(
+            projectId => projectId,
+            projectId =>
+            {
+                ProjectDetails? details = byId.GetValueOrDefault(projectId);
+                return new ProjectLoad(
+                    projectId,
+                    details?.Name ?? projectId.ToString(),
+                    new ProjectRunCeiling(liveByProject.GetValueOrDefault(projectId), details?.MaxParallelTasks));
+            });
     }
 
     /// <summary>
@@ -594,17 +737,27 @@ public sealed class DispatchEngine(
     /// measurement is current as much as it needs the number.
     /// </summary>
     private async Task RecordLoadAsync(
-        IDocumentSession session, NodeLoad load, DateTimeOffset now, CancellationToken cancellationToken)
+        IDocumentSession session, DispatchLoad load, DateTimeOffset now, CancellationToken cancellationToken)
     {
         session.Store(new NodeDispatchLoad
         {
             Id = node.NodeId,
             MachineName = Environment.MachineName,
-            LiveRuns = load.LiveRuns,
-            MaxConcurrentRuns = load.MaxConcurrentRuns,
+            LiveRuns = load.Node.LiveRuns,
+            MaxConcurrentRuns = load.Node.MaxConcurrentRuns,
             ObservedAt = now,
             SpendBudgetTokens = _options.SpendBudgetTokens,
             SpendPeriod = _options.SpendPeriod,
+            // Published rather than left to the reader to re-derive, the same reason
+            // MaxConcurrentRuns is (Decisions Log #64, #140): a CLI cannot see the dispatch
+            // handoff window at all, so a count it computed itself would disagree with the one
+            // the claims were actually made against.
+            ProjectLoads =
+            [
+                .. load.Projects.Values
+                    .Select(project => new ProjectRunLoad(
+                        project.ProjectId, project.Ceiling.LiveRuns, project.Ceiling.Cap)),
+            ],
         });
         await session.SaveChangesAsync(cancellationToken);
     }
@@ -659,6 +812,43 @@ public sealed class DispatchEngine(
 
         _deferredClaims.Clear();
         _deferredClaims.UnionWith(deferred);
+    }
+
+    /// <summary>
+    /// The project cap's own deferral log (Decisions Log #140), on the same one-line-per-episode
+    /// discipline <see cref="ReportDeferrals"/> gives the node ceiling and for the same reason —
+    /// but as its own line, with its own set, because the two are different limits with different
+    /// levers and a queue state must never have to be reconstructed from a line that named the
+    /// wrong one. A paused project says so in its own words: "at its cap" and "paused" are the
+    /// same mechanism pointed at different problems, and only one of them is answered by raising
+    /// a number.
+    /// </summary>
+    private void ReportProjectCapDeferrals(IReadOnlyCollection<QueuedCandidate> deferred, DispatchLoad load)
+    {
+        foreach (QueuedCandidate candidate in deferred.Where(candidate => !_deferredByProjectCap.Contains(candidate.TaskId)))
+        {
+            ProjectLoad project = load.Project(candidate.ProjectId);
+            if (project.Ceiling.IsPaused)
+            {
+                logger.LogInformation(
+                    "Task {TaskId} stays queued: project {Project} is paused — its per-project ceiling is 0, so "
+                    + "nothing of this project's is claimed however idle this node is. Nothing raises it on its "
+                    + "own: h9k project set {Project} --max-parallel-tasks <n>",
+                    candidate.TaskId, project.Name, project.Name);
+                continue;
+            }
+
+            logger.LogInformation(
+                project.Ceiling.OverCap
+                    ? "Task {TaskId} stays queued: project {Project} is over its own run ceiling (project cap "
+                        + "{LiveRuns} running, over a cap of {Cap}) — it is claimed as that project's runs finish"
+                    : "Task {TaskId} stays queued: project {Project} is at its own run ceiling (project cap "
+                        + "{LiveRuns} of {Cap} live run(s)) — it is claimed as one of that project's runs finishes",
+                candidate.TaskId, project.Name, project.Ceiling.LiveRuns, project.Ceiling.Cap);
+        }
+
+        _deferredByProjectCap.Clear();
+        _deferredByProjectCap.UnionWith(deferred.Select(candidate => candidate.TaskId));
     }
 
     private async Task<ClaimedWork?> TryClaimAsync(Guid taskId, CancellationToken cancellationToken)
