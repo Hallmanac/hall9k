@@ -708,9 +708,18 @@ public sealed partial class VerificationRunner(
     /// nonetheless absent — is recorded as <see cref="DeletedBeforeRecoveryMarker"/> rather than
     /// null: there is no blob to hash, but the fact that a deletion is what was stranded is itself
     /// still observed and worth recording. Null is reserved for a file this genuinely cannot
-    /// account for (it exists on disk but `git hash-object` still failed) — the same never-guess
+    /// account for — either `git status` itself is unreadable here, or `git status` reports
+    /// something other than a deletion (a submodule pointer bump, a dangling symlink) that
+    /// `git hash-object` still happens to fail on for reasons of its own — the same never-guess
     /// convention as every other git read in this file: a file this method cannot account for is
     /// never later flagged as discarded, since there would be nothing to compare it against.
+    /// <see cref="File.Exists(string)"/> used to stand in for this and was wrong on both those
+    /// shapes (independent pre-PR review, cycle 3, conformance finding): it reads false for a
+    /// submodule's gitlink path (a directory, not a file) and for a dangling symlink exactly the
+    /// same way it reads false for an actual deletion, so either one got misrecorded as a
+    /// deletion and then unconditionally flagged discarded by <see cref="DetectDiscardedFilesAsync"/>
+    /// even after the recovery session committed it correctly. `git status`'s own `D` status
+    /// code is what the cycle-2 ruling actually asked for, and it does not confuse the three.
     /// </summary>
     private static async Task<IReadOnlyDictionary<string, string?>> HashStrandedFilesAsync(
         string worktreePath, IReadOnlyList<string> strandedFiles, CancellationToken cancellationToken)
@@ -726,10 +735,33 @@ public sealed partial class VerificationRunner(
                 continue;
             }
 
-            hashes[file] = File.Exists(Path.Combine(worktreePath, file)) ? null : DeletedBeforeRecoveryMarker;
+            bool? deletedPerStatus = await IsDeletedPerGitStatusAsync(worktreePath, file, cancellationToken);
+            hashes[file] = deletedPerStatus == true ? DeletedBeforeRecoveryMarker : null;
         }
 
         return hashes;
+    }
+
+    /// <summary>
+    /// Whether `git status` itself reports <paramref name="file"/> as a deletion (its own `D`
+    /// status code, index or worktree side), read fresh rather than inferred from
+    /// <see cref="File.Exists(string)"/> (independent pre-PR review, cycle 3, conformance
+    /// finding — see <see cref="HashStrandedFilesAsync"/>'s own doc for why that inference was
+    /// wrong). Null when `git status` itself could not be read; never guessed at as a deletion
+    /// in that case.
+    /// </summary>
+    private static async Task<bool?> IsDeletedPerGitStatusAsync(
+        string worktreePath, string file, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output) = await RunGitAsync(
+            worktreePath, ["status", "--porcelain", "-z", "--untracked-files=all", "--", file], cancellationToken);
+        if (exitCode != 0)
+        {
+            return null;
+        }
+
+        string? entry = output.Split('\0', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return entry is { Length: >= 2 } && (entry[0] == 'D' || entry[1] == 'D');
     }
 
     /// <summary>
