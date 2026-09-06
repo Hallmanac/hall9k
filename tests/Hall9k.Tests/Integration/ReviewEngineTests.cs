@@ -1019,6 +1019,57 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Task: a lap reviews only what it changed. A ReviewFeedback or FailingChecks follow-up's own
+    /// opening Discovery cycle seeds its diff instruction from the pull request head the previous
+    /// run pushed — recorded on this run's own RunDispatched — so both lenses read the lap's own
+    /// change, not the whole branch, on cycle 1. Critically, a clean verdict there must NOT settle
+    /// the run the way an ordinary full-scope Discovery cycle's clean verdict does: the mandatory
+    /// FinalFullPass still has to run, at full scope, because the scoped opening cycle never
+    /// actually read the whole branch — "nothing merges on scoped green alone" holds for a scoped
+    /// lap too, and this is the regression the MaySettleReason exclusion clause exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_ups_opening_discovery_cycle_scopes_to_the_seeded_head_and_still_pays_the_final_full_pass()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, seedOpeningReviewSinceSha: true);
+        string seedSha = GitOutput(worktreePath, "rev-parse HEAD");
+
+        ScriptedExecutor executor = new(
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            4, "the scoped opening cycle's two lenses plus the mandatory FinalFullPass's two lenses — "
+                + "a scoped opening lap converging clean must still pay for the mandatory final pass");
+        executor.Spawns[0].Prompt.Should().Contain(
+            $"git diff {seedSha}..HEAD", "the opening cycle's conformance lens reads only the lap's own change");
+        executor.Spawns[1].Prompt.Should().Contain(
+            $"git diff {seedSha}..HEAD", "the opening cycle's adversarial lens gets the identical scoped boundary");
+        executor.Spawns[2].Prompt.Should().Contain(
+            "git diff origin/main...HEAD",
+            "the opening cycle never latched a full-scope boundary, so the mandatory final pass reads the whole branch");
+        executor.Spawns[3].Prompt.Should().Contain("git diff origin/main...HEAD");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Select(e => (e.Cycle, e.Mode, e.SinceSha)).Should().Equal(
+        [
+            (1, ReviewMode.Discovery, seedSha),
+            (1, ReviewMode.Discovery, seedSha),
+            (2, ReviewMode.FinalFullPass, null),
+            (2, ReviewMode.FinalFullPass, null),
+        ]);
+    }
+
+    /// <summary>
     /// Task: the mandatory FinalFullPass rereads only the commits no full-scope pass has already
     /// read (Decisions Log #115). The Discovery cycle's own real HEAD, captured before any fix
     /// lands, is what the mandatory final pass must scope its own diff instruction to — not the
@@ -1161,7 +1212,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// <summary>Like <see cref="SeedVerifiedRunAsync(DocumentStore, CancellationToken)"/>, but a real git worktree and a real `dotnet test`-shaped gate, for tests that need <see cref="VerificationRunner"/>'s own scoping to run for real rather than short-circuit on "no gates configured".</summary>
     private async Task<(Guid TaskId, Guid RunId, string WorktreePath, Guid ProjectId)> SeedVerifiedRunWithTestGateAsync(
         DocumentStore store, CancellationToken cancellationToken, bool recordVerifyCommandsFingerprint = true,
-        bool interactiveMode = false, ReviewStageComposition? reviewStageComposition = null)
+        bool interactiveMode = false, ReviewStageComposition? reviewStageComposition = null,
+        bool seedOpeningReviewSinceSha = false)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -1227,7 +1279,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
                 worktreePath, "task/review-me", ExecutorMode.Subscription, Now,
-                ReviewStageComposition: reviewStageComposition),
+                ReviewStageComposition: reviewStageComposition,
+                OpeningReviewSinceSha: seedOpeningReviewSinceSha ? headSha : null),
             new AgentSessionCompleted(runId, Now),
             new VerificationPassed(
                 runId, Now, RanFullScope: true, HeadSha: headSha,
@@ -4801,7 +4854,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
-        (Guid taskId, Guid runId, _) = await SeedReviewThreadDisputeParkedRunAsync(store, cts.Token);
+        (Guid taskId, Guid runId, _, _) = await SeedReviewThreadDisputeParkedRunAsync(store, cts.Token);
 
         const string humanResolution = "It is genuinely a design call — decide it yourself.";
         await using (IDocumentSession session = store.LightweightSession())
@@ -4830,6 +4883,65 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 "no review pass ever ran at cycle 0, so pointing at a review-findings file would name a file nothing wrote");
 
         File.ReadAllText(disputeFile).Should().Contain("product input");
+    }
+
+    /// <summary>
+    /// Task: a lap reviews only what it changed. A ReviewFeedback follow-up's own fix session can
+    /// dispute a review thread before any Discovery review ever ran (Decisions Log #62, ReviewCycle
+    /// still 0). Once a human resolves it with needs-fixes and the fix session actually resolves the
+    /// thread, the Discovery cycle that follows is still this run's own OPENING cycle (cycle 1) —
+    /// reached through the Reverify branch's own cycle-0 dispute-resume path rather than the ordinary
+    /// dispute-free ReviewPhase.None one — so it must seed its diff instruction from the recorded
+    /// pull request head exactly the same way. This is the reverify branch's own mirror of the
+    /// ReviewPhase.None fix (ReviewEngine.cs's reverifySinceSha), a second gap the same blast-radius
+    /// sweep found alongside the first.
+    /// </summary>
+    [Fact]
+    public async Task A_resolved_review_thread_dispute_still_scopes_the_opening_discovery_cycle_to_the_seeded_head()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, _, string worktreePath) = await SeedReviewThreadDisputeParkedRunAsync(
+            store, cts.Token, seedOpeningReviewSinceSha: true);
+        string seedSha = GitOutput(worktreePath, "rev-parse HEAD");
+
+        const string humanResolution = "Reply that this is intentional and resolve the thread.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanResolution, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Replied to the thread with the human's own explanation.\n\nRESOLUTION: fixed",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            // Cycle 1's own scoped Discovery converges clean, but that alone must not settle the
+            // run: the mandatory FinalFullPass still has to run at full scope (task: a lap reviews
+            // only what it changed) — the same guarantee the ReviewPhase.None path's own test covers.
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            5, "the resumed fix session, this run's own scoped opening Discovery cycle, then the mandatory FinalFullPass");
+        executor.Spawns[1].Prompt.Should().Contain(
+            $"git diff {seedSha}..HEAD",
+            "the opening Discovery cycle reached through the dispute-resume path is scoped exactly "
+                + "like the dispute-free ReviewPhase.None path");
+        executor.Spawns[2].Prompt.Should().Contain($"git diff {seedSha}..HEAD");
+        executor.Spawns[3].Prompt.Should().Contain(
+            "git diff origin/main...HEAD",
+            "the scoped opening cycle never latched a full-scope boundary, so the mandatory final pass "
+                + "reads the whole branch");
+        executor.Spawns[4].Prompt.Should().Contain("git diff origin/main...HEAD");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Where(e => e.Mode == ReviewMode.Discovery)
+            .Select(e => e.SinceSha).Should().Equal([seedSha, seedSha]);
     }
 
     [Fact]
@@ -6557,8 +6669,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// review-thread ones, not the rebase ones (adversarial review, cycle 4, finding 3 on this
     /// feature's own diff).
     /// </summary>
-    private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId)> SeedReviewThreadDisputeParkedRunAsync(
-        DocumentStore store, CancellationToken cancellationToken)
+    private async Task<(Guid TaskId, Guid RunId, Guid MainSessionId, string WorktreePath)> SeedReviewThreadDisputeParkedRunAsync(
+        DocumentStore store, CancellationToken cancellationToken, bool seedOpeningReviewSinceSha = false)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -6568,6 +6680,19 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         Guid mainSessionId = DomainId.New();
         string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
         Directory.CreateDirectory(worktreePath);
+        Git(worktreePath, "init -q -b main");
+        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
+        Git(worktreePath, "checkout -q -b task/review-me");
+        // One real commit ahead of main, exactly like SeedVerifiedRunWithTestGateAsync's own
+        // "widget" commit: VerificationRunner's no-commit pre-gate check (a branch with nothing
+        // beyond its base fails before any gate runs) would otherwise fire on the fix session's own
+        // reverify gate, since a scripted fix response never actually touches the worktree.
+        File.WriteAllText(Path.Combine(worktreePath, "widget.txt"), "widget\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+        string headSha = GitOutput(worktreePath, "rev-parse HEAD");
 
         await using IDocumentSession session = store.LightweightSession();
 
@@ -6594,13 +6719,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
-                worktreePath, "task/review-me", ExecutorMode.Subscription, Now, IsFollowUp: true),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now, IsFollowUp: true,
+                OpeningReviewSinceSha: seedOpeningReviewSinceSha ? headSha : null),
             new AgentSessionCompleted(runId, Now),
             new ReviewParked(runId,
                 "A follow-up disputed a review thread as a design call it cannot honestly make.", Now));
         await session.SaveChangesAsync(cancellationToken);
 
-        return (taskId, runId, mainSessionId);
+        return (taskId, runId, mainSessionId, worktreePath);
     }
 
     /// <summary>

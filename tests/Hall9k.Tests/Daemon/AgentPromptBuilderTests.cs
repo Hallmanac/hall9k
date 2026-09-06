@@ -1237,21 +1237,52 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// sinceSha is only ever meaningful for a FinalFullPass dispatch (task: the mandatory
-    /// FinalFullPass rereads only the commits no full-scope pass has already read) — a Discovery
-    /// cycle always reads the full diff, so a sinceSha handed to it anyway (never happens in
-    /// practice, since every ReviewEngine call site only computes one for FinalFullPass) must still
-    /// be ignored rather than silently narrowing a cycle that is supposed to discover everything.
+    /// A first run — no FollowUpKind, so ReviewEngine's own Discovery dispatch never resolves a
+    /// sinceSha for it — reads the full diff exactly as before this task: a lap reviews only what
+    /// it changed. This is the byte-for-byte-unchanged case the acceptance criteria calls for.
     /// </summary>
     [Fact]
-    public void Discovery_ignores_a_since_sha_and_still_reads_the_full_diff()
+    public void Discovery_with_no_since_sha_reads_the_full_diff_exactly_as_before()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, ReviewMode.Discovery,
+            sinceSha: null);
+
+        prompt.Should().Contain("git diff origin/main...HEAD");
+        prompt.Should().Contain("git log origin/main..HEAD");
+        prompt.Should().NotContain("follow-up lap");
+    }
+
+    /// <summary>
+    /// A ReviewFeedback or FailingChecks follow-up's own opening Discovery cycle scopes its diff
+    /// instruction to the pull request head the previous run pushed (task: a lap reviews only what
+    /// it changed), the one case besides FinalFullPass that AppendReviewMechanics now honors a
+    /// resolved sinceSha for. The prompt states what it is reviewing and why: the branch already
+    /// cleared the full chain at the previous head, this cycle reviews the lap's own change since
+    /// then, and a defect outside that range is still reportable so it routes rather than vanishes.
+    /// </summary>
+    [Fact]
+    public void Discovery_with_a_since_sha_scopes_the_lap_diff_and_explains_the_prior_full_read()
     {
         string prompt = AgentPromptBuilder.BuildReview(
             SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, ReviewMode.Discovery,
             sinceSha: "abc1234");
 
-        prompt.Should().Contain("git diff origin/main...HEAD");
-        prompt.Should().NotContain("git diff abc1234..HEAD");
+        prompt.Should().Contain(
+            "already cleared the full review", "the prompt says the branch already cleared the full chain");
+        prompt.Should().Contain("`abc1234`", "the previous head is named as the boundary");
+        prompt.Should().Contain(
+            "git diff abc1234..HEAD", "the reviewer's own diff instruction is scoped to the lap's own change");
+        prompt.Should().Contain(
+            "git log abc1234..HEAD", "the commit list is scoped identically to the diff");
+        prompt.Should().Contain(
+            "tag it out-of-scope",
+            "a defect outside the lap's own range is still reportable, so it routes rather than vanishing");
+        prompt.Should().NotContain(
+            "The diff under review: `git diff origin/main...HEAD`",
+            "a scoped lap's own diff instruction replaces the ordinary full base-branch instruction, "
+                + "not supplements it — origin/main...HEAD still appears in the separate merged-base scope "
+                + "check this block restates");
     }
 
     /// <summary>

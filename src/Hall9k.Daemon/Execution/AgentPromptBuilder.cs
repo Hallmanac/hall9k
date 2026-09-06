@@ -788,12 +788,15 @@ public static class AgentPromptBuilder
     /// neither lens re-raises a question a human already answered.
     /// </param>
     /// <param name="sinceSha">
-    /// Read only when <paramref name="mode"/> is <see cref="ReviewMode.FinalFullPass"/> (task: the
+    /// Read when <paramref name="mode"/> is <see cref="ReviewMode.FinalFullPass"/> (task: the
     /// mandatory FinalFullPass rereads only the commits no full-scope pass has already read): the
-    /// worktree HEAD of the last full-scope cycle that read this branch, or null when none is on
-    /// record or it could not be resolved — in which case the prompt falls back to the full
-    /// base-branch diff instruction rather than guessing at a boundary. Ignored for every other
-    /// mode, which always reads the full diff.
+    /// worktree HEAD of the last full-scope cycle that read this branch. Also read when
+    /// <paramref name="mode"/> is <see cref="ReviewMode.Discovery"/> and this is a ReviewFeedback or
+    /// FailingChecks follow-up's own opening cycle (task: a lap reviews only what it changed): the
+    /// pull request head the previous run pushed. Either way, null when none is on record or it
+    /// could not be resolved — in which case the prompt falls back to the full base-branch diff
+    /// instruction rather than guessing at a boundary. Ignored for every other mode, and for an
+    /// ordinary Discovery dispatch, both of which always read the full diff.
     /// </param>
     /// <param name="interactiveModeEnabledOverride">
     /// A freshly-read replacement for <c>task.InteractiveModeEnabled</c> (independent pre-PR
@@ -1834,13 +1837,15 @@ public static class AgentPromptBuilder
     /// failure, so the prompt also says plainly that the gates already answered the build
     /// question and are not to be re-run.
     /// <para>
-    /// The diff instruction itself narrows only for a <see cref="ReviewMode.FinalFullPass"/> pass
-    /// with a resolved <paramref name="sinceSha"/> (task: the mandatory FinalFullPass rereads only
-    /// the commits no full-scope pass has already read, Decisions Log #115): every other
-    /// combination — <see cref="ReviewMode.Discovery"/> always, or a FinalFullPass with no prior
-    /// full-scope read on record — reads the same full base-branch three-dot diff this method has
-    /// always instructed. <see cref="ReviewMode.Verify"/> never reaches this method with its own
-    /// scoped instruction at all; that mode has its own prompt builder entirely
+    /// The diff instruction itself narrows for a <see cref="ReviewMode.FinalFullPass"/> pass with a
+    /// resolved <paramref name="sinceSha"/> (task: the mandatory FinalFullPass rereads only the
+    /// commits no full-scope pass has already read, Decisions Log #115), and for a
+    /// <see cref="ReviewMode.Discovery"/> pass with a resolved <paramref name="sinceSha"/> — a
+    /// ReviewFeedback or FailingChecks follow-up's own opening cycle (task: a lap reviews only what
+    /// it changed): every other combination — an ordinary Discovery dispatch, or a FinalFullPass
+    /// with no prior full-scope read on record — reads the same full base-branch three-dot diff
+    /// this method has always instructed. <see cref="ReviewMode.Verify"/> never reaches this method
+    /// with its own scoped instruction at all; that mode has its own prompt builder entirely
     /// (<see cref="BuildReviewVerify"/>).
     /// </para>
     /// <para>
@@ -1888,6 +1893,23 @@ public static class AgentPromptBuilder
             prompt.AppendLine($"  `origin/{baseBranch}` at all: a task worktree's local base-branch ref, when one");
             prompt.AppendLine("  exists, is shared with the project home's `dev/` worktree and is routinely stale");
             prompt.AppendLine("  relative to this task's actual base.");
+        }
+        else if (mode == ReviewMode.Discovery && sinceSha is { } lapSinceSha)
+        {
+            prompt.AppendLine("  This is a follow-up lap on a pull request that already cleared the full review");
+            prompt.AppendLine($"  chain up to `{lapSinceSha}` — every commit up to there was read fresh by an earlier");
+            prompt.AppendLine("  run before it was pushed. This cycle's job is the lap's own change: read only what");
+            prompt.AppendLine($"  it added, `git diff {lapSinceSha}..HEAD` (commits: `git log {lapSinceSha}..HEAD`).");
+            prompt.AppendLine("  A defect you notice outside that range — in code an earlier lap already reviewed, or");
+            prompt.AppendLine("  genuinely pre-existing on the base — is still worth reporting: tag it out-of-scope");
+            prompt.AppendLine("  (the finding contract below) so the platform routes it instead of it silently");
+            prompt.AppendLine("  vanishing because it fell outside this cycle's own read range.");
+            prompt.AppendLine($"  If this branch brought `{baseBranch}` current via a merge (rather than a rebase)");
+            prompt.AppendLine("  since the previous lap, this range will include those upstream commits too — check a");
+            prompt.AppendLine($"  finding there against `git diff origin/{baseBranch}...HEAD` (the scope rule below)");
+            prompt.AppendLine("  before treating it as this lap's own work. That same command also decides scope for");
+            prompt.AppendLine($"  you, so fall back to the local `{baseBranch}` ref only when this worktree carries no");
+            prompt.AppendLine($"  `origin/{baseBranch}` at all.");
         }
         else
         {

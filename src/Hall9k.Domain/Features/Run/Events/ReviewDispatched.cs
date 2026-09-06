@@ -17,10 +17,13 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// existed could have carried. HeadSha is the worktree's `git rev-parse HEAD` at the moment this
 /// pass was spawned, best-effort (null when it could not be read) — what a later Verify cycle's
 /// prompt points a "commits since the prior cycle" instruction at. SinceSha is the boundary this
-/// pass's own diff instruction was actually scoped to when it dispatched — null for a
-/// <see cref="ReviewMode.Discovery"/> pass (always a full base-branch read) and for a
+/// pass's own diff instruction was actually scoped to when it dispatched — null for an ordinary
+/// <see cref="ReviewMode.Discovery"/> pass (a full base-branch read) and for a
 /// <see cref="ReviewMode.FinalFullPass"/> pass with no earlier full-scope boundary on record (also
-/// a full read); the prior cycle's own tip for a <see cref="ReviewMode.Verify"/> pass, the boundary
+/// a full read); the pull request head the previous run pushed for a ReviewFeedback or
+/// FailingChecks follow-up's own opening <see cref="ReviewMode.Discovery"/> pass (task: a lap
+/// reviews only what it changed), when one is on record and still resolves against this
+/// worktree's HEAD; the prior cycle's own tip for a <see cref="ReviewMode.Verify"/> pass, the boundary
 /// its delta read is scoped since — but null there too whenever that prior cycle's own HeadSha
 /// could not be read, since the boundary is only ever as good as that best-effort read (the Verify
 /// prompt falls back to a full-range instruction rather than inventing one); and the run's last
