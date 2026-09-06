@@ -327,10 +327,12 @@ public sealed class RunAggregate
     /// The most recently dispatched review cycle's own <see cref="Events.ReviewDispatched.SinceSha"/>
     /// (independent pre-PR review, cycle 1 adversarial finding) — null unless
     /// <see cref="CurrentCycleMode"/> is <see cref="ReviewMode.Verify"/> (the prior cycle's own tip,
-    /// the boundary its delta read is scoped since) or is <see cref="ReviewMode.FinalFullPass"/> and
-    /// that cycle was itself scoped to the commits since an earlier full-scope read. Mirrors
-    /// <see cref="CycleHeadSha"/>'s own capture-once-per-cycle bookkeeping, including for a
-    /// crash-recovery top-up into the same cycle.
+    /// the boundary its delta read is scoped since), is <see cref="ReviewMode.FinalFullPass"/> and
+    /// that cycle was itself scoped to the commits since an earlier full-scope read, or is
+    /// <see cref="ReviewMode.Discovery"/> and is a ReviewFeedback or FailingChecks follow-up's own
+    /// opening cycle scoped to the seeded pull request head (task: a lap reviews only what it
+    /// changed). Mirrors <see cref="CycleHeadSha"/>'s own capture-once-per-cycle bookkeeping,
+    /// including for a crash-recovery top-up into the same cycle.
     /// </summary>
     public string? CycleSinceSha { get; private set; }
 
