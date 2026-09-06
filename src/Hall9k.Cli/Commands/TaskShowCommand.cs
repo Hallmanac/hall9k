@@ -352,6 +352,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.Write(runsTable);
             WriteCoordinates(runs, runDetailsById);
             RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
+            WriteReviewScopeSeed(newestRun);
             WriteReviewOutcome(newestRun);
             WriteUnfixedFindings(newestRun);
             WriteRideAlongFindings(newestRun);
@@ -484,6 +485,27 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         _ when pullRequestUrl.IsBlank() => "the task was closed with no pull request to watch",
         _ => "the merge was observed",
     };
+
+    /// <summary>
+    /// This run's opening Discovery cycle scope seed (task: a lap reviews only what it changed) —
+    /// the pull request head the previous run pushed, observed by closeout when it reopened this
+    /// lap's task for a ReviewFeedback or FailingChecks follow-up. Null, and nothing renders, for a
+    /// fresh run, a Rebase follow-up (excluded, unchanged), a manual h9k pr resolve reopen, or a run
+    /// dispatched before this field existed — in every one of those cases the opening cycle read
+    /// the full branch and there is nothing to say here.
+    /// </summary>
+    private static void WriteReviewScopeSeed(RunDetails? run)
+    {
+        if (run is not { OpeningReviewSinceSha: { } sinceSha })
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Review scope[/]  opening cycle scoped to changes since "
+            + $"[dim]{sinceSha.EscapeMarkup()}[/] [dim]— the pull request head the previous run "
+            + "pushed, observed when this lap's task reopened[/]");
+    }
 
     /// <summary>
     /// How the newest run's pre-PR review ended (Decisions Log #63). Merge-ready is one word for

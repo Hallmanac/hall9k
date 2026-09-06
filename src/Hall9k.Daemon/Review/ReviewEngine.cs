@@ -64,8 +64,15 @@ namespace Hall9k.Daemon.Review;
 /// <para>
 /// Only cycle 1 pays discovery's full price (task: review cycles after the first, origin: 576M
 /// input tokens in one day re-reading 12k-line diffs with two lenses to judge 40-line fixes).
-/// Cycle 1 is always <see cref="ReviewMode.Discovery"/> — both lenses, full diff, fresh context,
-/// unchanged. A middle cycle is <see cref="ReviewMode.Verify"/>: one reviewer, handed the prior
+/// Cycle 1 is always <see cref="ReviewMode.Discovery"/> — both lenses, fresh context, and, for an
+/// ordinary run, the full diff, unchanged. A ReviewFeedback or FailingChecks follow-up's own
+/// opening cycle instead seeds its diff instruction from the pull request head the previous run
+/// pushed (task: a lap reviews only what it changed, origin: the fc85f609 analysis — a lap adding
+/// three commits was reviewed as the entire feature a second time), so a lap reads only its own
+/// change rather than the whole branch again; a Rebase follow-up is excluded and unchanged. The
+/// mandatory <see cref="ReviewMode.FinalFullPass"/> below is the backstop that makes that narrower
+/// opening safe — nothing merges on scoped green alone, for a scoped opening lap either.
+/// A middle cycle is <see cref="ReviewMode.Verify"/>: one reviewer, handed the prior
 /// cycle's own findings and fix summary, told to verify the fix and its blast radius rather than
 /// rediscover the diff — its rounds count against the same per-track caps a Discovery cycle's
 /// would, and a dispute or a cap-out parks exactly as before. Immediately before the run may
@@ -289,9 +296,18 @@ public sealed class ReviewEngine(
                     // adversarial lens's blindness design (log #63) stays intact where discovery
                     // actually happens.
                     string? openingHeadSha = await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
+                    // A ReviewFeedback or FailingChecks follow-up seeds this cycle's diff instruction
+                    // from the pull request head the previous run pushed (task: a lap reviews only
+                    // what it changed) — recorded on this run's own RunDispatched at dispatch time,
+                    // verified fresh against this worktree's current HEAD before use. Null in every
+                    // other case (a fresh run, a Rebase follow-up, or a manual h9k pr resolve reopen),
+                    // so Discovery reads the full branch exactly as it always has.
+                    string? openingSinceSha = await ResolveOpeningDiscoverySinceShaAsync(
+                        context.Run.WorktreePath, context.Run.OpeningReviewSinceSha, cancellationToken);
                     if (!await DispatchReviewPassesAsync(
                         context, run.ReviewCycle + 1, run.ActiveReviewLenses, ReviewMode.Discovery,
-                        openingHeadSha, sinceSha: null, run.CurrentCycleMode, run.CycleSinceSha, cancellationToken))
+                        openingHeadSha, sinceSha: openingSinceSha, run.CurrentCycleMode, run.CycleSinceSha,
+                        cancellationToken))
                     {
                         return false;
                     }
@@ -981,17 +997,25 @@ public sealed class ReviewEngine(
                     // run.CycleHeadSha would point at whatever that cycle's own scope was rather than
                     // the last genuinely full-scope one — run.LastFullScopeReviewHeadSha is what still
                     // holds that, as it stood before this dispatch. A Discovery reverify (the cycle-0
-                    // pre-gate dispute resume) gets neither boundary: ReviewDispatched.SinceSha is
-                    // documented null there (always a full base-branch read), so this branches on
+                    // pre-gate dispute resume) is this run's own opening Discovery cycle exactly as
+                    // much as the ordinary ReviewPhase.None dispatch is — a fix session's own thread
+                    // or rebase dispute (Decisions Log #62) parks before Discovery ever gets to run,
+                    // but the cycle that dispatches once that dispute settles is still cycle 1 — so
+                    // it gets the identical opening-cycle scope seed (task: a lap reviews only what
+                    // it changed), never run.CycleHeadSha (the Verify-specific boundary): null for
+                    // every case ResolveOpeningDiscoverySinceShaAsync already degrades to null for (a
+                    // fresh run, a Rebase follow-up, a manual reopen), a resolved one for a
+                    // ReviewFeedback or FailingChecks follow-up that recorded one. This branches on
                     // Verify specifically rather than "not FinalFullPass" — the latter would also
-                    // catch Discovery and record a boundary its prompt was never scoped to (the
-                    // sibling top-up dispatch above makes the same distinction explicitly).
+                    // catch Discovery and hand it the Verify boundary instead of its own opening-cycle
+                    // seed (the sibling top-up dispatch above makes the same distinction explicitly).
                     string? reverifySinceSha = reverifyMode == ReviewMode.FinalFullPass
                         ? await ResolveFinalFullPassSinceShaAsync(
                             context.Run.WorktreePath, run.LastFullScopeReviewHeadSha, cancellationToken)
                         : reverifyMode == ReviewMode.Verify
                             ? run.CycleHeadSha
-                            : null;
+                            : await ResolveOpeningDiscoverySinceShaAsync(
+                                context.Run.WorktreePath, context.Run.OpeningReviewSinceSha, cancellationToken);
                     if (!await DispatchReviewPassesAsync(
                         context, run.ReviewCycle + 1, reverifyLenses, reverifyMode, reverifyHeadSha,
                         sinceSha: reverifySinceSha, run.CurrentCycleMode, run.CycleSinceSha, cancellationToken))
@@ -1272,18 +1296,20 @@ public sealed class ReviewEngine(
         // (recorded by whichever pass of it dispatched first) — the same value re-recorded here.
         // The "since" boundary a Verify top-up's prompt needs is one cycle further back, which is
         // exactly what run.PriorCycleHeadSha still holds: StartCycleIfNew only moves it when a
-        // genuinely NEW cycle starts, and this dispatch is not one. A FinalFullPass top-up's own
-        // boundary, by contrast, is THIS cycle's own — run.CycleSinceSha, exactly what this cycle's
-        // opening dispatch already resolved and recorded on its own ReviewDispatched
+        // genuinely NEW cycle starts, and this dispatch is not one. A FinalFullPass or Discovery
+        // top-up's own boundary, by contrast, is THIS cycle's own — run.CycleSinceSha, exactly what
+        // this cycle's opening dispatch already resolved and recorded on its own ReviewDispatched
         // (independent pre-PR review, cycle 1 adversarial finding: re-deriving it here via a second
         // git call could disagree with what the opening dispatch actually used — a transient
         // merge-base failure on one call and not the other — misdescribing one of this cycle's own
         // passes; StartCycleIfNew is a no-op for a same-cycle top-up, so the recorded value is still
-        // exactly what this cycle started with). A Discovery top-up gets neither: ReviewDispatched.SinceSha
-        // is documented null there (always a full base-branch read), so this branches on Verify
-        // specifically rather than "not FinalFullPass" — the latter would also catch Discovery and
-        // record a boundary its prompt was never scoped to.
-        string? topUpSinceSha = run.CurrentCycleMode == ReviewMode.FinalFullPass
+        // exactly what this cycle started with). An ordinary Discovery cycle's own CycleSinceSha is
+        // simply null (ReviewDispatched.SinceSha is null there too), so this is a no-op for every
+        // run except a ReviewFeedback or FailingChecks follow-up's own scoped opening cycle (task: a
+        // lap reviews only what it changed) — without reusing it here, a daemon restart between the
+        // two lenses of that cycle would top up the second lens with the full diff instead of the
+        // same scoped range the first lens already got.
+        string? topUpSinceSha = run.CurrentCycleMode == ReviewMode.FinalFullPass || run.CurrentCycleMode == ReviewMode.Discovery
             ? run.CycleSinceSha
             : run.CurrentCycleMode == ReviewMode.Verify
                 ? run.PriorCycleHeadSha
@@ -1299,11 +1325,15 @@ public sealed class ReviewEngine(
     /// <see cref="ReviewMode.Verify"/> cycle dispatches exactly one session standing in for every
     /// lens in <paramref name="lenses"/> (task: review cycles after the first); every other mode
     /// dispatches one session per lens, as review always has. <paramref name="sinceSha"/> is read
-    /// by both a Verify dispatch and a <see cref="ReviewMode.FinalFullPass"/> one (task: the
-    /// mandatory FinalFullPass rereads only the commits no full-scope pass has already read) — each
-    /// against its own chain (the prior cycle for Verify, the last full-scope cycle for
-    /// FinalFullPass) — but never a <see cref="ReviewMode.Discovery"/> one, which always reads the
-    /// full base-branch diff. It is distinct from <paramref name="headSha"/>, which every mode
+    /// by a Verify dispatch, a <see cref="ReviewMode.FinalFullPass"/> one (task: the mandatory
+    /// FinalFullPass rereads only the commits no full-scope pass has already read), and a
+    /// <see cref="ReviewMode.Discovery"/> one that opens a ReviewFeedback or FailingChecks
+    /// follow-up's own lap (task: a lap reviews only what it changed) — each against its own chain
+    /// (the prior cycle for Verify, the last full-scope cycle for FinalFullPass, the pull request
+    /// head the previous run pushed for that opening Discovery cycle). An ordinary Discovery cycle
+    /// still always reads the full base-branch diff: every caller of this method computes a sinceSha
+    /// for Discovery only in that one follow-up case, null otherwise. It is distinct from
+    /// <paramref name="headSha"/>, which every mode
     /// records on its own <see cref="ReviewDispatched"/> for whichever cycle comes after it.
     /// <paramref name="priorCycleMode"/> is the same kind of value, only read for a Verify dispatch
     /// too (cycle-4 conformance finding): whether the cycle whose findings this pass is quoting was
@@ -1360,15 +1390,17 @@ public sealed class ReviewEngine(
         }
 
         Guid sessionId = DomainId.New();
-        // Discovery always wants the full-diff, fresh-context read (task: review cycles after the
-        // first). FinalFullPass is discovery-grade rigor at a later cycle number, but no longer the
-        // identical diff-reading prompt (task: the mandatory FinalFullPass rereads only the commits
-        // no full-scope pass has already read): sinceSha, when resolved, scopes it to the commits no
-        // earlier full-scope cycle has already read — AppendReviewMechanics decides that only for
-        // ReviewMode.FinalFullPass, so passing sinceSha here for a Discovery dispatch (always null,
-        // per every DispatchReviewPassesAsync caller) is inert. mode still changes the fix-bar
-        // wording too (Decisions Log #119, AppendFindingContract and AppendVerdictContract), so the
-        // reviewer is told the true bar rather than the ordinary cycle's.
+        // An ordinary Discovery cycle always wants the full-diff, fresh-context read (task: review
+        // cycles after the first). FinalFullPass is discovery-grade rigor at a later cycle number,
+        // but no longer the identical diff-reading prompt (task: the mandatory FinalFullPass rereads
+        // only the commits no full-scope pass has already read): sinceSha, when resolved, scopes it
+        // to the commits no earlier full-scope cycle has already read. A ReviewFeedback or
+        // FailingChecks follow-up's own opening Discovery cycle is the one other case sinceSha is
+        // meaningful for (task: a lap reviews only what it changed) — AppendReviewMechanics honors
+        // it for exactly these two modes; for every other Discovery dispatch it is null, per every
+        // DispatchReviewPassesAsync caller, and passing it here is inert. mode still changes the
+        // fix-bar wording too (Decisions Log #119, AppendFindingContract and AppendVerdictContract),
+        // so the reviewer is told the true bar rather than the ordinary cycle's.
         // interactiveModeEnabledOverride is read fresh rather than off context.Task (independent
         // pre-PR review, cycle 1, adversarial lens): ReviewContext is loaded once at the top of
         // DriveAsync and held across a dispatch that can itself run for hours, the same staleness
@@ -4329,11 +4361,16 @@ public sealed class ReviewEngine(
 
     /// <summary>
     /// Whether "nothing left to review" may actually settle the run without dispatching one more
-    /// fresh-context review pass over it (task: review cycles after the first). Both
-    /// <see cref="ReviewMode.Discovery"/> and <see cref="ReviewMode.FinalFullPass"/> qualify — each
-    /// is a full-scope, fresh-context read ending at the tip it concluded on — so a run that
-    /// converges clean at cycle 1 with nothing ever needing a fix pays no extra pass at all: cycle
-    /// 1's own two-lens read already is the fresh look immediately before the pull request opens.
+    /// fresh-context review pass over it (task: review cycles after the first). A genuinely
+    /// full-scope <see cref="ReviewMode.Discovery"/> cycle and a <see cref="ReviewMode.FinalFullPass"/>
+    /// one both qualify — each is a full-scope, fresh-context read ending at the tip it concluded
+    /// on — so a run that converges clean at cycle 1 with nothing ever needing a fix pays no extra
+    /// pass at all: cycle 1's own two-lens read already is the fresh look immediately before the
+    /// pull request opens. A ReviewFeedback or FailingChecks follow-up's own scoped opening
+    /// Discovery cycle (task: a lap reviews only what it changed) is the one Discovery shape that
+    /// does NOT qualify on its own: it only read the lap's own change, so a clean verdict there
+    /// still falls through to the mandatory FinalFullPass dispatch below rather than settling here —
+    /// see this method's own doc, below, for the excluding clause.
     /// "Full scope" is the union rather than one pass's own diff range (task: the mandatory
     /// FinalFullPass rereads only the commits no full-scope pass has already read): a scoped
     /// FinalFullPass reads from the previous full-scope pass's own head, so consecutive full-scope
@@ -4398,6 +4435,20 @@ public sealed class ReviewEngine(
     /// <c>CurrentCycleMode</c> conjunct <c>Bar</c> and <c>NothingOwed</c> share excludes a
     /// <c>Verify</c> tip on its own.
     /// </para>
+    /// <para>
+    /// <c>NothingOwed</c> presupposes cycle 1's own Discovery read was full scope, which a
+    /// ReviewFeedback or FailingChecks follow-up's own opening cycle no longer always is (task: a
+    /// lap reviews only what it changed) — a scoped opening cycle that converges clean has only
+    /// read the lap's own change, not the whole branch, so "nothing owed" would let it settle
+    /// without the mandatory <see cref="ReviewMode.FinalFullPass"/> backstop ever running: exactly
+    /// the "nothing merges on scoped green alone" guarantee this scoping must not break. The clause
+    /// ahead of <c>NothingOwed</c> excludes that one case — <c>CurrentCycleMode</c> is
+    /// <see cref="ReviewMode.Discovery"/> with a non-null <see cref="RunAggregate.CycleSinceSha"/> —
+    /// so it falls through to the ordinary FinalFullPass dispatch below instead. A scoped
+    /// <see cref="ReviewMode.FinalFullPass"/> is not excluded the same way: its own doc says why
+    /// (successive full-scope reads tile the branch with no gap), so it still settles here exactly
+    /// as before.
+    /// </para>
     /// </summary>
     private static SettleReason? MaySettleReason(RunAggregate run) => true switch
     {
@@ -4420,6 +4471,7 @@ public sealed class ReviewEngine(
         // yet even when no ordinary finding is outstanding — see that flag's own doc. Unlike the
         // Human clause above, this one is automatic, so nothing has looked at the recovery at all
         // without this gate.
+        _ when run.CurrentCycleMode == ReviewMode.Discovery && run.CycleSinceSha is not null => null,
         _ when run.CurrentCycleMode != ReviewMode.Verify
             && !run.FixDispatchedThisCycle
             && !run.PreFinalPassRebaseAwaitingReview => SettleReason.NothingOwed,
@@ -4516,7 +4568,17 @@ public sealed class ReviewEngine(
     /// entered, never that the gate call inside it is redundant.
     /// </summary>
     private static bool NeedsFullGateBeforeSettling(RunAggregate run) =>
-        run.CurrentCycleMode == ReviewMode.Verify || run.FixDispatchedThisCycle;
+        run.CurrentCycleMode == ReviewMode.Verify
+        || run.FixDispatchedThisCycle
+        // A ReviewFeedback or FailingChecks follow-up's own scoped opening cycle (task: a lap
+        // reviews only what it changed) is a third shape "a fresh-context reviewer has never read
+        // this cycle's own commits" describes: it read only the lap's own change, not the whole
+        // branch, so this method's own MaySettleReason exclusion for it (see that method's doc)
+        // must also route through THIS branch rather than the ordinary settle path below, which
+        // assumes NeedsFullGateBeforeSettling's negation already guarantees a settle reason. Once
+        // here, GateAlreadyRanFullOverCurrentHeadAsync still decides whether the build/test gate
+        // itself is redundant — nothing forces it to re-run just because this clause fired.
+        || (run.CurrentCycleMode == ReviewMode.Discovery && run.CycleSinceSha is not null);
 
     /// <summary>
     /// Whether the project's CURRENT <see cref="VerifyCommand.Fingerprint"/> still matches
@@ -4607,6 +4669,32 @@ public sealed class ReviewEngine(
 
         return await HeadShaResolvesInWorktreeAsync(worktreePath, lastFullScopeHeadSha, cancellationToken)
             ? lastFullScopeHeadSha
+            : null;
+    }
+
+    /// <summary>
+    /// Resolves this run's opening <see cref="ReviewMode.Discovery"/> cycle's own scope seed
+    /// (task: a lap reviews only what it changed): <paramref name="openingReviewSinceSha"/>, as
+    /// recorded on this run's own <see cref="Events.RunDispatched"/>, when it still names a commit
+    /// reachable from this worktree's current HEAD, null otherwise — the same degrade-rather-than-
+    /// guess rule <see cref="ResolveFinalFullPassSinceShaAsync"/> already follows for the mandatory
+    /// final pass. Null already covers the ordinary case: a fresh run, a Rebase follow-up (excluded,
+    /// unchanged — Brian's 2026-09-04 triage ruling governs that path), and a manual h9k pr resolve
+    /// reopen (no live pull-request inspection there to observe a head from) never carry one, so
+    /// Discovery falls back to the full base-branch diff instruction exactly as it always has. A
+    /// history rewrite between the reopen and this dispatch is the other way this degrades — never
+    /// guessed at.
+    /// </summary>
+    private static async ValueTask<string?> ResolveOpeningDiscoverySinceShaAsync(
+        string worktreePath, string? openingReviewSinceSha, CancellationToken cancellationToken)
+    {
+        if (openingReviewSinceSha is null)
+        {
+            return null;
+        }
+
+        return await HeadShaResolvesInWorktreeAsync(worktreePath, openingReviewSinceSha, cancellationToken)
+            ? openingReviewSinceSha
             : null;
     }
 
