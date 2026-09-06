@@ -663,6 +663,30 @@ public sealed class RunReviewProjectionTests
         view.State.Should().Be(RunState.UnderReview, "the daemon's own resume sweep signal, same as ReviewParkResolved");
     }
 
+    /// <summary>
+    /// RunListItem gained no handler for PreFinalPassRebaseRecoveryDispatched when it landed, so
+    /// unlike RunDetails/RunAggregate (both of which move to UnderReview for it) this lean row
+    /// stayed at whatever state preceded the recovery session — including BudgetParked, on a
+    /// retried recovery — for the whole time a live agent process is actually resident,
+    /// undercounting NodeLoad.LiveSlots against the node's real load.
+    /// </summary>
+    [Fact]
+    public void Run_list_item_moves_to_under_review_when_a_pre_final_pass_rebase_recovery_dispatches()
+    {
+        RunListItemProjection projection = new();
+        Guid id = DomainId.New();
+        RunListItem view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now)));
+
+        projection.Apply(new FakeEvent<RunBudgetExhausted>(new RunBudgetExhausted(id, "budget spent", Now)), view);
+        view.State.Should().Be(RunState.BudgetParked);
+
+        projection.Apply(new FakeEvent<PreFinalPassRebaseRecoveryDispatched>(new PreFinalPassRebaseRecoveryDispatched(
+            id, DomainId.New(), 5601, Now, Now, AgentModel.Unknown, "abc1234567", "def7654321", "x-rebase")), view);
+        view.State.Should().Be(RunState.UnderReview, "a live recovery-session process is resident, not still budget-parked");
+    }
+
     private static RunDetails VerifiedRun(RunDetailsProjection projection, Guid id)
     {
         RunDetails view = projection.Create(new FakeEvent<RunDispatched>(new RunDispatched(
