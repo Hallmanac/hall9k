@@ -1276,13 +1276,43 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain(
             "git log abc1234..HEAD", "the commit list is scoped identically to the diff");
         prompt.Should().Contain(
-            "tag it out-of-scope",
-            "a defect outside the lap's own range is still reportable, so it routes rather than vanishing");
+            "is still in-scope",
+            "a defect in an earlier lap's own commits is still this branch's own work, not out-of-scope, "
+                + "even though it falls outside this cycle's own read range");
+        prompt.Should().Contain(
+            "genuinely pre-existing on `main`",
+            "only a defect predating the branch entirely is out-of-scope — the scope rule must not "
+                + "contradict the finding contract's own out-of-scope definition");
         prompt.Should().NotContain(
             "The diff under review: `git diff origin/main...HEAD`",
             "a scoped lap's own diff instruction replaces the ordinary full base-branch instruction, "
                 + "not supplements it — origin/main...HEAD still appears in the separate merged-base scope "
                 + "check this block restates");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, conformance and adversarial findings: the conformance
+    /// lens is handed the task's full acceptance criteria (<see cref="AppendReviewMechanics"/>'s
+    /// own <c>includesAcceptanceCriteria</c> gate) while the scoped Discovery block points its diff
+    /// instruction at only the lap's own change — without this caveat, a criterion the earlier
+    /// commits already satisfy reads as unmet by this cycle's own delta and gets misgraded medium
+    /// at minimum, dispatching a fix session over work already on the branch. Mirrors the
+    /// FinalFullPass block's own equivalent caveat.
+    /// </summary>
+    [Fact]
+    public void Discovery_with_a_since_sha_points_the_conformance_lens_at_criteria_against_the_whole_branch()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 1, ReviewLens.Conformance, ReviewMode.Discovery,
+            sinceSha: "abc1234");
+
+        prompt.Should().Contain("Requests over the limit get 429", "the acceptance criteria still render");
+        prompt.Should().Contain(
+            "judge them against the whole branch at HEAD",
+            "the scoped opening cycle must not judge criteria against only the lap's own delta");
+        prompt.Should().Contain(
+            "a criterion the earlier commits already satisfy is met",
+            "a criterion implemented before this lap must not be misgraded as unmet by this cycle's own range");
     }
 
     /// <summary>
@@ -1966,6 +1996,30 @@ public sealed class AgentPromptBuilderTests : IDisposable
             SomeTask(), SomeProject(), "task/1-slug", cycle: 3,
             tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
             priorCycleMode: ReviewMode.FinalFullPass, priorCycleSinceSha: "abc123");
+        scoped.Should().NotContain("read this branch in full");
+        scoped.Should().Contain("read the commits since the branch's last full-scope pass");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, conformance and adversarial findings: the same false-
+    /// completeness problem applies to a scoped opening Discovery cycle (task: a lap reviews only
+    /// what it changed) exactly as it does a scoped FinalFullPass — a ReviewFeedback or
+    /// FailingChecks follow-up's cycle 1 that read only the lap's own delta must not be quoted to a
+    /// later Verify pass as having read the branch in full.
+    /// </summary>
+    [Fact]
+    public void Verify_prompt_does_not_claim_a_full_read_when_the_prior_Discovery_cycle_was_itself_scoped()
+    {
+        string genuinelyFull = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+            priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null);
+        genuinelyFull.Should().Contain("read this branch in full");
+
+        string scoped = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+            tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+            priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: "abc123");
         scoped.Should().NotContain("read this branch in full");
         scoped.Should().Contain("read the commits since the branch's last full-scope pass");
     }

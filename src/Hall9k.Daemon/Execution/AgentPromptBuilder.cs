@@ -921,10 +921,12 @@ public static class AgentPromptBuilder
     /// <param name="priorCycleSinceSha">
     /// That same cycle's own recorded <see cref="Events.ReviewDispatched.SinceSha"/> (independent
     /// pre-PR review, cycle 1 adversarial finding): a <see cref="ReviewMode.FinalFullPass"/> cycle no
-    /// longer guarantees a full-branch read on its own (Decisions Log #115) — a non-null value here
-    /// means that cycle was itself scoped to the commits since an earlier full-scope read, and the
-    /// same false-completeness problem <paramref name="priorCycleMode"/> guards against applies just
-    /// as much to a scoped FinalFullPass as it does to a Verify pass.
+    /// longer guarantees a full-branch read on its own (Decisions Log #115), and neither does a
+    /// <see cref="ReviewMode.Discovery"/> cycle that was itself a ReviewFeedback or FailingChecks
+    /// follow-up's own scoped opening lap (task: a lap reviews only what it changed) — a non-null
+    /// value here means that cycle was itself scoped rather than a full-branch read, and the same
+    /// false-completeness problem <paramref name="priorCycleMode"/> guards against applies just as
+    /// much to a scoped FinalFullPass or a scoped opening Discovery as it does to a Verify pass.
     /// </param>
     public static string BuildReviewVerify(
         TaskDetails task, ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewLens> tracks,
@@ -937,7 +939,8 @@ public static class AgentPromptBuilder
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         bool priorCycleReadFullBranch =
-            priorCycleMode != ReviewMode.FinalFullPass || priorCycleSinceSha is null;
+            (priorCycleMode != ReviewMode.FinalFullPass && priorCycleMode != ReviewMode.Discovery)
+            || priorCycleSinceSha is null;
         string priorCycleDescription = priorCycleMode == ReviewMode.Verify
             ? "One earlier reviewer already verified the standing findings over a delta since the cycle before it"
             : priorCycleReadFullBranch
@@ -1900,10 +1903,21 @@ public static class AgentPromptBuilder
             prompt.AppendLine($"  chain up to `{lapSinceSha}` — every commit up to there was read fresh by an earlier");
             prompt.AppendLine("  run before it was pushed. This cycle's job is the lap's own change: read only what");
             prompt.AppendLine($"  it added, `git diff {lapSinceSha}..HEAD` (commits: `git log {lapSinceSha}..HEAD`).");
-            prompt.AppendLine("  A defect you notice outside that range — in code an earlier lap already reviewed, or");
-            prompt.AppendLine("  genuinely pre-existing on the base — is still worth reporting: tag it out-of-scope");
-            prompt.AppendLine("  (the finding contract below) so the platform routes it instead of it silently");
-            prompt.AppendLine("  vanishing because it fell outside this cycle's own read range.");
+            if (includesAcceptanceCriteria)
+            {
+                prompt.AppendLine("  The same goes for the acceptance");
+                prompt.AppendLine("  criteria above: an earlier run already judged them against the branch up to");
+                prompt.AppendLine($"  `{lapSinceSha}`, so judge them against the whole branch at HEAD, not against this");
+                prompt.AppendLine("  lap's own range alone — a criterion the earlier commits already satisfy is met,");
+                prompt.AppendLine("  even though this range's own diff does not implement it.");
+            }
+
+            prompt.AppendLine("  A defect you notice outside that range is still worth reporting — decide its scope");
+            prompt.AppendLine("  by the same rule as everything else (below): code an earlier lap of this same");
+            prompt.AppendLine($"  branch added is still in-scope, since it sits inside `git diff origin/{baseBranch}...HEAD`");
+            prompt.AppendLine("  — report it in-scope even though it falls outside this cycle's own read range. Only");
+            prompt.AppendLine($"  a defect that predates this branch entirely, genuinely pre-existing on `{baseBranch}`,");
+            prompt.AppendLine("  is out-of-scope.");
             prompt.AppendLine($"  If this branch brought `{baseBranch}` current via a merge (rather than a rebase)");
             prompt.AppendLine("  since the previous lap, this range will include those upstream commits too — check a");
             prompt.AppendLine($"  finding there against `git diff origin/{baseBranch}...HEAD` (the scope rule below)");
