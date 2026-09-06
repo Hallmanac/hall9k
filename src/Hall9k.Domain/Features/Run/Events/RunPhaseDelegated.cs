@@ -1,3 +1,5 @@
+using Hall9k.Domain.Shared.ValueObjects;
+
 namespace Hall9k.Domain.Features.Run.Events;
 
 /// <summary>
@@ -26,6 +28,14 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// the first contractor's transcript, handoff and recorded token usage the moment
 /// <c>HeadlessLaunch.SpawnDetached</c> opened its own files for writing.
 /// </param>
+/// <param name="Model">
+/// The contractor's own resolved build-role model (<c>TaskStartCommand.ResolveBuildModelAsync</c>),
+/// recorded the same way <see cref="RunDispatched.Model"/> and <see cref="TokensRecorded.Model"/>
+/// are — an observed fact, never inferred from the interactive claim's own <c>run.Model</c>, which
+/// is hard-wired to the human-interactive tier and says nothing about what this contractor ran on
+/// (independent pre-PR review, cycle 1, conformance lens: the contractor's spend was otherwise
+/// recorded under the wrong model bucket, with no field anywhere naming the one it actually used).
+/// </param>
 public sealed record RunPhaseDelegated(
     Guid Id, string Note, DateTimeOffset DelegatedAt, Guid DelegatedByOwnerId, string SessionName,
-    string SessionFileKey);
+    string SessionFileKey, AgentModel Model);

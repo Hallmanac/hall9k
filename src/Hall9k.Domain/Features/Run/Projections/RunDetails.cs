@@ -778,7 +778,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<RunPhaseDelegated> @event, RunDetails view) =>
         view.PhaseDelegations.Add(new PhaseDelegation(
             @event.Data.DelegatedAt, @event.Data.Note, @event.Data.DelegatedByOwnerId, @event.Data.SessionName,
-            @event.Data.SessionFileKey));
+            @event.Data.SessionFileKey, @event.Data.Model));
 
     public void Apply(IEvent<PullRequestOpened> @event, RunDetails view)
     {

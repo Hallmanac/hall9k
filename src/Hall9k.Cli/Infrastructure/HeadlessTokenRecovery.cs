@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 
 namespace Hall9k.Cli.Infrastructure;
@@ -50,18 +51,31 @@ internal static class HeadlessTokenRecovery
         {
             string sessionStreamFile = RunPaths.SessionStreamFile(resolvedRunDirectory, delegation.SessionFileKey);
             TaskDeliverCommand.HeadlessResult result = TaskDeliverCommand.ReadHeadlessResultFromStreamFile(sessionStreamFile);
-            AppendUsage(session, run, result.Usage, recordedAt);
+            AppendUsage(session, run, result.Usage, recordedAt, delegation.Model);
         }
     }
 
     private static void AppendUsage(
         IDocumentSession session, RunDetails run, TaskDeliverCommand.HeadlessUsage? usage, DateTimeOffset recordedAt)
+        => AppendUsage(session, run, usage, recordedAt, run.Model);
+
+    /// <summary>
+    /// <paramref name="model"/> is the session that actually earned the spend — <see cref="AppendIfRecorded"/>'s
+    /// own overload passes <paramref name="run"/>'s own model, but a delegated contractor's overload
+    /// passes its own separately-resolved <see cref="PhaseDelegation.Model"/> instead, never
+    /// <c>run.Model</c>, which for an <c>h9k task work</c> claim is hard-wired to the human-interactive
+    /// tier and says nothing about what the contractor ran on (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </summary>
+    private static void AppendUsage(
+        IDocumentSession session, RunDetails run, TaskDeliverCommand.HeadlessUsage? usage, DateTimeOffset recordedAt,
+        AgentModel model)
     {
         if (usage is { } value)
         {
             session.Events.Append(run.Id, new TokensRecorded(
                 run.Id, value.InputTokens, value.OutputTokens, value.CostUsd, recordedAt,
-                value.CacheReadInputTokens, value.CacheCreationInputTokens, run.Model));
+                value.CacheReadInputTokens, value.CacheCreationInputTokens, model));
         }
     }
 }
