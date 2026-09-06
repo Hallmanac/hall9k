@@ -272,11 +272,23 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // success message below promises one regardless (conformance review, cycle 1).
         if (!task.InteractiveModeEnabled)
         {
+            // h9k task work is never the fix here (orchestrator ruling, cycle 2): re-entering an
+            // already-live claim (TaskWorkCommand.ReenterAsync) appends no event at all, and
+            // TaskRevised.ClearInteractiveMode's own contract says the flag comes back on only
+            // from a fresh TaskClaimed carrying InteractiveMode: true — never from re-entry. The
+            // one way back to a fresh claim is giving this one back first, and h9k task release
+            // only accepts a claim nothing has been done in yet (TaskReleaseCommand's own doc);
+            // once the branch holds work, h9k task handback is the only door left, and it hands
+            // the task to headless dispatch rather than restoring interactive mode.
             throw new DomainConflictException(
                 $"Task {taskId}'s claim turned interactive mode off (h9k task handback --now, or "
                 + $"h9k task revise {taskId} --clear-interactive-mode) — only a task still in "
-                + $"interactive mode can delegate this way. h9k task work {taskId} re-enters it "
-                + "interactively, which turns the flag back on, if that is what you want.");
+                + $"interactive mode can delegate this way. h9k task work {taskId} re-enters the same "
+                + "claim without changing that flag, so it will not help here. If nothing has been "
+                + $"committed or edited in this claim yet, h9k task release {taskId} gives it back and "
+                + $"h9k task work {taskId} then claims it fresh, which does turn interactive mode back "
+                + $"on. Once the branch holds work, h9k task handback {taskId} is the only way off this "
+                + "claim, and it stays headless from there.");
         }
 
         // Saved immediately, unlike every other caller of NodeBootstrap.EnsureAsync, which lets a
