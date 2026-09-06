@@ -2314,7 +2314,8 @@ public sealed class ReviewEngine(
         Guid sessionId = DomainId.New();
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
         string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
-            context.Task, context.Project, context.Run.Branch, commitStyle, humanGuidance, rebaseStillInProgress);
+            context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
+            humanGuidance, rebaseStillInProgress);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = RebaseRecoveryArtifactName(sessionId);

@@ -2961,6 +2961,58 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("Address: `brians-terminal`");
     }
 
+    /// <summary>
+    /// The fresh-build case (no pull request yet): the prompt states plainly that nothing has
+    /// shipped or been pushed, and never references a pull request URL it does not have.
+    /// </summary>
+    [Fact]
+    public void PreFinalPassRebase_prompt_states_nothing_shipped_yet_with_no_pull_request()
+    {
+        string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
+            SomeTask(), SomeProject(), "task/1-slug", CommitStyle.Append, pullRequestUrl: null);
+
+        prompt.Should().Contain("no pull request has opened, and nothing has");
+        prompt.Should().Contain("not yet pushed anywhere");
+        prompt.Should().NotContain("Pull request:");
+    }
+
+    /// <summary>
+    /// A follow-up run dispatched onto an already-open pull request (<c>h9k pr resolve</c>) can
+    /// still hit this same mandatory pre-final-pass rebase step, and the prompt has to say so
+    /// truthfully instead of asserting nothing has opened or pushed when the code four lines
+    /// earlier already read the pull request URL (independent pre-PR review, cycle 1, adversarial
+    /// lens).
+    /// </summary>
+    [Fact]
+    public void PreFinalPassRebase_prompt_states_the_existing_pull_request_when_one_is_already_open()
+    {
+        string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
+            SomeTask(), SomeProject(), "task/1-slug", CommitStyle.Append,
+            pullRequestUrl: "https://github.com/x/y/pull/7");
+
+        prompt.Should().Contain("Pull request: https://github.com/x/y/pull/7");
+        prompt.Should().Contain("already pushed and open");
+        prompt.Should().Contain("do NOT open a new pull");
+        prompt.Should().Contain("the existing PR updates in place");
+        prompt.Should().NotContain("no pull request has opened");
+        prompt.Should().NotContain("not yet pushed anywhere");
+    }
+
+    /// <summary>
+    /// The dispute path tells the session to close its summary "above the HANDOFF block", so the
+    /// prompt has to actually append that block — otherwise the phrase points at a section that
+    /// was never asked for (independent pre-PR review, cycle 1, adversarial lens, ride-along).
+    /// </summary>
+    [Fact]
+    public void PreFinalPassRebase_prompt_appends_the_handoff_block_the_dispute_rule_references()
+    {
+        string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
+            SomeTask(), SomeProject(), "task/1-slug", CommitStyle.Append, pullRequestUrl: null);
+
+        prompt.Should().Contain("above the HANDOFF block");
+        prompt.Should().Contain("## Handoff (required — the last thing in your final message)");
+    }
+
     /// <summary>An adopted task as import leaves it: the reference recorded, the quote composed.</summary>
     private static TaskDetails AdoptedTask()
     {

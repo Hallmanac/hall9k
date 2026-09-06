@@ -446,27 +446,45 @@ public static class AgentPromptBuilder
 
     /// <summary>
     /// A narrow, mid-run recovery session (task: a run rebases its branch onto the current base
-    /// branch): dispatched inside the build run's own lifecycle — no follow-up, no task reopen,
-    /// no pull request yet — after a plain <c>git rebase</c> onto the base branch conflicted
-    /// immediately before the mandatory final full pass. Brian's 2026-09-04 ruling on scope: git
-    /// conflicting is itself evidence that judgment is required, unlike the clean-apply case this
-    /// session exists precisely because git could NOT resolve on its own. Deliberately not
-    /// <see cref="BuildRebase"/> reused as-is: that prompt is written for a follow-up over an
-    /// EXISTING pull request ("the original task already shipped..."), and nothing here has
-    /// shipped or opened yet.
+    /// branch): dispatched inside the build run's own lifecycle — no task reopen — after a plain
+    /// <c>git rebase</c> onto the base branch conflicted immediately before the mandatory final
+    /// full pass. Brian's 2026-09-04 ruling on scope: git conflicting is itself evidence that
+    /// judgment is required, unlike the clean-apply case this session exists precisely because git
+    /// could NOT resolve on its own. Deliberately not <see cref="BuildRebase"/> reused as-is: that
+    /// prompt's own opening line ("the original task already shipped in the pull request above")
+    /// assumes a follow-up run cut fresh for an existing PR, while this method is reached from the
+    /// SAME run whether or not a pull request already exists for it — a fresh build's own first
+    /// pre-final-pass rebase has none yet, but a follow-up run dispatched onto an already-open PR
+    /// (<c>h9k pr resolve</c>) reaches this same mandatory-rebase step with one already live, so
+    /// <paramref name="pullRequestUrl"/> is read from <c>TaskDetails.PullRequestUrl</c> rather than
+    /// assumed either way (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
-        string? humanResolution = null, bool rebaseStillInProgress = false)
+        string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Rebase this branch onto its base before the mandatory final review pass");
         prompt.AppendLine();
-        prompt.AppendLine("This run's own work is not done yet — no pull request has opened, and nothing has");
-        prompt.AppendLine($"been pushed. But other work merged into `{project.BaseBranch}` while this run was");
-        prompt.AppendLine("building, and a plain rebase onto it just conflicted. Your job is to bring this");
-        prompt.AppendLine("branch current before the platform's own mandatory final review pass and gates run,");
-        prompt.AppendLine("preserving the branch's own authored history — not to redo the original work.");
+        if (pullRequestUrl.IsNotBlank())
+        {
+            prompt.AppendLine($"Pull request: {pullRequestUrl}");
+            prompt.AppendLine();
+            prompt.AppendLine("This run already has the pull request above open and pushed. But other work");
+            prompt.AppendLine($"merged into `{project.BaseBranch}` since, and a plain rebase onto it just");
+            prompt.AppendLine("conflicted. Your job is to bring this branch current before the platform's own");
+            prompt.AppendLine("mandatory final review pass and gates run, preserving the branch's own authored");
+            prompt.AppendLine("history — not to redo the original work.");
+        }
+        else
+        {
+            prompt.AppendLine("This run's own work is not done yet — no pull request has opened, and nothing has");
+            prompt.AppendLine($"been pushed. But other work merged into `{project.BaseBranch}` while this run was");
+            prompt.AppendLine("building, and a plain rebase onto it just conflicted. Your job is to bring this");
+            prompt.AppendLine("branch current before the platform's own mandatory final review pass and gates run,");
+            prompt.AppendLine("preserving the branch's own authored history — not to redo the original work.");
+        }
+
         prompt.AppendLine();
 
         if (humanResolution.IsNotBlank())
@@ -504,7 +522,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("## Working rules");
         prompt.AppendLine();
         prompt.AppendLine("- You are in this run's own git worktree, checked out on its own in-progress");
-        prompt.AppendLine($"  branch `{branch}` — not yet pushed anywhere. Work only here.");
+        prompt.AppendLine(pullRequestUrl.IsNotBlank()
+            ? $"  branch `{branch}` — already pushed and open as the pull request above. Work only here."
+            : $"  branch `{branch}` — not yet pushed anywhere. Work only here.");
         if (rebaseStillInProgress)
         {
             prompt.AppendLine("- **A rebase looks to still be in progress here** — an earlier attempt to abort it");
@@ -539,14 +559,25 @@ public static class AgentPromptBuilder
         prompt.AppendLine("    Before continuing past any conflicted commit, grep the resolved files for those");
         prompt.AppendLine("    markers and confirm none remain.");
         AppendRebaseVerificationRule(prompt, project, commitStyle);
-        prompt.AppendLine("  - Do NOT push, and do NOT open a pull request — the platform's own mandatory");
-        prompt.AppendLine("    final gate and review pass run over the tree you leave behind, and the daemon");
-        prompt.AppendLine("    pushes and opens the pull request itself once everything is green.");
+        if (pullRequestUrl.IsNotBlank())
+        {
+            prompt.AppendLine("  - Do NOT push (the platform pushes the rebased branch with");
+            prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
+            prompt.AppendLine("    request — the existing PR updates in place.");
+        }
+        else
+        {
+            prompt.AppendLine("  - Do NOT push, and do NOT open a pull request — the platform's own mandatory");
+            prompt.AppendLine("    final gate and review pass run over the tree you leave behind, and the daemon");
+            prompt.AppendLine("    pushes and opens the pull request itself once everything is green.");
+        }
+
         AppendRebaseDisputeRules(prompt);
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what conflicted, how you resolved each conflict and");
         prompt.AppendLine("  why, and the verification results.");
+        AppendHandoffRules(prompt);
 
         return prompt.ToString();
     }
