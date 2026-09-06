@@ -386,9 +386,12 @@ public sealed class RunDetails
     /// cares to (both read as "skip sending" to a dispatched prompt). Also null, indistinguishably
     /// from "nobody has registered yet", on a document written before this field existed even when
     /// a live registration is on the stream: <see cref="RunDetailsProjection"/> is registered
-    /// Inline with no backfill for this field, the same gap <see cref="LastInteractiveActivityAt"/>'s
-    /// own doc describes for itself — self-healing on the next attach or detach, but stating an
-    /// unobserved fact rather than avoiding one until then.
+    /// Inline with no backfill for this field, a narrower version of the gap
+    /// <see cref="LastInteractiveActivityAt"/>'s own doc describes for itself — self-healing only
+    /// on the next attach, since <c>Apply(IEvent{InteractiveSessionEnded}, RunDetails)</c> never
+    /// touches this field the way it touches <see cref="LastInteractiveActivityAt"/>, so a detach
+    /// alone leaves this field exactly as stale as it was — but stating an unobserved fact rather
+    /// than avoiding one until then.
     /// </para>
     /// </summary>
     public string? RegisteredInteractiveSessionName { get; set; }

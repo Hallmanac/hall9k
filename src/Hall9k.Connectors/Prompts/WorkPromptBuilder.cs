@@ -237,8 +237,9 @@ public static class WorkPromptBuilder
         // mid-list nested every rule appended after it under "Reporting to the human" instead of
         // under "## Working rules". The live-attended build (isInteractive) is the human's own
         // session — there is nobody else here for it to report to, so R8's outbound milestones
-        // apply only to a headless build dispatched under interactive mode (h9k task start, or a
-        // handback that kept it).
+        // apply only to a headless build dispatched under interactive mode (h9k task start, or an
+        // ordinary dispatch carrying the flag forward from an earlier h9k task release
+        // --keep-interactive — never a handback, which clears the flag unconditionally).
         if (task.InteractiveModeEnabled && !isInteractive)
         {
             AppendOutboundMilestoneRules(
@@ -982,7 +983,12 @@ public static class WorkPromptBuilder
             if (isFinal)
             {
                 prompt.AppendLine("  (your closing summary, handoff, or verdict and findings — not just this");
-                prompt.AppendLine("  label), then end.");
+                prompt.AppendLine("  label), then end. This send is in addition to, never instead of, your own");
+                prompt.AppendLine("  final message: a tool call is never truly your last act, since the runtime");
+                prompt.AppendLine("  forces one more assistant turn after any tool result, and that final message");
+                prompt.AppendLine("  is the only text the platform ever reads back for a verdict, resolution, or");
+                prompt.AppendLine("  handoff. Put the same report in your own final message too — closing with a");
+                prompt.AppendLine("  line like \"report sent\" and nothing else discards it.");
                 if (parksAtBoundaryAfterward)
                 {
                     prompt.AppendLine("  This task's interactive-mode phase-boundary park holds from there until");
