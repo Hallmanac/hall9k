@@ -587,7 +587,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// from whatever the run's own state happens to be by the time this renders: a run that
     /// recovered cleanly can still fail later for an unrelated reason (a downstream gate, a push
     /// refusal), and reading that as "the recovery also ended dirty" would be false (independent
-    /// pre-PR review, cycle 1, both lenses).
+    /// pre-PR review, cycle 1, both lenses). A null <see cref="UncommittedWorkRecoveryRecord.RecoveredCleanly"/>
+    /// is ambiguous on its own — it is also what a completed recovery records when its own
+    /// re-detection could not read `git status` — so this reads <see cref="UncommittedWorkRecoveryRecord.CompletedAt"/>
+    /// too, to tell "not finished yet" apart from "finished, but genuinely unobservable" rather than
+    /// rendering both as "outcome not yet recorded" (independent pre-PR review, cycle 3, conformance
+    /// finding). <see cref="UncommittedWorkRecoveryRecord.DiscardedFiles"/> also gets its own
+    /// wording on a false verdict: the tree can read perfectly clean and still be a discard, when
+    /// a stranded file was reverted or deleted rather than committed, so "still did not leave the
+    /// tree clean" would misstate what was actually observed (independent pre-PR review, cycle 3,
+    /// adversarial finding).
     /// </summary>
     private static void WriteUncommittedWorkRecovery(RunDetails? run)
     {
@@ -596,11 +605,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return;
         }
 
-        string outcome = recovery.RecoveredCleanly switch
+        string outcome = recovery switch
         {
-            true => "[green]recovered — the run reached its gates[/]",
-            false => "[red]still did not leave the tree clean[/]",
-            null => "[yellow]outcome not yet recorded[/]",
+            { RecoveredCleanly: true } => "[green]recovered — the run reached its gates[/]",
+            { RecoveredCleanly: false, DiscardedFiles.Count: > 0 } =>
+                "[red]discarded stranded work rather than committing it[/]",
+            { RecoveredCleanly: false } => "[red]still did not leave the tree clean[/]",
+            { CompletedAt: null } => "[yellow]outcome not yet recorded[/]",
+            _ => "[yellow]recovery finished, but its own re-check could not read the worktree — outcome unknown[/]",
         };
 
         AnsiConsole.MarkupLine(

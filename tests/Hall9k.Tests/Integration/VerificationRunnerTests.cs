@@ -922,6 +922,78 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// A submodule pointer bump reads exactly like a stranded deletion did to the prior
+    /// <c>File.Exists</c>-based heuristic: `git hash-object` cannot hash a gitlink path (it fails
+    /// the same way it fails on a genuine deletion), and <c>File.Exists</c> reads false for it too,
+    /// since the path is a directory rather than a file — but `git status` reports it as a plain
+    /// modification (` M sub`), never a `D`. The before-snapshot must not record this as a deletion
+    /// marker, or a correctly-committed pointer bump gets flagged discarded by
+    /// <c>DetectDiscardedFilesAsync</c> even though HEAD genuinely holds the gitlink afterward
+    /// (independent pre-PR review, cycle 3, conformance finding: this class of stranded file could
+    /// never recover successfully under the old heuristic).
+    /// </summary>
+    [Fact]
+    public async Task Automatic_recovery_that_commits_a_stranded_submodule_bump_is_recognized_as_recovered()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string submoduleSource = Path.Combine(Path.GetTempPath(), $"hall9k-vt-sub-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(submoduleSource);
+        try
+        {
+            await RunShellAsync(
+                submoduleSource,
+                "git init -q -b main && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init",
+                cts.Token);
+
+            Directory.CreateDirectory(_worktree);
+            await RunShellAsync(
+                _worktree,
+                "git init -q -b main && " +
+                "git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init && " +
+                "git checkout -q -b task/verify && " +
+                $"git -c protocol.file.allow=always submodule add {submoduleSource} sub && " +
+                "git -c user.email=t@t -c user.name=t commit -q -m addsub",
+                cts.Token);
+
+            // Advance the submodule's own history and move the parent's checked-out pointer to
+            // it without committing that bump — the shape `git status` reports as ` M sub`, never
+            // a deletion, the way a submodule bump always reads.
+            await RunShellAsync(
+                submoduleSource, "git -c user.email=t@t -c user.name=t commit -q --allow-empty -m second", cts.Token);
+            string submoduleHead = (await RunShellCapturingAsync(submoduleSource, "git rev-parse HEAD", cts.Token)).Trim();
+            await RunShellAsync(
+                Path.Combine(_worktree, "sub"), $"git fetch -q origin && git checkout -q {submoduleHead}", cts.Token);
+
+            (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+            CommittingRecoveryExecutor recovery = new(_worktree);
+
+            bool passed =
+                await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+
+            passed.Should().BeTrue(
+                "the recovery session committed the submodule pointer bump; a gitlink `git hash-object` cannot " +
+                "hash is not a deletion and must not be flagged as one");
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            run.UncommittedWorkRecovery.Should().NotBeNull();
+            run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeTrue(
+                "the submodule bump reached HEAD; nothing was ever a deletion");
+            run.UncommittedWorkRecovery!.DiscardedFiles.Should().BeEmpty();
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(submoduleSource, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
     /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
     /// A recovery session that could not even be spawned still gets a real
     /// <see cref="RunUncommittedWorkRecoveryCompleted"/> on the stream (independent pre-PR review,
@@ -1493,12 +1565,6 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
-    /// The success-path executor: acts like the real commit-only recovery session actually did
-    /// its job, committing everything currently sitting in <see cref="_worktree"/> before
-    /// reporting success — so the caller's own post-recovery re-check finds a clean tree and
-    /// proceeds to the gates.
-    /// </summary>
-    /// <summary>
     /// A recovery session that never even starts (a bad <c>AgentModel</c>, `claude` missing from
     /// PATH): <c>IExecutor.SpawnAsync</c> throws before a <see cref="SpawnedAgent"/> ever exists.
     /// The worktree is never touched, so the completion event this now always records should
@@ -1510,6 +1576,12 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             throw new InvalidOperationException("scripted: the recovery session could not be spawned");
     }
 
+    /// <summary>
+    /// The success-path executor: acts like the real commit-only recovery session actually did
+    /// its job, committing everything currently sitting in <see cref="_worktree"/> before
+    /// reporting success — so the caller's own post-recovery re-check finds a clean tree and
+    /// proceeds to the gates.
+    /// </summary>
     private sealed class CommittingRecoveryExecutor(string worktree) : IExecutor
     {
         private int _nextProcessId = 82_000;

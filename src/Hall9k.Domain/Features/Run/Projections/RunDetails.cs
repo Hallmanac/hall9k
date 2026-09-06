@@ -428,11 +428,15 @@ public sealed record SessionErrorRetryRecord(
 /// pre-PR review, cycle 1, conformance finding: an unobserved tree is not the same fact as an observed
 /// clean one). <see cref="DiscardedFiles"/> names every originally-stranded file the recovery session
 /// made vanish from `git status` without ever landing it in a commit — empty on a recovery that either
-/// has not completed yet or genuinely preserved everything.
+/// has not completed yet or genuinely preserved everything. <see cref="CompletedAt"/> is null until
+/// <see cref="RunDetailsProjection.Apply(IEvent{RunUncommittedWorkRecoveryCompleted}, RunDetails)"/>
+/// applies, and is what lets a reader tell "the recovery has not finished yet" apart from "the
+/// recovery finished, but its own re-detection could not read the worktree" — both read as a null
+/// <see cref="RecoveredCleanly"/> otherwise (independent pre-PR review, cycle 3, conformance finding).
 /// </summary>
 public sealed record UncommittedWorkRecoveryRecord(
     IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt, bool? RecoveredCleanly,
-    IReadOnlyList<string> DiscardedFiles);
+    IReadOnlyList<string> DiscardedFiles, DateTimeOffset? CompletedAt = null);
 
 public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
 {
@@ -926,6 +930,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             {
                 RecoveredCleanly = @event.Data.RecoveredCleanly,
                 DiscardedFiles = @event.Data.DiscardedFiles,
+                CompletedAt = @event.Data.CompletedAt,
             };
         }
     }
