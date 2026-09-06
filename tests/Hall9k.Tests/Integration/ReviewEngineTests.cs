@@ -1542,6 +1542,63 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Task: a run rebases its branch onto the current base branch, independent pre-PR review,
+    /// cycle 1, conformance lens finding: a recovery session resolves a real conflict with
+    /// judgment, not a mechanical apply — unlike a clean rebase, this must NOT be allowed to reach
+    /// the pull request through the ordinary "nothing owed" settle path unread by any fresh-context
+    /// reviewer. Before the fix, a run that converges merge-ready at Discovery cycle 1 with both
+    /// lenses clean and no fix ever dispatched settled straight through here even when the
+    /// mandatory pre-final-pass rebase needed a recovery session to resolve a genuine conflict.
+    /// </summary>
+    [Fact]
+    public async Task A_recovered_pre_final_pass_rebase_on_the_nothing_owed_settle_path_still_earns_a_final_pass()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        // Both sides add Widget.cs, with different content — a genuine add/add conflict when
+        // this branch's own commit replays onto the moved base.
+        PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main */ }\n", "add Widget from main");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready",
+            "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
+            "Nothing new to flag.\n\nVERDICT: merge-ready",
+            "Still holds.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[2] = () =>
+        {
+            Git(worktreePath, "fetch -q origin");
+            TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
+            File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { /* resolved */ }\n");
+            Git(worktreePath, "add -A");
+            Git(
+                worktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            5, "both lenses converged clean at cycle 1 (nothing owed), plus the recovery session, " +
+            "plus the mandatory final pass the recovered conflict now earns even on that path");
+        File.ReadAllText(Path.Combine(worktreePath, "Widget.cs")).Should().Contain("resolved");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle();
+        events.OfType<RunRebasedOntoBase>().Should().Contain(e => e.RecoveredByAgentSession && !e.WasNoOp);
+        events.OfType<ReviewDispatched>().Should().Contain(
+            e => e.Mode == ReviewMode.FinalFullPass,
+            "the recovered conflict forces the mandatory final pass rather than settling unread");
+    }
+
+    /// <summary>
     /// Task: a run rebases its branch onto the current base branch. When the recovery session
     /// cannot honestly resolve the conflict, the run parks for a human — the same shape a
     /// disputed rebase park takes today — rather than failing the run or reopening the task.
