@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Xunit;
@@ -13,10 +14,36 @@ namespace Hall9k.Tests.Connectors;
 /// </summary>
 public sealed class NonInteractiveGitTests
 {
+    /// <summary>
+    /// A fresh <see cref="ProcessStartInfo"/> with any inherited GIT_CONFIG_* or GIT_*EDITOR*
+    /// variable stripped. <see cref="ProcessStartInfo.Environment"/> starts as a copy of this
+    /// process's own environment, and the gate runner that hosts this test process already
+    /// applies <see cref="NonInteractiveGit.Apply"/> to it (origin incident 2026-09-06: a branch
+    /// containing that hardening failed its own test gate twice because the inherited
+    /// GIT_CONFIG_COUNT=1 made a fresh <see cref="ProcessStartInfo"/> here look pre-populated, and
+    /// <see cref="NonInteractiveGit.Apply"/> appended onto it instead of starting from zero). This
+    /// keeps the tests below honest about what they are asserting, whether or not the parent
+    /// process already applied the same hardening.
+    /// </summary>
+    private static ProcessStartInfo FreshGitProcessStartInfo()
+    {
+        ProcessStartInfo startInfo = new();
+
+        foreach (string key in startInfo.Environment.Keys
+            .Where(key => key.StartsWith("GIT_CONFIG_", StringComparison.Ordinal)
+                || key.Contains("EDITOR", StringComparison.Ordinal))
+            .ToList())
+        {
+            startInfo.Environment.Remove(key);
+        }
+
+        return startInfo;
+    }
+
     [Fact]
     public void Every_interactive_knob_is_pinned_off()
     {
-        ProcessStartInfo startInfo = new();
+        ProcessStartInfo startInfo = FreshGitProcessStartInfo();
 
         NonInteractiveGit.Apply(startInfo);
 
@@ -56,7 +83,7 @@ public sealed class NonInteractiveGitTests
         // -1 is the one value git reads as "zero entries" rather than refusing outright, which
         // would drop the signing override silently; every other bad value is already fatal to
         // git before this helper runs. Either way the helper repairs it instead of appending.
-        ProcessStartInfo startInfo = new();
+        ProcessStartInfo startInfo = FreshGitProcessStartInfo();
         startInfo.Environment["GIT_CONFIG_COUNT"] = inherited;
 
         NonInteractiveGit.Apply(startInfo);
