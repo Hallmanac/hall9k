@@ -48,7 +48,7 @@ internal static class HeadlessTokenRecovery
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         foreach (PhaseDelegation delegation in run.PhaseDelegations)
         {
-            string sessionStreamFile = RunPaths.SessionStreamFile(resolvedRunDirectory, delegation.SessionName);
+            string sessionStreamFile = RunPaths.SessionStreamFile(resolvedRunDirectory, delegation.SessionFileKey);
             TaskDeliverCommand.HeadlessResult result = TaskDeliverCommand.ReadHeadlessResultFromStreamFile(sessionStreamFile);
             AppendUsage(session, run, result.Usage, recordedAt);
         }

@@ -261,7 +261,7 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // deliver with no recovered handoff at all, even though the last contractor wrote one.
         string? recoveredHandoff = run.PhaseDelegations is { Count: > 0 } delegations
             ? ReadHeadlessResultFromStreamFile(
-                RunPaths.SessionStreamFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory), delegations[^1].SessionName)).Handoff
+                RunPaths.SessionStreamFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory), delegations[^1].SessionFileKey)).Handoff
             : headlessResult.Handoff;
         string handoff = settings.Handoff ?? PromptForHandoff(recoveredHandoff);
         if (handoff.IsBlank() && settings.Handoff is null && !AnsiConsole.Profile.Capabilities.Interactive)
@@ -353,7 +353,12 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // headlessResult's own reasoning (independent pre-PR review, cycle 1, on h9k task
         // delegate): nothing else ever reads it back, so every phase this claim delegated would
         // under-count the node's periodic token-spend budget by exactly what that phase spent.
-        HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, run, completedAt);
+        // runBeforeAppend, not the top-of-command run snapshot (adversarial review, cycle 1): the
+        // window between that first load and this point spans the push and PromptForHandoff's own
+        // unbounded block on operator input, long enough for a concurrent h9k task delegate to
+        // land a new PhaseDelegation the stale snapshot would never see, silently dropping that
+        // contractor's own token usage — the exact under-count this call exists to close.
+        HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, runBeforeAppend, completedAt);
 
         await session.SaveChangesAsync(CancellationToken.None);
 
