@@ -1067,6 +1067,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             (2, ReviewMode.FinalFullPass, null),
             (2, ReviewMode.FinalFullPass, null),
         ]);
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.OpeningReviewSinceShaApplied.Should().Be(
+            seedSha, "the opening cycle's own scope actually applied, so h9k task show renders the observed "
+                + "boundary rather than only the dispatch-time seed");
     }
 
     /// <summary>

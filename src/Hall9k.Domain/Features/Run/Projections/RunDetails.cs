@@ -382,6 +382,18 @@ public sealed class RunDetails
     public bool IsFollowUp { get; set; }
     /// <summary>See <see cref="RunDispatched"/>'s own doc — the seed for this run's opening Discovery cycle's diff instruction, rendered by <c>h9k task show</c>.</summary>
     public string? OpeningReviewSinceSha { get; set; }
+    /// <summary>
+    /// What the opening Discovery cycle's diff instruction actually scoped to (independent pre-PR
+    /// review, cycle 1 conformance and adversarial findings): recorded from the first cycle-1
+    /// <see cref="Events.ReviewDispatched.SinceSha"/> rather than trusted from
+    /// <see cref="OpeningReviewSinceSha"/> alone, since <c>ReviewEngine.ResolveOpeningDiscoverySinceShaAsync</c>
+    /// re-verifies the seed against the worktree at dispatch time and degrades it to a full read
+    /// when a history rewrite (the mandated fixup-and-autosquash rebase among them) leaves it no
+    /// longer an ancestor of HEAD. Null whenever cycle 1 read the full branch — whether because no
+    /// seed was ever recorded or because the seed failed to resolve — so <c>h9k task show</c> never
+    /// asserts a scoping that was only seeded, never applied.
+    /// </summary>
+    public string? OpeningReviewSinceShaApplied { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
     /// <summary>The operator's Claude Code session id, from the most recent <see cref="InteractiveSessionStarted"/>; null for a headless run.</summary>
     public Guid? InteractiveClaudeSessionId { get; set; }
@@ -656,6 +668,10 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewCycle = @event.Data.Cycle;
         view.ReviewCycleMode = @event.Data.Mode ?? ReviewMode.Discovery;
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
+        if (@event.Data.Cycle == 1 && (@event.Data.Mode ?? ReviewMode.Discovery) == ReviewMode.Discovery)
+        {
+            view.OpeningReviewSinceShaApplied = @event.Data.SinceSha;
+        }
         StartSession(
             view, AgentRole.Review, @event.Data.Lens, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
             name: @event.Data.SessionName);

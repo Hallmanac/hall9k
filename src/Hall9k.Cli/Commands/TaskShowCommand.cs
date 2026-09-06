@@ -493,6 +493,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// fresh run, a Rebase follow-up (excluded, unchanged), a manual h9k pr resolve reopen, or a run
     /// dispatched before this field existed — in every one of those cases the opening cycle read
     /// the full branch and there is nothing to say here.
+    /// <para>
+    /// A seed being recorded is not the same as it having applied (independent pre-PR review,
+    /// cycle 1 conformance and adversarial findings): <c>ReviewEngine.ResolveOpeningDiscoverySinceShaAsync</c>
+    /// re-verifies the seed against the worktree at dispatch time and silently degrades to a full
+    /// read when a history rewrite — the mandated fixup-and-autosquash rebase among them — leaves it
+    /// no longer an ancestor of HEAD. <see cref="RunDetails.OpeningReviewSinceShaApplied"/> is what
+    /// the opening cycle actually used, so this renders that observation rather than the dispatch-time
+    /// intent — never a fact about the review that was never observed.
+    /// </para>
     /// </summary>
     private static void WriteReviewScopeSeed(RunDetails? run)
     {
@@ -501,10 +510,26 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return;
         }
 
+        if (run.OpeningReviewSinceShaApplied is { } appliedSha)
+        {
+            AnsiConsole.MarkupLine(
+                $"\n[bold]Review scope[/]  opening cycle scoped to changes since "
+                + $"[dim]{appliedSha.EscapeMarkup()}[/] [dim]— the pull request head the previous run "
+                + "pushed, observed when this lap's task reopened[/]");
+            return;
+        }
+
+        if (run.ReviewCycle < 1)
+        {
+            // The opening cycle has not dispatched yet — nothing observed to report either way,
+            // so say nothing rather than assert a scoping (or a degrade) nobody has seen happen.
+            return;
+        }
+
         AnsiConsole.MarkupLine(
-            $"\n[bold]Review scope[/]  opening cycle scoped to changes since "
-            + $"[dim]{sinceSha.EscapeMarkup()}[/] [dim]— the pull request head the previous run "
-            + "pushed, observed when this lap's task reopened[/]");
+            $"\n[bold]Review scope[/]  seeded to changes since [dim]{sinceSha.EscapeMarkup()}[/], but the "
+            + "[dim]seed no longer resolved against the worktree when the opening cycle dispatched — it read "
+            + "the full branch instead[/]");
     }
 
     /// <summary>
