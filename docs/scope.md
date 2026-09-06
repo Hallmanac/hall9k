@@ -85,7 +85,12 @@ resumed. It occupies zero concurrency slots (the run's `NodeId` is the sentinel 
 the node's session-ceiling accounting never counts), so it starts even when the daemon's queue is
 full. `h9k task verify` runs the project's gates on demand against the claim's worktree; `h9k task
 deliver` pushes the branch and hands the run into the standard delivery pipeline — from there it is
-indistinguishable from a headless run; `h9k task handback` releases the claim to a headless agent
+indistinguishable from a headless run; `h9k task delegate <id> --note "<text>"` dispatches a
+headless build contractor onto this same run, worktree, and branch for one phase, leaving the
+claim, the assignment, and interactive mode untouched, so the task stays the operator's — distinct
+from `handback`, which ends interactive mode outright, and reversed by re-entering with
+`h9k task work` once the contractor reports back (design ruling R6); `h9k task handback` releases
+the claim to a headless agent
 partway through, resuming the same branch (`--first` marks it queue-first for the next free
 dispatch slot, `--now` dispatches it immediately instead, ceiling-exempt, through
 `h9k task start`'s own mechanism — refused together); `h9k task release` gives an untouched claim
