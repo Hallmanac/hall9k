@@ -457,7 +457,7 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
-        string? humanResolution = null)
+        string? humanResolution = null, bool rebaseStillInProgress = false)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Rebase this branch onto its base before the mandatory final review pass");
@@ -505,11 +505,24 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("- You are in this run's own git worktree, checked out on its own in-progress");
         prompt.AppendLine($"  branch `{branch}` — not yet pushed anywhere. Work only here.");
-        prompt.AppendLine("- The worktree is already back at this branch's own tip (an earlier plain rebase");
-        prompt.AppendLine("  attempt that conflicted was aborted before you were spawned) — there is no rebase");
-        prompt.AppendLine("  already in progress here. If the repo ships a rebase-onto-main skill (or an");
-        prompt.AppendLine("  absorb-review-fixes skill that covers rebasing), invoke it — it walks these exact");
-        prompt.AppendLine("  mechanics. Either way:");
+        if (rebaseStillInProgress)
+        {
+            prompt.AppendLine("- **A rebase looks to still be in progress here** — an earlier attempt to abort it");
+            prompt.AppendLine("  before you were spawned could not be confirmed clean. Run `git status` first and");
+            prompt.AppendLine("  finish or abort whatever it finds (`git rebase --continue` once every conflict in");
+            prompt.AppendLine("  the current commit is resolved, or `git rebase --abort` to start over) before");
+            prompt.AppendLine("  doing anything else. If the repo ships a rebase-onto-main skill (or an");
+            prompt.AppendLine("  absorb-review-fixes skill that covers rebasing), invoke it — it walks these exact");
+            prompt.AppendLine("  mechanics. Either way, once the worktree is clean:");
+        }
+        else
+        {
+            prompt.AppendLine("- The worktree is already back at this branch's own tip (an earlier plain rebase");
+            prompt.AppendLine("  attempt that conflicted was aborted before you were spawned) — there is no rebase");
+            prompt.AppendLine("  already in progress here. If the repo ships a rebase-onto-main skill (or an");
+            prompt.AppendLine("  absorb-review-fixes skill that covers rebasing), invoke it — it walks these exact");
+            prompt.AppendLine("  mechanics. Either way:");
+        }
         prompt.AppendLine($"  - `git fetch origin` first — rebasing onto a stale `origin/{project.BaseBranch}`");
         prompt.AppendLine("    can leave the branch still conflicting after the rebase reports success.");
         prompt.AppendLine($"  - `git rebase origin/{project.BaseBranch}`, resolving each conflict by reading");
@@ -534,7 +547,6 @@ public static class AgentPromptBuilder
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what conflicted, how you resolved each conflict and");
         prompt.AppendLine("  why, and the verification results.");
-        AppendHandoffRules(prompt);
 
         return prompt.ToString();
     }

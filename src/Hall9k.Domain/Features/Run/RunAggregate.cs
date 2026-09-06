@@ -100,6 +100,23 @@ public sealed class RunAggregate
     /// </summary>
     public bool? LastPreFinalPassRebaseWasNoOp { get; private set; }
 
+    /// <summary>
+    /// Whether a real (non-no-op) pre-final-pass rebase has landed since the run's own tip was
+    /// last gated at full scope (task: a run rebases its branch onto the current base branch,
+    /// independent pre-PR review, cycle 1, both lenses) — the signal
+    /// <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s Settling branch uses to force one more
+    /// full-scope gate before the run may settle, even on the ordinary "nothing owed" path a clean
+    /// Discovery-cycle-1 convergence takes. Deliberately event-sourced rather than a live git HEAD
+    /// comparison: a git read fails whenever the run's own worktree cannot be read (adopted onto a
+    /// node that never checked it out, or simply gone), and treating that failure as "not yet
+    /// gated" would force a redundant full gate on every such settle forever, not just the one
+    /// this flag actually exists to catch. Set by a non-no-op <see cref="Events.RunRebasedOntoBase"/>
+    /// (whether it applied cleanly on its own or only after a recovery session resolved its
+    /// conflict) and cleared by the very next full-scope <see cref="Events.VerificationPassed"/>,
+    /// whichever event lands later on the stream.
+    /// </summary>
+    public bool PreFinalPassRebaseAwaitingGate { get; private set; }
+
     /// <summary>Whether the last non-no-op pre-final-pass rebase needed the recovery session rather than applying cleanly on its own.</summary>
     public bool LastPreFinalPassRebaseRecovered { get; private set; }
 
@@ -753,6 +770,14 @@ public sealed class RunAggregate
         LastGateRanFullScope = @event.RanFullScope;
         LastGateHeadSha = @event.HeadSha;
         LastGateVerifyCommandsFingerprint = @event.VerifyCommandsFingerprint;
+        // A full-scope gate, wherever it landed on the stream relative to the last real rebase,
+        // is a gate that read whatever the worktree held at that moment — see
+        // PreFinalPassRebaseAwaitingGate's own doc for why this is event order, not a live git
+        // comparison.
+        if (@event.RanFullScope)
+        {
+            PreFinalPassRebaseAwaitingGate = false;
+        }
     }
 
     public void Apply(GateRetried @event) => GateRetries++;
@@ -1045,6 +1070,12 @@ public sealed class RunAggregate
             PendingRebaseRecoveryGuidance = @event.Reason;
             ParkedNeedsFixesOffersNoProgress = false;
             State = RunState.UnderReview;
+            // A fresh human grant like any other (see the two branches below) — without this, a
+            // human's own --needs-fixes retry after this park spends its very next recovery
+            // dispatch re-tripping MaxRebaseRecoveryRounds on a count the dispute itself never
+            // actually added to landing cleanly or not (independent pre-PR review, cycle 1,
+            // conformance lens).
+            RebaseRecoveryRounds = 0;
             return;
         }
 
@@ -1474,9 +1505,12 @@ public sealed class RunAggregate
         LastMechanicalRebaseAt = @event.AttemptedAt;
     }
 
-    // Informational only, exactly like Apply(PullRequestMechanicalRebaseAttempted) above: a
-    // clean or no-op outcome leaves ReviewPhase and State untouched, so the mandatory final gate
-    // and pass that were already about to run simply read the tree this event just produced.
+    // Informational only, exactly like Apply(PullRequestMechanicalRebaseAttempted) above: State
+    // is untouched either way. ReviewPhase is untouched by a clean or no-op outcome too — but not
+    // because the mandatory gate and pass are always about to run next (independent pre-PR
+    // review, cycle 1, both lenses: the ordinary "nothing owed" settle path proved that
+    // assumption false), which is exactly why a real rebase also has to raise
+    // PreFinalPassRebaseAwaitingGate below rather than trusting whatever runs next to notice it.
     public void Apply(RunRebasedOntoBase @event)
     {
         LastPreFinalPassRebaseWasNoOp = @event.WasNoOp;
@@ -1485,6 +1519,33 @@ public sealed class RunAggregate
         LastPreFinalPassRebaseOntoCommit = @event.RebasedOntoCommit;
         LastPreFinalPassRebaseDetail = @event.Detail;
         LastPreFinalPassRebaseAt = @event.RebasedAt;
+        // RebaseRecoveryRounds' own doc promises "in a row without ever landing cleanly", and a
+        // confirmed no-op is the only fact here git itself observed rather than a session's own
+        // claim: it means EnsureRebasedBeforeFinalPassAsync freshly compared origin/<base>'s tip
+        // against this branch's own merge-base and found nothing left to rebase, which is only
+        // ever true once a prior conflict is genuinely behind this branch (independent pre-PR
+        // review, cycle 1, adversarial lens — reset instead on every non-no-op event, as first
+        // tried here, means a recovery session's own unverified "RESOLUTION: fixed" claim resets
+        // the count on the very dispatch it should have been counted against, so a session that
+        // repeats the identical false claim every round never trips MaxRebaseRecoveryRounds at
+        // all — caught by A_rebase_recovery_session_that_never_actually_resolves_parks_once_the_round_cap_is_spent,
+        // which exists specifically to prove that cap holds). Reset the same way a human's fresh
+        // grant already does in Apply(ReviewParkResolved), so a run whose conflicts genuinely keep
+        // resolving does not creep toward the cap over defects that never actually recur.
+        if (@event.WasNoOp)
+        {
+            RebaseRecoveryRounds = 0;
+        }
+
+        // A real (non-no-op) rebase landing — whether git applied it cleanly on its own or a
+        // recovery session merely claimed to — is exactly when this branch's own commits have not
+        // been gated at their new, possibly-rebased position (see PreFinalPassRebaseAwaitingGate's
+        // own doc): worth an extra full gate to confirm even when the claim behind it turns out to
+        // be false, since that gate is what would catch the false claim in the first place.
+        if (!@event.WasNoOp)
+        {
+            PreFinalPassRebaseAwaitingGate = true;
+        }
     }
 
     public void Apply(PreFinalPassRebaseRecoveryDispatched @event)
