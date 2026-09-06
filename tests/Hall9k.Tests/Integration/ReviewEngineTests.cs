@@ -1599,6 +1599,73 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// Task: a run rebases its branch onto the current base branch, independent pre-PR review,
+    /// cycle 3, both lenses finding: <c>MaySettleReason</c>'s <c>Bar</c> clause (a final full pass
+    /// whose verdict is merge-ready with only below-bar findings) was gated on
+    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/> only in its own doc's shadow —
+    /// the actual conjunct landed solely on the <c>NothingOwed</c> clause. A recovered rebase
+    /// conflict discovered on the very Settling entry that would otherwise settle through Bar must
+    /// force one more fresh-context final pass instead, exactly as it already does for NothingOwed.
+    /// </summary>
+    [Fact]
+    public async Task A_recovered_pre_final_pass_rebase_on_the_severity_bar_settle_path_still_earns_another_final_pass()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
+            "Fixed it.\n\nRESOLUTION: fixed",
+            "The fix holds.\n\nVERDICT: merge-ready",
+            "Nothing new to flag.\n\nVERDICT: merge-ready",
+            "FINDING: severity=low; scope=in-scope; at=Widget.cs:1\nDefect: minor.\n\nVERDICT: merge-ready",
+            "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
+            "Still nothing to flag.\n\nVERDICT: merge-ready",
+            "Still just the minor nit.\n\nVERDICT: merge-ready");
+
+        // Main moves only once the genuine mandatory final pass (index 4-5) is already under way,
+        // so the conflict is discovered on the very Settling entry that reads that pass's own
+        // merge-ready-with-a-ride-along verdict — the exact ordering the finding names, rather
+        // than a conflict discovered before the final pass ever ran (already covered by
+        // A_conflicting_pre_final_pass_rebase_is_resolved_by_a_narrow_recovery_session_inside_the_same_run).
+        executor.OnSpawnByIndex[5] = () =>
+            PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main */ }\n", "add Widget from main");
+        executor.OnSpawnByIndex[6] = () =>
+        {
+            Git(worktreePath, "fetch -q origin");
+            TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
+            File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { /* resolved */ }\n");
+            Git(worktreePath, "add -A");
+            Git(
+                worktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            9, "the first final pass's own merge-ready-with-a-ride-along verdict must not settle " +
+            "through the severity bar while a just-recovered rebase conflict has never been read by " +
+            "a fresh-context reviewer — a second final pass (indexes 7-8) is owed, on top of the " +
+            "recovery session (index 6)");
+        File.ReadAllText(Path.Combine(worktreePath, "Widget.cs")).Should().Contain("resolved");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle();
+        events.OfType<RunRebasedOntoBase>().Should().Contain(e => e.RecoveredByAgentSession && !e.WasNoOp);
+        events.OfType<ReviewDispatched>().Count(e => e.Mode == ReviewMode.FinalFullPass).Should().Be(
+            4, "two lenses for the genuine final pass the conflict interrupted, plus two more for " +
+            "the fresh-context final pass the recovered conflict forces before the run may settle");
+    }
+
+    /// <summary>
     /// Task: a run rebases its branch onto the current base branch. When the recovery session
     /// cannot honestly resolve the conflict, the run parks for a human — the same shape a
     /// disputed rebase park takes today — rather than failing the run or reopening the task.

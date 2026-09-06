@@ -4288,9 +4288,17 @@ public sealed class ReviewEngine(
     private static SettleReason? MaySettleReason(RunAggregate run) => true switch
     {
         _ when run.HumanEndedTheLoop => SettleReason.Human,
+        // Gated on PreFinalPassRebaseAwaitingReview being clear on this clause too (independent
+        // pre-PR review, cycle 3, both lenses): this clause is reachable straight off a
+        // FinalFullPass whose own recovered rebase conflict was resolved by agent judgment, and
+        // without this conjunct it settled to the pull request without ever giving a fresh-context
+        // reviewer the chance to read that resolution — the identical gap the NothingOwed clause
+        // below was already closed for. The Human clause above is the only one AGENTS.md documents
+        // as deliberately exempt from this gate.
         _ when run.CurrentCycleMode == ReviewMode.FinalFullPass
             && run.LastReviewVerdict == ReviewVerdict.MergeReady
-            && run.CompletedReviewPasses.Any(pass => pass.Findings.Count > 0) =>
+            && run.CompletedReviewPasses.Any(pass => pass.Findings.Count > 0)
+            && !run.PreFinalPassRebaseAwaitingReview =>
             SettleReason.Bar,
         // Gated on PreFinalPassRebaseAwaitingReview being clear (independent pre-PR review, cycle
         // 1, conformance lens): a recovered pre-final-pass rebase means an agent resolved a real
