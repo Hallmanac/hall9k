@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Extensions;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -367,10 +368,16 @@ public sealed class RunDetails
     /// through the headless review/fix loop that follows a live `h9k task deliver`, not only
     /// during the build itself — except the one <see cref="InteractiveSessionStarted"/> that is
     /// never a human's: <c>h9k task start</c> appends this same event carrying its own headless
-    /// build agent's session name (<see cref="SessionRoleName.Build"/>'s own suffix), and that
-    /// write is skipped rather than mirrored (independent pre-PR review, cycle 1, both lenses) —
-    /// the same build-role-suffix discriminator <c>TaskPhaseComposer</c> already relies on to
-    /// tell an attended claim from a start-it-mine one.
+    /// build agent's machine-composed session name, and that write is skipped rather than mirrored
+    /// (independent pre-PR review, cycle 1, both lenses). Matched by exact equality against THIS
+    /// run's own task's <see cref="SessionRoleName.Build"/> name, not by a "-build" suffix
+    /// (independent pre-PR review, cycle 1, adversarial lens): unlike the dispatch-time
+    /// <c>RunDispatched.SessionName</c> a bare suffix check safely discriminates on elsewhere
+    /// (<c>TaskPhaseComposer</c>, entirely platform-composed), this event's own
+    /// <see cref="Events.InteractiveSessionStarted.SessionName"/> can also carry a human's freely
+    /// chosen Claude Code session name (<c>TaskRegisterSessionCommand.ReadClaudeSessionName</c>),
+    /// and a mere suffix match silently discarded a genuine registration whenever that name
+    /// happened to end the same way.
     /// <para>
     /// Null when nobody has ever run <c>h9k task register-session</c> against this run — every
     /// fresh headless dispatch under interactive mode starts this way (<c>h9k task start</c>, an
@@ -960,11 +967,15 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         // start appends this identical event for its own headless build agent (SessionRoleName.Build),
         // not for a human, and mirroring that verbatim here told every later review/fix prompt that
         // agent's own exited session was "the human's own registered session" (independent pre-PR
-        // review, cycle 1, both lenses). The build-role suffix is the same discriminator
-        // TaskPhaseComposer already relies on to tell an attended h9k task work claim from a
-        // start-it-mine one, since TaskAggregate.IsInteractiveClaim's own Guid.Empty sentinel does
-        // not tell them apart on its own.
-        if (!@event.Data.SessionName.EndsWith("-" + SessionRoleName.Build, StringComparison.Ordinal))
+        // review, cycle 1, both lenses). Matched against THIS run's own task's machine-composed
+        // build-session name exactly, not merely a "-build" suffix (independent pre-PR review,
+        // cycle 1, adversarial lens): a bare suffix check also caught a human's own chosen Claude
+        // Code session name whenever it happened to end that way (e.g. "nightly-build"), silently
+        // dropping a genuine `h9k task register-session` registration and leaving every later
+        // review/fix prompt claiming nobody had ever registered. Only this exact name is
+        // machine-composed and unavailable to a human choosing their own.
+        string buildSessionName = SessionRoleName.For(DomainId.Short(view.TaskId), SessionRoleName.Build);
+        if (!string.Equals(@event.Data.SessionName, buildSessionName, StringComparison.Ordinal))
         {
             view.RegisteredInteractiveSessionName = @event.Data.SessionName;
         }
