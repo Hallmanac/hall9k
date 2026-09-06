@@ -276,6 +276,13 @@ session at it instead of promising it. The help audit found exactly one command 
 (`h9k logs`), and `CommandTreeHelpTests` now walks the shipped tree so the standard is enforced
 rather than remembered. Usage failures teach instead of crashing (decision log #66).
 
+**2026-09-06 addendum:** the section moved out to its own `ORCHESTRATOR-WINDOW.md`, and the
+"Build / test / run" CLI reference beside it moved to the `hall9k-cli-reference` skill (Decisions
+Log #137) — a dispatched session never loaded either one for its own role, so leaving them inline
+in `AGENTS.md` cost every dispatched session's turn-1 context for content only the orchestrator
+window itself ever needed. `CLAUDE.md` now points an interactive session at `ORCHESTRATOR-WINDOW.md`
+directly rather than at a section of `AGENTS.md`.
+
 **How "verified by use" was performed** (2026-08-22): two scratch Postgres databases were created
 on the local server (`hall9k_s113_smoke`, `hall9k_s113_fresh`) and reached through
 `HALL9K_CONNECTION_STRING`, so nothing touched the live board. A genuinely fresh Claude Code

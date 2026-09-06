@@ -499,11 +499,13 @@ database), which stays open.
 
 ### The slim agent profile and auxiliary sessions
 
-Dispatched sessions currently inherit the owner's full Claude Code configuration, including every
-MCP server, none of which any platform session has ever used. The design narrows that to a slim
-default with MCPs declared per task, keeping CLIs as the on-demand capability path. Alongside it,
-a running agent requesting an auxiliary session with declared capabilities is designed and
-unbuilt.
+Every dispatched session spawns with `--strict-mcp-config`, connecting to no MCP server at all —
+none of the owner's account connectors (Gmail, Slack, Drive, Calendar) are inherited, whether the
+session is trusted or not. CLIs remain the on-demand capability path. What is still unbuilt is
+the finer-grained design [`backlog/29-slim-agent-profile.md`](../backlog/29-slim-agent-profile.md)
+originally proposed — MCPs declared per task when a mission genuinely needs one — since today's
+default is a flat zero rather than a per-task declaration. Alongside it, a running agent
+requesting an auxiliary session with declared capabilities is designed and unbuilt.
 
 See [`backlog/29-slim-agent-profile.md`](../backlog/29-slim-agent-profile.md) and
 [`backlog/30-auxiliary-sessions.md`](../backlog/30-auxiliary-sessions.md).

@@ -20,7 +20,8 @@ Then:
 |---|---|
 | [PLAN.md](../PLAN.md) | The vision, the architecture, and the **v0 Decisions Log** in §16. Every numbered decision cited anywhere in this repository lives there with its reasoning. |
 | [TASK-MODEL.md](../TASK-MODEL.md) | The domain reference: event streams, aggregates, projections, the state machines, and the value-object type discipline. |
-| [AGENTS.md](../AGENTS.md) | The contributor and agent guide: coding standards, git rules, the review rhythm, and the orchestrator-window role. `CLAUDE.md` defers to it. |
+| [AGENTS.md](../AGENTS.md) | The contributor and agent guide: coding standards, git rules, and build/test/run — kept under 200 lines so a dispatched session's context stays cheap. `CLAUDE.md` defers to it. |
+| [ORCHESTRATOR-WINDOW.md](../ORCHESTRATOR-WINDOW.md) | The orchestrator-window role: the review rhythm, the recovery levers, the needs-you relay. Only an interactive session loads it; a headless dispatched session never does. |
 | [SLICE-1.md](../SLICE-1.md) | The current build breakdown with acceptance criteria per slice. |
 | [HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) | The peer-to-peer layer: identity, discovery, NAT traversal. Design only; nothing is built. |
 | [backlog/](../backlog) | The dogfood-era archive: one file per pre-cutover piece of work. The numbered ones carry an objective and acceptance criteria in the frontmatter `h9k task add --file` reads; the `IDEA-` notes beside them are earlier-stage prose. New work is captured with `h9k idea add` / `h9k task add` and renders into the project home instead (backlog 48). |
