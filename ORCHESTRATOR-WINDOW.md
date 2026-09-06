@@ -313,24 +313,32 @@ The checkpoints, in the order the window sees them:
    cycle ran under — Discovery, Verify, or FinalFullPass — is a deterministic engine decision
    recorded on the run stream, so `h9k task show` and the daemon log say which one dispatched;
    only the review content itself is agent judgment. Immediately before that mandatory
-   FinalFullPass — the same "nothing merges on scoped green alone" point, whether it is reached
-   from Settling or from Reverify — the run fetches the project's base branch and, if it moved
-   past what the branch already contains, rebases onto it right there in the run's own worktree
-   (idea fc85f609's before-push side, completing what 023f08bb's after-push mechanical rebase
-   started): the mandatory gate and pass that were already about to run then read the rebased
-   tree, so the pull request that opens afterward is mergeable on arrival rather than racing
-   whatever merged into the base while the run was still building. A no-op (the base had not
-   moved) and a clean git apply are both recorded on the run stream
-   (`RunRebasedOntoBase`, rendered by `h9k task show` as "Pre-final-pass rebase") and cost nothing
-   else — Brian's 2026-09-04 ruling: git applying every commit without a conflict is itself the
-   evidence that no judgment was exercised, so a clean rebase earns no extra Discovery cycle,
-   lens, or fix session. A conflict is handed to a narrow recovery session dispatched inside this
-   same run — the rebase-onto-main skill's own mechanics, never a task reopen — and only a
-   conflict that session cannot honestly resolve parks the run for a human, the same shape a
-   disputed rebase park takes today (`h9k review resolve --needs-fixes "<resolution>"` retries it
-   with their guidance; `--merge-ready` is refused, since nothing has been rebased yet). Main
-   moving again during the final pass itself, or after the push, is the residual case 023f08bb's
-   own closeout mechanical rebase and the Rebase follow-up path still cover exactly as before.
+   FinalFullPass — the same "nothing merges on scoped green alone" point (idea fc85f609's
+   before-push side, completing what 023f08bb's after-push mechanical rebase started) — the run
+   fetches the project's base branch and, if it moved past what the branch already contains,
+   rebases onto it right there in the run's own worktree, so the mandatory gate and pass that were
+   already about to run then read the rebased tree and the pull request that opens afterward is
+   mergeable on arrival rather than racing whatever merged into the base while the run was still
+   building. Three entry points reach this check: composition none's own settle branch off
+   `ReviewPhase.None`, `ReviewPhase.Reverify` when its next cycle really is the mandatory pass, and
+   `ReviewPhase.Settling`, which runs it unconditionally on every entry — including the ordinary
+   clean convergence that never otherwise touches the mandatory gate at all — rather than only when
+   that gate is about to run, since a rebased tip needs the same fresh-context check regardless of
+   which path settles it. A no-op (the base had not moved) and a clean git apply are both recorded
+   on the run stream (`RunRebasedOntoBase`, rendered by `h9k task show` as "Pre-final-pass rebase")
+   and cost nothing else — Brian's 2026-09-04 ruling: git applying every commit without a conflict
+   is itself the evidence that no judgment was exercised, so a clean rebase earns no extra Discovery
+   cycle, lens, or fix session. A conflict is handed to a narrow recovery session dispatched inside
+   this same run — the rebase-onto-main skill's own mechanics, never a task reopen — and a
+   recovered conflict, unlike a clean apply, is a reviewer-relevant change: the run is forced
+   through one more mandatory FinalFullPass dispatch before it may settle even on the ordinary
+   "nothing owed" path, since a session resolved that conflict with judgment rather than a
+   mechanical apply (`RunAggregate.PreFinalPassRebaseAwaitingReview`). Only a conflict that session
+   cannot honestly resolve parks the run for a human, the same shape a disputed rebase park takes
+   today (`h9k review resolve --needs-fixes "<resolution>"` retries it with their guidance;
+   `--merge-ready` is refused, since nothing has been rebased yet). Main moving again during the
+   final pass itself, or after the push, is the residual case 023f08bb's own closeout mechanical
+   rebase and the Rebase follow-up path still cover exactly as before.
 4. **The daemon opens the pull request.** Agents never do, and there is deliberately no create-pr
    skill. The task reaches **Done** here, when the pull request opens, so Done means "the work is
    on a PR and waiting on review" rather than "merged". A **pr-review** task is the one exception
