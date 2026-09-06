@@ -2038,21 +2038,25 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// The base branch's actual tip once a recovery session has resolved (or a worktree read has
-    /// confirmed) the rebase — read fresh from the worktree's own local <c>origin/&lt;base&gt;</c>
-    /// ref rather than trusted from whatever <see cref="DispatchRebaseRecoverySessionAsync"/>
-    /// observed at dispatch time (independent pre-PR review, cycle 1, conformance lens): the
-    /// recovery session runs for real wall-clock minutes to hours and fetches again on its own, so
-    /// the base can have moved past the dispatch-time reading by the time this is called — recording
-    /// that stale value as <see cref="Events.RunRebasedOntoBase.RebasedOntoCommit"/> would name a
-    /// tip the branch was never actually rebased onto, exactly the unobserved-fact guess AGENTS.md's
-    /// "never guess at unobserved facts" rule forbids in an audit field. Deliberately without a
-    /// fresh fetch of its own, for the identical reason <see cref="RebaseActuallyLandedAsync"/> reads
-    /// without one: the recovery session's own skill already fetched before it attempted the
-    /// rebase, so this observes what that fetch left behind rather than racing a later one. Falls
-    /// back to "unknown" — the same sentinel <see cref="DispatchRebaseRecoverySessionAsync"/>'s own
-    /// best-effort read already uses — on any read failure, rather than the dispatch-time value,
-    /// which is exactly what this exists to stop being recorded as fact.
+    /// The commit the branch was actually rebased onto once a recovery session has resolved (or a
+    /// worktree read has confirmed) the rebase — read as HEAD's merge-base with the worktree's own
+    /// local <c>origin/&lt;base&gt;</c> ref rather than that ref's raw tip (independent pre-PR
+    /// review, cycle 3, both lenses): the project's bare repository is shared across every worktree
+    /// on the node, so another run's own fetch can advance <c>origin/&lt;base&gt;</c> past what this
+    /// branch was actually rebased onto in the window between the recovery session finishing and
+    /// this read running, and a raw <c>rev-parse</c> would then name a tip this branch never
+    /// contains — exactly the unobserved-fact guess AGENTS.md's "never guess at unobserved facts"
+    /// rule forbids in an audit field. <c>merge-base HEAD origin/&lt;base&gt;</c> is immune to that
+    /// race: once this branch is rebased onto commit X, X is an ancestor of HEAD forever regardless
+    /// of how far <c>origin/&lt;base&gt;</c> advances afterward, so the merge-base of the two is X
+    /// either way — the same technique <see cref="RebaseActuallyLandedAsync"/> already uses to
+    /// confirm the rebase landed at all. Deliberately without a fresh fetch of its own, for the
+    /// identical reason <see cref="RebaseActuallyLandedAsync"/> reads without one: the recovery
+    /// session's own skill already fetched before it attempted the rebase, so this observes what
+    /// that fetch left behind rather than racing a later one. Falls back to "unknown" — the same
+    /// sentinel <see cref="DispatchRebaseRecoverySessionAsync"/>'s own best-effort read already
+    /// uses — on any read failure, rather than the dispatch-time value, which is exactly what this
+    /// exists to stop being recorded as fact.
     /// </summary>
     private static async Task<string> ResolveObservedOntoCommitAsync(
         string worktreePath, string baseBranch, CancellationToken cancellationToken)
@@ -2065,9 +2069,9 @@ public sealed class ReviewEngine(
         try
         {
             ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
-            ProcessResult originTip = await git(
-                "git", ["rev-parse", $"origin/{baseBranch}"], worktreePath, cancellationToken);
-            return originTip.ExitCode == 0 ? originTip.StandardOutput.Trim() : "unknown";
+            ProcessResult mergeBase = await git(
+                "git", ["merge-base", "HEAD", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+            return mergeBase.ExitCode == 0 ? mergeBase.StandardOutput.Trim() : "unknown";
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -2197,7 +2201,18 @@ public sealed class ReviewEngine(
             // always needs to take its own.
             await using IAsyncDisposable repositoryLock =
                 await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken);
-            await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+            ProcessResult fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+            if (fetch.ExitCode != 0)
+            {
+                // Best-effort only, same as the merge-base/rev-parse reads below: the recorded
+                // from/onto pair is for the audit trail, never read back to drive behavior, and
+                // the dispatched session redoes its own fetch and rebase regardless. Logged so a
+                // stale origin/<base> behind this pair leaves a signal rather than a silent gap.
+                logger.LogWarning(
+                    "Run {RunId}: could not fetch origin/{Base} before dispatching the rebase-recovery session ({Error}) — the recorded from/onto pair may be based on a stale fetch",
+                    context.RunId, baseBranch, FirstLine(fetch.StandardError));
+            }
+
             ProcessResult mergeBaseResult = await git(
                 "git", ["merge-base", "HEAD", $"origin/{baseBranch}"], worktreePath, cancellationToken);
             ProcessResult originTipResult = await git("git", ["rev-parse", $"origin/{baseBranch}"], worktreePath, cancellationToken);
