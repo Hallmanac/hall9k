@@ -942,6 +942,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         {
             ReviewLapGuardOutcome.Written =>
                 $"[dim]Push guard installed at {ReviewLapGuardFile.PathIn(worktreePath)} — any Claude Code session started in that worktree is denied git push, every gh write verb, gh api (the endpoint they all reach), and your own two verdict commands, with no flag needed.[/]",
+            ReviewLapGuardOutcome.AlreadyGuarded =>
+                $"[dim]Push guard already at {ReviewLapGuardFile.PathIn(worktreePath)} from an earlier entry into this lap, unchanged — any Claude Code session started in that worktree is still covered by it, with no flag needed.[/]",
             ReviewLapGuardOutcome.AlreadyPresent =>
                 $"[yellow]The worktree already had a {ReviewLapGuardFile.RelativePath}, so the push guard was NOT written there[/] [dim]— nothing of the pull request's own was overwritten. Start your session with --settings {settingsFile}, which carries the same denials.[/]",
             ReviewLapGuardOutcome.Failed =>

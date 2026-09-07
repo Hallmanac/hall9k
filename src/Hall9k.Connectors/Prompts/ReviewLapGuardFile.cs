@@ -9,7 +9,17 @@ public enum ReviewLapGuardOutcome
     /// <summary>The guard was written; any session started in this worktree is covered by it.</summary>
     Written,
 
-    /// <summary>The worktree already carried a local settings file, so nothing was overwritten — the run directory's own settings file is the vehicle instead.</summary>
+    /// <summary>
+    /// The guard this lap itself wrote on an earlier entry is already there, byte for byte, so
+    /// the worktree is covered — nothing needed writing. Distinct from
+    /// <see cref="AlreadyPresent"/> because they are opposite facts about whether the checkout is
+    /// protected, and re-entry (closing the terminal and re-running <c>h9k pr review</c>) is an
+    /// ordinary way to reach this one: reporting it as a foreign file told a reviewer the guard
+    /// was missing on the ordinary path (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    AlreadyGuarded,
+
+    /// <summary>The worktree already carried a local settings file that is not this guard, so nothing was overwritten — the run directory's own settings file is the vehicle instead.</summary>
     AlreadyPresent,
 
     /// <summary>There is no worktree to install a guard in (<c>--no-worktree</c>).</summary>
@@ -37,6 +47,11 @@ public enum ReviewLapGuardOutcome
 /// head, and a repository that tracks its own <c>.claude/settings.local.json</c> would have that
 /// file's contents replaced here — silently editing the author's tree to install a guard, which
 /// is a worse trade than saying the guard could not be installed and naming the other vehicle.
+/// It does, however, recognize its OWN file: re-entering a lap finds the guard the first entry
+/// wrote, and that is <see cref="ReviewLapGuardOutcome.AlreadyGuarded"/>, not somebody else's
+/// settings (independent pre-PR review, cycle 1, adversarial lens — the existence check alone
+/// warned every re-entering reviewer that the checkout was unprotected while the guard sat
+/// there, active).
 /// </para>
 /// </summary>
 public static class ReviewLapGuardFile
@@ -74,7 +89,17 @@ public static class ReviewLapGuardFile
             string path = PathIn(worktreePath);
             if (File.Exists(path))
             {
-                return ReviewLapGuardOutcome.AlreadyPresent;
+                // Whose file it is decides which of the two answers this is, so the content is
+                // compared rather than the existence alone: the ordinary re-entry into a lap
+                // finds THIS guard from the first entry, and reporting that as somebody else's
+                // settings file warns a reviewer the checkout is unprotected when it is in fact
+                // guarded. Compared against the current content exactly — a guard written by an
+                // older version, with a shorter deny list, is honestly not the guard this run
+                // would write, and the AlreadyPresent branch's advice (start the session with
+                // --settings, which carries today's list) is the right advice for it.
+                return await IsOurOwnGuardAsync(path, cancellationToken)
+                    ? ReviewLapGuardOutcome.AlreadyGuarded
+                    : ReviewLapGuardOutcome.AlreadyPresent;
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -84,6 +109,24 @@ public static class ReviewLapGuardFile
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             return ReviewLapGuardOutcome.Failed;
+        }
+    }
+
+    /// <summary>
+    /// Whether the file already at <paramref name="path"/> is this guard. A file that cannot be
+    /// read reads as not ours — the honest answer, since the whole question is whether the
+    /// checkout is known to be covered, and an unreadable file cannot say it is.
+    /// </summary>
+    private static async Task<bool> IsOurOwnGuardAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string existing = await File.ReadAllTextAsync(path, cancellationToken);
+            return existing.Trim() == Content();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 }
