@@ -146,6 +146,31 @@ public static class ClaudeSettingsFile
     /// and the push it would make possible is denied on its own line.
     /// </para>
     /// <para>
+    /// The <c>gh issue</c> rules are the same write half of the same resource, reached under the
+    /// other subcommand's name, and they were the hole left when only <c>gh pr</c> was closed
+    /// (independent pre-PR review, cycle 2, adversarial lens). Issues and pull requests share one
+    /// number sequence and one underlying REST resource — <c>GitHubWorkItemProvider</c> carries
+    /// the same observation for the other direction, where <c>gh issue view 1 --repo cli/cli</c>
+    /// returns a merged pull request (origin observation 2026-08-21) — so
+    /// <c>gh issue comment &lt;pull-request-number&gt;</c> posts on the pull request's own
+    /// conversation and starts a thread there, which is precisely the write the paragraph above
+    /// denies <c>gh api .../issues/&lt;n&gt;/comments</c> for: <c>gh issue comment</c> is the
+    /// first-class verb wrapping that exact endpoint. <c>gh issue edit</c>, <c>close</c>,
+    /// <c>reopen</c>, <c>lock</c>, <c>unlock</c>, <c>delete</c>, <c>transfer</c>, <c>pin</c>,
+    /// <c>unpin</c> and <c>develop</c> sit on the same shared resource (or, for <c>develop</c>,
+    /// create a branch on the remote), and <c>gh issue create</c> writes under the reviewer's
+    /// login exactly as <c>gh pr create</c> does, so the write half is enumerated whole here for
+    /// the same reason it is there. The reads (<c>gh issue view</c>, <c>gh issue list</c>,
+    /// <c>gh issue status</c>) are untouched: a lap reads the issues a pull request cites.
+    /// <br/>
+    /// The boundary this stops at, named so nothing reads the list as wider than it is: the
+    /// invariant defended is authorship of writes to the pull request itself (AGENTS.md's
+    /// never-start-a-review-thread rule), not every repository write <c>gh</c> can make.
+    /// <c>gh release</c>, <c>gh repo edit</c>, <c>gh label</c> and their kin are not denied by
+    /// name — they touch nothing on the pull request and start no thread on it, and the REST
+    /// route to any of them is already refused by the <c>gh api</c> line.
+    /// </para>
+    /// <para>
     /// <c>gh api</c> is denied alongside them, and it is the rule this list was first written
     /// without (independent pre-PR review, cycle 1, both lenses). It is not one more write verb —
     /// it is the write surface this list's whole point reaches through:
@@ -205,6 +230,18 @@ public static class ClaudeSettingsFile
         "Bash(gh pr unlock:*)",
         "Bash(gh pr revert:*)",
         "Bash(gh pr update-branch:*)",
+        "Bash(gh issue create:*)",
+        "Bash(gh issue comment:*)",
+        "Bash(gh issue edit:*)",
+        "Bash(gh issue close:*)",
+        "Bash(gh issue reopen:*)",
+        "Bash(gh issue lock:*)",
+        "Bash(gh issue unlock:*)",
+        "Bash(gh issue delete:*)",
+        "Bash(gh issue transfer:*)",
+        "Bash(gh issue pin:*)",
+        "Bash(gh issue unpin:*)",
+        "Bash(gh issue develop:*)",
         "Bash(gh api:*)",
         "Bash(h9k pr approve:*)",
         "Bash(h9k pr request-changes:*)",

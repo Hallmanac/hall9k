@@ -280,6 +280,16 @@ public sealed class ReviewLapPromptBuilderTests
             ["Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr checks:*)"],
             "reading the pull request is most of what a lap does");
         deny.EnumerateArray().Select(rule => rule.GetString()).Should().Contain(
+            ["Bash(gh issue comment:*)", "Bash(gh issue edit:*)", "Bash(gh issue close:*)", "Bash(gh issue lock:*)"],
+            "issues and pull requests share one number space and one REST resource — this codebase's own "
+            + "GitHubWorkItemProvider observes gh issue view resolving a pull request — so gh issue comment "
+            + "<pr-number> starts a thread on the pull request under the reviewer's login through a "
+            + "first-class verb, the exact write the gh api .../issues/<n>/comments denial exists for "
+            + "(independent pre-PR review, cycle 2, adversarial lens)");
+        deny.EnumerateArray().Select(rule => rule.GetString()).Should().NotContain(
+            ["Bash(gh issue view:*)", "Bash(gh issue list:*)", "Bash(gh issue status:*)"],
+            "a lap reads the issues a pull request cites");
+        deny.EnumerateArray().Select(rule => rule.GetString()).Should().Contain(
             ["Bash(h9k pr approve:*)", "Bash(h9k pr request-changes:*)"],
             "the platform's own verdict commands post through that same gh api endpoint under the reviewer's "
             + "own login AND finalize the task, and the lap's briefing prints both with the task id filled in "

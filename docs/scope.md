@@ -306,7 +306,9 @@ when this node can read them. Nothing is written to the author's store. The brie
 test scenarios, areas of concern or review order — the session gives those on request, and helps
 with local setup, the suites, or an end-to-end test — and the session is denied `git push`, every
 `gh pr` write verb (`update-branch` and `edit` among them, so neither the branch nor the
-description moves under the reviewer's login), `gh api` (the endpoint they all reach) and the
+description moves under the reviewer's login), every `gh issue` write verb (the same resource
+under the other name — one number space, so `gh issue comment` on the pull request's number
+comments on the pull request), `gh api` (the endpoint they all reach) and the
 reviewer's own two verdict commands, so tests the reviewer writes go to a
 branch of their own the session offers to stack on the pull request. The lap ends only when the reviewer runs
 `h9k pr approve <task> --note "…"` or

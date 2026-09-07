@@ -593,16 +593,23 @@ The lap's push guard is Claude Code's own `permissions.deny`, written both to th
 file and to `<worktree>/.claude/settings.local.json` so a session started in the checkout with no
 `--settings` flag is covered: `git push`, the whole write half of `gh pr` (`create`, `review`,
 `comment`, `edit`, `merge`, `close`, `reopen`, `ready`, `lock`, `unlock`, `revert`,
-`update-branch`), `gh api`, `h9k pr approve` and `h9k pr request-changes` are denied. The `gh pr`
+`update-branch`), the whole write half of `gh issue` (`create`, `comment`, `edit`, `close`,
+`reopen`, `lock`, `unlock`, `delete`, `transfer`, `pin`, `unpin`, `develop`), `gh api`,
+`h9k pr approve` and `h9k pr request-changes` are denied. The `gh pr`
 side is denied verb-complete rather than by the few a session reaching for a *review* would use:
 `gh pr update-branch` merges the base into somebody else's branch server-side and `gh pr edit
---body` rewrites their description, both under the reviewer's login. `gh api` is in the list
+--body` rewrites their description, both under the reviewer's login. The `gh issue` side is there
+because it is the same resource under the other name: issues and pull requests share one number
+sequence and one REST resource, so `gh issue comment <pr-number>` posts on the pull request's
+conversation and starts a thread there — the first-class verb wrapping the very
+`gh api .../issues/<n>/comments` endpoint the next sentence denies. `gh api` is in the list
 because it is the surface the others reach through — this platform's own poster uses
 `gh api .../pulls/<n>/reviews`, since `gh pr review` takes no line comments — and the two verdict
 commands are in it because they ARE that poster: they reach the same endpoint under the reviewer's
 own login and finalize the task besides, so a session that ran one would post a verdict the
 reviewer never gave. A lap loses nothing by any of it, because every read it makes
-goes through `gh pr view` / `gh pr diff` / `gh pr checks`. It is a session-level permission deny matched on the
+goes through `gh pr view` / `gh pr diff` / `gh pr checks`, and `gh issue view` / `list` / `status`
+stay open for the issues a pull request cites. It is a session-level permission deny matched on the
 command as spelled, not a sandbox: it refuses the ordinary route to each of these, and a command
 spelled around the prefix does not match it. `git commit` is deliberately **not** — the checkout is detached with no
 local branch, so a commit there moves nothing, and the reviewer's own tests have to be committable;
