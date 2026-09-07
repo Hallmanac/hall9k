@@ -11,6 +11,12 @@ namespace Hall9k.Connectors.Worktrees;
 /// </summary>
 public sealed record WorktreeRequest(
     string RepositoryPath,
+    /// <summary>
+    /// The branch this run's work is cut from. The project's own base branch for every ordinary
+    /// run; a stacked child's parent branch instead (task: a stacked pull-request edge exists as
+    /// an explicit opt-in dependency), which is why this is a caller-resolved value rather than
+    /// something read from the project here.
+    /// </summary>
     string BaseBranch,
     Guid TaskId,
     Guid RunId,
@@ -36,7 +42,22 @@ public sealed record PrReviewWorktreeRequest(
     Guid TaskId,
     Guid RunId);
 
-public sealed record Worktree(string Path, string Branch, string StartPoint);
+/// <summary>
+/// A checkout a run works in. <paramref name="StartPoint"/> is the ref the branch was cut from as
+/// this manager named it (<c>origin/main</c>, or the branch itself when it was resumed rather than
+/// cut). <paramref name="StartPointCommit"/> is that ref resolved to a commit at the moment of the
+/// cut — the branch's fork point, observed when it was true.
+/// <para>
+/// A commit and not just the ref, because a ref stops naming that point the moment it moves: a
+/// stacked child's replay onto a force-pushed parent needs the head the child was actually built
+/// on, and <c>git merge-base</c> cannot recover it — a force-push rewrites the shared history, so
+/// the merge base collapses back to the base branch and a replay from there re-applies the parent's
+/// OLD commit against its new one (verified in a scratch repository: it conflicts on the parent's
+/// own content). Empty when nothing was resolved: a resumed branch has no fresh cut to report, and
+/// a rev-parse that could not be read is admitted as unknown rather than guessed at (AGENTS.md).
+/// </para>
+/// </summary>
+public sealed record Worktree(string Path, string Branch, string StartPoint, string StartPointCommit = "");
 
 /// <summary>
 /// What a refresh of a long-lived reading checkout actually managed. <paramref name="Detail"/>

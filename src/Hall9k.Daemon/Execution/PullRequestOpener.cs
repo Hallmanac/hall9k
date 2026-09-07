@@ -83,7 +83,13 @@ public sealed class PullRequestOpener(
             (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
                 ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))
                 : await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
-                    ? await CreatePullRequestAsync(run, task, project.BaseBranch, cancellationToken)
+                    // The base this run recorded at dispatch, not the project's own: a stacked
+                    // child's pull request targets its parent's branch, which is what forms the
+                    // stack on GitHub (task: a stacked pull-request edge exists as an explicit
+                    // opt-in dependency). BaseBranchOr resolves the ordinary blank to the project's
+                    // base, so every unstacked pull request opens exactly as it always has.
+                    ? await CreatePullRequestAsync(
+                        run, task, run.BaseBranchOr(project.BaseBranch), cancellationToken)
                     : (null, 0);
 
             DateTimeOffset now = DateTimeOffset.UtcNow;

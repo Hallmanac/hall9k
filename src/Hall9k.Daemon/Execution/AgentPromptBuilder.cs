@@ -33,7 +33,13 @@ namespace Hall9k.Daemon.Execution;
 /// </summary>
 public static class AgentPromptBuilder
 {
-    /// <summary>Forwards to the shared implementation — see the type doc above.</summary>
+    /// <summary>
+    /// Forwards to the shared implementation — see the type doc above. <paramref name="baseBranch"/>
+    /// is the branch this run's work sits on top of, which the caller resolved once at dispatch
+    /// (<c>RunDispatched.BaseBranch</c>): the project's own for every ordinary run, a stacked
+    /// child's parent branch instead. Null defers to the project's, which is what every caller
+    /// that has no run to read one from passes.
+    /// </summary>
     public static string Build(
         TaskDetails task,
         ProjectDetails project,
@@ -41,10 +47,12 @@ public static class AgentPromptBuilder
         string worktreePath,
         bool resumesPreviousWork = false,
         string? blockerContext = null,
-        string? interactiveMilestoneAddress = null) =>
+        string? interactiveMilestoneAddress = null,
+        string? baseBranch = null) =>
         WorkPromptBuilder.Build(
             task, project, branch, worktreePath, resumesPreviousWork, blockerContext, task.RetryReason,
-            isHandback: task.ResumesFromHandback, interactiveMilestoneAddress: interactiveMilestoneAddress);
+            isHandback: task.ResumesFromHandback, interactiveMilestoneAddress: interactiveMilestoneAddress,
+            baseBranch: baseBranch);
 
     /// <summary>
     /// The line a follow-up ends with when a review thread is a disagreement it cannot
@@ -74,8 +82,9 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildFollowUp(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? interactiveMilestoneAddress = null)
+        string? interactiveMilestoneAddress = null, string? baseBranch = null)
     {
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: resolve review feedback on an existing pull request");
         prompt.AppendLine();
@@ -123,7 +132,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Use the resolve-review-threads skill to triage every unresolved thread on");
         prompt.AppendLine($"  {pullRequestUrl}: apply valid fixes, reply in-thread, resolve them.");
         AppendThreadTextBoundaryRule(prompt);
-        AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
+        AppendCommitStyleRules(prompt, commitStyle, effectiveBaseBranch);
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: which threads you addressed, which you answered");
@@ -158,8 +167,9 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildFixChecks(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? interactiveMilestoneAddress = null)
+        string? interactiveMilestoneAddress = null, string? baseBranch = null)
     {
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: fix the failing CI checks on an existing pull request");
         prompt.AppendLine();
@@ -205,7 +215,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"- Inspect the failures yourself: `gh pr checks {pullRequestUrl}` lists the checks,");
         prompt.AppendLine("  and `gh run view <run-id> --log-failed` shows a failing workflow's log.");
         prompt.AppendLine("- Fix the causes and re-run the failing commands locally until they pass.");
-        AppendCommitStyleRules(prompt, commitStyle, project.BaseBranch);
+        AppendCommitStyleRules(prompt, commitStyle, effectiveBaseBranch);
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what was failing, what you changed, and any open");
@@ -261,16 +271,17 @@ public static class AgentPromptBuilder
     public static string BuildRebase(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? humanResolution = null, string? interactiveMilestoneAddress = null,
-        bool? interactiveModeEnabledOverride = null)
+        bool? interactiveModeEnabledOverride = null, string? baseBranch = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: rebase an existing pull request onto its base branch");
         prompt.AppendLine();
         prompt.AppendLine($"Pull request: {pullRequestUrl}");
         prompt.AppendLine();
         prompt.AppendLine("The original task below already shipped in the pull request above, but its branch");
-        prompt.AppendLine($"now conflicts with `{project.BaseBranch}` — other work merged into the base since");
+        prompt.AppendLine($"now conflicts with `{effectiveBaseBranch}` — other work merged into the base since");
         prompt.AppendLine("this branch was cut. Your job is to bring it current, preserving the branch's own");
         prompt.AppendLine("authored history — not to redo the original work.");
         prompt.AppendLine();
@@ -324,9 +335,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  covers rebasing), invoke it — it walks these exact mechanics. Either way:");
         prompt.AppendLine($"  - `git fetch origin` first — a resumed dispute is dispatched straight into this");
         prompt.AppendLine("    worktree, so this session cannot assume anything already fetched for it, and");
-        prompt.AppendLine($"    rebasing onto a stale `origin/{project.BaseBranch}` can leave the pull request");
+        prompt.AppendLine($"    rebasing onto a stale `origin/{effectiveBaseBranch}` can leave the pull request");
         prompt.AppendLine("    still conflicting after the rebase reports success.");
-        prompt.AppendLine($"  - `git rebase origin/{project.BaseBranch}`, resolving each conflict by reading");
+        prompt.AppendLine($"  - `git rebase origin/{effectiveBaseBranch}`, resolving each conflict by reading");
         prompt.AppendLine("    both sides' intent, not by mechanically picking one. Keep both changes when both");
         prompt.AppendLine("    are still wanted, take the side that is still correct when one supersedes the");
         prompt.AppendLine("    other, and never guess when you cannot honestly tell which — see the dispute");
@@ -339,7 +350,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  - **Never leave a conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) in a commit.**");
         prompt.AppendLine("    Before continuing past any conflicted commit, grep the resolved files for those");
         prompt.AppendLine("    markers and confirm none remain.");
-        AppendRebaseVerificationRule(prompt, project, commitStyle);
+        AppendRebaseVerificationRule(prompt, project, commitStyle, effectiveBaseBranch);
         prompt.AppendLine("  - Do NOT push (the platform pushes the rebased branch with");
         prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
         prompt.AppendLine("    request — the existing PR updates in place.");
@@ -382,7 +393,8 @@ public static class AgentPromptBuilder
     /// agent has to see the failure itself to fix its actual cause instead of a resubmitted
     /// flake theory.
     /// </summary>
-    private static void AppendRebaseVerificationRule(StringBuilder prompt, ProjectDetails project, CommitStyle commitStyle)
+    private static void AppendRebaseVerificationRule(
+        StringBuilder prompt, ProjectDetails project, CommitStyle commitStyle, string baseBranch)
     {
         if (project.VerifyCommands.Count == 0)
         {
@@ -414,7 +426,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine("    you are still mid-rebase, `git add` it and continue; if the rebase already");
             prompt.AppendLine("    finished, commit the fix with `git commit --fixup=<owning-commit>` against");
             prompt.AppendLine("    the commit whose replay produced the failure, then fold it in with");
-            prompt.AppendLine($"    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/{project.BaseBranch}`");
+            prompt.AppendLine($"    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/{baseBranch}`");
             prompt.AppendLine("    (there is no terminal in this session, so a bare `git rebase -i` cannot open");
             prompt.AppendLine("    an editor).");
         }
@@ -467,8 +479,10 @@ public static class AgentPromptBuilder
     /// </summary>
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
-        string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false)
+        string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false,
+        string? baseBranch = null)
     {
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
         prompt.AppendLine("# Rebase this branch onto its base before the mandatory final review pass");
         prompt.AppendLine();
@@ -477,7 +491,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine($"Pull request: {pullRequestUrl}");
             prompt.AppendLine();
             prompt.AppendLine("This run already has the pull request above open and pushed. But other work");
-            prompt.AppendLine($"merged into `{project.BaseBranch}` since, and a plain rebase onto it just");
+            prompt.AppendLine($"merged into `{effectiveBaseBranch}` since, and a plain rebase onto it just");
             prompt.AppendLine("conflicted. Your job is to bring this branch current before the platform's own");
             prompt.AppendLine("mandatory final review pass and gates run, preserving the branch's own authored");
             prompt.AppendLine("history — not to redo the original work.");
@@ -485,7 +499,7 @@ public static class AgentPromptBuilder
         else
         {
             prompt.AppendLine("This run's own work is not done yet — no pull request has opened, and nothing has");
-            prompt.AppendLine($"been pushed. But other work merged into `{project.BaseBranch}` while this run was");
+            prompt.AppendLine($"been pushed. But other work merged into `{effectiveBaseBranch}` while this run was");
             prompt.AppendLine("building, and a plain rebase onto it just conflicted. Your job is to bring this");
             prompt.AppendLine("branch current before the platform's own mandatory final review pass and gates run,");
             prompt.AppendLine("preserving the branch's own authored history — not to redo the original work.");
@@ -549,9 +563,9 @@ public static class AgentPromptBuilder
             prompt.AppendLine("  absorb-review-fixes skill that covers rebasing), invoke it — it walks these exact");
             prompt.AppendLine("  mechanics. Either way:");
         }
-        prompt.AppendLine($"  - `git fetch origin` first — rebasing onto a stale `origin/{project.BaseBranch}`");
+        prompt.AppendLine($"  - `git fetch origin` first — rebasing onto a stale `origin/{effectiveBaseBranch}`");
         prompt.AppendLine("    can leave the branch still conflicting after the rebase reports success.");
-        prompt.AppendLine($"  - `git rebase origin/{project.BaseBranch}`, resolving each conflict by reading");
+        prompt.AppendLine($"  - `git rebase origin/{effectiveBaseBranch}`, resolving each conflict by reading");
         prompt.AppendLine("    both sides' intent, not by mechanically picking one. Keep both changes when both");
         prompt.AppendLine("    are still wanted, take the side that is still correct when one supersedes the");
         prompt.AppendLine("    other, and never guess when you cannot honestly tell which — see the dispute");
@@ -564,7 +578,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  - **Never leave a conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) in a commit.**");
         prompt.AppendLine("    Before continuing past any conflicted commit, grep the resolved files for those");
         prompt.AppendLine("    markers and confirm none remain.");
-        AppendRebaseVerificationRule(prompt, project, commitStyle);
+        AppendRebaseVerificationRule(prompt, project, commitStyle, effectiveBaseBranch);
         if (pullRequestUrl.IsNotBlank())
         {
             prompt.AppendLine("  - Do NOT push (the platform pushes the rebased branch with");
@@ -584,6 +598,116 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- End with a short summary: what conflicted, how you resolved each conflict and");
         prompt.AppendLine("  why, and the verification results.");
         AppendHandoffRules(prompt);
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The stacked-replay variant (task: a stacked pull-request edge exists as an explicit opt-in
+    /// dependency): the child's parent branch moved — it merged and this pull request has already
+    /// been retargeted onto <paramref name="baseBranch"/>, or it was force-pushed — and this
+    /// session replays the child's own commits onto the new head.
+    /// <para>
+    /// Mechanical, and the prompt says so in the strongest terms it can: one <c>git rebase --onto</c>
+    /// with a named upstream, the gates, nothing else. No review cycle reads the result
+    /// (<c>ReviewStageComposition.None</c> is forced for this run), which is exactly why the prompt
+    /// must not leave room for judgment: a session that "improved something while it was in there"
+    /// would put unreviewed intent on a branch nothing is going to read. A conflict is the one
+    /// thing it may resolve, and only by reading both sides' intent the way
+    /// <see cref="BuildRebase"/> teaches — because git cannot replay a conflicting patch without a
+    /// decision, and stopping instead would leave the branch mid-rebase.
+    /// </para>
+    /// <para>
+    /// Both commits are named literally rather than as refs, and both are the caller's own observed
+    /// values. <paramref name="upstreamCommit"/> is the boundary: everything at or before it belongs
+    /// to the parent (or to the base a previous replay put this branch on) and must NOT be replayed,
+    /// since <paramref name="ontoCommit"/> already holds that work. Getting it wrong in either
+    /// direction is the whole hazard — too low replays the parent's commits as duplicates, too high
+    /// drops the child's own work — which is why the prompt asks for the count to be checked before
+    /// and after. <paramref name="ontoCommit"/> is where the replay lands, a commit rather than
+    /// <c>origin/&lt;base&gt;</c> so the session lands exactly where closeout looked rather than
+    /// wherever that ref drifted to while this run waited to be claimed; the fetch below still
+    /// happens, because the commit has to be present locally before it can be rebased onto.
+    /// </para>
+    /// </summary>
+    public static string BuildStackReplay(
+        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl,
+        string baseBranch, string upstreamCommit, string ontoCommit)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Follow-up task: replay this stacked branch onto its new base");
+        prompt.AppendLine();
+        prompt.AppendLine($"Pull request: {pullRequestUrl}");
+        prompt.AppendLine();
+        prompt.AppendLine("This task's work is a slice of a stack: it was built on top of another task's");
+        prompt.AppendLine("branch, and its pull request targeted that branch. That parent branch has now");
+        prompt.AppendLine($"moved, and this pull request's base is `{baseBranch}`. Your job is exactly one");
+        prompt.AppendLine("mechanical operation: replay this branch's own commits onto the new base.");
+        prompt.AppendLine();
+        prompt.AppendLine("**There is no new intent here and you must not add any.** Nothing in this");
+        prompt.AppendLine("session's output is read by a reviewer — the platform deliberately runs no review");
+        prompt.AppendLine("cycle over a replay, because git replaying commits that already passed review is");
+        prompt.AppendLine("not new work. That is only true if you keep it true: do not refactor, do not");
+        prompt.AppendLine("improve, do not fix anything you notice in passing. Note it in your final summary");
+        prompt.AppendLine("instead — that is what the summary is for here.");
+        prompt.AppendLine();
+
+        if (task.FollowUpReason.IsNotBlank())
+        {
+            prompt.AppendLine($"Why this follow-up was dispatched: {task.FollowUpReason}");
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## Original objective (context, already implemented and reviewed)");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+
+        WorkPromptBuilder.AppendProjectHome(prompt, project);
+
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        prompt.AppendLine("- You are in an isolated git worktree checked out on the EXISTING pull-request");
+        prompt.AppendLine($"  branch `{branch}`. Work only here.");
+        AppendRetainedWorktreeNote(prompt);
+        prompt.AppendLine("- The replay, in this exact shape:");
+        prompt.AppendLine("  - `git fetch origin` first, so both commits below are present locally.");
+        prompt.AppendLine("  - Record what you are about to replay, so you can check nothing was lost:");
+        prompt.AppendLine($"    `git log --oneline {upstreamCommit}..HEAD`. Those commits — and only those —");
+        prompt.AppendLine("    are this task's own work.");
+        prompt.AppendLine($"  - `git rebase --onto {ontoCommit} {upstreamCommit} {branch}`");
+        prompt.AppendLine("    Both arguments are exact commits, not branch names, and neither is negotiable.");
+        prompt.AppendLine($"    `{upstreamCommit}` is the boundary: everything at or before it is the parent's");
+        prompt.AppendLine($"    work, which `{ontoCommit}` already holds. A plain `git rebase` without it would");
+        prompt.AppendLine("    replay the parent's commits a second time; a different boundary would drop this");
+        prompt.AppendLine($"    task's own commits. `{ontoCommit}` is the commit on `{baseBranch}` this branch");
+        prompt.AppendLine("    is meant to land on — do not substitute the branch name, which may have moved");
+        prompt.AppendLine("    since; if the base has moved, the platform's own machinery brings the branch");
+        prompt.AppendLine("    current afterwards, exactly as it does for any other run.");
+        prompt.AppendLine("  - Resolve any conflict by reading both sides' intent — keep both changes when");
+        prompt.AppendLine("    both are still wanted, take the side that is still correct when one supersedes");
+        prompt.AppendLine("    the other. A resolved conflict's content belongs inside the commit being");
+        prompt.AppendLine("    replayed (`git add`, then `git rebase --continue`); never invent a \"resolve");
+        prompt.AppendLine("    rebase\" commit, and never leave a conflict marker behind — grep the resolved");
+        prompt.AppendLine("    files for the three marker sequences before continuing.");
+        prompt.AppendLine("  - Check the replay afterwards: `git log --oneline` must show this task's own");
+        prompt.AppendLine("    commits and nothing of the parent's, and the count must match what you");
+        prompt.AppendLine("    recorded above (a commit git drops as already-present upstream is the one");
+        prompt.AppendLine("    legitimate exception — say which, and why, in your summary).");
+        AppendRebaseVerificationRule(prompt, project, CommitStyle.Narrative, baseBranch);
+        prompt.AppendLine("  - Do NOT push (the platform pushes the replayed branch with");
+        prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
+        prompt.AppendLine("    request — the existing one updates in place, already retargeted.");
+        prompt.AppendLine("- **If the replay cannot be made to work, stop and say so plainly** rather than");
+        prompt.AppendLine("  forcing something through. Leave the worktree clean (`git rebase --abort`), and");
+        prompt.AppendLine("  name in your final summary exactly what blocked it. A replay nobody reviews must");
+        prompt.AppendLine("  never ship a result you are unsure of.");
+        WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(prompt);
+        WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, task.Id);
+        prompt.AppendLine("- End with a short summary: which commits replayed, anything git dropped and why,");
+        prompt.AppendLine("  what conflicted and how you resolved it, the verification results, and anything");
+        prompt.AppendLine("  you noticed but deliberately did not touch.");
+        WorkPromptBuilder.AppendHandoffRules(prompt);
 
         return prompt.ToString();
     }
@@ -898,11 +1022,28 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// What <see cref="AppendReviewMechanics"/> needs overridden when the diff under review is not
-    /// this task's own — currently only <see cref="BuildPrReviewLens"/>. Null everywhere else, so
-    /// the ordinary pre-PR loop keeps reading <c>project.BaseBranch</c>, the real `on branch`
-    /// wording, and the real gate-status observation exactly as it always has.
+    /// What <see cref="AppendReviewMechanics"/> needs overridden when the range under review is not
+    /// this task's own diff against the project's own base branch. Two callers, and only the first
+    /// changes anything beyond the base branch: <see cref="BuildPrReviewLens"/>, where the whole
+    /// diff belongs to someone else's pull request, and a stacked child's ordinary pre-PR loop,
+    /// where the diff is this task's own but the base it is a delta against is the parent's branch
+    /// rather than the project's (task: a stacked pull-request edge exists as an explicit opt-in
+    /// dependency) — that one passes <see cref="BaseBranch"/> alone and takes every other default,
+    /// which is what makes its reviewers see the child's own delta rather than the parent's work
+    /// alongside it. Null everywhere else, so an unstacked pre-PR loop keeps reading
+    /// <c>project.BaseBranch</c>, the real `on branch` wording, and the real gate-status
+    /// observation exactly as it always has.
     /// </summary>
+    /// <param name="CheckoutDescription">
+    /// The first mechanics line, replacing the ordinary "you are in the implementation's git
+    /// worktree on branch X". Null keeps that ordinary wording, which is right for a stacked child:
+    /// it really is in its own worktree on its own branch — only its base differs.
+    /// </param>
+    /// <param name="GatesObserved">
+    /// Whether this run's own gates actually ran, which is what the gate-status section is allowed
+    /// to assert. True for every ordinary pre-PR pass including a stacked child's; false only for a
+    /// foreign pull request, where nothing was verified locally at all.
+    /// </param>
     /// <param name="DiffIsForeignPullRequest">
     /// True only for <see cref="BuildPrReviewLens"/> (cycle-1 conformance and adversarial
     /// findings): the diff under review belongs to another contributor's already-open pull
@@ -917,7 +1058,7 @@ public static class AgentPromptBuilder
     /// worktree's <c>obj/</c>/<c>bin/</c> at the same time — <see cref="AppendReviewMechanics"/>.
     /// </param>
     public sealed record ReviewMechanicsOverride(
-        string BaseBranch, string CheckoutDescription, bool GatesObserved,
+        string BaseBranch, string? CheckoutDescription = null, bool GatesObserved = true,
         bool DiffIsForeignPullRequest = false);
 
     /// <summary>
@@ -961,9 +1102,11 @@ public static class AgentPromptBuilder
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
         string? interactiveSessionAddress = null,
-        bool? interactiveModeEnabledOverride = null)
+        bool? interactiveModeEnabledOverride = null,
+        string? baseBranch = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         bool priorCycleReadFullBranch =
             (priorCycleMode != ReviewMode.FinalFullPass && priorCycleMode != ReviewMode.Discovery)
             || priorCycleSinceSha is null;
@@ -1050,8 +1193,8 @@ public static class AgentPromptBuilder
             ? $"  Read the commits added since the prior cycle: `git log {sha}..HEAD` and `git diff {sha}..HEAD`."
               + " That range is the fix — and anything else that landed alongside it — you are verifying."
             : "  The commit the prior cycle's fix landed on could not be pinned down, so read the whole diff "
-              + $"instead: `git diff origin/{project.BaseBranch}...HEAD` (commits: "
-              + $"`git log origin/{project.BaseBranch}..HEAD`) — the same origin-first range "
+              + $"instead: `git diff origin/{effectiveBaseBranch}...HEAD` (commits: "
+              + $"`git log origin/{effectiveBaseBranch}..HEAD`) — the same origin-first range "
               + "AppendReviewMechanics uses, for the same staleness reason: a local base-branch ref, when this "
               + "worktree carries one at all, is shared with the project home's `dev/` worktree and is routinely "
               + "stale relative to this task's actual base.");
@@ -2336,9 +2479,11 @@ public static class AgentPromptBuilder
     public static string BuildReviewFix(
         TaskDetails task, ProjectDetails project, string branch, string findings, int cycle,
         string? interactiveSessionAddress = null,
-        bool? interactiveModeEnabledOverride = null)
+        bool? interactiveModeEnabledOverride = null,
+        string? baseBranch = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
         prompt.AppendLine("# Fix the verified findings from an independent pre-PR review");
         prompt.AppendLine();
@@ -2388,7 +2533,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  The severity decides how the review loop converges, so re-grading one yourself");
         prompt.AppendLine("  would be deciding your own way past that. The platform hands disputes to a human");
         prompt.AppendLine("  with both positions on record.");
-        AppendReviewFixSelfCheckPhaseRules(prompt, project);
+        AppendReviewFixSelfCheckPhaseRules(prompt, project, effectiveBaseBranch);
 
         // Last, not immediately after AppendExternalInteractionLoggingRule (independent pre-PR
         // review, cycle 1, both lenses): this method opens its own "##" heading, so calling it
@@ -2531,7 +2676,8 @@ public static class AgentPromptBuilder
     /// separate commit (cycle 3), falling through to named-not-fixed only when neither applies.
     /// </para>
     /// </summary>
-    private static void AppendReviewFixSelfCheckPhaseRules(StringBuilder prompt, ProjectDetails project)
+    private static void AppendReviewFixSelfCheckPhaseRules(
+        StringBuilder prompt, ProjectDetails project, string effectiveBaseBranch)
     {
         prompt.AppendLine("- **Self-check phase.** Once every finding above is fixed or disputed, and before");
         prompt.AppendLine("  you conclude, run one pass — not a loop — over your own fix: assume you left");
@@ -2554,9 +2700,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     shape, wherever it lives — inside this branch's own changes or pre-existing on");
         prompt.AppendLine("     the branch's base — not only the ones your own fix reaches; a sweep bounded to");
         prompt.AppendLine("     your own fix cannot catch a sibling site your fix never touched. Draw that line");
-        prompt.AppendLine($"     from `origin/{project.BaseBranch}`, not your worktree's local base-branch ref —");
+        prompt.AppendLine($"     from `origin/{effectiveBaseBranch}`, not your worktree's local base-branch ref —");
         prompt.AppendLine("     the same staleness reason the rebase and review-verify mechanics use it too: a");
-        prompt.AppendLine($"     site touched by `git diff origin/{project.BaseBranch}...HEAD` is inside this");
+        prompt.AppendLine($"     site touched by `git diff origin/{effectiveBaseBranch}...HEAD` is inside this");
         prompt.AppendLine("     branch's own changes; anything else is pre-existing on the base. Fix or");
         prompt.AppendLine("     explicitly clear each site inside this branch's own changes — a site you looked");
         prompt.AppendLine("     at and judged fine counts as cleared, one you never looked at does not. A");

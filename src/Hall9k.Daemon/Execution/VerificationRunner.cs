@@ -417,16 +417,22 @@ public sealed partial class VerificationRunner(
         // still stranded work, whatever its deliverable is.
         if (task.Type != TaskType.Research)
         {
-            int? commits = await CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken);
+            // This run's own recorded base, not the project's: a stacked child's branch sits on
+            // top of its parent's, so counting against the project's base would count the PARENT's
+            // commits as this session's own — a stacked child that committed nothing at all would
+            // read as productive and sail past the very check that exists to catch it (task: a
+            // stacked pull-request edge exists as an explicit opt-in dependency).
+            string baseBranch = run.BaseBranchOr(project.BaseBranch);
+            int? commits = await CountBranchCommitsAsync(run.WorktreePath, baseBranch, cancellationToken);
             if (commits == 0)
             {
                 string reason = strandedFiles is { Count: > 0 }
                     ? $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
-                      $"'{project.BaseBranch}'. The session ended with uncommitted files still sitting " +
+                      $"'{baseBranch}'. The session ended with uncommitted files still sitting " +
                       $"in the worktree instead of being committed: {SummarizeFiles(strandedFiles)}." +
                       $"{untrackedClarification}"
                     : $"Agent produced no commits: branch '{run.Branch}' holds nothing beyond " +
-                      $"'{project.BaseBranch}'. The session ended without committing its work, so the " +
+                      $"'{baseBranch}'. The session ended without committing its work, so the " +
                       "gates were not run against the unmodified tree.";
                 return new StrandedWorkCheck(reason, strandedFiles ?? []);
             }
@@ -437,7 +443,7 @@ public sealed partial class VerificationRunner(
                 // proceed and let the gates surface whatever is actually broken.
                 logger.LogWarning(
                     "Run {RunId}: could not count commits on branch {Branch} against {BaseBranch}; skipping the no-commit check",
-                    run.Id, run.Branch, project.BaseBranch);
+                    run.Id, run.Branch, baseBranch);
             }
         }
 

@@ -38,8 +38,18 @@ public static class WorkPromptBuilder
         string? interactiveMilestoneAddress = null,
         bool isDelegatedContractor = false,
         string? delegationNote = null,
-        string? delegationBaseCommit = null)
+        string? delegationBaseCommit = null,
+        string? baseBranch = null)
     {
+        // The branch this session's work sits on top of, resolved by the caller at dispatch
+        // (RunDispatched.BaseBranch): the project's own for every ordinary run, a stacked child's
+        // parent branch instead (task: a stacked pull-request edge exists as an explicit opt-in
+        // dependency). Every base-branch reference this prompt makes — the self-review phase's own
+        // diff range and the recompose's fork point above all — reads this rather than the
+        // project's, so a stacked child's session reviews and recomposes its own delta rather than
+        // its parent's work alongside it. Null defers to the project's, which is what every caller
+        // with no run to read one from passes.
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
         prompt.AppendLine();
@@ -227,7 +237,8 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  to look before delivering). Both commands refuse when run from inside this very");
             prompt.AppendLine("  session, so do not attempt them yourself — end with your summary once the work");
             prompt.AppendLine("  below is done.");
-            AppendDelegatedContractorCommitRules(prompt, project, worktreePath, delegationBaseCommit);
+            AppendDelegatedContractorCommitRules(
+                prompt, project, worktreePath, delegationBaseCommit, effectiveBaseBranch);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
         else if (isDeliberateHeadlessStart)
@@ -249,13 +260,13 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  to look before delivering). Both commands refuse when run from inside this very");
             prompt.AppendLine("  session, so do not attempt them yourself — end with your summary once the work");
             prompt.AppendLine("  below is done.");
-            AppendCheckpointCommitRules(prompt, project, worktreePath);
+            AppendCheckpointCommitRules(prompt, project, worktreePath, effectiveBaseBranch);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
         else
         {
             prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
-            AppendCheckpointCommitRules(prompt, project, worktreePath);
+            AppendCheckpointCommitRules(prompt, project, worktreePath, effectiveBaseBranch);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
 
@@ -578,9 +589,17 @@ public static class WorkPromptBuilder
     /// at a step the caller then forbids reads as contradictory (independent pre-PR review, cycle
     /// 1, both lenses).
     /// </param>
+    /// <param name="baseBranch">
+    /// The branch the hunt's own diff range is taken against — the project's own for every ordinary
+    /// run, a stacked child's parent branch instead, so a stacked session hunts its own delta rather
+    /// than reading its parent's already-reviewed work as part of this branch. Null defers to the
+    /// project's.
+    /// </param>
     public static void AppendSelfReviewPhaseRules(
-        StringBuilder prompt, ProjectDetails project, string worktreePath, bool recomposeFollows = true)
+        StringBuilder prompt, ProjectDetails project, string worktreePath, bool recomposeFollows = true,
+        string? baseBranch = null)
     {
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         // Suffixed with the worktree's own directory name (unique per session, since a node
         // dispatches each concurrent session into its own worktree) so two build sessions
         // running at once on the same node never clobber one another's round-one tip file.
@@ -640,7 +659,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  finding so the round has something to report is the failure this phase is");
         prompt.AppendLine("  guarding against, not the clean round.");
         prompt.AppendLine("  The loop is capped at two rounds, hard.");
-        prompt.AppendLine($"  Round one starts from a fresh `git diff origin/{project.BaseBranch}...HEAD`,");
+        prompt.AppendLine($"  Round one starts from a fresh `git diff origin/{effectiveBaseBranch}...HEAD`,");
         prompt.AppendLine("  read in full — not from memory of what you wrote. A worktree's local");
         prompt.AppendLine("  base-branch ref is routinely stale relative to this task's actual base, so name");
         prompt.AppendLine("  `origin/` in the range; a diff you already believe you know is not a diff you");
@@ -806,15 +825,16 @@ public static class WorkPromptBuilder
     /// commit-plan step forgot to stage.
     /// </para>
     /// </summary>
-    public static void AppendCheckpointCommitRules(StringBuilder prompt, ProjectDetails project, string worktreePath)
+    public static void AppendCheckpointCommitRules(
+        StringBuilder prompt, ProjectDetails project, string worktreePath, string? baseBranchOverride = null)
     {
-        string baseBranch = project.BaseBranch;
+        string baseBranch = baseBranchOverride ?? project.BaseBranch;
         prompt.AppendLine("- **Commit as you go, one logical unit at a time.** Each commit here is");
         prompt.AppendLine("  crash protection, not authored history: a checkpoint so that an abnormal");
         prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
         prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
         prompt.AppendLine("  plainly; none of them are what ships.");
-        AppendSelfReviewPhaseRules(prompt, project, worktreePath);
+        AppendSelfReviewPhaseRules(prompt, project, worktreePath, baseBranch: baseBranch);
         prompt.AppendLine("- **Once all the work is done, the full verification suite is green, and the");
         prompt.AppendLine("  self-review phase above has run its course, recompose the checkpoints into");
         prompt.AppendLine("  real history in one continuous step.**");
@@ -915,14 +935,17 @@ public static class WorkPromptBuilder
     /// </para>
     /// </summary>
     private static void AppendDelegatedContractorCommitRules(
-        StringBuilder prompt, ProjectDetails project, string worktreePath, string? delegationBaseCommit)
+        StringBuilder prompt, ProjectDetails project, string worktreePath, string? delegationBaseCommit,
+        string baseBranch)
     {
         prompt.AppendLine("- **Commit as you go, one logical unit at a time.** Each commit here is");
         prompt.AppendLine("  crash protection, not authored history: a checkpoint so that an abnormal");
         prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
         prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
         prompt.AppendLine("  plainly; none of them are what ships.");
-        AppendSelfReviewPhaseRules(prompt, project, worktreePath, recomposeFollows: delegationBaseCommit is not null);
+        AppendSelfReviewPhaseRules(
+            prompt, project, worktreePath, recomposeFollows: delegationBaseCommit is not null,
+            baseBranch: baseBranch);
 
         if (delegationBaseCommit is null)
         {
@@ -972,7 +995,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     bookkeeping.");
         prompt.AppendLine("  1. Reset to the exact commit this branch held when you were dispatched —");
         prompt.AppendLine($"     `{delegationBaseCommit}` — never the branch's fork point against");
-        prompt.AppendLine($"     `origin/{project.BaseBranch}`. Everything at or before that commit is the");
+        prompt.AppendLine($"     `origin/{baseBranch}`. Everything at or before that commit is the");
         prompt.AppendLine("     operator's own history, made on their own live interactive claim before this");
         prompt.AppendLine("     delegation — not yours to rewrite, whatever it contains:");
         prompt.AppendLine($"     `git reset --mixed {delegationBaseCommit}`");

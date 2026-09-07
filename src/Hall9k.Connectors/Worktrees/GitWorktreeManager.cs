@@ -59,10 +59,19 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 $"worktree add \"{worktreePath}\" {branch}",
                 cancellationToken);
 
+            // The start point resolved to a commit, recorded because the ref will not keep naming
+            // this point (Worktree.StartPointCommit's own doc). Best-effort: a rev-parse that
+            // cannot be read records nothing rather than a guess, and the one consumer refuses to
+            // act without it.
+            (int startPointExit, string startPointCommit, _) = await TryRunGitAsync(
+                repositoryPath, $"rev-parse \"{startPoint}^{{commit}}\"", cancellationToken);
+
             logger.LogInformation(
                 "Worktree {Path} created on branch {Branch} from {StartPoint}",
                 worktreePath, branch, startPoint);
-            return new Worktree(worktreePath, branch, startPoint);
+            return new Worktree(
+                worktreePath, branch, startPoint,
+                startPointExit == 0 ? startPointCommit.Trim() : string.Empty);
         }
     }
 
