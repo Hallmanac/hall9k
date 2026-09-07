@@ -191,7 +191,7 @@ what its immediate blockers handed down at their closeout, exactly one hop.
 ### Stacked pull requests
 
 `h9k task add --stacked-on <parent>` (and `h9k task revise --stacked-on` / `--clear-stacked-on`),
-PLAN.md Decisions Log #144. An explicit opt-in dependency, never inferred from a plain
+PLAN.md Decisions Log #144 and #146. An explicit opt-in dependency, never inferred from a plain
 `--blocked-by`: the child dispatches at the parent's `Delivered`, cuts its branch from the parent's
 branch head, opens its pull request against that branch, computes its diff and review packet
 against it, is kept off the merge bar while un-retargeted, and is mechanically replayed (gates, no
@@ -202,11 +202,20 @@ past its cap. A parent that merged into something other than the base branch (a 
 merged by hand while still aimed at its own parent) parks the child untouched rather than retarget
 it, which is the pairwise edges declining to guess at the multi-level ordering below.
 
-**Not** built here (slice two, deliberately): the child still starts at the parent's *Delivered*
-rather than at the parent's build-complete-before-review, which is where Brian would rather it
-started, and the catch-up choreography that earlier start needs does not exist. Nor is there any
-notion of a stack as a first-class object: no `h9k stack` command, no ordering across three or more
-levels beyond what the pairwise edges happen to compose, and no reordering.
+The parent's post-delivery churn is absorbed at **two checkpoints** rather than chased push by push
+(#146): a child still in flight catches up to its parent's current head immediately before its own
+first review cycle and immediately before the mandatory final full pass, and nowhere in between.
+Each catch-up is mechanical — the same replay, plus the gates, no review cycle — spending the same
+rebase budget and parking past the same cap. A conflict at a checkpoint restores the branch and
+parks; so does a parent that has died terminally (abandoned, `Failed`, or Done having never
+delivered a pull request that can merge), wherever the child is in its own pipeline.
+
+**Not** built here, deliberately: there is no notion of a stack as a first-class object — no
+`h9k stack` command, no ordering across three or more levels beyond what the pairwise edges happen
+to compose, and no reordering. The child dispatching at the parent's
+*build-complete-before-review* rather than at its `Delivered` was considered and **dropped**
+(Brian's ruling, 2026-08-28 late evening): `Delivered` is the dispatch point, and the churn
+choreography a Delivered parent still generates is what the checkpoints above answer instead.
 
 ### Epics
 
