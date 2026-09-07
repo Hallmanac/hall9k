@@ -56,7 +56,9 @@ namespace Hall9k.Domain.Features.Tasks;
 /// <c>RunDetails.FailureReason</c> for the same reason <see cref="RunPullRequestNumber"/> is.
 /// Carried so <see cref="CloseoutCanStillArrive"/> can exclude the one failure the closeout
 /// orphan sweep itself excludes — a pull request the monitor already observed closed without
-/// merging, where a repeat inspection would only relearn a fact already on the stream.
+/// merging, where a repeat inspection would only relearn a fact already on the stream. The same
+/// observation is the one thing that unmakes a <see cref="IsDelivered"/> reading, since a closed
+/// pull request's URL stays recorded on the task forever.
 /// </param>
 public sealed record TaskDependency(
     Guid Id,
@@ -100,8 +102,30 @@ public sealed record TaskDependency(
     /// than only this: a parent that merged and had its branch deleted is past Delivered, not short
     /// of it, and <see cref="IsClosedOut"/> is the only honest reading of that.
     /// </para>
+    /// <para>
+    /// A pull request the monitor observed CLOSED without merging is not one that is open, so it is
+    /// not Delivered however long its URL stays recorded — and it stays forever:
+    /// <c>CloseoutEngine.RecordClosedAsync</c> appends the closure to the RUN's stream and leaves
+    /// the task Done carrying the same URL it always had. Origin (independent pre-PR review,
+    /// 2026-09-07, adversarial lens): a parent whose pull request a human closed without merging
+    /// read Delivered forever, which released a stacked child that had not dispatched yet — the
+    /// child cut its branch from a dead parent, ran its whole pipeline, opened a pull request
+    /// against a branch whose own pull request can never merge, and then sat off the merge bar
+    /// promising a retarget that could never come.
+    /// </para>
     /// </summary>
-    public bool IsDelivered => State == TaskState.Done && PullRequestUrl.IsNotBlank();
+    public bool IsDelivered =>
+        State == TaskState.Done && PullRequestUrl.IsNotBlank() && !PullRequestClosedUnmerged;
+
+    /// <summary>
+    /// The one observation that unmakes a Delivered reading: this dependency's own run records
+    /// <see cref="RunDetails.PullRequestClosedWithoutMerge"/>, the fact the closeout monitor writes
+    /// when it sees the pull request closed rather than merged — the same field, read for the same
+    /// reason, that <see cref="StillWatchedByOrphanSweep"/> uses to know the sweep is done with it.
+    /// Absent it, nothing is claimed: a run that recorded no failure reason is a pull request
+    /// nobody observed closed, not one guessed open (AGENTS.md's never-guess rule).
+    /// </summary>
+    private bool PullRequestClosedUnmerged => RunFailureReason == RunDetails.PullRequestClosedWithoutMerge;
 
     /// <summary>
     /// Whether this dependency still holds back a dependent <em>stacked on</em> it. Delivered is
@@ -114,11 +138,26 @@ public sealed record TaskDependency(
     /// Whether this dependency can no longer reach even <em>Delivered</em>, so a dependent stacked
     /// on it waits forever. Narrower than <see cref="IsDead"/> by exactly the arm a stacked edge
     /// does not care about: a Done blocker whose merge observation will never arrive has still
-    /// delivered a branch and a pull request, and its stacked child has long since dispatched onto
-    /// them — reporting that as a dead blocker would park the child for a hold that never applied
-    /// to it. Failed and Abandoned are dead for either kind of edge.
+    /// delivered a branch and a pull request, so a child stacked on it is released rather than held
+    /// — reporting that as a dead blocker would park the child for a hold that never applied to it.
+    /// Failed and Abandoned are dead for either kind of edge.
+    /// <para>
+    /// The third arm is the mirror of the first two, and it is the reason this is not simply
+    /// Failed-or-Abandoned: a Done blocker that <see cref="BlocksStackedChild"/> still holds back is
+    /// one that reached the end of its own lifecycle without ever passing either bar — a pull
+    /// request observed closed without merging (<see cref="IsDelivered"/>'s own origin incident), or
+    /// a task with no pull request at all, which is <c>h9k task resolve</c>'s attestation exit from
+    /// Failed (Decisions Log #27). Nothing further arrives on its own from Done, so the stacked
+    /// child behind it waits forever unless a human is told — the identical stranding
+    /// <see cref="IsDead"/>'s own origin incident (2026-08-20) records for a plain edge. A child
+    /// that already dispatched is unaffected either way: its edge left the unmet set at release, and
+    /// <c>TaskDependencyResolver</c> only ever re-asks about dependencies still on it.
+    /// </para>
     /// </summary>
-    public bool IsDeadForStackedChild => State == TaskState.Failed || State == TaskState.Abandoned;
+    public bool IsDeadForStackedChild =>
+        State == TaskState.Failed
+        || State == TaskState.Abandoned
+        || (State == TaskState.Done && BlocksStackedChild);
 
     /// <summary>
     /// A Done task closes out when the closeout monitor observes its pull request merge. Most of

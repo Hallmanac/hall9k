@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -205,9 +206,9 @@ public sealed class StackedEdgeTests
 
     /// <summary>
     /// The narrower death rule. A Done parent whose merge observation will never arrive has still
-    /// delivered the branch and pull request its stacked child built on, and that child dispatched
-    /// long ago — recording a dead-blocker hold for it would park the child for a hold that never
-    /// applied to it.
+    /// delivered the branch and pull request a stacked child builds on — so the child is released
+    /// onto them rather than held, and recording a dead-blocker hold for it would park the child for
+    /// a hold that never applied to it.
     /// </summary>
     [Fact]
     public void A_done_parent_that_will_never_close_out_is_not_dead_to_its_stacked_child()
@@ -218,6 +219,43 @@ public sealed class StackedEdgeTests
         stranded.IsDead.Should().BeTrue("a plain blocked-by dependent waits forever on this");
         stranded.IsDeadForStackedChild.Should().BeFalse(
             "it delivered the branch and pull request the stacked child is already built on");
+    }
+
+    /// <summary>
+    /// The other half of that rule, and the one it was first written without: a Done parent whose
+    /// pull request was CLOSED rather than merged never delivered anything, however long its URL
+    /// stays recorded on the task — <c>RecordClosedAsync</c> writes the closure onto the run's
+    /// stream and leaves the task Done carrying that URL forever. It has to keep blocking a stacked
+    /// child that has not dispatched yet, and it has to read dead, or that child is released onto a
+    /// branch whose pull request can never merge and then waits for a retarget nothing can perform
+    /// (independent pre-PR review, 2026-09-07, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void A_parent_whose_pull_request_closed_unmerged_never_delivered_and_is_dead_to_its_stacked_child()
+    {
+        TaskDependency closed = Dependency(
+            TaskState.Done, RunState.Failed, closedOut: false, PullRequest,
+            runFailureReason: RunDetails.PullRequestClosedWithoutMerge);
+
+        closed.IsDelivered.Should().BeFalse("a closed pull request is not one that is open");
+        closed.BlocksStackedChild.Should().BeTrue(
+            "there is no branch here whose pull request can ever merge for a child to stack on");
+        closed.IsDeadForStackedChild.Should().BeTrue(
+            "nothing further arrives from Done, so the child behind it waits forever unless a human is told");
+    }
+
+    /// <summary>
+    /// The same rule reached the other way: <c>h9k task resolve</c>'s attestation exit (Decisions
+    /// Log #27) can land a task in Done with no pull request at all, which is not a branch a child
+    /// can be stacked on either.
+    /// </summary>
+    [Fact]
+    public void A_parent_resolved_to_done_with_no_pull_request_is_dead_to_its_stacked_child()
+    {
+        TaskDependency resolved = Dependency(TaskState.Done, RunState.Failed, closedOut: false);
+
+        resolved.IsDelivered.Should().BeFalse();
+        resolved.IsDeadForStackedChild.Should().BeTrue("it never delivered a branch or a pull request");
     }
 
     [Theory]
@@ -537,9 +575,9 @@ public sealed class StackedEdgeTests
 
     private static TaskDependency Dependency(
         TaskState state, RunState? currentRunState, bool closedOut, string? pullRequestUrl = null,
-        Guid? id = null, Guid projectId = default) =>
+        Guid? id = null, Guid projectId = default, string? runFailureReason = null) =>
         new(id ?? DomainId.New(), "The parent slice", state, closedOut, currentRunState, pullRequestUrl,
-            TaskType.Feature, [], ProjectId: projectId);
+            TaskType.Feature, [], RunFailureReason: runFailureReason, ProjectId: projectId);
 
     /// <summary>
     /// <see cref="Added"/>, but in a named project rather than a fresh one per task — what the

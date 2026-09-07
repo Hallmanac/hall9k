@@ -999,9 +999,10 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// <param name="stackedOnTaskId">
     /// The task's own declared stacked edge, null on every unstacked task: what decides whether a
     /// blocker here is dead for this dependent and which bar releases it (task: a stacked
-    /// pull-request edge exists as an explicit opt-in dependency). A stacked parent reads dead only
-    /// on Failed or Abandoned, since a Done-but-never-merging parent has still delivered the branch
-    /// and pull request this child needs.
+    /// pull-request edge exists as an explicit opt-in dependency). A stacked parent that reads Done
+    /// with no merge coming is not dead to this child — it has still delivered the branch and pull
+    /// request the child needs — unless it never delivered one at all, which is the narrower thing
+    /// <see cref="TaskDependency.IsDeadForStackedChild"/> answers.
     /// </param>
     internal static string DescribeUnmetDependencyAdvice(
         Guid taskId, IReadOnlyList<TaskDependency> unmet, bool alreadyAssigned = false,
@@ -1057,8 +1058,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// <param name="stackedOnTaskId">
     /// The task's own declared stacked edge, null on every unstacked task — the same reason
     /// <see cref="DescribeUnmetDependencyAdvice"/> takes one: a stacked parent that reads Done with
-    /// no merge coming has still delivered what this child needs, so printing a death notice for it
-    /// would advise a human about a hold that never applied.
+    /// a pull request open has still delivered what this child needs even though no merge is coming,
+    /// so printing a death notice for it would advise a human about a hold that never applied.
     /// </param>
     internal static void PrintUnmetDependencyWarning(
         string verb, Guid taskId, IReadOnlyList<TaskDependency> unmet, bool carriedForward,
