@@ -24,6 +24,7 @@ using JasperFx;
 using Marten;
 using Marten.Events;
 using Marten.Linq.MatchesSql;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -3802,6 +3803,13 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// backlog: every published task is tracked automatically). The write goes through
     /// <c>CloseoutEngine</c>'s injected <c>ProcessRunner</c> seam rather than a live gh — a
     /// sibling of the injected <c>JiraRequester</c> seam a Jira reference's write reuses.
+    /// <para>
+    /// Close-linked-issue is pinned to never here so this test's own single-call assertion keeps
+    /// meaning what it always meant — the platform's own default is when-all-tasks-close (task: a
+    /// task's linked GitHub issue is closed at true closeout under a configurable rule), which
+    /// reads the issue before deciding whether to close it; CloseoutEngineTests's own
+    /// close-linked-issue tests cover that read and the close it sometimes leads to.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_merge_with_a_github_reference_comments_the_issue_and_says_nothing_to_jira()
@@ -3814,6 +3822,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
             externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#42"));
+        Guid projectId = await ProjectIdAsync(store, taskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.Never, null, cts.Token);
 
         RecordingProcessRunner github = RecordingProcessRunner.Succeeding(string.Empty);
         FakeInspector inspector = new()
@@ -3827,6 +3837,344 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         call.FileName.Should().Be("gh");
         call.Arguments.Should().ContainInOrder("issue", "comment", "42", "--repo", "o/r", "--body");
         call.Arguments[^1].Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
+    }
+
+    /// <summary>
+    /// Under on-closeout (task: a task's linked GitHub issue is closed at true closeout under a
+    /// configurable rule), closeout closes the issue in the same step that posts the merge note —
+    /// every time, with no sibling to wait for.
+    /// </summary>
+    [Fact]
+    public async Task On_closeout_closes_the_issue_in_the_same_step_as_the_merge_note()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#1"));
+        Guid projectId = await ProjectIdAsync(store, taskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.OnCloseout, null, cts.Token);
+
+        RecordingProcessRunner github = GitHubCloseoutRunner(isOpen: true);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) commentCall =
+            github.Calls.Should().ContainSingle(call => call.Arguments.Contains("comment")).Subject;
+        commentCall.Arguments.Should().ContainInOrder("issue", "comment", "1", "--repo", "o/r", "--body");
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) closeCall =
+            github.Calls.Should().ContainSingle(
+                call => call.Arguments.Contains("close"), "on-closeout closes the issue every time").Subject;
+        closeCall.Arguments.Should().ContainInOrder("issue", "close", "1", "--repo", "o/r");
+    }
+
+    /// <summary>
+    /// Under never, closeout posts the merge note and never closes the issue — the right choice
+    /// for an epic, a PRD, or an ADR (task: a task's linked GitHub issue is closed at true
+    /// closeout under a configurable rule).
+    /// </summary>
+    [Fact]
+    public async Task Never_posts_the_note_and_never_closes_the_issue()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#2"));
+        Guid projectId = await ProjectIdAsync(store, taskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.Never, null, cts.Token);
+
+        RecordingProcessRunner github = GitHubCloseoutRunner(isOpen: true);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
+
+        github.Calls.Should().Contain(call => call.Arguments.Contains("comment"), "the merge note is still posted");
+        github.Calls.Should().NotContain(call => call.Arguments.Contains("close"));
+    }
+
+    /// <summary>
+    /// The default: when-all-tasks-close posts the note every time, and closes the issue only
+    /// once every task linked to it has itself reached true closeout or been abandoned — decided
+    /// fresh at the last one (task: a task's linked GitHub issue is closed at true closeout under
+    /// a configurable rule; origin walk 2026-09-06: the many-tasks-one-issue case is knowable from
+    /// the store, so this needs no configuration of its own).
+    /// </summary>
+    [Fact]
+    public async Task When_all_tasks_close_closes_only_at_the_second_of_two_linked_tasks()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#3");
+        (Guid task1Id, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, externalReference: reference);
+        Guid projectId = await ProjectIdAsync(store, task1Id, cts.Token);
+        // when-all-tasks-close is already the default a new project starts in; set explicitly so
+        // the test documents the value it depends on rather than relying on an unstated default.
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.WhenAllTasksClose, null, cts.Token);
+
+        Guid task2Id = await SeedLinkedButNotStartedTaskAsync(store, projectId, node.OwnerId, reference, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        RecordingProcessRunner github1 = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github1).PollOnceAsync(cts.Token);
+
+        github1.Calls.Should().Contain(call => call.Arguments.Contains("comment"));
+        github1.Calls.Should().NotContain(call => call.Arguments.Contains("close"),
+            "task2 is still linked to the same issue and has not itself reached true closeout");
+
+        await ClaimCompleteAndOpenPullRequestAsync(store, node, worktrees, repoPath, task2Id, cts.Token);
+
+        RecordingProcessRunner github2 = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github2).PollOnceAsync(cts.Token);
+
+        github2.Calls.Should().Contain(call => call.Arguments.Contains("close"),
+            "task2 is the last task linked to the issue to reach true closeout");
+    }
+
+    /// <summary>
+    /// When the last linked task closes out, the rule is decided across every task linked to the
+    /// issue: an explicit close-flavoured override on any one of them closes it even though every
+    /// other task only ever inherited the project's own never default (task: a task's linked
+    /// GitHub issue is closed at true closeout under a configurable rule).
+    /// </summary>
+    [Fact]
+    public async Task An_explicit_close_value_on_one_sibling_beats_an_inherited_never_on_the_others()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#4");
+        (Guid task1Id, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, externalReference: reference);
+        Guid projectId = await ProjectIdAsync(store, task1Id, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.Never, null, cts.Token);
+
+        Guid task2Id = await SeedLinkedButNotStartedTaskAsync(
+            store, projectId, node.OwnerId, reference, cts.Token, closeLinkedIssueOverride: "when-all-tasks-close");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+
+        // task1 carries no override of its own, so it inherits the project's never default and
+        // closes out immediately with no sibling wait — the issue stays open.
+        RecordingProcessRunner github1 = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github1).PollOnceAsync(cts.Token);
+        github1.Calls.Should().NotContain(call => call.Arguments.Contains("close"));
+
+        // task2's own explicit when-all-tasks-close override waits for every linked task, and
+        // when it becomes the last one to close, the cross-task scan closes the issue: no linked
+        // task ever recorded an explicit never, and one of them (task2 itself) explicitly said a
+        // close-flavoured rule.
+        await ClaimCompleteAndOpenPullRequestAsync(store, node, worktrees, repoPath, task2Id, cts.Token);
+        RecordingProcessRunner github2 = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github2).PollOnceAsync(cts.Token);
+
+        github2.Calls.Should().Contain(call => call.Arguments.Contains("close"),
+            "task2's explicit when-all-tasks-close override is decided across every linked task at "
+            + "the last closeout, and no linked task recorded an explicit never");
+    }
+
+    /// <summary>
+    /// The mirror of the test above: an explicit never recorded on ANY linked task keeps the
+    /// issue open even when the task actually reaching the last closeout only ever inherited the
+    /// project's when-all-tasks-close default (task: a task's linked GitHub issue is closed at
+    /// true closeout under a configurable rule).
+    /// </summary>
+    [Fact]
+    public async Task An_explicit_never_on_one_sibling_keeps_the_issue_open_under_a_default_of_when_all_tasks_close()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#5");
+        (Guid task2Id, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, externalReference: reference,
+            closeLinkedIssueOverride: "never");
+        Guid projectId = await ProjectIdAsync(store, task2Id, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.WhenAllTasksClose, null, cts.Token);
+
+        Guid task1Id = await SeedLinkedButNotStartedTaskAsync(store, projectId, node.OwnerId, reference, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+
+        // task2's own explicit never closes out immediately with no sibling wait.
+        RecordingProcessRunner github2 = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github2).PollOnceAsync(cts.Token);
+        github2.Calls.Should().NotContain(call => call.Arguments.Contains("close"));
+
+        // task1 carries no override, so it inherits when-all-tasks-close and becomes the last
+        // linked task to close — but the cross-task scan finds task2's own explicit never and
+        // keeps the issue open regardless of task1's own inherited default.
+        await ClaimCompleteAndOpenPullRequestAsync(store, node, worktrees, repoPath, task1Id, cts.Token);
+        RecordingProcessRunner github1 = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github1).PollOnceAsync(cts.Token);
+
+        github1.Calls.Should().Contain(call => call.Arguments.Contains("comment"));
+        github1.Calls.Should().NotContain(call => call.Arguments.Contains("close"),
+            "task2's explicit never wins over task1's inherited when-all-tasks-close default");
+    }
+
+    /// <summary>
+    /// A never-close label forces never for an issue carrying it, regardless of the project's own
+    /// default — but a task's own explicit override still wins over the label (task: a task's
+    /// linked GitHub issue is closed at true closeout under a configurable rule).
+    /// </summary>
+    [Fact]
+    public async Task A_never_close_label_overrides_the_project_default_and_loses_to_a_task_override()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+
+        // The label beats the project's own on-closeout default.
+        (Guid labeledTaskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#6"));
+        Guid labeledProjectId = await ProjectIdAsync(store, labeledTaskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(
+            store, labeledProjectId, CloseLinkedIssueRule.OnCloseout, ["epic", "prd"], cts.Token);
+
+        RecordingProcessRunner labeledGithub = GitHubCloseoutRunner(isOpen: true, "epic");
+        await NewEngine(store, node, inspector, worktrees, github: labeledGithub).PollOnceAsync(cts.Token);
+        labeledGithub.Calls.Should().NotContain(call => call.Arguments.Contains("close"),
+            "the issue carries a never-close label, which forces never over the project's on-closeout default");
+
+        // A task's own override still beats the label.
+        (Guid overriddenTaskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#7"),
+            closeLinkedIssueOverride: "on-closeout");
+        Guid overriddenProjectId = await ProjectIdAsync(store, overriddenTaskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(
+            store, overriddenProjectId, CloseLinkedIssueRule.Never, ["epic", "prd"], cts.Token);
+
+        RecordingProcessRunner overriddenGithub = GitHubCloseoutRunner(isOpen: true, "epic");
+        await NewEngine(store, node, inspector, worktrees, github: overriddenGithub).PollOnceAsync(cts.Token);
+        overriddenGithub.Calls.Should().Contain(call => call.Arguments.Contains("close"),
+            "a task's explicit override wins over a never-close label, and the project's own never "
+            + "default never gets consulted");
+    }
+
+    /// <summary>
+    /// Abandoning a task never closes its issue and posts no merge note (task: a task's linked
+    /// GitHub issue is closed at true closeout under a configurable rule) — CloseoutEngine never
+    /// dispatches follow-ups or watches for a merge on an abandoned task's behalf at all, so an
+    /// abandoned task's GitHub reference is never touched.
+    /// </summary>
+    [Fact]
+    public async Task Abandoning_a_task_posts_no_merge_note_and_never_closes_its_issue()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#8");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Never gets there", ["merged"], TaskType.Chore, null, null,
+                reference, Now, node.OwnerId);
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, node.OwnerId, Now);
+            List<object> events = [.. lifecycle];
+            Hall9k.Domain.Features.Tasks.Events.TaskAbandoned abandoned =
+                TaskDecider.Abandon(task, "changed my mind", Now, node.OwnerId);
+            events.Add(abandoned);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingProcessRunner github = RecordingProcessRunner.Succeeding(string.Empty);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
+
+        github.Calls.Should().BeEmpty("an abandoned task has no watched run and no merge note to post");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Abandoned);
+    }
+
+    /// <summary>
+    /// An issue GitHub itself reports already closed is left alone with a warning naming the
+    /// reference, and closeout never fails or retries on account of it (task: a task's linked
+    /// GitHub issue is closed at true closeout under a configurable rule) — the merge note is
+    /// still posted, and the run and task still reach their ordinary Completed/Done state.
+    /// </summary>
+    [Fact]
+    public async Task An_already_closed_issue_is_left_alone_with_a_warning()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#9"));
+        Guid projectId = await ProjectIdAsync(store, taskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.OnCloseout, null, cts.Token);
+
+        RecordingProcessRunner github = GitHubCloseoutRunner(isOpen: false);
+        ListLogger<CloseoutEngine> logger = new();
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github, logger: logger).PollOnceAsync(cts.Token);
+
+        github.Calls.Should().NotContain(call => call.Arguments.Contains("close"),
+            "an issue already closed is left alone rather than re-closed or retried");
+        github.Calls.Should().Contain(call => call.Arguments.Contains("comment"),
+            "the merge note is still posted regardless of the issue's own state");
+        logger.Lines.Should().Contain(line => line.Contains("o/r#9") && line.Contains("already closed"));
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Completed);
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
     }
 
     /// <summary>
@@ -3957,12 +4305,14 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         ExternalReference? externalReference = null,
         string? priorObstructionKey = null,
         string? priorObstructionSummary = null,
-        PreApprovalMode? preApproval = null)
+        PreApprovalMode? preApproval = null,
+        Guid? existingProjectId = null,
+        string? closeLinkedIssueOverride = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
         Guid ownerId = node.OwnerId;
-        Guid projectId = DomainId.New();
+        Guid projectId = existingProjectId ?? DomainId.New();
 
         Worktree worktree = await worktrees.CreateAsync(
             new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out", BranchNameTemplate.Default, ExternalReference: null), cancellationToken);
@@ -3973,11 +4323,15 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         await using IDocumentSession session = store.LightweightSession();
 
-        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
-            TaskDecider.Add(
-                taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
-                externalReference, Now, ownerId),
-            ownerId, Now);
+        // TaskSeed.Start's own Publish carries no close-linked-issue override, so a test needing
+        // one builds the same three-event lifecycle by hand rather than widening a helper every
+        // other integration test in this repo also calls.
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
+            externalReference, Now, ownerId);
+        (TaskAggregate task, object[] lifecycle) = closeLinkedIssueOverride is null
+            ? TaskSeed.Start(added, ownerId, Now)
+            : StartWithCloseLinkedIssueOverride(added, ownerId, Now, closeLinkedIssueOverride);
         List<object> taskEvents = [.. lifecycle];
 
         if (preApproval is not null)
@@ -4046,12 +4400,130 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             new VerificationPassed(lastClaimRunId, Now),
             new PullRequestOpened(lastClaimRunId, PullRequestUrl, 7, Now));
 
-        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
-            projectId, ownerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
-        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+        // A caller passing existingProjectId already registered that project — a second linked
+        // task joining the same one for the when-all-tasks-close tests below — so registering it
+        // again here would start a second event on a stream that already exists.
+        if (existingProjectId is null)
+        {
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+        }
 
         await session.SaveChangesAsync(cancellationToken);
         return (taskId, lastClaimRunId, worktree);
+    }
+
+    /// <summary>
+    /// <see cref="TaskSeed.Start"/>'s own three-event lifecycle (Add, Publish, Assign), with a
+    /// close-linked-issue override recorded at the Publish step — the one thing that shared
+    /// helper has no parameter for, since publishing pre-approved or with a review-stage override
+    /// are the only Publish-time facts any existing seed needed before this task.
+    /// </summary>
+    private static (TaskAggregate Task, object[] Events) StartWithCloseLinkedIssueOverride(
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added, Guid ownerId, DateTimeOffset at, string closeLinkedIssueOverride)
+    {
+        TaskAggregate task = new();
+        task.Apply(added);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, at, ownerId,
+            closeLinkedIssue: Optional<string?>.Of(closeLinkedIssueOverride));
+        task.Apply(published);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskAssigned assigned = TaskDecider.Assign(
+            task, ownerId, TaskDependencyGraph.Empty.Resolve(task.BlockedBy), at, ownerId);
+        task.Apply(assigned);
+
+        return (task, [added, published, assigned]);
+    }
+
+    /// <summary>
+    /// A second task linked to the same issue as a first, left Queued — assigned but never
+    /// claimed or run — so the when-all-tasks-close tests below can seed a sibling that is
+    /// "linked but not yet closed out" without giving it a pull request of its own until the
+    /// test is ready to merge it (<see cref="ClaimCompleteAndOpenPullRequestAsync"/>).
+    /// </summary>
+    private static async Task<Guid> SeedLinkedButNotStartedTaskAsync(
+        DocumentStore store,
+        Guid existingProjectId,
+        Guid ownerId,
+        ExternalReference externalReference,
+        CancellationToken cancellationToken,
+        string? closeLinkedIssueOverride = null)
+    {
+        Guid taskId = DomainId.New();
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+            taskId, existingProjectId, "A second task on the same issue", ["merged"], TaskType.Chore, null, null,
+            externalReference, Now, ownerId);
+        (_, object[] lifecycle) = closeLinkedIssueOverride is null
+            ? TaskSeed.Start(added, ownerId, Now)
+            : StartWithCloseLinkedIssueOverride(added, ownerId, Now, closeLinkedIssueOverride);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, lifecycle);
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
+    /// <summary>
+    /// Grows an already-Queued task (<see cref="SeedLinkedButNotStartedTaskAsync"/>) into one
+    /// whose pull request is open and awaiting review — the tail of
+    /// <see cref="SeedAwaitingReviewAsync"/>, run on demand rather than at seed time, so a
+    /// when-all-tasks-close test can control exactly when a sibling starts competing for "am I
+    /// the last one" rather than having every linked task race to AwaitingReview together.
+    /// </summary>
+    private static async Task<Guid> ClaimCompleteAndOpenPullRequestAsync(
+        DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string repoPath, Guid taskId, CancellationToken cancellationToken)
+    {
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "second task", BranchNameTemplate.Default, ExternalReference: null),
+            cancellationToken);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK2.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work2");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        await using IDocumentSession session = store.LightweightSession();
+        StreamState fence = (await session.Events.FetchStreamStateAsync(taskId, cancellationToken))!;
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, version: fence.Version, token: cancellationToken))!;
+
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(task, node.NodeId, node.OwnerId, DomainId.New(), Now);
+        task.Apply(claimed);
+        Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+            TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+        task.Apply(completed);
+        session.Events.Append(taskId, expectedVersion: fence.Version + 2, claimed, completed);
+
+        Guid runId = task.CurrentRunId!.Value;
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, task.LeaseGeneration, DomainId.New(),
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now),
+            new PullRequestOpened(runId, PullRequestUrl, 7, Now));
+
+        await session.SaveChangesAsync(cancellationToken);
+        return runId;
+    }
+
+    /// <summary>
+    /// A gh fake shaped for the closeout-time GitHub issue reads and writes this feature adds
+    /// (task: a task's linked GitHub issue is closed at true closeout under a configurable
+    /// rule): <c>gh issue view --json state,labels</c> answers with the state and labels this
+    /// test declares, and every other call (the merge comment, the close) succeeds with nothing
+    /// to parse — the same "answer the read, succeed the write" shape <see cref="JiraRequesterFor"/>
+    /// gives the Jira side.
+    /// </summary>
+    private static RecordingProcessRunner GitHubCloseoutRunner(bool isOpen, params string[] labels)
+    {
+        string labelsJson = string.Join(",", labels.Select(label => $$"""{"name":"{{label}}"}"""));
+        string stateJson = $$"""{"state":"{{(isOpen ? "OPEN" : "CLOSED")}}","labels":[{{labelsJson}}]}""";
+        return new RecordingProcessRunner(arguments => arguments.Contains("view")
+            ? new ProcessResult(0, stateJson, string.Empty)
+            : new ProcessResult(0, string.Empty, string.Empty));
     }
 
     /// <summary>
@@ -4164,7 +4636,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         int maxCloseoutLapsPerObstruction = 2,
         int maxMechanicalResolutionAttempts = 3,
         TimeSpan? copilotReviewSettleWindow = null,
-        TimeSpan? checksRegistrationSettleWindow = null) =>
+        TimeSpan? checksRegistrationSettleWindow = null,
+        ILogger<CloseoutEngine>? logger = null) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
             new StackedParentWatch(worktrees, NullLogger<StackedParentWatch>.Instance),
             (github ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
@@ -4178,7 +4651,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 CopilotReviewSettleWindow = copilotReviewSettleWindow ?? TimeSpan.FromHours(24),
                 ChecksRegistrationSettleWindow = checksRegistrationSettleWindow ?? TimeSpan.FromMinutes(15),
             }),
-            NullLogger<CloseoutEngine>.Instance);
+            logger ?? NullLogger<CloseoutEngine>.Instance);
 
     /// <summary>
     /// A Jira fake whose GET calls (the write's own mandatory read-back verification) answer with
@@ -4313,6 +4786,32 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 ReviewRerequest: Optional<ReviewRerequestPolicy>.Of(ReviewRerequestPolicy.Enabled)));
         }
 
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Records a project's own close-linked-issue rule and never-close-labels list (task: a
+    /// task's linked GitHub issue is closed at true closeout under a configurable rule), the
+    /// <see cref="EnableReviewRerequestAsync"/> shape applied to the setting this task adds.
+    /// </summary>
+    private static async Task SetCloseLinkedIssueSettingsAsync(
+        DocumentStore store,
+        Guid projectId,
+        CloseLinkedIssueRule? closeLinkedIssue,
+        IReadOnlyList<string>? neverCloseLabels,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(projectId, new ProjectSettingsChanged(
+            projectId,
+            Optional<IReadOnlyList<VerifyCommand>>.None,
+            Optional<bool>.None,
+            Optional<int>.None,
+            Optional<IReadOnlyList<ContextLink>>.None,
+            Now,
+            Guid.Empty,
+            CloseLinkedIssue: closeLinkedIssue is { } rule ? Optional<CloseLinkedIssueRule>.Of(rule) : Optional<CloseLinkedIssueRule>.None,
+            NeverCloseLabels: neverCloseLabels is { } labels ? Optional<IReadOnlyList<string>>.Of(labels) : Optional<IReadOnlyList<string>>.None));
         await session.SaveChangesAsync(cancellationToken);
     }
 
