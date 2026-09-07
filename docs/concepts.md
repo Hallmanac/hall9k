@@ -188,10 +188,14 @@ What the edge changes, and nothing else does:
   request opens against the parent's branch**, which is what forms the stack on GitHub.
 - **Its diff, review packet, self-review hunt and end-of-work recompose are all computed against
   the parent's branch**, so its reviewers read the child's own delta rather than the parent's
-  already-reviewed work alongside it. The build session's own recompose and self-review range name
-  the recorded fork point as a *commit*, not the parent branch as a ref: a parent that force-pushes
-  a review lap mid-session moves that ref, and a recompose reset to the resulting merge base would
-  rewrite the parent's commits as the child's own history.
+  already-reviewed work alongside it. Every one of those ranges names the recorded fork point as a
+  *commit*, not the parent branch as a ref: a parent that force-pushes a review lap mid-session
+  moves that ref, and a recompose reset to the resulting merge base would rewrite the parent's
+  commits as the child's own history. The review prompts name it for the same reason and one more —
+  the range a reviewer reads is also the range that decides in-scope from out-of-scope, so a ref
+  moved out from under it has parent-owned defects graded as this pull request's own and fixed on
+  the child's branch. Where nothing was ever recorded, they fall back to the parent's branch rather
+  than inventing a boundary.
 - **It is never rebased onto its parent's branch mid-run.** The pre-final-pass rebase that keeps an
   ordinary branch mergeable-on-arrival is skipped for a stacked child, for the same reason the
   boundary below is a recorded commit — a plain merge-base rebase onto a force-pushed parent
@@ -213,7 +217,10 @@ What the edge changes, and nothing else does:
   the base under new shas). It is the parent's own head where the child's branch still contains it
   (observed directly), and the fork point the child's run recorded at its cut where it does not —
   never a `git merge-base`, because a force-pushed parent rewrites the shared history and merge-base
-  then gives the wrong answer. Nothing moves the pull request's base unless the replay is actually
+  then gives the wrong answer. The recorded fork point is trusted only once git confirms the branch
+  actually contains it: a replay that was dispatched but never landed leaves a record naming a
+  commit the branch never reached, and replaying from there would carry the parent's own work as
+  this task's. That reads as unobserved — the next sweep asks again — rather than as a boundary. Nothing moves the pull request's base unless the replay is actually
   going to be dispatched: if the child is out of budget or otherwise owed a park, it parks with the
   stack left intact rather than aimed at the base with the replay undone. The
   replay runs the gates and triggers **no review cycle** — nothing new entered the branch, so there
