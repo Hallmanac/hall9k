@@ -1984,13 +1984,20 @@ public sealed class CloseoutEngine(
             return false;
         }
 
-        // Nothing a fresh read could learn would change the answer: no override to weigh against
-        // a label, no label list to check the issue against, and the project's own default is
-        // already never — so the read that exists to inform exactly those two questions is
-        // skipped rather than spent on a call whose answer cannot matter.
         if (taskOverride is null && project.NeverCloseLabels.Count == 0 && project.CloseLinkedIssue == CloseLinkedIssueRule.Never)
         {
-            return false;
+            // An inherited never can still be beaten by a sibling's own explicit override once
+            // every linked task has closed (Decisions Log #154), so this fast path is safe only
+            // once it is confirmed no sibling exists to ever supply one — not merely because this
+            // task's own rule already resolves to never. A sibling that exists but has not closed
+            // yet still lets this return false correctly further down, once the read below feeds
+            // the ordinary cross-task gate; this check exists only to skip the read when there is
+            // truly nothing else linked that could ever change the answer.
+            await using IQuerySession noSiblingSession = store.QuerySession();
+            if (!await AnyOtherLinkedTaskAsync(noSiblingSession, taskId, reference, cancellationToken))
+            {
+                return false;
+            }
         }
 
         GitHubIssueCloseoutRead read = await provider.ReadCloseoutStateAsync(reference, project.RepositoryPath, cancellationToken);
@@ -2021,13 +2028,11 @@ public sealed class CloseoutEngine(
             return true;
         }
 
-        if (rule != CloseLinkedIssueRule.WhenAllTasksClose)
-        {
-            // Never, or a recorded value this build does not recognize — fails toward leaving the
-            // issue open (CloseLinkedIssueRule.Unknown's own doc).
-            return false;
-        }
-
+        // Never (from a label or the project default) or WhenAllTasksClose: either way the answer
+        // is not settled by this task's own rule alone, because a sibling's explicit override can
+        // still beat an inherited never regardless of which task happens to close last (Decisions
+        // Log #154) — so both cases defer to the same cross-task resolution rather than only the
+        // WhenAllTasksClose one.
         await using IQuerySession session = store.QuerySession();
         if (!await AllOtherLinkedTasksClosedOutAsync(session, taskId, reference, cancellationToken))
         {
@@ -2077,6 +2082,23 @@ public sealed class CloseoutEngine(
                 && candidate.CurrentRunId is { } runId
                 && runStates.TryGetValue(runId, out RunState? runState)
                 && runState == RunState.Completed));
+    }
+
+    /// <summary>
+    /// Whether any task besides this one is linked to the same external reference at all,
+    /// regardless of that task's own state — the narrow question <see cref="ShouldCloseGitHubIssueAsync"/>
+    /// needs answered before it can safely skip its own GitHub read for an inherited never: that
+    /// skip is only safe when no sibling could ever supply an explicit override for the cross-task
+    /// resolution to find later (Decisions Log #154). Unlike <see cref="AllOtherLinkedTasksClosedOutAsync"/>,
+    /// this says nothing about closure — a sibling that exists but has not closed yet still counts.
+    /// </summary>
+    private static Task<bool> AnyOtherLinkedTaskAsync(
+        IQuerySession session, Guid currentTaskId, ExternalReference reference, CancellationToken cancellationToken)
+    {
+        string canonical = reference.ToString();
+        return session.Query<TaskListItem>()
+            .Where(candidate => candidate.ExternalReference == canonical && candidate.Id != currentTaskId)
+            .AnyAsync(cancellationToken);
     }
 
     /// <summary>

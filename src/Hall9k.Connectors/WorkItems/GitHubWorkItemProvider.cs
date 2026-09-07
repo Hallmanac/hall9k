@@ -418,7 +418,18 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
                     + $"read. Run the same gh command by hand from {workingDirectory} to see what answered.");
             }
 
-            bool isOpen = WorkItemStatus.Parse(ReadString(document.RootElement, "state")).IsOpen;
+            if (ReadString(document.RootElement, "state") is not { } state)
+            {
+                // The same reasoning as the missing-assignees-array refusal above: exit code zero
+                // is not a promise of shape, and a payload with no readable state must not be read
+                // as "closed" — that would be guessing at an unobserved fact (AGENTS.md).
+                return GitHubIssueCloseoutRead.Unreadable(
+                    $"gh answered for {repository}#{number} with something that carries no readable "
+                    + $"state, so there is nothing in it to read as open or closed. Run the same gh "
+                    + $"command by hand from {workingDirectory} to see what answered.");
+            }
+
+            bool isOpen = WorkItemStatus.Parse(state).IsOpen;
             List<string> labels = document.RootElement.TryGetProperty("labels", out JsonElement labelsElement)
                 && labelsElement.ValueKind == JsonValueKind.Array
                 ? [.. labelsElement.EnumerateArray().Select(label => ReadString(label, "name")).OfType<string>()]

@@ -4041,6 +4041,53 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The reverse ordering of the test above: the outcome must not depend on which task happens
+    /// to close last (Decisions Log #154) — a sibling's explicit close-flavoured override still
+    /// closes the issue even when the LAST task to close is the one that only ever inherited the
+    /// project's never default, whose own rule alone would leave the issue open (task: a task's
+    /// linked GitHub issue is closed at true closeout under a configurable rule).
+    /// </summary>
+    [Fact]
+    public async Task An_explicit_close_value_on_one_sibling_beats_an_inherited_never_however_the_closeouts_are_ordered()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#6");
+        (Guid task2Id, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, externalReference: reference,
+            closeLinkedIssueOverride: "when-all-tasks-close");
+        Guid projectId = await ProjectIdAsync(store, task2Id, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.Never, null, cts.Token);
+
+        Guid task1Id = await SeedLinkedButNotStartedTaskAsync(store, projectId, node.OwnerId, reference, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+
+        // task2's own explicit when-all-tasks-close override closes out first, but task1 is still
+        // open, so the cross-task scan finds a sibling not yet closed and waits.
+        RecordingProcessRunner github2 = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github2).PollOnceAsync(cts.Token);
+        github2.Calls.Should().NotContain(call => call.Arguments.Contains("close"));
+
+        // task1 carries no override, so it inherits the project's never default and becomes the
+        // LAST linked task to close — its own rule alone would leave the issue open, but task2's
+        // explicit close-flavoured override still settles it once every linked task has closed.
+        await ClaimCompleteAndOpenPullRequestAsync(store, node, worktrees, repoPath, task1Id, cts.Token);
+        RecordingProcessRunner github1 = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github1).PollOnceAsync(cts.Token);
+
+        github1.Calls.Should().Contain(call => call.Arguments.Contains("close"),
+            "task2's explicit when-all-tasks-close override closes the issue regardless of which "
+            + "task happens to close last");
+    }
+
+    /// <summary>
     /// The mirror of the test above: an explicit never recorded on ANY linked task keeps the
     /// issue open even when the task actually reaching the last closeout only ever inherited the
     /// project's when-all-tasks-close default (task: a task's linked GitHub issue is closed at
