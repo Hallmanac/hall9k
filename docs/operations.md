@@ -959,8 +959,9 @@ the review a body-level reply names) comes out of the fix session's own summary,
 closeout never read on this pull request is refused rather than posted to — reply by hand and
 resolve with `--post-nothing`, which is also the answer when you can see the thread is genuinely
 the reviewer's and closeout simply never saw it (its thread read stops at the pull request's first
-100 threads). If a post lands and then recording the verdict fails,
-the error says so and names what was already sent: re-run with `--post-nothing`, never with a
+100 threads). If a post lands and then recording the verdict fails — including
+when you interrupt it with Ctrl+C in that window — the error says so and names what was already
+sent: re-run with `--post-nothing`, never with a
 reply choice, or the reviewer reads the same reply twice under your login. `h9k task show` renders every changes-requested review
 this pull request has taken — reviewer, time, finding count, link — with any parked disagreement
 under it and what you directed. Once the lap pushes, that reviewer's review is re-requested on the
