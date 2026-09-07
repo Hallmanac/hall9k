@@ -209,6 +209,11 @@ public sealed class ReviewLapPromptBuilderTests
         prompt.Should().Contain($"h9k pr approve {taskId}");
         prompt.Should().Contain($"h9k pr request-changes {taskId}");
         prompt.Should().Contain("never on its own");
+        prompt.Should().Contain(
+            "Both are denied for this session",
+            "the briefing prints the two verdict commands with the task id filled in, so it has to say they "
+            + "are the reviewer's to run — and the guard denies them, so the session cannot run one anyway "
+            + "(independent pre-PR review, cycle 1, conformance lens)");
     }
 
     [Fact]
@@ -264,9 +269,19 @@ public sealed class ReviewLapPromptBuilderTests
             "gh api is the surface GitHubPullRequestSurface.PostReviewAsync itself posts through, so a list of "
             + "the four gh pr verbs alone left a session able to post a review — or start a thread — under the "
             + "reviewer's own login (independent pre-PR review, cycle 1, both lenses)");
+        deny.EnumerateArray().Select(rule => rule.GetString()).Should().Contain(
+            ["Bash(h9k pr approve:*)", "Bash(h9k pr request-changes:*)"],
+            "the platform's own verdict commands post through that same gh api endpoint under the reviewer's "
+            + "own login AND finalize the task, and the lap's briefing prints both with the task id filled in "
+            + "— so denying only the gh side left the session handed the exact spelling of a review it could "
+            + "post for the reviewer (independent pre-PR review, cycle 1, conformance lens)");
         ClaudeSettingsFile.ReviewLapDeniedTools.Should().NotContain(
             rule => rule!.Contains("git commit", StringComparison.Ordinal),
             "a reviewer's own end-to-end tests have to be committable — the detached checkout is what makes a commit here harmless");
+        ClaudeSettingsFile.ReviewLapDeniedTools.Should().NotContain(
+            rule => rule!.Contains("h9k review resolve", StringComparison.Ordinal),
+            "ending a lap without posting anything is not the authorship invariant this list defends, and a "
+            + "lap ended early is recoverable with one h9k pr review");
     }
 
     [Fact]

@@ -103,10 +103,11 @@ public static class ClaudeSettingsFile
     /// branch, so a commit there moves nothing, and the reviewer's own end-to-end tests have to be
     /// committable somewhere — denying commit outright would block the one kind of writing a lap
     /// is explicitly for. What is denied is every way the work leaves this machine: the push
-    /// itself, and the GitHub write surfaces that would let a session post a review, a comment or
-    /// a merge the reviewer never ran (the verdict travels through <c>h9k pr approve</c> /
-    /// <c>h9k pr request-changes</c> under the reviewer's own login, which is the only thing that
-    /// makes it theirs).
+    /// itself, the GitHub write surfaces that would let a session post a review, a comment or a
+    /// merge the reviewer never ran, and this platform's own two verdict commands, which reach
+    /// that same surface under that same login. The verdict travels through <c>h9k pr approve</c>
+    /// / <c>h9k pr request-changes</c> run by the reviewer in their own terminal, which is the
+    /// only thing that makes it theirs.
     /// </para>
     /// </summary>
     public static string BuildForReviewLap(TimeSpan commandTimeout)
@@ -142,6 +143,27 @@ public static class ClaudeSettingsFile
     /// <c>gh pr view</c> / <c>gh pr diff</c>.
     /// </para>
     /// <para>
+    /// <c>h9k pr approve</c> and <c>h9k pr request-changes</c> are denied for exactly the same
+    /// reason as <c>gh api</c>, and they were the hole left when only the <c>gh</c> side was
+    /// closed (independent pre-PR review, cycle 1, conformance lens): they are this platform's
+    /// OWN poster, they shell out to <c>gh</c> under the reviewer's own login, and they
+    /// additionally finalize the task — so a session that ran one would post a verdict the
+    /// reviewer never gave AND end their lap, which is strictly worse than the raw <c>gh api</c>
+    /// call this list already refuses. <c>PullRequestReviewVerdict.DeliverAsync</c> cannot tell
+    /// an agent caller from a human one, and the lap's own briefing prints both commands with the
+    /// task id filled in, so the prompt hands a session the exact spelling — which is a request
+    /// not to run it, where this is a refusal. It costs a lap nothing: the reviewer runs their
+    /// verdict in their own terminal, never through the session.
+    /// <br/>
+    /// Deliberately NOT extended to the other <c>h9k</c> commands that could end a lap
+    /// (<c>h9k review resolve --merge-ready</c>, <c>h9k task release</c>,
+    /// <c>h9k task abandon</c>): none of them writes anything to the pull request under the
+    /// reviewer's login, which is the authorship invariant this list defends (AGENTS.md's
+    /// never-start-a-review-thread rule, origin incident 2026-08-20), and a lap ended early is
+    /// recoverable in one command — <c>h9k pr review</c> again, since a Done pr-review task does
+    /// not hold its pull request hostage. Those stay the prompt's business.
+    /// </para>
+    /// <para>
     /// What this list is, stated plainly so nothing downstream describes it as more: a
     /// session-level permission deny, matched by Claude Code's own engine on the command as it is
     /// spelled. It refuses the ordinary way to reach each of these, which is what a session
@@ -161,5 +183,7 @@ public static class ClaudeSettingsFile
         "Bash(gh pr merge:*)",
         "Bash(gh pr close:*)",
         "Bash(gh api:*)",
+        "Bash(h9k pr approve:*)",
+        "Bash(h9k pr request-changes:*)",
     ];
 }

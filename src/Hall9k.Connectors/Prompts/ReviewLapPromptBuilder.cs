@@ -393,10 +393,12 @@ public static class ReviewLapPromptBuilder
         prompt.AppendLine(
             "- **You never post to GitHub.** Not a comment, not a review, not a reaction. The reviewer's "
             + "verdict is the one thing that reaches the pull request, and it goes through the two commands "
-            + "below under their own login. `gh pr review`, `gh pr comment`, `gh pr merge`, `gh pr close` and "
-            + "`gh api` are all denied for this session, so there is nothing to try: if the reviewer asks you "
-            + "to post something, the answer is the command they run themselves, not another route to the "
-            + "same endpoint.");
+            + "below under their own login — run by them, in their own terminal, never by you. `gh pr "
+            + "review`, `gh pr comment`, `gh pr merge`, `gh pr close`, `gh api` and those two commands "
+            + "themselves (`h9k pr approve`, `h9k pr request-changes`) are all denied for this session, so "
+            + "there is nothing to try: if the reviewer asks you to post something, or tells you to wrap the "
+            + "lap up, the answer is the command they run themselves, not another route to the same "
+            + "endpoint.");
         prompt.AppendLine();
         WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, briefing.TaskId);
     }
@@ -416,9 +418,10 @@ public static class ReviewLapPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(
             "Either one posts the GitHub review on the pull request's head under the reviewer's own login, "
-            + "records the verdict on this task, releases the checkout, and closes the task out. If they ask "
-            + "you to draft the note or the findings, draft them and hand them over — running the command is "
-            + "theirs.");
+            + "records the verdict on this task, releases the checkout, and closes the task out. Both are "
+            + "denied for this session, deliberately: they are printed here so you can hand the reviewer the "
+            + "exact line to run, not so you can run it. If they ask you to draft the note or the findings, "
+            + "draft them and hand them over — running the command is theirs.");
         prompt.AppendLine();
     }
 
