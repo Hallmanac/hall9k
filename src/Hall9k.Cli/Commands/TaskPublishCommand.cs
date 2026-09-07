@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -83,6 +84,17 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             + "non-terminal task with h9k task set-pre-approved, without the unassign/draft/revise/publish "
             + "ceremony a readiness-contract change would otherwise need")]
         public FlagValue<string> PreApproved { get; init; } = new();
+
+        [CommandOption("--close-linked-issue <on-closeout|never|when-all-tasks-close|default>")]
+        [Description(
+            "Override whether true closeout closes THIS task's linked GitHub issue, and when (task: a "
+            + "task's linked GitHub issue is closed at true closeout under a configurable rule). Left "
+            + "unset, the task defers to the project's own close-linked-issue setting (h9k project set), "
+            + "live — not a value frozen at publish. 'default' clears an override set earlier with h9k "
+            + "task revise. The right lever for an issue that covers more than this one task: an epic, a "
+            + "PRD, an ADR, or an issue split into several tasks, where an explicit 'never' or "
+            + "'on-closeout' here beats an inherited default on every sibling task")]
+        public string? CloseLinkedIssue { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -109,7 +121,10 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         TaskPublished published = TaskDecider.Publish(
             task, graph, DateTimeOffset.UtcNow, context.OwnerId, project.BacklogPolicy,
-            settings.NoExistingItem, settings.Untracked, PreApprovalInput.FromFlag(settings.PreApproved));
+            settings.NoExistingItem, settings.Untracked, PreApprovalInput.FromFlag(settings.PreApproved),
+            settings.CloseLinkedIssue is { } closeLinkedIssue
+                ? Optional<string?>.Of(closeLinkedIssue)
+                : Optional<string?>.None);
         session.Events.Append(taskId, published);
         task.Apply(published);
 
@@ -138,6 +153,14 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
                 $"[dim]  Pre-approved ({PreApprovalInput.Word(published.EffectivePreApproval)}): "
                 + $"{PreApprovalInput.Describe(published.EffectivePreApproval)} — h9k task set-pre-approved "
                 + "to change.[/]");
+        }
+
+        if (published.CloseLinkedIssue.HasValue)
+        {
+            AnsiConsole.MarkupLine(published.CloseLinkedIssue.Value is { } closeLinkedIssueRule
+                ? $"[dim]  Close linked issue: {closeLinkedIssueRule.Value.EscapeMarkup()} (task override) — "
+                  + $"h9k task revise {shortId} --close-linked-issue default clears it.[/]"
+                : $"[dim]  Close linked issue: inherited from the project's own setting.[/]");
         }
 
         // Every published task is tracked automatically: a task adopted with --from-issue or
