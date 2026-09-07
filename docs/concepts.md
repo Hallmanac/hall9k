@@ -533,9 +533,24 @@ Per poll, in priority order:
   follow-up run is dispatched onto the branch with the rebase-onto-main prompt.
 - **Checks completed and failing.** Never acted on while any check is still pending. A follow-up
   run is dispatched onto the branch with the fix-the-CI prompt.
+- **A human reviewer's changes-requested review on the current head.** Checked ahead of the
+  thread branch below, because a changes-requested review ordinarily opens threads too and the
+  narrower fact is the one that matters. The review's own body and every inline comment are
+  carried onto the reopen as findings — each with the file and line the comment had, and the
+  thread a reply would land inside, including a comment written as a *reply* inside a thread an
+  earlier review opened, which is how a second look most often arrives — and the fix lap is handed
+  them rather than sent to rediscover them. What earns this its own lap is what happens on disagreement: the session posts nothing and
+  resolves nothing, and instead parks with the reviewer's point, its own reasoning, and a **proposed
+  reply the implementer sends, edits, or drops** (`h9k review resolve --post-reply-as-written` /
+  `--post-reply "<text>"` / `--post-nothing`). No agent and no orchestrator ever posts a
+  disagreement to a person. When the lap pushes, that reviewer's review is re-requested on the new
+  head. A **bot's** changes-requested review is deliberately not this: Copilot's findings stay on
+  the automated thread path below, which argues and resolves on its own.
 - **Unresolved review threads, from any reviewer.** A follow-up run is dispatched with the
   resolve-review-threads prompt. Copilot is one reviewer among many: a teammate's thread and the
-  author's own self-review note count and dispatch identically.
+  author's own self-review note count and dispatch identically. This is the path for every review
+  that carries no changes-requested verdict — a comment-only review, a bot's, or threads left
+  behind with no review state at all.
 - **An errored Copilot review.** Re-requested exactly once through the provider's API, because an
   errored review produces zero threads and thread count alone would read as a clean pass.
 
@@ -549,7 +564,8 @@ may still be reporting" rather than claiming a clean pull request.
 
 Automatic follow-ups are bounded by two counters, not one. A **progress cap**
 (`MaxCloseoutLapsPerObstruction`, default 2) counts consecutive laps spent on the *same*
-obstruction — the same failing check, the same set of unresolved thread ids — and resets the
+obstruction — the same failing check, the same set of unresolved thread ids, the same
+changes-requested review url — and resets the
 moment a lap actually clears something, so a busy pull request grinding through different real
 problems never trips it. A **lifetime ceiling** (`MaxAutomaticCloseoutRuns`, default 6) is the
 true runaway backstop: every automatic lap spends it regardless of which obstruction it answered,
