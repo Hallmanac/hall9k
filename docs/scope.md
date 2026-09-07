@@ -188,6 +188,22 @@ blocker that dies holds its dependents visibly rather than silently unblocking t
 blocker that recovers clears the hold on its own. The same edges route context: a run receives
 what its immediate blockers handed down at their closeout, exactly one hop.
 
+### Stacked pull requests
+
+`h9k task add --stacked-on <parent>` (and `h9k task revise --stacked-on` / `--clear-stacked-on`),
+PLAN.md Decisions Log #144. An explicit opt-in dependency, never inferred from a plain
+`--blocked-by`: the child dispatches at the parent's `Delivered`, cuts its branch from the parent's
+branch head, opens its pull request against that branch, computes its diff and review packet
+against it, is kept off the merge bar while un-retargeted, and is retargeted onto the base branch
+plus mechanically replayed (gates, no review cycle) when the parent merges or force-pushes —
+bounded by a per-child rebase budget that parks for a human past its cap.
+
+**Not** built here (slice two, deliberately): the child still starts at the parent's *Delivered*
+rather than at the parent's build-complete-before-review, which is where Brian would rather it
+started, and the catch-up choreography that earlier start needs does not exist. Nor is there any
+notion of a stack as a first-class object: no `h9k stack` command, no ordering across three or more
+levels beyond what the pairwise edges happen to compose, and no reordering.
+
 ### Epics
 
 `h9k epic add | list | show | link-jira | close` (PLAN.md Decisions Log #100). A first-class

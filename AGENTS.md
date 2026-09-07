@@ -106,7 +106,12 @@ first-class interface, always, for every command:
   invisible to the closeout monitor and to any agent reading the PR. Never read silence as "the
   reviewer had nothing to say".
 - Branch naming: `task/<id>-<slug>` unless the project set its own convention
-  (`h9k project set <project> --branch-template`), created off `origin/main` with `--no-track`.
+  (`h9k project set <project> --branch-template`), created off `origin/main` with `--no-track` —
+  except a task declared `--stacked-on` another, whose branch is cut from that parent's branch head
+  and whose pull request targets it (Decisions Log #144). **Every base-branch reference in a
+  dispatched session's own prompt is already the right one for that session**, stacked or not:
+  never substitute `origin/main` for what the prompt names, and never retarget or rebase a stacked
+  branch onto main by hand — the daemon does both mechanically when the parent merges.
 - `main` is only ever checked out in the `dev/` worktree; agent worktrees are siblings of `dev/`.
 - **PR branches are authored history, not a diary.** No work-in-progress commits, no "address
   review feedback" commits. A fix that belongs to an existing commit folds into it:

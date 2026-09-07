@@ -119,6 +119,8 @@ h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
 h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
+h9k task add --project <name> --objective "…" --stacked-on <id>   # a STACKED edge (Decisions Log #144), not a plain blocked-by — see below
+h9k task revise <id> --stacked-on <id>            # declare the stacked edge on a Draft; --clear-stacked-on drops it (leaving the blocked-by alone)
 h9k task revise <id> --queue-first                # the one revision Draft-only doesn't gate: marks the task-level queue-first fact (Decisions Log #127), settable in any live state; --clear-queue-first removes it
 h9k task revise <id> --clear-interactive-mode     # the other revision Draft-only doesn't gate: clears the interactive-mode flag (below) directly, settable in any live state, for when neither h9k task handback nor a default h9k task release has an active interactive claim left to act on
 h9k task revise <id> --review-stage-composition <VALUE|default>   # Draft-only, unlike the review caps below — a live change reaches only the task's next run (Decisions Log #129)
@@ -153,6 +155,28 @@ h9k epic show <id>                                # one epic: title, state, Jira
 h9k epic link-jira <id> <key-or-url>              # record the Jira item this one corresponds to, an epic or a card it tracks on a team's behalf; identity only
 h9k epic close <id> --reason "<why>"              # the only way an epic ends
 ```
+
+**A stacked pull-request edge is one explicit opt-in dependency and nothing is inferred**
+(Decisions Log #144, Brian's cohesion ruling 2026-08-28). `--stacked-on <parent>` implies the
+`--blocked-by` edge and adds six behaviours a plain blocked-by never gets: the child dispatches at
+the parent's **Delivered** rather than its merge; its branch is cut from the parent's branch head;
+its pull request opens **against the parent's branch**, forming a GitHub stack; its diff, review
+packet, self-review hunt and end-of-work recompose are all computed against the parent's branch, so
+its reviewers read the child's own delta; it is **not at the merge bar** while its pull request is
+still aimed at the parent (the board never says "the merge is yours" and a pre-approved child is
+not auto-merged); and when the parent merges — or force-pushes — the daemon retargets the child
+onto the base branch and dispatches a **mechanical replay** (one `git rebase --onto` between two
+exact commits — the fork point the child's run recorded at its cut, and the freshly observed commit
+it lands on — then the gates, and no review cycle at all, since nothing new entered the branch; the
+boundary is recorded rather than derived from `git merge-base`, which a force-pushed parent makes
+wrong).
+The replay is bounded by the child's own rebase budget (`DaemonOptions.MaxStackReplayRuns`,
+default 12, separate from the lifetime closeout ceiling so a busy parent cannot spend the child's
+review budget); past the cap the child parks with the reason. Reserve the edge for slices of one
+feature that are genuinely cohesive — the interactive-mode pair is the canonical example — and
+never reach for it just because one task happens to wait on another. A plain `--blocked-by` task
+behaves exactly as it always has. Slice two, not built: the child still starts at the parent's
+Delivered rather than at its build-complete-before-review.
 
 **One Jira card that needs many pull requests does not distribute across sibling tasks the way
 it looks like it should.** A task can adopt an external item at all only if no other task already
