@@ -296,8 +296,13 @@ tracking policy until a human or orchestrator either links what a search of the 
 attests none exists with `--no-existing-item`, or attests that the task should skip tracking
 altogether with `--untracked` — the platform never searches the tracker itself. When a task
 carrying an external reference merges, closeout comments the pull request on it (GitHub issue or
-Jira card alike, the Jira comment going through the same `write-jira` surface) and never closes or
-transitions it. A rejected credential (the registered API token revoked or rotated) is a handled
+Jira card alike, the Jira comment going through the same `write-jira` surface). The Jira card is
+never transitioned or closed. A GitHub issue may be, under a configurable rule
+(`h9k project set --close-linked-issue on-closeout|never|when-all-tasks-close`, per-task override
+at `h9k task publish`/`h9k task revise`, default `when-all-tasks-close` — an issue split into
+several tasks, an epic, or a PRD is not always one unit of work, so closing on the first merge
+would be wrong exactly as often as never closing would be). A rejected credential (the registered
+API token revoked or rotated) is a handled
 state: the write is recorded pending, `h9k status` surfaces a needs-you row pointing at
 `h9k connection add jira` to refresh it, and the daemon retries the identical write automatically
 once the connection is fixed.
