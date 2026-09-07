@@ -164,4 +164,22 @@ public sealed record ProjectSettingsChanged(
     /// (Unknown) clears the override so <see cref="Model"/>, then the node's resolution, decides
     /// again — the same clearing idiom <see cref="Model"/> itself already uses.
     /// </summary>
-    Optional<AgentModel> OrchestratorModel = default);
+    Optional<AgentModel> OrchestratorModel = default,
+    /// <summary>
+    /// Whether true closeout closes this project's tasks' linked GitHub issues, and when (task: a
+    /// task's linked GitHub issue is closed at true closeout under a configurable rule).
+    /// <see cref="Project.CloseLinkedIssueRule.WhenAllTasksClose"/> is what a new project starts
+    /// with, and present-with-null restores it — the same clearing idiom
+    /// <see cref="Priority"/> uses for <see cref="ProjectPriority.Normal"/>. Trailing and optional
+    /// so every stream written before this feature existed replays unchanged.
+    /// </summary>
+    Optional<CloseLinkedIssueRule> CloseLinkedIssue = default,
+    /// <summary>
+    /// A label list that forces <see cref="Project.CloseLinkedIssueRule.Never"/> for an issue
+    /// carrying any of them at closeout time — an epic, a PRD, an ADR — regardless of this
+    /// project's own default; a task's explicit override still wins over the label. Empty is both
+    /// the default and the explicit "no labels force never"; present-with-empty clears a
+    /// previously recorded list, the same idiom <see cref="VerifyCommands"/> and
+    /// <see cref="ContextLinks"/> already use for "replace the whole list."
+    /// </summary>
+    Optional<IReadOnlyList<string>> NeverCloseLabels = default);

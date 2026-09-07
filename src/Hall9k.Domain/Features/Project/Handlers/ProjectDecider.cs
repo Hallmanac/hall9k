@@ -76,7 +76,9 @@ public static class ProjectDecider
         Optional<ProjectPriority> priority = default,
         Optional<ClaimGate> claimGate = default,
         Optional<IReadOnlyList<LaunchText>> launchTexts = default,
-        Optional<AgentModel> orchestratorModel = default)
+        Optional<AgentModel> orchestratorModel = default,
+        Optional<CloseLinkedIssueRule> closeLinkedIssue = default,
+        Optional<IReadOnlyList<string>> neverCloseLabels = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -287,6 +289,31 @@ public static class ProjectDecider
                 [.. (launchTexts.Value ?? []).Select(entry => entry with { Cli = LaunchText.NormalizeCli(entry.Cli) })]);
         }
 
+        // The same closed-set check every other rule in this decider runs (Decisions Log #141's
+        // own reasoning): CloseoutEngine only ever compares this value against its own statics, so
+        // an unrecognized one would silently read as Never rather than teach the operator about
+        // the typo.
+        if (closeLinkedIssue.HasValue
+            && closeLinkedIssue.Value is { } chosenRule
+            && chosenRule != CloseLinkedIssueRule.OnCloseout
+            && chosenRule != CloseLinkedIssueRule.Never
+            && chosenRule != CloseLinkedIssueRule.WhenAllTasksClose)
+        {
+            throw new DomainValidationException(
+                $"The close-linked-issue rule must be {CloseLinkedIssueRule.OnCloseout}, "
+                + $"{CloseLinkedIssueRule.Never}, or {CloseLinkedIssueRule.WhenAllTasksClose} (whether "
+                + "true closeout closes a task's linked GitHub issue, and when — task: a task's linked "
+                + "GitHub issue is closed at true closeout under a configurable rule).");
+        }
+
+        // Trimmed and emptied of blanks the same way ContextLinks and VerifyCommands normalize
+        // their own list input, so "epic, prd,, adr" and "epic,prd,adr" record identically and a
+        // stray blank entry can never silently match every unlabeled issue.
+        Optional<IReadOnlyList<string>> normalizedNeverCloseLabels = neverCloseLabels.HasValue
+            ? Optional<IReadOnlyList<string>>.Of(
+                [.. (neverCloseLabels.Value ?? []).Select(label => label.Trim()).Where(label => label.Length > 0)])
+            : Optional<IReadOnlyList<string>>.None;
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -325,7 +352,9 @@ public static class ProjectDecider
             Priority: priority,
             ClaimGate: claimGate,
             LaunchTexts: launchTexts,
-            OrchestratorModel: orchestratorModel);
+            OrchestratorModel: orchestratorModel,
+            CloseLinkedIssue: closeLinkedIssue,
+            NeverCloseLabels: normalizedNeverCloseLabels);
     }
 
     /// <summary>

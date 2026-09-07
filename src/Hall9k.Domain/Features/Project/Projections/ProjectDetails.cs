@@ -88,6 +88,16 @@ public sealed class ProjectDetails
     /// </summary>
     public ClaimGate ClaimGate { get; set; } = ClaimGate.Off;
     /// <summary>
+    /// Whether true closeout closes this project's tasks' linked GitHub issues, and when (task: a
+    /// task's linked GitHub issue is closed at true closeout under a configurable rule); a
+    /// document written before this feature existed has no key for it and reads the initialised
+    /// default, <see cref="CloseLinkedIssueRule.WhenAllTasksClose"/> — the same "no backfill
+    /// needed" reasoning <see cref="Priority"/> already documents.
+    /// </summary>
+    public CloseLinkedIssueRule CloseLinkedIssue { get; set; } = CloseLinkedIssueRule.WhenAllTasksClose;
+    /// <summary>A label list that forces <see cref="CloseLinkedIssueRule.Never"/> for an issue carrying any of them at closeout time.</summary>
+    public List<string> NeverCloseLabels { get; set; } = [];
+    /// <summary>
     /// Where this project lives on disk (backlog 47). None for a project registered before homes
     /// existed, or one whose home has not been created on this machine.
     /// </summary>
@@ -237,6 +247,16 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.LaunchTexts.HasValue)
         {
             view.LaunchTexts = [.. @event.Data.LaunchTexts.Value ?? []];
+        }
+
+        if (@event.Data.CloseLinkedIssue.HasValue)
+        {
+            view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value ?? CloseLinkedIssueRule.WhenAllTasksClose;
+        }
+
+        if (@event.Data.NeverCloseLabels.HasValue)
+        {
+            view.NeverCloseLabels = [.. @event.Data.NeverCloseLabels.Value ?? []];
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
