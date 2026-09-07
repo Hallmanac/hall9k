@@ -28,6 +28,7 @@ public sealed class LaunchTextDefaultsTests
         text.Should().Contain(LaunchTextDefaults.SettingsRelativePath);
         text.Should().Contain("--append-system-prompt-file");
         text.Should().Contain(LaunchTextDefaults.AnchorRelativePath);
+        text.Should().Contain("--dangerously-skip-permissions");
         text.Should().Contain(WorkingDirectory);
         text.Should().Contain(OpeningMessage);
     }

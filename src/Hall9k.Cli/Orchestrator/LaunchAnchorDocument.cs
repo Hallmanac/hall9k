@@ -15,7 +15,11 @@ namespace Hall9k.Cli.Orchestrator;
 /// It is deliberately tiny: it is loaded on every turn one, so its whole job is to point at the
 /// generator-written <see cref="RecipeLibraryPaths.OrchestratorRecipeFileName"/> and hand off to
 /// it, plus the <c>.new</c> handling a re-run of the generator relies on to never clobber a
-/// recipe outright.
+/// recipe outright. Its content is otherwise identical wherever it is written, with one named
+/// exception Decisions Log #144 sanctions: step 3's own fallback names two machine-specific,
+/// hand-written prototype paths from before the generator existed (the node's own and the
+/// hall9k project's own), for exactly the interim window between install and this skill's first
+/// run.
 /// </para>
 /// </summary>
 public static class LaunchAnchorDocument
@@ -33,20 +37,25 @@ public static class LaunchAnchorDocument
         This file is appended to this window's system prompt on every launch (`--append-system-prompt-file`).
         Keep it in mind that it is paid for on every turn one, so it carries a hand-off and nothing else.
 
-        1. Look in this same directory for a `.new` file beside each recipe file here
-           (`orchestrator.md.new`, `settings.json.new`, and so on: one per file the generator
-           regenerated). For each one found: compare it against the file it sits beside, report to
-           the human what changed and what would be lost by adopting it, and ask whether to adopt
-           it (rename it over the current file, keeping a dated `.prev` copy of what it replaced),
-           keep the current file untouched, or merge the two by hand. Never adopt silently.
+        1. Look in the `recipes/` directory here for a `.new` file beside each recipe file there
+           (`recipes/orchestrator.md.new`, `recipes/settings.json.new`, and so on: one per file
+           the generator regenerated). For each one found: compare it against the file it sits
+           beside, report to the human what changed and what would be lost by adopting it, and ask
+           whether to adopt it (rename it over the current file, keeping a dated `.prev` copy of
+           what it replaced), keep the current file untouched, or merge the two by hand. Never
+           adopt silently.
         2. Read `recipes/orchestrator.md` in this same directory and follow it. That file, not
            this one, is the actual recipe: what this window is, its start-up sequence, and how it
            spawns scoped sessions.
         3. If `recipes/orchestrator.md` does not exist, stop here and tell the human to run the
-           `orchestrator-recipe-generator` skill from this directory. Until it has run, the interim
-           recipe on this machine is the hand-written prototype at `~/.hall9k/recipes/orchestrator.md`
-           (for the node window) or `~/.hall9k/projects/hall9k/recipes/orchestrator.md` and its
-           siblings (for a project window). Read the matching one by hand.
+           `orchestrator-recipe-generator` skill from this directory. Until it has run, this
+           machine's own interim recipe — a hand-written prototype recorded before the generator
+           existed, not a file this anchor can regenerate — sits at
+           `~/.hall9k/recipes/orchestrator.md` for the node window, or
+           `~/.hall9k/projects/hall9k/recipes/orchestrator.md` for the hall9k project window
+           specifically. If the path recipes/orchestrator.md resolves to in this window is the
+           same path just named, no interim copy was ever made on this machine: there is nothing
+           to fall back to, and running the generator is the only way forward.
         """.ReplaceLineEndings("\n");
 
     /// <summary>Writes the anchor at <paramref name="path"/>, overwriting whatever was there. Always safe: see the type doc.</summary>

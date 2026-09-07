@@ -361,7 +361,8 @@ otherwise, in the same shape on every machine:
 ├── ideas/
 ├── tasks/      _archive/ holds terminal tasks (closed out or abandoned); moved back if reopened
 ├── skills/     plain markdown skill docs, seeded from the install's canonical set
-└── .claude/    generated Claude Code plumbing: skills/ symlinked, never copied
+├── recipes/    this project's orchestrator window recipe (below)
+└── .claude/    generated Claude Code plumbing: skills/ and recipes/orchestrator-recipe-generator/ symlinked, never copied
 ```
 
 Creating it is platform code end to end: the directories, the bare clone with its fetch refspec
@@ -555,6 +556,25 @@ which is what makes it the opposite lever to the sticky cap-0 pause; `default` i
 word, putting the project back in the rotation. Nothing preempts either way:
 ordering decides only who receives the next free slot, and every claim logs one sentence naming
 the winner and why. See [operations.md](operations.md#who-gets-the-next-free-slot).
+
+### Orchestrator windows
+
+`h9k orchestrator node [--cli]` · `h9k orchestrator project [PROJECT] [--cli]` ·
+`h9k orchestrator launch-text show | set` · `h9k orchestrator measure`
+
+Never launches anything — the design's own explicit refusal to have Hall9k spawn an interactive
+session. `node`/`project` print that window's daemon liveness, its launch text (the exact line to
+paste into a fresh terminal to start one), its recipe and journal paths, and its last-measured
+cost or "not measured"; with no project named and more than one registered, `project` prints one
+block per project rather than guessing. `launch-text show`/`set` reads and replaces the launch
+line for a given agent CLI (`--cli`, default `claude-code`) — the node's own in the platform
+config file, a project's own via `h9k project set`'s underlying event — and `measure` runs a
+fixed, cheap-model, non-interactive probe against it so a "lean window" claim is a number, not an
+adjective. The recipe content itself (what the window is, its start-up sequence, how it spawns
+scoped sessions) is never platform-rendered — only a tiny, always-overwritten hand-off file is —
+written instead by the `orchestrator-recipe-generator` skill, which `h9k install` and
+`h9k project add`/`init` publish and seed. See
+[README's Orchestrator windows](../README.md#orchestrator-windows) for the full picture.
 
 ## Identifiers
 

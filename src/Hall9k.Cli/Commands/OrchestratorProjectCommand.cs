@@ -59,7 +59,7 @@ public sealed class OrchestratorProjectCommand : Hall9kAsyncCommand<Orchestrator
         {
             if (projects.Count > 1)
             {
-                AnsiConsole.MarkupLineInterpolated($"[bold]{project.Name.EscapeMarkup()}[/]");
+                AnsiConsole.MarkupLineInterpolated($"[bold]{project.Name}[/]");
             }
 
             LaunchText? resolved = OrchestratorLaunchTextResolution.Resolve(
