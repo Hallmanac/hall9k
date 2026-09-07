@@ -150,6 +150,12 @@ two commands replace the `review resolve` ceremony for somebody who is actually 
 `h9k review resolve <id> --merge-ready` remains the way to close a pr-review task out when the
 report was walked and nothing needs posting.
 
+One shape a single-login install runs into: GitHub takes no review from a pull request's own
+author, so neither verdict can be posted on a pull request the same account opened — it answers
+"Can not approve your own pull request", which both commands relay as exactly that. Reviewing your
+own account's pull requests is what the lap plus `review resolve --merge-ready` is for; a posted
+verdict needs a second account.
+
 A project can opt in to starting that same task automatically instead of waiting on `--from-pr`:
 `h9k project set <name> --auto-pr-review off|normal|first|now` (default `off`) has the daemon poll
 GitHub for open pull requests in that project's repo requesting this install's own login, and

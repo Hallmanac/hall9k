@@ -474,11 +474,32 @@ public sealed class GitHubPullRequestSurface(ProcessRunner? runner = null)
     /// reviewer causes and can fix: GitHub rejects the entire review — body and every other
     /// comment with it — when one comment names a line the diff does not contain, so nothing was
     /// posted and re-running with the line corrected is the whole remedy.
+    /// <para>
+    /// Reviewing one's OWN pull request is a 422 as well, not the 403 it reads like, and it is
+    /// checked for first (independent pre-PR review, cycle 1, adversarial lens): a single-login
+    /// install is the ordinary one, so the daemon opened the pull request under the very login
+    /// the reviewer posts with, and the generic 422 explanation blamed a line comment or a moved
+    /// head for it. GitHub answers "Can not approve your own pull request" (and the
+    /// changes-requested equivalent), so the phrase this matches on is the shared tail of both
+    /// rather than either verb.
+    /// </para>
     /// </summary>
     private static DomainException ExplainPost(
         string standardError, string repository, int number, IReadOnlyList<PullRequestReviewLineComment> comments)
     {
         string reported = RelayedText.OneLine(standardError).Trim();
+        if (reported.Contains("your own pull request", StringComparison.OrdinalIgnoreCase))
+        {
+            return new DomainValidationException(
+                $"GitHub refused the review on {repository}#{number} and posted nothing: the gh login this "
+                + "posted under is that pull request's own author, and GitHub takes no review from an author "
+                + "on their own pull request. On a single-login install this is the ordinary shape of "
+                + "reviewing a pull request this same account opened — the review has to come from another "
+                + "account, and closing the task out without posting is "
+                + "h9k review resolve <task> --merge-ready. GitHub reported: "
+                + $"{reported}");
+        }
+
         if (reported.Contains("HTTP 422", StringComparison.OrdinalIgnoreCase))
         {
             string locations = comments.Count == 0
@@ -495,10 +516,14 @@ public sealed class GitHubPullRequestSurface(ProcessRunner? runner = null)
         if (reported.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase)
             || reported.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase))
         {
+            // Deliberately no longer naming self-review here: that case is a 422 and is handled
+            // above. What a 403 or 401 actually means is a login that cannot review this
+            // repository at all — unauthenticated, or without the access requesting changes
+            // takes.
             return new DomainValidationException(
-                $"gh's login is not allowed to review {repository}#{number} — an author cannot approve their "
-                + $"own pull request, and a login without write access cannot request changes on one. "
-                + $"GitHub reported: {reported}");
+                $"gh's login is not allowed to review {repository}#{number} — it is either not authenticated "
+                + "for this repository (run 'gh auth status' from the project's clone) or lacks the access a "
+                + $"review takes on it. GitHub reported: {reported}");
         }
 
         return new DomainValidationException(

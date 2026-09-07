@@ -627,9 +627,9 @@ public sealed class PullRequestReviewLapTests : IClassFixture<PostgresFixture>, 
     /// <summary>
     /// The lap's run and the lap's own event are two commits, so a Ctrl-C between them leaves a
     /// claimed task naming a Dispatched sentinel run with <c>ReviewLapOpen</c> still false.
-    /// Re-running the command has to re-enter that run: the refusal that stood here told the
-    /// reviewer "the automated review's own adversarial pass is still reading the pull request in
-    /// that worktree" about a run with no process at all, and pointed away from every way out
+    /// Re-running the command has to re-enter that run: the refusal that stood here credited the
+    /// automated review's own adversarial pass with reading the pull request in that worktree,
+    /// about a run with no process at all, and pointed away from every way out
     /// (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
     [Fact]
@@ -701,6 +701,107 @@ public sealed class PullRequestReviewLapTests : IClassFixture<PostgresFixture>, 
             RecordingProcessRunner.NeverInvoked(), NewWorktrees(), cts.Token);
 
         (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*Pass --project*");
+    }
+
+    /// <summary>
+    /// A dead automated review leaves <c>CurrentRunId</c> standing (<c>TaskFailed</c> moves only
+    /// the state), so the lap's refusal reaches its catch-all arm — and the shared "open the lap
+    /// once the automated review parks its findings report" suffix named a route that run will
+    /// never take (independent pre-PR review, cycle 1, adversarial lens). Every reason now
+    /// carries its own way out, and a terminal run's is <c>h9k task retry</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_lap_over_a_terminal_run_is_pointed_at_task_retry_rather_than_a_park_that_never_comes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedParkedPrReviewTaskAsync(store, node, findingsReport: null, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(seeded.RunId, new RunFailed(
+                seeded.RunId, "Agent process died without a result.", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession attaching = store.LightweightSession();
+        Func<Task> act = () => PullRequestReviewCommand.RunAsync(
+            store, attaching,
+            new PullRequestReviewCommand.Settings { PullRequest = "42", Project = seeded.ProjectName },
+            ScriptedGh(), NewWorktrees(), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*will never park a findings report*")
+            .And.Message.Should().Contain($"h9k task retry {seeded.TaskId}");
+    }
+
+    /// <summary>
+    /// The verdict side's own copy of that shape, refused the same way — a reviewer whose
+    /// automated run died must not be told to wait for a park either.
+    /// </summary>
+    [Fact]
+    public async Task A_verdict_on_a_terminal_run_is_pointed_at_task_retry_and_posts_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedParkedPrReviewTaskAsync(store, node, findingsReport: null, cts.Token);
+        RecordingGh gh = new(PullRequestJson, ReviewUrl);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(seeded.RunId, new RunFailed(
+                seeded.RunId, "Agent process died without a result.", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession delivering = store.LightweightSession();
+        Func<Task> act = () => PullRequestReviewVerdict.DeliverAsync(
+            delivering, seeded.TaskId, ReviewerVerdict.Approved, "Reads clean.", findings: [],
+            new GitHubPullRequestSurface(gh.Runner), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*will never park a findings report*")
+            .And.Message.Should().Contain($"h9k task retry {seeded.TaskId}");
+        gh.ReviewPayload.Should().BeNull("nothing was posted");
+    }
+
+    /// <summary>
+    /// GitHub answers a review on one's own pull request with a 422, not the 403 it reads like —
+    /// and on a single-login install, which is the ordinary one, the daemon opened the pull
+    /// request under the very login the reviewer posts with. The generic 422 explanation blamed
+    /// a line comment or a moved head for it (independent pre-PR review, cycle 1, adversarial
+    /// lens).
+    /// </summary>
+    [Fact]
+    public async Task A_review_refused_as_the_authors_own_says_that_rather_than_blaming_a_line()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedParkedPrReviewTaskAsync(store, node, findingsReport: null, cts.Token);
+        ProcessRunner refusingGh = (_, arguments, _, _) => Task.FromResult(
+            arguments.Contains("--input")
+                ? new ProcessResult(
+                    1, string.Empty,
+                    "gh: Unprocessable Entity (HTTP 422) Can not approve your own pull request")
+                : new ProcessResult(0, PullRequestJson, string.Empty));
+
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => PullRequestReviewVerdict.DeliverAsync(
+            session, seeded.TaskId, ReviewerVerdict.Approved, "Reads clean.", findings: [],
+            new GitHubPullRequestSurface(refusingGh), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>())
+            .WithMessage("*that pull request's own author*")
+            .And.Message.Should().NotContain(
+                "the head moved", "a line comment and a moved head are the other 422, not this one");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(seeded.TaskId, cts.Token))!;
+        details.ReviewerVerdict.Should().Be(
+            ReviewerVerdict.Unknown, "a post that failed records nothing — the reviewer re-runs");
     }
 
     /// <summary>

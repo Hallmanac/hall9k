@@ -358,8 +358,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// the lap's own event are two commits, and a Ctrl-C between them (or a crash while composing
     /// the briefing) leaves a claimed task naming a Dispatched sentinel run with
     /// <c>ReviewLapOpen</c> still false. Re-entry is the honest recovery, so this is read as one
-    /// rather than refused — the refusal that stood here named "the automated review's own
-    /// adversarial pass is still reading the pull request in that worktree" for a run that has no
+    /// rather than refused — the refusal that stood here credited the automated review's own
+    /// adversarial pass with reading the pull request in that worktree, for a run that has no
     /// process at all, and pointed the reviewer away from every way out (independent pre-PR
     /// review, cycle 1, adversarial lens).
     /// <para>
@@ -413,23 +413,43 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             && await session.Events.AggregateStreamAsync<RunAggregate>(
                     runId, version: runVersion, token: cancellationToken)
                 is { PrReviewDelivered: true };
-        string because = run.State switch
+        // The way out travels WITH the reason, never as one suffix for all of them: a run that
+        // is Failed, Killed, Completed or Superseded will never park a findings report, and
+        // telling its reviewer to wait for one pointed them away from every route they had
+        // (independent pre-PR review, cycle 1, adversarial lens — TaskFailed leaves CurrentRunId
+        // standing, so a dead automated review lands squarely in the catch-all arm).
+        const string OnceItParks = "open the lap once the automated review parks its findings report";
+        (string Because, string WayOut) refusal = run.State switch
         {
-            var state when state == RunState.Dispatched || state == RunState.Running =>
-                "the automated review's own adversarial pass is still reading the pull request in that "
-                + "worktree, and a second session in it would double-book the checkout",
+            // Dispatched is not Running, and one sentence for both said a dispatched pass "is
+            // still reading" when all that was observed is a launch — the never-guess rule
+            // applied to a refusal's own text (Copilot review, pull request #271). The checkout
+            // is already cut at dispatch, so the double-booking half holds for both.
+            var state when state == RunState.Dispatched =>
+                ("the automated review's own adversarial pass has been dispatched into that worktree and "
+                    + "has not reported starting yet, and a second session in it would double-book the "
+                    + "checkout", OnceItParks),
+            var state when state == RunState.Running =>
+                ("the automated review's own adversarial pass is still reading the pull request in that "
+                    + "worktree, and a second session in it would double-book the checkout", OnceItParks),
             var state when state == RunState.Verifying =>
-                "the automated review's adversarial pass has finished and the engine has not dispatched its "
-                + "conformance pass yet",
+                ("the automated review's adversarial pass has finished and the engine has not dispatched its "
+                    + "conformance pass yet", OnceItParks),
             var state when state == RunState.UnderReview && delivered =>
-                "a verdict has already been recorded on this task — the lap it belonged to has ended",
+                ("a verdict has already been recorded on this task — the lap it belonged to has ended",
+                    "the daemon is finalizing that task now; run h9k pr review again once it closes out and "
+                    + "you get a fresh lap (a Done pr-review task does not hold its pull request hostage)"),
             var state when state == RunState.UnderReview =>
-                "the automated review's conformance pass is still running in that worktree",
-            _ => $"its run is {run.State.Value}",
+                ("the automated review's conformance pass is still running in that worktree", OnceItParks),
+            var state when state.IsTerminal =>
+                ($"its run is {state.Value}, which is terminal — that run will never park a findings report",
+                    $"h9k task retry {taskId} dispatches a fresh review, and the lap attaches to it once it "
+                    + "parks its report"),
+            _ => ($"its run is {run.State.Value}", OnceItParks),
         };
         throw new DomainConflictException(
-            $"Task {taskId} cannot take a review lap right now: {because}. h9k task show {taskId} to see "
-            + "where it stands; open the lap once the automated review parks its findings report.");
+            $"Task {taskId} cannot take a review lap right now: {refusal.Because}. h9k task show {taskId} to "
+            + $"see where it stands; {refusal.WayOut}.");
     }
 
     /// <summary>
