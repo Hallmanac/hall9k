@@ -97,6 +97,43 @@ public sealed class AdHocGateRunnerTests
         result.OutputTail.Length.Should().BeLessThanOrEqualTo(400);
     }
 
+    /// <summary>
+    /// <see cref="GateCheckResult.FullOutput"/> exists specifically because a caller classifying an
+    /// infrastructure failure (<c>VerificationRunner.DescribeCleanBaseComparisonAsync</c>) used to
+    /// read <see cref="GateCheckResult.OutputTail"/> for it, so a marker logged early in a long run
+    /// sat outside the trailing 400-character window and went unclassified (independent pre-PR
+    /// review, cycle 1, both lenses, high/medium).
+    /// </summary>
+    [Fact]
+    public async Task A_failed_command_carries_its_full_output_for_classification_even_when_the_marker_is_outside_the_tail()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+
+        GateCheckResult result = await AdHocGateRunner.RunAsync(
+            _directory, "echo early-marker-shape; yes filler | head -c 5000; exit 1", TimeSpan.FromSeconds(10), cts.Token);
+
+        result.Outcome.Should().Be(GateCheckOutcome.Failed);
+        result.OutputTail.Should().NotContain("early-marker-shape", "the marker fell outside the trailing 400-character tail");
+        result.FullOutput.Should().Contain("early-marker-shape");
+    }
+
+    [Fact]
+    public async Task A_passed_command_carries_no_full_output()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+
+        GateCheckResult result = await AdHocGateRunner.RunAsync(
+            _directory, "echo all-good", TimeSpan.FromSeconds(10), cts.Token);
+
+        result.Outcome.Should().Be(GateCheckOutcome.Passed);
+        result.FullOutput.Should().BeEmpty("nothing classifies a passed comparison, so there is no reason to hold its full output");
+    }
+
     [Fact]
     public async Task The_command_runs_in_the_given_working_directory()
     {
