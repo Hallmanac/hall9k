@@ -3409,6 +3409,168 @@ public sealed class AgentPromptBuilderTests : IDisposable
         return task;
     }
 
+    /// <summary>
+    /// The review is handed over rather than hunted for (task: a changes-requested pull-request
+    /// review from a human becomes a fix lap), in the shape a platform review finding takes — with
+    /// no <c>severity=</c> and no <c>scope=</c>, because the reviewer graded neither and neither is
+    /// the session's to invent.
+    /// </summary>
+    [Fact]
+    public void The_changes_requested_prompt_hands_over_the_review_as_ungraded_findings()
+    {
+        TaskDetails task = SomeTask();
+        task.ChangesRequestedReviews =
+        [
+            new ChangesRequestedReview(
+                "teammate", "https://github.com/x/y/pull/7#pullrequestreview-42",
+                new DateTimeOffset(2026, 9, 6, 12, 15, 0, TimeSpan.Zero),
+                [
+                    new ChangesRequestedFinding("Two things before this ships."),
+                    new ChangesRequestedFinding("This limiter never resets.", "src/Limiter.cs:42", "PRRT_abc"),
+                ]),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReviewRequestedChanges(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
+
+        prompt.Should().Contain("Changes requested by @teammate");
+        prompt.Should().Contain("https://github.com/x/y/pull/7#pullrequestreview-42");
+        prompt.Should().Contain("FINDING: at=src/Limiter.cs:42; thread=PRRT_abc");
+        prompt.Should().Contain("This limiter never resets.");
+        prompt.Should().Contain("the review's own body — no file, no line, no thread");
+        prompt.Should().Contain("Two things before this ships.");
+        prompt.Split('\n')
+            .Where(line => line.TrimStart().StartsWith(ReviewResultParser.FindingMarker, StringComparison.Ordinal))
+            .Should().NotBeEmpty()
+            .And.OnlyContain(
+                header => !header.Contains("severity=", StringComparison.Ordinal)
+                    && !header.Contains("scope=", StringComparison.Ordinal),
+                "the reviewer graded neither, and neither is invented for them — the section's own prose "
+                + "explains their absence, which is why this reads the headers rather than the whole prompt");
+    }
+
+    /// <summary>
+    /// A review closeout read nothing off is reported as exactly that, and never as a reviewer who
+    /// stated nothing: closeout's thread read is capped at the pull request's first 100 threads, so
+    /// a reviewer whose comments all sit past that cap arrives here indistinguishable from a silent
+    /// one, and asserting silence would have the lap close out claiming they asked for nothing
+    /// (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void The_changes_requested_prompt_reports_an_empty_review_as_unread_rather_than_as_silence()
+    {
+        TaskDetails task = SomeTask();
+        task.ChangesRequestedReviews =
+        [
+            new ChangesRequestedReview(
+                "teammate", "https://github.com/x/y/pull/7#pullrequestreview-42",
+                new DateTimeOffset(2026, 9, 6, 12, 15, 0, TimeSpan.Zero), []),
+        ];
+
+        string prompt = AgentPromptBuilder.BuildReviewRequestedChanges(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
+
+        prompt.Should().Contain("Closeout read no body and no inline comments on this review");
+        prompt.Should().Contain("first 100 threads", "the cap is why an empty read is not proof of silence");
+        prompt.Should().Contain("read it yourself", "the review itself settles which of the two it is");
+    }
+
+    /// <summary>
+    /// The rule the lap exists for, stated where the session will read it.
+    /// </summary>
+    [Fact]
+    public void The_changes_requested_prompt_forbids_answering_a_disagreement_on_the_pull_request()
+    {
+        string prompt = BuildChangesRequestedPrompt();
+
+        prompt.Should().Contain("do not reply on the pull request, and do not resolve the thread");
+        prompt.Should().Contain(ReviewResultParser.DisagreementMarker);
+        prompt.Should().Contain(ReviewResultParser.ReviewerAskedMarker);
+        prompt.Should().Contain(ReviewResultParser.DisagreementReasoningMarker);
+        prompt.Should().Contain(ReviewResultParser.ProposedReplyMarker);
+        prompt.Should().Contain(AgentPromptBuilder.DisputeMarker);
+        prompt.Should().Contain("offers them exactly three choices",
+            "the session is told the human has three choices; the flag names are the human's, not its");
+    }
+
+    /// <summary>
+    /// The prompt's own worked example, echoed back verbatim, must park nothing (self-review,
+    /// this task): a session that quotes the contract before answering is an observed habit, and
+    /// an echoed block would otherwise become a real parked disagreement pointing at a file no
+    /// repository has, carrying a placeholder "proposed reply" that <c>h9k review resolve</c>
+    /// would offer to send to a real reviewer. Run against the prompt this builder actually
+    /// renders rather than a hand-copied version of it, so the two cannot drift apart.
+    /// </summary>
+    [Fact]
+    public void The_contracts_own_example_echoed_back_parks_no_disagreement()
+    {
+        string prompt = BuildChangesRequestedPrompt();
+
+        string echoed = string.Join(
+            '\n',
+            prompt.Split('\n')
+                .SkipWhile(line => !line.TrimStart().StartsWith(
+                    ReviewResultParser.DisagreementMarker, StringComparison.Ordinal))
+                .TakeWhile(line => !line.TrimStart().StartsWith("Then a final line", StringComparison.Ordinal)))
+            + $"\n{AgentPromptBuilder.DisputeMarker}\n";
+
+        echoed.Should().Contain(
+            ReviewResultParser.ProposedReplyMarker, "the slice must actually cover the whole example block");
+        ReviewResultParser.ParseDisagreements(echoed).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A real block, written from a real finding's own header, parses to the three positions the
+    /// park needs — the other half of the echo test above.
+    /// </summary>
+    [Fact]
+    public void A_block_written_from_a_real_finding_parses_to_its_three_positions()
+    {
+        string filled = $"""
+            {ReviewResultParser.DisagreementMarker} at=src/Limiter.cs:42; thread=PRRT_abc; review=https://x/y/pull/7#r1
+            {ReviewResultParser.ReviewerAskedMarker} reset the limiter per request.
+            {ReviewResultParser.DisagreementReasoningMarker} per-window is the documented contract.
+            {ReviewResultParser.ProposedReplyMarker}
+            The reset really is per window, deliberately.
+            {AgentPromptBuilder.DisputeMarker}
+            """;
+
+        ReviewDisagreement disagreement =
+            ReviewResultParser.ParseDisagreements(filled).Should().ContainSingle().Subject;
+
+        disagreement.Location.Should().Be("src/Limiter.cs:42");
+        disagreement.ThreadId.Should().Be("PRRT_abc");
+        disagreement.ProposedReply.Should().Be("The reset really is per window, deliberately.");
+    }
+
+    /// <summary>
+    /// A lap dispatched with no recorded review says so and tells the session where to look,
+    /// rather than rendering an empty findings section that reads as "the reviewer said nothing".
+    /// Unreachable from a dispatch — <c>TaskDecider.Reopen</c> refuses the kind without a review —
+    /// so this pins the honest reading of a stream that predates the field.
+    /// </summary>
+    [Fact]
+    public void A_changes_requested_prompt_with_no_recorded_review_says_so()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewRequestedChanges(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
+
+        prompt.Should().Contain("No review findings were recorded with this follow-up");
+    }
+
+    private string BuildChangesRequestedPrompt()
+    {
+        TaskDetails task = SomeTask();
+        task.ChangesRequestedReviews =
+        [
+            new ChangesRequestedReview(
+                "teammate", "https://github.com/x/y/pull/7#pullrequestreview-42", null,
+                [new ChangesRequestedFinding("This limiter never resets.", "src/Limiter.cs:42", "PRRT_abc")]),
+        ];
+        return AgentPromptBuilder.BuildReviewRequestedChanges(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Narrative);
+    }
+
     private static TaskDetails SomeTask() => new()
     {
         Objective = "Add rate limiting to auth endpoints",

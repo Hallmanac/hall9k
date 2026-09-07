@@ -171,6 +171,293 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// The changes-requested variant (task: a changes-requested pull-request review from a human
+    /// becomes a fix lap): a PERSON formally requested changes on the pull request's current head,
+    /// and this session answers that review. Modeled on <see cref="BuildFollowUp"/> — same branch,
+    /// same commit style, same platform push — with one deliberate difference that is the whole
+    /// reason it exists.
+    /// <para>
+    /// <see cref="BuildFollowUp"/> tells a session to argue its own case in the thread and resolve
+    /// it. That is right for Copilot and for the automated dispute path a bot's findings have
+    /// always taken. It is wrong for a person: telling a colleague they are mistaken is a social
+    /// act the implementer owns, so here a disagreement posts NOTHING, resolves nothing, and parks
+    /// with a drafted reply the human sends, edits, or drops (Brian's ruling, 2026-09-06 12:15).
+    /// </para>
+    /// <para>
+    /// The findings are handed over rather than hunted for, in the shape every platform review
+    /// finding takes (<c>ReviewResultParser.FindingMarker</c>): closeout already read the review's
+    /// body and every inline comment, so a session that went looking for them itself could only
+    /// read a staler copy of the same thing.
+    /// </para>
+    /// </summary>
+    /// <param name="baseCommit">
+    /// This run's own recorded fork point, read for the narrative style's fixup-fold on the same
+    /// terms <see cref="BuildFollowUp"/>'s own parameter states.
+    /// </param>
+    public static string BuildReviewRequestedChanges(
+        TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
+        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null)
+    {
+        string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Follow-up task: answer a reviewer's changes-requested review");
+        prompt.AppendLine();
+        prompt.AppendLine($"Pull request: {pullRequestUrl}");
+        prompt.AppendLine();
+        prompt.AppendLine("The original task below already shipped in the pull request above. A person has now");
+        prompt.AppendLine("reviewed it and formally requested changes. Your job is to answer that review — not");
+        prompt.AppendLine("to redo the original work.");
+        prompt.AppendLine();
+
+        if (task.FollowUpReason.IsNotBlank())
+        {
+            prompt.AppendLine($"Why this follow-up was dispatched: {task.FollowUpReason}");
+            prompt.AppendLine();
+        }
+
+        AppendOperatorGuidanceSection(prompt, task);
+
+        prompt.AppendLine("## Original objective (context, already implemented)");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+
+        if (project.ContextLinks.Count > 0)
+        {
+            prompt.AppendLine("## Project links (fetch yourself as needed)");
+            prompt.AppendLine();
+            foreach (var link in project.ContextLinks)
+            {
+                prompt.AppendLine($"- {link.Name}: {link.Url}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        AppendProjectHome(prompt, project);
+        AppendChangesRequestedFindings(prompt, task);
+        AppendChangesRequestedHandlingRules(prompt);
+        AppendChangesRequestedDisagreementRules(prompt);
+
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        prompt.AppendLine("- You are in an isolated git worktree checked out on the EXISTING pull-request");
+        prompt.AppendLine($"  branch `{branch}`. Work only here.");
+        AppendRetainedWorktreeNote(prompt);
+        prompt.AppendLine("- Work from the findings above rather than rediscovering them: they were read off the");
+        prompt.AppendLine("  pull request when this lap was dispatched, so spend your reading on the code they");
+        prompt.AppendLine("  point at. Two things they can miss, both worth knowing rather than assuming away:");
+        prompt.AppendLine("  a pull request carrying more than 100 review threads exceeds the provider's own");
+        prompt.AppendLine("  page cap, and a reviewer may have submitted something new since. If a finding the");
+        prompt.AppendLine("  review plainly refers to is not above, read the pull request for it and say so in");
+        prompt.AppendLine("  your summary.");
+        prompt.AppendLine("- Use the resolve-review-threads skill for the mechanics of replying inside a thread");
+        prompt.AppendLine("  and resolving it (the thread ids are already given above, as each finding's");
+        prompt.AppendLine("  `thread=`). Its triage judgment does not apply here and it says so itself: a");
+        prompt.AppendLine("  human's finding you disagree with is not settled in the thread, it is parked per the");
+        prompt.AppendLine("  section above.");
+        AppendThreadTextBoundaryRule(prompt);
+        AppendCommitStyleRules(
+            prompt, commitStyle, effectiveBaseBranch,
+            ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
+        AppendSessionEndsAtFinalMessageRule(prompt);
+        AppendExternalInteractionLoggingRule(prompt, task.Id);
+        prompt.AppendLine("- End with a short summary: which findings you fixed, which you answered without a");
+        prompt.AppendLine("  code change and why, and which one (if any) you parked as a disagreement.");
+        // R8's outbound milestones, on the identical terms BuildFollowUp's own comment states:
+        // this follow-up dispatches under SessionRoleName.Build, still a build-role session, and
+        // starts a brand-new RunAggregate stream, so interactiveMilestoneAddress is null on every
+        // production path today.
+        if (task.InteractiveModeEnabled)
+        {
+            AppendOutboundMilestoneRules(prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress);
+        }
+
+        AppendHandoffRules(prompt);
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The review itself, handed over as findings in the shape every platform review finding takes
+    /// (task: a changes-requested pull-request review from a human becomes a fix lap) — so a
+    /// session that has read a pre-PR review's findings recognizes these on sight.
+    /// <para>
+    /// Two tags are deliberately absent from these headers, and their absence is the point. There
+    /// is no <c>severity=</c>: the platform's severity anchors are what a review PASS grades
+    /// against, and a person who requested changes graded nothing — inventing a grade for them
+    /// would be a guess written into the one place the session decides how much a finding is worth
+    /// (AGENTS.md's never-guess rule). There is no <c>scope=</c> either, for the same reason. What
+    /// is stated instead is the standing that actually applies: a human requested changes, so
+    /// every finding here is one the reviewer requires an answer to.
+    /// </para>
+    /// </summary>
+    private static void AppendChangesRequestedFindings(StringBuilder prompt, TaskDetails task)
+    {
+        prompt.AppendLine("## The review you are answering");
+        prompt.AppendLine();
+        if (task.ChangesRequestedReviews.Count == 0)
+        {
+            // Never reached from a dispatch (TaskDecider.Reopen refuses a changes-requested lap
+            // with no review), so this is the honest reading of a task whose reopen predates this
+            // vocabulary or whose record was lost — never a fabricated finding.
+            prompt.AppendLine("No review findings were recorded with this follow-up. Say so in your summary and");
+            prompt.AppendLine("read the pull request's own reviews yourself: `gh pr view --json reviews`.");
+            prompt.AppendLine();
+            return;
+        }
+
+        prompt.AppendLine("Closeout already read the review, so it is quoted here rather than left for you to");
+        prompt.AppendLine("find. Each finding opens with the same `FINDING:` header a platform review pass uses,");
+        prompt.AppendLine("with two tags deliberately missing: no `severity=` and no `scope=`, because the");
+        prompt.AppendLine("reviewer graded neither and neither is yours to invent. Their standing is simpler —");
+        prompt.AppendLine("a person requested changes, so every one of these is a point they want answered.");
+        prompt.AppendLine();
+        prompt.AppendLine("`thread=` names the review thread a reply would land inside. A finding with no");
+        prompt.AppendLine("`thread=` is the review's own BODY, which GitHub makes unthreadable: there is nothing");
+        prompt.AppendLine("to reply inside, so an answer to it can only be a top-level comment on the pull");
+        prompt.AppendLine("request.");
+        prompt.AppendLine();
+
+        foreach (ChangesRequestedReview review in task.ChangesRequestedReviews)
+        {
+            string submitted = review.SubmittedAt is { } at
+                ? at.ToString("u", CultureInfo.InvariantCulture)
+                : "time not reported by the provider";
+            prompt.AppendLine($"### Changes requested by @{review.Reviewer} ({submitted})");
+            prompt.AppendLine();
+            prompt.AppendLine($"Review: {review.ReviewUrl}");
+            prompt.AppendLine();
+            if (review.Findings.Count == 0)
+            {
+                // Deliberately NOT stated as "the reviewer said nothing": closeout's own thread
+                // read is capped at the first 100 threads, so a review whose comments all sit past
+                // that cap also arrives here with no findings, and a reviewer who did state what
+                // they wanted would be reported as silent (independent pre-PR review, cycle 1,
+                // adversarial lens). What was actually observed is that closeout read none — so
+                // the session is pointed at the review itself before concluding either way.
+                prompt.AppendLine("Closeout read no body and no inline comments on this review. That is either a");
+                prompt.AppendLine("reviewer who requested changes without stating what, or comments closeout could");
+                prompt.AppendLine("not see — its thread read is capped at the pull request's first 100 threads.");
+                prompt.AppendLine("Open the review above and read it yourself (`gh pr view --json reviews`, or");
+                prompt.AppendLine("`gh api` for its comments) before concluding which. If the reviewer genuinely");
+                prompt.AppendLine("stated nothing, say so in your summary rather than guessing at what they meant:");
+                prompt.AppendLine("there is then nothing to fix and nothing to dispute.");
+                prompt.AppendLine();
+                continue;
+            }
+
+            foreach (ChangesRequestedFinding finding in review.Findings)
+            {
+                List<string> tags = [];
+                if (finding.Location.IsNotBlank())
+                {
+                    tags.Add($"at={finding.Location}");
+                }
+
+                if (finding.ThreadId.IsNotBlank())
+                {
+                    tags.Add($"thread={finding.ThreadId}");
+                }
+
+                prompt.AppendLine(tags.Count > 0
+                    ? $"{ReviewResultParser.FindingMarker} {string.Join("; ", tags)}"
+                    : $"{ReviewResultParser.FindingMarker} (the review's own body — no file, no line, no thread)");
+                prompt.AppendLine(finding.Body);
+                prompt.AppendLine();
+            }
+        }
+    }
+
+    /// <summary>
+    /// How a finding the session agrees with is answered. The same care asymmetry
+    /// <see cref="AppendThreadHandlingRules"/> teaches, narrowed to the one case where the reviewer
+    /// is known to be a person: there is no bot half to state, because a bot's review never reaches
+    /// this prompt.
+    /// </summary>
+    private static void AppendChangesRequestedHandlingRules(StringBuilder prompt)
+    {
+        prompt.AppendLine("## How to handle each finding");
+        prompt.AppendLine();
+        prompt.AppendLine("Read the finding and the code around it before deciding anything. Then:");
+        prompt.AppendLine();
+        prompt.AppendLine("- A finding you agree with gets the fix, then a reply inside its thread saying what");
+        prompt.AppendLine("  changed, then the thread resolved — in that order. Never resolve before the reply");
+        prompt.AppendLine("  is posted: a resolved thread with no answer in it reads as handled when it is not.");
+        prompt.AppendLine("- **A question gets an answer, not a code change.** If the honest answer is \"yes,");
+        prompt.AppendLine("  deliberately, because X\", that reply IS the resolution. Inventing a change to look");
+        prompt.AppendLine("  responsive is worse than saying nothing.");
+        prompt.AppendLine("- A finding about the review's own BODY has no thread to reply inside. Answer it with");
+        prompt.AppendLine("  a top-level comment on the pull request (`gh pr comment`) that names the review it");
+        prompt.AppendLine("  answers and says what you did about each point. Never leave a review body");
+        prompt.AppendLine("  unanswered.");
+        prompt.AppendLine("- **Never open a new review thread.** Reply inside existing ones only. A thread's");
+        prompt.AppendLine("  first comment is always a reviewer's, and that is the only way the next run can");
+        prompt.AppendLine("  tell your comment from theirs.");
+        prompt.AppendLine();
+        prompt.AppendLine("What you cannot see: GitHub hides a review's comments while that review is still");
+        prompt.AppendLine("PENDING (written but not submitted). So work the findings above, and never read");
+        prompt.AppendLine("silence as \"the reviewer had nothing more to say\".");
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// The one rule this prompt exists for (task: a changes-requested pull-request review from a
+    /// human becomes a fix lap). A disagreement with a person is not posted by this session, by
+    /// any other agent, or by an orchestrator — it is drafted here and sent, edited, or dropped by
+    /// the implementer through <c>h9k review resolve</c> (Brian's ruling, 2026-09-06 12:15).
+    /// <para>
+    /// The marker is the same <c>RESOLUTION: disputed</c> vocabulary the thread-dispute and
+    /// rebase-dispute paths already answer in (<c>ReviewResultParser.ParseFixOutcome</c> reads it
+    /// generically, whatever obstruction the follow-up was dispatched for) — reused rather than
+    /// reinvented, with the structured block above it being what is new.
+    /// </para>
+    /// </summary>
+    private static void AppendChangesRequestedDisagreementRules(StringBuilder prompt)
+    {
+        prompt.AppendLine("## When you disagree with a finding");
+        prompt.AppendLine();
+        prompt.AppendLine("The reviewer is a person. Telling them they are wrong is theirs to send, not yours:");
+        prompt.AppendLine("**do not reply on the pull request, and do not resolve the thread.** Not a hedged");
+        prompt.AppendLine("reply, not a \"just noting\" comment — nothing reaches the reviewer from you.");
+        prompt.AppendLine();
+        prompt.AppendLine("Fix everything you honestly agree with first — those replies land immediately, and");
+        prompt.AppendLine("they are the right thing to post. Then, for the finding you cannot accept, close your");
+        prompt.AppendLine("summary with a block of exactly this shape:");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            $"    {ReviewResultParser.DisagreementMarker} at={ReviewResultParser.ExampleLocationPlaceholder}; "
+            + "thread=THE-FINDINGS-OWN-THREAD; review=THE-REVIEWS-URL");
+        prompt.AppendLine($"    {ReviewResultParser.ReviewerAskedMarker} what they asked for, in your own words, fairly.");
+        prompt.AppendLine($"    {ReviewResultParser.DisagreementReasoningMarker} why you think otherwise — the pattern, constraint, or");
+        prompt.AppendLine("    decision it rests on, and what you did instead.");
+        prompt.AppendLine($"    {ReviewResultParser.ProposedReplyMarker}");
+        prompt.AppendLine("    The reply you would send, written to the reviewer, as you would send it.");
+        prompt.AppendLine();
+        prompt.AppendLine($"Then a final line reading exactly `{DisputeMarker}` (the last line of the summary,");
+        prompt.AppendLine("above the HANDOFF block the section below asks for).");
+        prompt.AppendLine();
+        prompt.AppendLine("Fill in every part of that header from the finding's own one above — the block is");
+        prompt.AppendLine($"dropped as an echoed example if you leave `at={ReviewResultParser.ExampleLocationPlaceholder}`");
+        prompt.AppendLine("in it, which would park a run over a file this repository does not have. Drop `thread=`");
+        prompt.AppendLine("entirely when the finding you dispute is the review's own body, which has no thread.");
+        prompt.AppendLine("Write the proposed reply as prose addressed to the reviewer, not as a note to the");
+        prompt.AppendLine("implementer — it is what they may send verbatim under their own name.");
+        prompt.AppendLine();
+        prompt.AppendLine("The platform parks the run for the implementer with your three positions saved");
+        prompt.AppendLine("beside it, and pushes nothing until they decide. They resolve it with");
+        prompt.AppendLine("`h9k review resolve`, which offers them exactly three choices: post your reply as");
+        prompt.AppendLine("written, post an edited one, or post nothing at all.");
+        prompt.AppendLine();
+        prompt.AppendLine("Park at most once: one block, for the finding that genuinely blocks this lap. This is");
+        prompt.AppendLine("one honest attempt, not a negotiation, and it is not a way to escalate a finding you");
+        prompt.AppendLine("simply do not feel like fixing.");
+        prompt.AppendLine();
+        prompt.AppendLine($"When you handled everything, close the summary with `{ResolvedMarker}` instead.");
+        prompt.AppendLine();
+    }
+
+    /// <summary>
     /// The fix-the-CI variant (closeout monitor, Decisions Log #22): the agent resumes
     /// the task's existing PR branch to make the pull request's failing checks pass.
     /// Fixes land per the commit style, like any follow-up (Decisions Log #26).
