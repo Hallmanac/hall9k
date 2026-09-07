@@ -1,9 +1,12 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -31,11 +34,12 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         ConnectionDetails? connection = await session.LoadAsync<ConnectionDetails>(project.ConnectionId, cancellationToken);
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(project.OwnerId, cancellationToken);
+        OperatingSettings operatingSettings = (await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken)).Settings;
 
         AnsiConsole.Write(Registration(project, connection, owner));
         AnsiConsole.MarkupLine("\n[bold]Settings[/] [dim](change them with h9k project set "
             + $"{project.Name.EscapeMarkup()} …)[/]");
-        AnsiConsole.Write(SettingsPane(project));
+        AnsiConsole.Write(SettingsPane(project, operatingSettings));
 
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
@@ -78,10 +82,11 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         return table;
     }
 
-    private static Table SettingsPane(ProjectDetails project)
+    private static Table SettingsPane(ProjectDetails project, OperatingSettings operatingSettings)
     {
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
+        table.AddRow("Orchestrator model", OrchestratorModelRow(project, operatingSettings));
         table.AddRow("Skip permissions", project.SkipPermissions
             ? "[yellow]yes[/] [dim]— agents run with --dangerously-skip-permissions (log #9)[/]"
             : "[dim]no — agents stop for every permission prompt, which a detached run cannot answer (log #9)[/]");
@@ -145,6 +150,25 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
         return table;
+    }
+
+    /// <summary>
+    /// The model an orchestrator window for this project actually resolves to right now
+    /// (<see cref="OrchestratorModel.ForProject"/>'s own chain), and which override in that chain
+    /// is the one deciding it. Before this row existed, the only way to see the effective value
+    /// was to cat the project's own recipes/settings.json or re-read config.json by hand
+    /// (independent pre-PR review, cycle 3, conformance lens).
+    /// </summary>
+    internal static string OrchestratorModelRow(ProjectDetails project, OperatingSettings operatingSettings)
+    {
+        string resolved = OrchestratorModel.ForProject(project.OrchestratorModel, project.Model, operatingSettings);
+        string origin = project.OrchestratorModel != AgentModel.Unknown
+            ? "this project's own override"
+            : project.Model != AgentModel.Unknown
+                ? "this project's agent-dispatch model (h9k project set --model)"
+                : "the node's own resolution (h9k config show)";
+        return $"{resolved.EscapeMarkup()} [dim]— {origin}. Override: h9k project set "
+            + $"{project.Name.EscapeMarkup()} --orchestrator-model <tier>[/]";
     }
 
     /// <summary>

@@ -10,12 +10,14 @@ using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
+using Doorbell = Hall9k.Cli.Infrastructure.Doorbell;
 
 namespace Hall9k.Cli.Commands;
 
@@ -597,8 +599,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // lens).
             if (settings.Model is not null || settings.OrchestratorModel is not null)
             {
-                Hall9k.Domain.Infrastructure.Persistence.ConfigFileReadResult operatingSettingsRead =
-                    await Hall9k.Domain.Infrastructure.Persistence.PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
+                ConfigFileReadResult operatingSettingsRead = await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
+                if (operatingSettingsRead.Problem is { } settingsProblem)
+                {
+                    homeSteps.Add(ProjectHomeStep.Skipped(
+                        $"{settingsProblem.Message} The orchestrator recipe's settings.json falls back to "
+                        + $"{AgentModel.PlatformFallback} for its model this pass — fix the file, then re-run "
+                        + "h9k project set to pick up the real setting."));
+                }
+
                 homeSteps.Add(RecipeSettingsDocument.WriteStep(
                     ProjectHomePaths.RecipeSettingsFile(updated.HomeDirectory.Value),
                     OrchestratorModel.ForProject(updated.OrchestratorModel, updated.Model, operatingSettingsRead.Settings)));
