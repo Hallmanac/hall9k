@@ -792,6 +792,58 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     /// <summary>
+    /// The whole reason <see cref="GitWorktreeManager.AcquireCheckoutLockAsync"/> exists rather
+    /// than every gate-spawning caller reusing <see cref="GitWorktreeManager.AcquireRepositoryLockAsync"/>
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium): a clean-base comparison's
+    /// own budget is now derived from the gate's own recorded duration, so it can hold a lock for
+    /// far longer than the old fixed five-minute cap, and the repository-wide lock would have held
+    /// that same span against every other run's own <c>git worktree add</c> on this project. A
+    /// checkout-scoped lock held on one linked worktree must never block creating a sibling one.
+    /// </summary>
+    [Fact]
+    public async Task Holding_a_checkout_lock_on_one_worktree_does_not_block_creating_another()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Worktree first = await _manager.CreateAsync(Request("Hold the checkout lock"), cts.Token);
+
+        await using IAsyncDisposable checkoutLock = await _manager.AcquireCheckoutLockAsync(first.Path, cts.Token);
+
+        // Bounded well under the test's own cancellation budget: if CreateAsync were still
+        // serialized against this checkout lock the way it used to be against the repository-wide
+        // one, this would hang until cts fires instead of completing promptly.
+        using CancellationTokenSource createBudget = new(TimeSpan.FromSeconds(10));
+        Worktree second = await _manager.CreateAsync(
+            Request("Second worktree while checkout locked"), createBudget.Token);
+
+        Directory.Exists(second.Path).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The narrower scope must not cost the mutual exclusion the lock still owes every other
+    /// caller of the identical checkout (h9k task verify, h9k project set --verify, a sibling run's
+    /// own clean-base comparison) — two acquisitions against the same checkout still serialize.
+    /// </summary>
+    [Fact]
+    public async Task A_checkout_lock_still_serializes_a_second_acquisition_on_the_same_checkout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Worktree first = await _manager.CreateAsync(Request("Serialize the checkout lock"), cts.Token);
+
+        IAsyncDisposable held = await _manager.AcquireCheckoutLockAsync(first.Path, cts.Token);
+        try
+        {
+            using CancellationTokenSource secondBudget = new(TimeSpan.FromMilliseconds(300));
+            Func<Task> act = () => _manager.AcquireCheckoutLockAsync(first.Path, secondBudget.Token);
+
+            await act.Should().ThrowAsync<OperationCanceledException>("the first acquisition still holds the lock");
+        }
+        finally
+        {
+            await held.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// A path that is not a checkout at all is reported as unobserved rather than answered for:
     /// the caller logs what came back, and "up to date" would be a claim nothing here can make.
     /// </summary>
