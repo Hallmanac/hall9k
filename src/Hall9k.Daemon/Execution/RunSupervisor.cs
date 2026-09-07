@@ -711,6 +711,14 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
+    /// Distinguishes "nothing to park" from "would have parked, but this generation is
+    /// stale" (Copilot review, PR #30): <see cref="CompleteRunAsync"/> treated both as the
+    /// same false and fell through to a verification cycle a stale lane has no business
+    /// spending — the later review-loop fence would only reject it one step further in.
+    /// </summary>
+    private enum ThreadDisputeOutcome { NoDispute, Parked, Stale }
+
+    /// <summary>
     /// A follow-up that met a review thread it could not honestly judge parks the run for
     /// the human instead of pushing (Decisions Log #62). The never-loop rule the pre-PR fix
     /// session already runs on, applied to a reviewer's thread: one honest attempt, and a
@@ -723,10 +731,12 @@ public sealed class RunSupervisor(
     /// prompt teaches this vocabulary, so a CI-fix session quoting the skill file's marker
     /// line would otherwise park a run with a dispute reason pointing at a CI narrative. The
     /// gate is <c>RunLauncher</c>'s own prompt-selection condition read back — FailingChecks
-    /// got BuildFixChecks, Rebase got BuildRebase, and everything else (including the Unknown
+    /// got BuildFixChecks, Rebase got BuildRebase, ReviewRequestedChanges got
+    /// BuildReviewRequestedChanges, and everything else (including the Unknown
     /// of reopens recorded before the vocabulary existed) got BuildFollowUp — so the runs that
     /// may park are exactly the runs that were taught how, off the same field that chose the
-    /// prompt.
+    /// prompt. Three of those four teach the marker and may park; only the CI-fix prompt does
+    /// not.
     /// </para>
     /// <para>
     /// The park reuses <see cref="ReviewParked"/> whole: it already surfaces as NeedsHuman,
@@ -735,14 +745,6 @@ public sealed class RunSupervisor(
     /// to re-enter at the gates instead of reporting merge-ready (RunAggregate.ParkedFromState).
     /// </para>
     /// </summary>
-    /// <summary>
-    /// Distinguishes "nothing to park" from "would have parked, but this generation is
-    /// stale" (Copilot review, PR #30): <see cref="CompleteRunAsync"/> treated both as the
-    /// same false and fell through to a verification cycle a stale lane has no business
-    /// spending — the later review-loop fence would only reject it one step further in.
-    /// </summary>
-    private enum ThreadDisputeOutcome { NoDispute, Parked, Stale }
-
     private async Task<ThreadDisputeOutcome> ParkedOnThreadDisputeAsync(
         Guid runId, Guid taskId, AgentResult result, CancellationToken cancellationToken)
     {
@@ -774,6 +776,13 @@ public sealed class RunSupervisor(
         // artifact so the human reads a park about the actual obstruction.
         bool isRebaseDispute = task.FollowUpKind == FollowUpKind.Rebase;
 
+        // The third question the same RESOLUTION vocabulary now asks (task: a changes-requested
+        // pull-request review from a human becomes a fix lap): not "which side of this thread is
+        // right" and not "how do these conflicting changes reconcile", but "should this reply
+        // reach the reviewer at all" — which is not an agent's call to make, so the park carries a
+        // drafted reply nobody has sent and h9k review resolve is what sends, edits, or drops it.
+        bool isChangesRequestedDisagreement = task.FollowUpKind == FollowUpKind.ReviewRequestedChanges;
+
         if (!await GenerationFence.AllowsAsync(
             session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
         {
@@ -794,9 +803,7 @@ public sealed class RunSupervisor(
         }
 
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
-        string disputeFilePath = isRebaseDispute
-            ? RunPaths.RebaseConflictDisputeFile(runDirectory)
-            : RunPaths.ReviewThreadDisputeFile(runDirectory);
+        string disputeFilePath = RunPaths.FollowUpDisputeFile(runDirectory, task.FollowUpKind);
         await WriteDisputePositionAsync(disputeFilePath, result.Summary, cancellationToken);
 
         // The ReviewParked appended below is itself what ends this run's liveness, which
@@ -805,10 +812,27 @@ public sealed class RunSupervisor(
         // not where it sits the instant before (ReviewEngine.ParkedRunDirectory does the
         // same anticipation for the identical dispute file; adversarial review, cycle 3).
         string parkedRunDirectory = RunPaths.AnticipateDirectoryAfterSweep(runDirectory, willArchive: false);
-        string parkedDisputeFilePath = isRebaseDispute
-            ? RunPaths.RebaseConflictDisputeFile(parkedRunDirectory)
-            : RunPaths.ReviewThreadDisputeFile(parkedRunDirectory);
-        string reason = isRebaseDispute
+        string parkedDisputeFilePath = RunPaths.FollowUpDisputeFile(parkedRunDirectory, task.FollowUpKind);
+
+        // Appended ahead of the ReviewParked below, deliberately: that event is the one that moves
+        // the run's state, and by the time anything reads the parked run these positions are
+        // already on the stream (RunAggregate.Apply(ReviewDisagreementParked) says the same).
+        // Recorded even when the parse found no block at all — the marker still says a
+        // disagreement exists, and h9k review resolve must still ask the implementer what the
+        // reviewer hears rather than reading an unparseable park as an ordinary one.
+        if (isChangesRequestedDisagreement)
+        {
+            session.Events.Append(runId, new ReviewDisagreementParked(
+                runId, ReviewResultParser.ParseDisagreements(result.Summary), DateTimeOffset.UtcNow));
+        }
+
+        string reason = isChangesRequestedDisagreement
+            ? "A changes-requested fix lap disagreed with one of the reviewer's findings and posted "
+              + $"nothing about it — that reply is yours to send. Its three positions: {parkedDisputeFilePath}. "
+              + "Resolve with h9k review resolve, which offers to post the drafted reply as written "
+              + "(--post-reply-as-written), post your own text instead (--post-reply \"<text>\"), or post "
+              + "nothing (--post-nothing). Nothing has been pushed, and the reviewer has heard nothing."
+            : isRebaseDispute
             ? "A follow-up could not honestly resolve a rebase conflict — both sides changed the same "
               + $"behavior, not just the same lines. Conflicting files and both positions: {parkedDisputeFilePath}. "
               + "Decide between them, then resolve with h9k review resolve --needs-fixes \"<your resolution>\" "
@@ -820,9 +844,11 @@ public sealed class RunSupervisor(
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogWarning(
-            isRebaseDispute
-                ? "Run {RunId}: rebase conflict disputed — parked for the human. {Reason}"
-                : "Run {RunId}: review thread disputed — parked for the human. {Reason}",
+            isChangesRequestedDisagreement
+                ? "Run {RunId}: disagreed with a reviewer's finding and posted nothing about it — parked for the human. {Reason}"
+                : isRebaseDispute
+                    ? "Run {RunId}: rebase conflict disputed — parked for the human. {Reason}"
+                    : "Run {RunId}: review thread disputed — parked for the human. {Reason}",
             runId, reason);
         return ThreadDisputeOutcome.Parked;
     }
