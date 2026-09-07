@@ -16,6 +16,13 @@ public sealed class ConnectionDetails
     public DateTimeOffset RegisteredAt { get; set; }
     /// <summary>When the credentials or the site were last replaced; null while still as first registered.</summary>
     public DateTimeOffset? ReregisteredAt { get; set; }
+    /// <summary>
+    /// The identity the tracker itself reports these credentials as (Jira's own <c>accountId</c>),
+    /// or null when nothing has observed it yet — see <see cref="ConnectionTrackerIdentityObserved"/>.
+    /// </summary>
+    public string? TrackerAccountId { get; set; }
+    /// <summary>When <see cref="TrackerAccountId"/> was read from the tracker; null while it is unobserved.</summary>
+    public DateTimeOffset? TrackerIdentityObservedAt { get; set; }
 }
 
 public sealed class ConnectionDetailsProjection : SingleStreamProjection<ConnectionDetails, Guid>
@@ -38,5 +45,11 @@ public sealed class ConnectionDetailsProjection : SingleStreamProjection<Connect
         view.CredentialReference = @event.Data.CredentialReference.ToString();
         view.SiteUrl = @event.Data.SiteUrl;
         view.ReregisteredAt = @event.Data.ReregisteredAt;
+    }
+
+    public void Apply(IEvent<ConnectionTrackerIdentityObserved> @event, ConnectionDetails view)
+    {
+        view.TrackerAccountId = @event.Data.TrackerAccountId;
+        view.TrackerIdentityObservedAt = @event.Data.ObservedAt;
     }
 }
