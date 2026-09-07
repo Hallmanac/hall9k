@@ -38,6 +38,27 @@ public sealed class OrchestratorModelTests
     }
 
     [Fact]
+    public void ForNode_treats_a_hand_edited_default_literal_as_unset_at_every_level()
+    {
+        // A hand-edited config.json can carry the clearing word "default" (h9k config set
+        // --default-model's own documented meaning) instead of running the command, and
+        // AgentModel.Resolve maps that same literal to Unknown for every dispatched agent — this
+        // chain must agree, or the orchestrator window and dispatched agents end up on different
+        // models from the same file (independent pre-PR review, cycle 1, adversarial lens).
+        OperatingSettings settings = new() { DefaultModel = "claude-sonnet-5", OrchestratorModel = "default" };
+
+        OrchestratorModel.ForNode(settings).Should().Be("claude-sonnet-5");
+    }
+
+    [Fact]
+    public void ForNode_treats_a_blank_default_model_as_unset()
+    {
+        OperatingSettings settings = new() { DefaultModel = "   ", OrchestratorModel = null };
+
+        OrchestratorModel.ForNode(settings).Should().Be(AgentModel.PlatformFallback);
+    }
+
+    [Fact]
     public void ForProject_falls_through_to_the_node_when_the_project_sets_neither_override()
     {
         OperatingSettings settings = new() { DefaultModel = "claude-sonnet-5" };
