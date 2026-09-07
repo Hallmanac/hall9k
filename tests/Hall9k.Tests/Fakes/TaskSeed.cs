@@ -22,6 +22,19 @@ internal static class TaskSeed
         Start(added, ownerId, at).Events;
 
     /// <summary>
+    /// The same lifecycle stopped one step short: Published, past the readiness gate, and
+    /// deliberately <em>not</em> assigned. What a test about the assign door itself needs — a task
+    /// already assigned cannot be assigned again, so a refusal that "left the task exactly as
+    /// before" is only checkable when that door is what would have moved it.
+    /// </summary>
+    public static object[] Publishable(TaskAdded added, Guid ownerId, DateTimeOffset at)
+    {
+        TaskAggregate task = new();
+        task.Apply(added);
+        return [added, TaskDecider.Publish(task, TaskDependencyGraph.Empty, at, ownerId)];
+    }
+
+    /// <summary>
     /// The same, for a task with declared dependencies. Publish is the cycle-detection gate,
     /// so it refuses a task whose blockers are absent from the graph it is handed — a seed
     /// with edges must load the real graph (<see cref="DependencyGraphAsync"/>) rather than
