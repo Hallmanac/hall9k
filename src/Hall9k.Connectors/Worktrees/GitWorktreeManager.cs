@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Verification;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Microsoft.Extensions.Logging;
@@ -250,39 +251,78 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             // git-common-dir and the identical semaphore key as the repository lock already held
             // above, and re-entering a non-reentrant SemaphoreSlim on the exact same instance is a
             // guaranteed self-deadlock, not exclusion.
+            //
+            // The wait to acquire it is bounded to AdHocGateRunner.CleanBaseCheckTimeoutCap, the
+            // identical budget DescribeCleanBaseComparisonAsync/TaskVerifyCommand/ProjectSetCommand
+            // already bound their own checkout-lock acquisition to (that constant's own doc comment
+            // names this method as the fourth site sharing the budget). Left unbounded, this wait
+            // sits *inside* the repository lock acquired above, and the checkout lock it waits on
+            // can now be held for as long as a clean-base comparison's own gate run takes —
+            // VerifyGateTimeout, not the old fixed five-minute cap this branch replaced. An
+            // unbounded wait here would pin the repository lock (in-process and cross-process) for
+            // that whole span, blocking every other CreateAsync/CheckoutExistingAsync/RemoveAsync/
+            // PruneAsync on the project — including the daemon's own dispatch loop — behind a
+            // best-effort refresh (independent pre-PR review, cycle 5, conformance and adversarial
+            // lenses, high). Timing out here means only that this refresh cannot confirm the
+            // checkout is current right now; the caller already treats !UpToDate as "skip the
+            // comparison, honestly", the same outcome every other unobservable case in this method
+            // reaches.
             string fullCheckoutPath = Path.GetFullPath(checkoutPath);
-            await using IAsyncDisposable? checkoutLock = fullCheckoutPath == repositoryPath
-                ? null
-                : await AcquireCheckoutLockCoreAsync(fullCheckoutPath, cancellationToken);
-
-            (int behindExit, string counted, string countError) = await TryRunGitAsync(
-                checkoutPath, $"rev-list --count HEAD..origin/{branch}", cancellationToken);
-            if (behindExit != 0 || !int.TryParse(counted.Trim(), out int behind))
+            IAsyncDisposable? checkoutLock;
+            if (fullCheckoutPath == repositoryPath)
             {
-                return new CheckoutRefresh(
-                    UpToDate: false,
-                    $"could not be compared against origin/{branch} ({countError.Trim()}), so whether it "
-                    + "holds current code is unobserved");
+                checkoutLock = null;
+            }
+            else
+            {
+                using CancellationTokenSource lockBudget =
+                    CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                lockBudget.CancelAfter(AdHocGateRunner.CleanBaseCheckTimeoutCap);
+                try
+                {
+                    checkoutLock = await AcquireCheckoutLockCoreAsync(fullCheckoutPath, lockBudget.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    return new CheckoutRefresh(
+                        UpToDate: false,
+                        "could not acquire its checkout lock within "
+                        + $"{AdHocGateRunner.CleanBaseCheckTimeoutCap.TotalMinutes:0} minutes, so whether it "
+                        + "holds current code is unobserved");
+                }
             }
 
-            if (behind == 0)
+            await using (checkoutLock)
             {
-                return new CheckoutRefresh(UpToDate: true, $"already at origin/{branch}");
+                (int behindExit, string counted, string countError) = await TryRunGitAsync(
+                    checkoutPath, $"rev-list --count HEAD..origin/{branch}", cancellationToken);
+                if (behindExit != 0 || !int.TryParse(counted.Trim(), out int behind))
+                {
+                    return new CheckoutRefresh(
+                        UpToDate: false,
+                        $"could not be compared against origin/{branch} ({countError.Trim()}), so whether it "
+                        + "holds current code is unobserved");
+                }
+
+                if (behind == 0)
+                {
+                    return new CheckoutRefresh(UpToDate: true, $"already at origin/{branch}");
+                }
+
+                // Fast-forward only. Whatever is uncommitted or committed locally under a reading
+                // checkout is somebody's, and this is not the place that gets to decide it was not
+                // wanted — SyncToOriginBestEffortAsync resets, but that one owns a run's own worktree.
+                (int mergeExit, _, string mergeError) = await TryRunGitAsync(
+                    checkoutPath, $"merge --ff-only origin/{branch}", cancellationToken);
+                (_, string head, _) = await TryRunGitAsync(checkoutPath, "rev-parse --short HEAD", cancellationToken);
+
+                return mergeExit == 0
+                    ? new CheckoutRefresh(UpToDate: true, $"fast-forwarded {behind} commit(s) to origin/{branch}")
+                    : new CheckoutRefresh(
+                        UpToDate: false,
+                        $"is {behind} commit(s) behind origin/{branch} at {head.Trim()} and could not be "
+                        + $"fast-forwarded ({mergeError.Trim()}); it was left exactly as it is");
             }
-
-            // Fast-forward only. Whatever is uncommitted or committed locally under a reading
-            // checkout is somebody's, and this is not the place that gets to decide it was not
-            // wanted — SyncToOriginBestEffortAsync resets, but that one owns a run's own worktree.
-            (int mergeExit, _, string mergeError) = await TryRunGitAsync(
-                checkoutPath, $"merge --ff-only origin/{branch}", cancellationToken);
-            (_, string head, _) = await TryRunGitAsync(checkoutPath, "rev-parse --short HEAD", cancellationToken);
-
-            return mergeExit == 0
-                ? new CheckoutRefresh(UpToDate: true, $"fast-forwarded {behind} commit(s) to origin/{branch}")
-                : new CheckoutRefresh(
-                    UpToDate: false,
-                    $"is {behind} commit(s) behind origin/{branch} at {head.Trim()} and could not be "
-                    + $"fast-forwarded ({mergeError.Trim()}); it was left exactly as it is");
         }
     }
 
