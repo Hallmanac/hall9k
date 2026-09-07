@@ -856,13 +856,12 @@ public sealed class RunLauncher(
     /// path won, so the prompt tells a resuming agent to review the previous attempt's
     /// work — possibly uncommitted in the retained worktree — before starting over.
     /// </summary>
-    /// <summary>
-    /// <paramref name="baseBranch"/> is the resolved base this run sits on — the project's own for
-    /// every ordinary task, a stacked child's parent branch instead (<see cref="StackedBaseResolver"/>).
-    /// A retry resuming its own previous branch never consults it: that branch was already cut from
-    /// whatever base the earlier attempt resolved, and the retry is continuing that work rather
-    /// than re-basing it.
-    /// </summary>
+    /// <param name="baseBranch">
+    /// The resolved base this run sits on — the project's own for every ordinary task, a stacked
+    /// child's parent branch instead (<see cref="StackedBaseResolver"/>). A retry resuming its own
+    /// previous branch never consults it: that branch was already cut from whatever base the earlier
+    /// attempt resolved, and the retry is continuing that work rather than re-basing it.
+    /// </param>
     private async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
         TaskDetails task, ProjectDetails project, string baseBranch, Guid taskId, Guid runId,
         CancellationToken cancellationToken)
