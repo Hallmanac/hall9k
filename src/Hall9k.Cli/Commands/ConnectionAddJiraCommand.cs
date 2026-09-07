@@ -89,7 +89,7 @@ public sealed class ConnectionAddJiraCommand : Hall9kAsyncCommand<ConnectionAddJ
         // dispatched run, where the person who mistyped it is not watching (AGENTS.md, never
         // guess at unobserved facts).
         JiraWorkItemProvider provider = new(chosen.Account);
-        string displayName = await provider.VerifyAccessAsync(cancellationToken);
+        JiraSelfAccount self = await provider.VerifyAccessAsync(cancellationToken);
 
         CredentialReference credential = chosen.Reference(site, email);
 
@@ -110,19 +110,36 @@ public sealed class ConnectionAddJiraCommand : Hall9kAsyncCommand<ConnectionAddJ
             // working one, from a command that exited non-zero and appeared to have done nothing.
             await chosen.WriteAsync(site, email, cancellationToken);
 
+            // The accountId /rest/api/2/myself just answered, recorded in the same breath as the
+            // registration it proved (idea 64c75e43): it is the identity a project's
+            // tracker-assignee claim gate compares a card's assignee against, and it is captured
+            // here because this call is already made — a gate that had to discover it later would
+            // pay for its own /myself round trip on the first check instead. Its own event rather
+            // than a field on the registration, because it is an observation of the tenant rather
+            // than part of what a human typed (the WorkItemLinked separation).
+            DateTimeOffset registeredAt = DateTimeOffset.UtcNow;
             if (existing is null)
             {
                 Guid connectionId = DomainId.New();
-                session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
-                    connectionId, context.OwnerId, WorkItemProvider.Jira, email, credential,
-                    DateTimeOffset.UtcNow, site));
+                session.Events.StartStream<ConnectionAggregate>(
+                    connectionId,
+                    ConnectionDecider.Register(
+                        connectionId, context.OwnerId, WorkItemProvider.Jira, email, credential,
+                        registeredAt, site),
+                    new ConnectionTrackerIdentityObserved(connectionId, self.AccountId, registeredAt));
             }
             else
             {
                 ConnectionAggregate aggregate = (await session.Events
                     .AggregateStreamAsync<ConnectionAggregate>(existing.Id, token: cancellationToken))!;
-                session.Events.Append(existing.Id, ConnectionDecider.Reregister(
-                    aggregate, email, credential, DateTimeOffset.UtcNow, site));
+                session.Events.Append(
+                    existing.Id,
+                    ConnectionDecider.Reregister(aggregate, email, credential, registeredAt, site),
+                    // Re-recorded on every re-registration, never assumed to carry over: this
+                    // command also re-registers the same connection as a *different* account on
+                    // the same tenant, and a stale accountId there would gate every card against
+                    // whoever used to hold the credentials.
+                    new ConnectionTrackerIdentityObserved(existing.Id, self.AccountId, registeredAt));
             }
 
             await session.SaveChangesAsync(cancellationToken);
@@ -145,10 +162,13 @@ public sealed class ConnectionAddJiraCommand : Hall9kAsyncCommand<ConnectionAddJ
             session, existing, credential, cancellationToken);
 
         AnsiConsole.MarkupLine(existing is null
-            ? $"[green]Jira connection registered[/] as {ExternalText.OneLineMarkup(displayName)} "
+            ? $"[green]Jira connection registered[/] as {ExternalText.OneLineMarkup(self.DisplayName)} "
               + $"[dim]({email.EscapeMarkup()}) at {site.Host.EscapeMarkup()}[/]"
-            : $"[green]Jira connection updated[/] to {ExternalText.OneLineMarkup(displayName)} "
+            : $"[green]Jira connection updated[/] to {ExternalText.OneLineMarkup(self.DisplayName)} "
               + $"[dim]({email.EscapeMarkup()}) at {site.Host.EscapeMarkup()}[/]");
+        AnsiConsole.MarkupLine(
+            $"[dim]  Jira account id: {ExternalText.OneLineMarkup(self.AccountId)} (read from /rest/api/2/myself — the "
+            + "identity a tracker-assignee claim gate compares a card's assignee against)[/]");
         AnsiConsole.MarkupLine($"[dim]  credential: {credential.ToString().EscapeMarkup()} (the token is not on the event stream)[/]");
         if (superseded is not null)
         {

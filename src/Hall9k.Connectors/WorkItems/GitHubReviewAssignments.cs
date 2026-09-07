@@ -1,11 +1,21 @@
 using System.Globalization;
 using System.Text.Json;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Text;
 
 namespace Hall9k.Connectors.WorkItems;
 
 /// <summary>One open pull request the search below found, as gh reported it.</summary>
 public sealed record ReviewRequestedPullRequest(int Number, string Url, string Title, string? Body);
+
+/// <summary>
+/// The login <c>gh</c> is authenticated as right now, or why it could not be read —
+/// <see cref="GitHubReviewAssignments.ReadCurrentLoginAsync"/>'s answer. Exactly one of
+/// <see cref="Login"/> and <see cref="Error"/> is ever set. <see cref="AuthenticationRefusal"/>
+/// tells the one failure whose remedy is a login (<c>gh auth login</c>) apart from every other,
+/// whose remedy is the tool or the machine.
+/// </summary>
+public sealed record GitHubLoginRead(string? Login, string? Error, bool AuthenticationRefusal);
 
 /// <summary>
 /// Who most recently changed a login's reviewer-request state on a pull request, and when —
@@ -90,7 +100,25 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
     /// installed, not authenticated, offline): the poll treats that exactly like any other failed
     /// inspection rather than crashing the sweep.
     /// </summary>
-    public async Task<string?> CurrentLoginAsync(string workingDirectory, CancellationToken cancellationToken)
+    public async Task<string?> CurrentLoginAsync(string workingDirectory, CancellationToken cancellationToken) =>
+        (await ReadCurrentLoginAsync(workingDirectory, cancellationToken)).Login;
+
+    /// <summary>
+    /// The same read, with the failure kept instead of swallowed — what a
+    /// <c>tracker-assignee</c> claim gate needs (idea 64c75e43), since a gate that fails closed
+    /// has to say <em>why</em> it could not read this install's own identity and what ends the
+    /// hold. <see cref="CurrentLoginAsync"/> is this method with the reason dropped, which is
+    /// right for a poll whose only move is to try again next tick.
+    /// <para>
+    /// <see cref="GitHubLoginRead.AuthenticationRefusal"/> is true only when gh actually said the
+    /// account was the problem, matched on the same two strings
+    /// <c>GitHubWorkItemProvider.Explain</c> matches: a gh that will not start at all, or a
+    /// proxy asking for its own credentials, is somebody else's failure and must not send the
+    /// reader to re-authenticate a login nothing refused.
+    /// </para>
+    /// </summary>
+    public async Task<GitHubLoginRead> ReadCurrentLoginAsync(
+        string workingDirectory, CancellationToken cancellationToken)
     {
         ProcessResult result;
         try
@@ -99,11 +127,35 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return null;
+            return new GitHubLoginRead(
+                null,
+                $"gh could not be run from {workingDirectory} to read the login it is authenticated as: "
+                + $"{RelayedText.OneLine(exception.Message)}",
+                AuthenticationRefusal: false);
         }
 
         string login = result.StandardOutput.Trim();
-        return result.ExitCode == 0 && login.Length > 0 ? login : null;
+        if (result.ExitCode == 0 && login.Length > 0)
+        {
+            return new GitHubLoginRead(login, null, AuthenticationRefusal: false);
+        }
+
+        // gh's stderr on the way into a sentence a terminal prints and a one-line status row
+        // frames, so it goes through RelayedText first — exactly what every other gh-stderr path
+        // in this feature does (GitHubWorkItemProvider.Explain, ExplainCreate). The commonest
+        // failure here is the unauthenticated one, whose message is several lines of its own, and
+        // an error carrying those newlines verbatim breaks the row that quotes it (independent
+        // pre-PR review, cycle 1, adversarial lens). Folding costs the matching below nothing:
+        // the words are all still there, on one line.
+        string reported = RelayedText.OneLine(result.StandardError).Trim();
+        return new GitHubLoginRead(
+            null,
+            result.ExitCode == 0
+                ? $"gh api user exited successfully from {workingDirectory} but printed no login, so this "
+                  + "install's own GitHub identity is unknown."
+                : $"gh api user exited {result.ExitCode} from {workingDirectory}: {reported}",
+            AuthenticationRefusal: reported.Contains("gh auth login", StringComparison.OrdinalIgnoreCase)
+                || reported.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
