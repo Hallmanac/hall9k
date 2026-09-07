@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
+using Hall9k.Cli.Commands;
+using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
@@ -19,6 +21,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
@@ -1152,6 +1155,484 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             "the recorded boundary no longer resolves against HEAD after the rewrite, so the mandatory "
                 + "final pass must fall back to the full diff instruction rather than trust a stale sha");
         executor.Spawns[4].Prompt.Should().NotContain($"git diff {discoveryHeadSha}..HEAD");
+    }
+
+    /// <summary>
+    /// Task: a human at the wheel takes the fix role herself — the lever's whole shape in one
+    /// pass. At the review-verdict-to-fix park the human commits her own fix and runs
+    /// <c>h9k review fixed</c>; the loop re-enters at the existing fix-to-re-review boundary, so
+    /// the gates run over her commits and the next review pass is scoped to the parked cycle's own
+    /// head — byte-identically to what a fix session's commits would have got — and no fix session
+    /// is ever dispatched. The budget half of the same criterion rides along here rather than in a
+    /// test of its own, because it is only checkable against a run that actually took this path:
+    /// <see cref="RunAggregate.ReviewFixRuns"/> (the automatic count) stays at zero while
+    /// <see cref="RunAggregate.HumanFixRounds"/> reaches one, and the cycle her fix opens is
+    /// counted exactly as one a fix session opens is — same <see cref="RunAggregate.ReviewCycle"/>
+    /// increment, same per-track cap arithmetic, same <see cref="RunAggregate.FixDispatchedThisCycle"/>
+    /// owed to a fresh-context reader before the run may settle.
+    /// </summary>
+    [Fact]
+    public async Task A_human_fix_re_enters_review_at_the_fix_to_re_review_boundary_with_no_fix_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
+            store, cts.Token, interactiveMode: true, reviewStageComposition: ReviewStageComposition.AdversarialOnly);
+
+        // Interactive mode's own "build done to review" boundary, then cycle 1's own verdict.
+        (await NewEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        ScriptedExecutor discovery = new(
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: the widget never initializes.\n\nVERDICT: needs-fixes");
+        (await NewEngine(store, discovery).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse(
+            "the needs-fixes verdict parks at the review-verdict-to-fix boundary");
+        discovery.Spawns.Should().HaveCount(1, "the review pass only — no fix session yet");
+
+        await using (IQuerySession parked = store.QuerySession())
+        {
+            RunDetails details = (await parked.LoadAsync<RunDetails>(runId, cts.Token))!;
+            details.ParkedIsInteractiveGate.Should().BeTrue();
+            details.ParkedReason.Should().Contain(
+                $"h9k review fixed {taskId}",
+                "the park text names all four choices at this boundary, the human's own fix among them");
+        }
+
+        string parkedTip = GitOutput(worktreePath, "rev-parse HEAD");
+
+        // She fixes it herself and commits, then hands the branch back with one verb.
+        CommitDocOnlyChange(worktreePath);
+        (await RunReviewFixedAsync(store, taskId, noChange: null, cts.Token)).Should().Be(ExitCodes.Ok);
+
+        // Re-entered at the fix-to-re-review boundary, which is a boundary of its own: her fix
+        // answered the review-verdict-to-fix question, so the gates run over her commits and then
+        // this next boundary asks its own — exactly the shape a fix session's completion leaves
+        // behind, where the proceed that bought the fix is likewise already spent.
+        ScriptedExecutor reverify = new();
+        (await NewEngine(store, reverify).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse(
+            "the fix-to-re-review boundary holds for her own go, as it does after a fix session");
+        reverify.Spawns.Should().BeEmpty("the gates are not a session, and no fix agent was ever needed");
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        // Cycle 2: one Verify pass reads what she committed.
+        ScriptedExecutor afterFix = new(
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: still not initialized.\n\nVERDICT: needs-fixes");
+        (await NewEngine(store, afterFix).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse(
+            "the cycle her fix opened comes back needs-fixes and parks at the same boundary again");
+        afterFix.Spawns.Should().HaveCount(
+            1, "one review pass and nothing else — a human fix dispatches no fix session of its own");
+        afterFix.Spawns[0].Prompt.Should().Contain(
+            "Independent review",
+            "the one session dispatched after her fix is a reviewer, never a fix agent");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFixDispatched>().Should().BeEmpty(
+            "no fix session was ever dispatched on this run — that is the whole point of the lever");
+
+        ReviewHumanFixApplied humanFix = events.OfType<ReviewHumanFixApplied>().Should().ContainSingle().Subject;
+        humanFix.Cycle.Should().Be(1, "the cycle whose findings she fixed");
+        humanFix.HeadSha.Should().Be(GitOutput(worktreePath, "rev-parse HEAD"));
+        humanFix.NoChangeReason.Should().BeNull("commits landed, so there is nothing to explain");
+        humanFix.PushedToRemote.Should().BeFalse("no pull request is open yet, so nothing needed publishing");
+
+        List<ReviewDispatched> dispatches = [.. events.OfType<ReviewDispatched>()];
+        dispatches.Should().HaveCount(2);
+        dispatches[1].Cycle.Should().Be(2, "her fix opens a review cycle exactly as a fix session's would");
+        dispatches[1].Mode.Should().Be(
+            ReviewMode.Verify, "the same mode the fix-to-re-review boundary hands a fix session's own commits");
+        dispatches[1].SinceSha.Should().Be(
+            parkedTip,
+            "the next pass reads her commits since the parked tip — the identical boundary a fix "
+                + "session's commits would have been scoped against (RunAggregate.CycleHeadSha)");
+
+        // The reverify gate ran over her commit rather than being skipped as an idempotent resume.
+        List<VerificationPassed> gates = [.. events.OfType<VerificationPassed>()];
+        gates.Should().HaveCount(2, "the seeded opening gate, plus the reverify gate her commit earned");
+        gates[^1].HeadSha.Should().Be(humanFix.HeadSha);
+
+        RunAggregate run = (await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token))!;
+        run.ReviewFixRuns.Should().Be(
+            0, "a human fix counts against no automatic fix budget and no cap a fix session consumes");
+        run.HumanFixRounds.Should().Be(1, "counted separately, so neither number misreports who did the work");
+        run.ReviewCycle.Should().Be(2, "the review cycle it opened counts exactly as one a fix session opens does");
+
+        RunDetails view = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        view.HumanFixes.Should().ContainSingle().Which.Cycle.Should().Be(1);
+        view.HumanFixes[0].NoChangeReason.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Task: a human at the wheel takes the fix role herself, second criterion — the
+    /// uncommitted-files refusal, naming them. Nothing is recorded and the run stays parked, so
+    /// the lever is still there once she commits.
+    /// </summary>
+    [Fact]
+    public async Task A_human_fix_is_refused_over_an_uncommitted_worktree_and_names_the_files()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) =
+            await SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(store, cts.Token);
+
+        // A tracked file edited but not committed, and an untracked file under src/ — the daemon's
+        // own pre-gate check fails a run over either, so both block here (WorktreeGitStatus).
+        File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { int x; }\n");
+        Directory.CreateDirectory(Path.Combine(worktreePath, "src"));
+        File.WriteAllText(Path.Combine(worktreePath, "src", "Stranded.cs"), "class Stranded { }\n");
+
+        Func<Task> act = () => RunReviewFixedAsync(store, taskId, noChange: null, cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*still holds uncommitted work*")
+            .WithMessage("*Widget.cs*")
+            .WithMessage("*src/Stranded.cs*");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewHumanFixApplied>().Should().BeEmpty("a refusal records nothing");
+        RunDetails view = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        view.State.Should().Be(RunState.ReviewParked, "the run is still parked, so the lever is still there");
+        view.ParkedIsInteractiveGate.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The same guard <c>h9k task deliver</c> holds, on this lever too (round-one self-review, the
+    /// blast-radius class sweep): a worktree left checked out somewhere else passes every other
+    /// check here — the tree reads clean and HEAD reads moved, because it is a different commit —
+    /// while the push, the reverify gate and the next review pass would each read something
+    /// different from the others.
+    /// </summary>
+    [Fact]
+    public async Task A_human_fix_is_refused_when_the_worktree_is_not_on_the_claim_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) =
+            await SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(store, cts.Token);
+
+        // A commit on another branch: clean tree, moved HEAD, wrong branch — exactly the shape
+        // every other check here reads as fine.
+        Git(worktreePath, "checkout -q -b somewhere-else");
+        CommitDocOnlyChange(worktreePath);
+
+        Func<Task> act = () => RunReviewFixedAsync(store, taskId, noChange: null, cts.Token);
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*checked out to 'somewhere-else'*")
+            .WithMessage("*not its claim branch 'task/review-me'*");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)
+            .OfType<ReviewHumanFixApplied>().Should().BeEmpty("a refusal records nothing");
+    }
+
+    /// <summary>
+    /// Task: a human at the wheel takes the fix role herself, second criterion — the unmoved-tip
+    /// refusal. Without commits the next review pass would be handed an empty diff, so the plain
+    /// verb is refused; <c>--no-change "&lt;why&gt;"</c> is the deliberate override, and its reason
+    /// is recorded and carried into the next review pass the way a resolve reason is.
+    /// </summary>
+    [Fact]
+    public async Task A_human_fix_with_an_unmoved_tip_is_refused_until_no_change_states_why()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) =
+            await SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(store, cts.Token);
+        string parkedTip = GitOutput(worktreePath, "rev-parse HEAD");
+
+        Func<Task> act = () => RunReviewFixedAsync(store, taskId, noChange: null, cts.Token);
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*the same tip review cycle 1 was parked at*")
+            .WithMessage("*--no-change*");
+
+        (await RunReviewFixedAsync(
+            store, taskId, noChange: "  The limiter already resets in the retry sweep - confirmed by reading it.  ",
+            cts.Token)).Should().Be(ExitCodes.Ok, "--no-change is the deliberate override");
+
+        await using IQuerySession query = store.QuerySession();
+        ReviewHumanFixApplied humanFix = (await query.Events.FetchStreamAsync(runId, token: cts.Token))
+            .Select(e => e.Data).OfType<ReviewHumanFixApplied>()
+            .Should().ContainSingle().Subject;
+        humanFix.NoChangeReason.Should().Be(
+            "The limiter already resets in the retry sweep - confirmed by reading it.",
+            "trimmed the way an h9k review resolve reason is, so a blank never reads as 'none recorded'");
+        humanFix.HeadSha.Should().Be(parkedTip, "the honest observation: the tip did not move");
+
+        // Carried into the next review pass through the settled-rulings surface, exactly the way a
+        // resolve reason is, and read as a dismissal rather than an order. Two engine calls with
+        // her go in between, because the fix-to-re-review boundary she now sits at is its own.
+        await NewEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token);
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+        ScriptedExecutor afterNoChange = new("Nothing new here.\n\nVERDICT: merge-ready");
+        await NewEngine(store, afterNoChange).ReviewAsync(runId, taskId, cts.Token);
+        afterNoChange.Spawns.Should().NotBeEmpty();
+        afterNoChange.Spawns[0].Prompt.Should().Contain("## Fixes a human applied by hand on this task");
+        afterNoChange.Spawns[0].Prompt.Should().Contain(
+            "The limiter already resets in the retry sweep - confirmed by reading it.");
+        afterNoChange.Spawns[0].Prompt.Should().Contain(
+            "**a fix recorded as no-change** is a dismissal",
+            "the reviewer is told how to read it, not merely handed the text");
+    }
+
+    /// <summary>
+    /// The same refusal in the other direction (independent pre-PR review, cycle 1, both lenses):
+    /// <c>--no-change</c> over a tip that DID move is refused rather than recorded. The two are
+    /// mutually exclusive answers to the same cycle, and accepting both told every later
+    /// fresh-context pass “the finding was read, nothing was deliberately changed” about a cycle
+    /// whose human-authored commits are sitting in the very diff that pass is reading.
+    /// </summary>
+    [Fact]
+    public async Task A_human_fix_refuses_no_change_over_a_tip_that_did_move()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, _) =
+            await SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(store, cts.Token);
+        string parkedTip = GitOutput(worktreePath, "rev-parse HEAD");
+
+        // Her fix for one finding landed; the flag is the natural-but-wrong way to say the other
+        // finding needed nothing.
+        CommitDocOnlyChange(worktreePath);
+        Func<Task> act = () => RunReviewFixedAsync(
+            store, taskId, noChange: "The other finding is already handled by the retry sweep.", cts.Token);
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*has moved to*")
+            .WithMessage("*--no-change*");
+
+        await using (IQuerySession refused = store.QuerySession())
+        {
+            (await refused.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)
+                .OfType<ReviewHumanFixApplied>().Should().BeEmpty("a refusal records nothing");
+        }
+
+        // The plain verb over the very same commits is what the branch actually did, and it is
+        // recorded as the ordinary fix it is - no dismissal riding along with it.
+        (await RunReviewFixedAsync(store, taskId, noChange: null, cts.Token)).Should().Be(ExitCodes.Ok);
+
+        await using IQuerySession query = store.QuerySession();
+        ReviewHumanFixApplied humanFix = (await query.Events.FetchStreamAsync(runId, token: cts.Token))
+            .Select(e => e.Data).OfType<ReviewHumanFixApplied>()
+            .Should().ContainSingle().Subject;
+        humanFix.NoChangeReason.Should().BeNull("the commits are the answer, so nothing was dismissed");
+        humanFix.HeadSha.Should().NotBe(parkedTip, "the honest observation: the tip moved");
+
+        RunDetails view = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        view.HumanFixes.Should().ContainSingle().Which.NoChangeReason.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Task: a human at the wheel takes the fix role herself, sixth criterion — the same lever at a
+    /// closeout-side fix park, on a follow-up reopened by a human's changes-requested review. The
+    /// branch is already published here, so her fix has to reach origin before the reviewers and
+    /// the pull request's own checks read it.
+    /// </summary>
+    [Fact]
+    public Task A_human_fix_works_at_a_closeout_side_fix_park_after_a_changes_requested_review() =>
+        AssertHumanFixWorksOnFollowUpAsync(FollowUpKind.ReviewFeedback);
+
+    /// <summary>
+    /// The same, on a follow-up reopened by failing checks (sixth criterion's other half). The
+    /// lever keys on the park, not on why the pull request reopened, so this is the class sweep
+    /// over the other reopen cause rather than a different code path.
+    /// </summary>
+    [Fact]
+    public Task A_human_fix_works_at_a_closeout_side_fix_park_after_failing_checks() =>
+        AssertHumanFixWorksOnFollowUpAsync(FollowUpKind.FailingChecks);
+
+    private async Task AssertHumanFixWorksOnFollowUpAsync(FollowUpKind kind)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedInteractiveFollowUpRunWithOriginAsync(store, kind, cts.Token);
+
+        (await NewEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse(
+            "the follow-up's own build-done-to-review boundary parks first");
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        ScriptedExecutor discovery = new(
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: the lap left the widget broken.\n\nVERDICT: needs-fixes");
+        (await NewEngine(store, discovery).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse(
+            "this follow-up's review verdict parks at the same review-verdict-to-fix boundary");
+
+        string parkedTip = GitOutput(worktreePath, "rev-parse HEAD");
+        CommitDocOnlyChange(worktreePath);
+        (await RunReviewFixedAsync(store, taskId, noChange: null, cts.Token)).Should().Be(ExitCodes.Ok);
+
+        // Pushed, because this branch is already published behind an open pull request: origin's
+        // own copy of the branch has to hold her commit, not just the local worktree.
+        TryGit(originPath, "show task/review-me:NOTES.md").Should().Be(
+            0, "her fix must reach origin before the pull request's own readers see it");
+
+        // The same two-step re-entry the pre-pull-request side takes: gates, then the
+        // fix-to-re-review boundary's own go, then the re-review.
+        (await NewEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        await ApproveBoundaryAsync(store, runId, cts.Token);
+
+        ScriptedExecutor afterFix = new(
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: still broken.\n\nVERDICT: needs-fixes");
+        (await NewEngine(store, afterFix).ReviewAsync(runId, taskId, cts.Token)).Should().BeFalse();
+        afterFix.Spawns.Should().HaveCount(1, "one reviewer, no fix session");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFixDispatched>().Should().BeEmpty();
+        events.OfType<ReviewHumanFixApplied>().Should().ContainSingle()
+            .Which.PushedToRemote.Should().BeTrue("the pull request was already open");
+        List<ReviewDispatched> dispatches = [.. events.OfType<ReviewDispatched>()];
+        dispatches.Should().HaveCount(2);
+        dispatches[1].Mode.Should().Be(
+            ReviewMode.Verify, "the same fix-to-re-review shape the pre-pull-request side re-enters at");
+        dispatches[1].SinceSha.Should().Be(parkedTip);
+    }
+
+    /// <summary>Interactive mode's own bare proceed, as <c>h9k review proceed</c> appends it.</summary>
+    private async Task ApproveBoundaryAsync(DocumentStore store, Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new ReviewBoundaryApproved(runId, Now, DomainId.New()));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// <c>h9k review fixed</c> through the command's own rule set rather than by appending the
+    /// event directly, so every refusal and every git read this task added is what the test
+    /// actually exercises. The command rings the doorbell, which resolves its connection off
+    /// <c>HALL9K_CONNECTION_STRING</c> rather than this fixture, so it is pointed at the fixture
+    /// for the duration of the call and put back afterwards — the same process-wide dance
+    /// <c>ReviewResolveCommandTests</c> does, which is why both live in the serialized
+    /// <c>Hall9kHome</c> collection.
+    /// </summary>
+    private async Task<int> RunReviewFixedAsync(
+        DocumentStore store, Guid taskId, string? noChange, CancellationToken cancellationToken)
+    {
+        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            return await ReviewFixedCommand.RecordAsync(
+                session, taskId, new ReviewFixedCommand.Settings { NoChange = noChange }, cancellationToken);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
+        }
+    }
+
+    /// <summary>
+    /// The state the refusal tests need and nothing more: an interactive-mode run whose cycle-1
+    /// review filed a finding, parked at the review-verdict-to-fix boundary with its worktree
+    /// exactly as the reviewers left it.
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId, string WorktreePath, Guid ProjectId)>
+        SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(DocumentStore store, CancellationToken cancellationToken)
+    {
+        (Guid taskId, Guid runId, string worktreePath, Guid projectId) = await SeedVerifiedRunWithTestGateAsync(
+            store, cancellationToken, interactiveMode: true,
+            reviewStageComposition: ReviewStageComposition.AdversarialOnly);
+
+        await NewEngine(store, new ScriptedExecutor()).ReviewAsync(runId, taskId, cancellationToken);
+        await ApproveBoundaryAsync(store, runId, cancellationToken);
+        ScriptedExecutor discovery = new(
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: the widget never initializes.\n\nVERDICT: needs-fixes");
+        await NewEngine(store, discovery).ReviewAsync(runId, taskId, cancellationToken);
+        return (taskId, runId, worktreePath, projectId);
+    }
+
+    /// <summary>
+    /// A closeout-side follow-up run under interactive mode (task: a human at the wheel takes the
+    /// fix role herself, sixth criterion): a task that already reached Done behind a real pull
+    /// request, reopened for <paramref name="kind"/> and reclaimed at generation 2, on a branch
+    /// that is genuinely published to a real bare origin — which is what lets the push half of
+    /// <c>h9k review fixed</c> be observed rather than asserted. Real verify commands too, so the
+    /// reverify gate her fix earns actually runs.
+    /// <para>
+    /// <c>OpeningReviewSinceSha</c> is deliberately left unset, so this follow-up's opening cycle
+    /// is a full Discovery read: the scoped-opening-lap interaction is its own feature's coverage,
+    /// and seeding it here would only put a second variable inside a test about the fix lever.
+    /// </para>
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId, string WorktreePath, string OriginPath)>
+        SeedInteractiveFollowUpRunWithOriginAsync(
+            DocumentStore store, FollowUpKind kind, CancellationToken cancellationToken)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
+        string originPath = Path.Combine(_home, $"origin-{runId:N}.git");
+        Directory.CreateDirectory(_home);
+        Git(_home, $"init -q --bare -b main \"{originPath}\"");
+        Git(_home, $"clone -q \"{originPath}\" \"{worktreePath}\"");
+        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
+        Git(worktreePath, "push -q origin main");
+        Git(worktreePath, "checkout -q -b task/review-me");
+        File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+        Git(worktreePath, "push -q -u origin task/review-me");
+        string headSha = GitOutput(worktreePath, "rev-parse HEAD");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        Hall9k.Domain.Features.Project.ProjectAggregate project = new();
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"followup-{taskId:N}", worktreePath, null, "main", Now);
+        project.Apply(registered);
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> verifyCommands =
+            [new Hall9k.Domain.Features.Project.VerifyCommand("test", "dotnet test --help")];
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(
+            projectId, registered,
+            Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                project,
+                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(verifyCommands),
+                skipPermissions: Optional<bool>.None,
+                contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                Now, node.OwnerId));
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Fix the closeout lap by hand", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var firstClaim = TaskDecider.Claim(task, node.NodeId, node.OwnerId, firstRunId, Now);
+        task.Apply(firstClaim);
+        var completed = TaskDecider.Complete(task, firstRunId, "https://github.com/o/r/pull/9", Now);
+        task.Apply(completed);
+        var reopened = TaskDecider.Reopen(
+            task, firstRunId, "task/review-me", "The pull request came back.", kind,
+            automatic: false, Now, node.OwnerId);
+        task.Apply(reopened);
+        var followUpClaim = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now)
+            with { InteractiveMode = true };
+        task.Apply(followUpClaim);
+        session.Events.StartStream<TaskAggregate>(
+            taskId, [.. lifecycle, firstClaim, completed, reopened, followUpClaim]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 2, DomainId.New(),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now,
+                ReviewStageComposition: ReviewStageComposition.AdversarialOnly),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(
+                runId, Now, RanFullScope: true, HeadSha: headSha,
+                VerifyCommandsFingerprint: Hall9k.Domain.Features.Project.VerifyCommand.Fingerprint(verifyCommands)));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (taskId, runId, worktreePath, originPath);
     }
 
     /// <summary>
