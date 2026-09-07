@@ -918,6 +918,17 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         IReadOnlyList<TaskDependency> unmet =
             [.. dependencies.Where(dependency => assigned.UnmetDependencies.Contains(dependency.Id))];
 
+        // A remote stacked parent holds this claim with nothing in `unmet` behind it — there is no
+        // local task to name — so it is asked separately, and asked BEFORE the assignment is
+        // applied: the assignment would land the task Blocked, and TaskDecider.ClaimInteractively's
+        // own Blocked guard would then refuse with a message that says nothing about what to pass
+        // (task: a stacked child can stand on a pull request another install owns).
+        if (task.AwaitsRemoteStackedParent && !acknowledgeUnmetDependencies)
+        {
+            throw new DomainBusinessRuleException(
+                RemoteStackedParentClaimRefusal(task, "h9k task work", alreadyAssigned: false));
+        }
+
         if (unmet.Count > 0 && !acknowledgeUnmetDependencies)
         {
             // ExternalText.OneLine, not a raw interpolation (mirrors h9k task start's own
@@ -936,9 +947,60 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
 
         task.Apply(assigned);
-        TaskClaimed claimed = TaskDecider.ClaimInteractively(task, ownerId, runId, now, unmet.Count > 0);
+        TaskClaimed claimed = TaskDecider.ClaimInteractively(
+            task, ownerId, runId, now, unmet.Count > 0 || task.AwaitsRemoteStackedParent);
         return (assigned, claimed, unmet);
     }
+
+    /// <summary>
+    /// The refusal a claim across an unreleased remote stacked parent gets — the shape
+    /// <see cref="DescribeUnmetDependencyAdvice"/> gives a local blocker, for the hold that has no
+    /// local blocker at all (task: a stacked child can stand on a pull request another install
+    /// owns). Written once and shared by <c>h9k task work</c> and <c>h9k task start</c> so the two
+    /// doors say the same thing, exactly as they already share the unmet-dependency wording.
+    /// <para>
+    /// It names the flag rather than telling the human to wait, for the same reason the
+    /// unmet-dependency refusal does: the platform advises here. What it deliberately does NOT
+    /// promise is that waiting is quick — the state is read on the closeout watcher's cadence, so
+    /// an operator staring at an open pull request in a browser needs to know why the board has not
+    /// caught up yet.
+    /// </para>
+    /// </summary>
+    /// <param name="alreadyAssigned">
+    /// True at the two already-Blocked entries, false at the two Published ones — the same
+    /// distinction <see cref="DescribeUnmetDependencyAdvice"/> draws, and load-bearing for the same
+    /// reason: a Published task is assigned to nobody, and BOTH halves of the wait-it-out promise
+    /// are false for it. <c>RemoteStackedParentSweep.SweepOnceAsync</c> reads a remote parent only
+    /// for tasks assigned to this owner in Blocked/Queued/Claimed/Done, so a Published child is
+    /// never looked at and its parent is never observed; and <c>DispatchEngine</c> only ever picks
+    /// up a Queued task, so nothing would dispatch it even if it were. Told to wait, an operator
+    /// would wait forever, and the only other named way out — the acknowledgment flag — cuts from
+    /// the project's base and silently loses the parent's work, which is the hazard this whole
+    /// feature exists to prevent. The unassigned form names <c>h9k task assign</c>, which is what
+    /// makes both halves true (independent pre-PR review, cycle 1, adversarial lens).
+    /// </param>
+    internal static string RemoteStackedParentClaimRefusal(
+        TaskAggregate task, string command, bool alreadyAssigned = false) =>
+        $"Task {task.Id} is stacked on pull request #{task.StackedOnPullRequestNumber}, "
+        + (task.RemoteStackedParentState.WasObserved
+            ? $"last observed {task.RemoteStackedParentState.Describe()}. "
+            : "which has not been observed yet. ")
+        + (alreadyAssigned
+            ? "It dispatches on its own once that pull request is observed open, which the closeout watcher's "
+              + "own sweep looks for on its cadence, so the board can sit a few minutes behind GitHub. "
+            : "Nothing is watching that pull request on this task's behalf, and waiting will not change "
+              + "that: the closeout watcher's sweep reads a remote parent only for a task that is assigned, "
+              + "and a Published task never dispatches on its own. "
+              + $"h9k task assign {task.Id} holds it Blocked and starts that watch — it then queues and "
+              + "dispatches itself once the pull request is observed open, which the sweep looks for on its "
+              + "cadence, so the board can sit a few minutes behind GitHub. ")
+        + (task.RemoteStackedParentHoldReason is { } hold
+            ? ExternalText.OneLine(hold) + " "
+            : string.Empty)
+        + $"The platform advises rather than refuses here: {command} {task.Id} "
+        + "--acknowledge-unmet-dependencies to claim it anyway, once you have confirmed that is what you want "
+        + "— its branch would then be cut from the project's base rather than from that pull request's head. "
+        + $"h9k task show {task.Id} for the full picture.";
 
     /// <summary>
     /// The claim behind an already-Blocked entry (task 0ac72cb8-h9k): the task was already
@@ -960,6 +1022,17 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         bool acknowledgeUnmetDependencies)
     {
         bool carriedForward = !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
+        // A remote stacked parent with no local blocker behind it: the ordinary refusal below would
+        // report "0 task(s) that have not closed out", which is true and useless. Answered first,
+        // and only where it is the WHOLE hold — a task held by both says both, through the refusal
+        // below, since the unmet blockers are the part with names to list.
+        if (unmetDependencies.Count == 0 && task.AwaitsRemoteStackedParent
+            && !acknowledgeUnmetDependencies && !carriedForward)
+        {
+            throw new DomainBusinessRuleException(
+                RemoteStackedParentClaimRefusal(task, "h9k task work", alreadyAssigned: true));
+        }
+
         if (!acknowledgeUnmetDependencies && !carriedForward)
         {
             throw new DomainBusinessRuleException(

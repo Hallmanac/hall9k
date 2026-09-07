@@ -85,7 +85,9 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
 
-        await AnnounceAsync(assigned, owner, session, cancellationToken, task.StackedOnTaskId);
+        await AnnounceAsync(
+            assigned, owner, session, cancellationToken, task.StackedOnTaskId,
+            StackedParentDeclaration.From(task));
         await ReportTrackerAsync(store, session, task, take, decision, cancellationToken);
         return ExitCodes.Ok;
     }
@@ -311,9 +313,24 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     /// </summary>
     internal static async Task AnnounceAsync(
         TaskAssigned assigned, OwnerDetails owner, IQuerySession session, CancellationToken cancellationToken,
-        Guid? stackedOnTaskId = null)
+        Guid? stackedOnTaskId = null, StackedParentDeclaration? stackedParent = null)
     {
         string shortId = TaskListCommand.ShortId(assigned.Id);
+
+        // A remote stacked parent holds the assignment Blocked with no unmet dependency behind it
+        // — there is no local task to name — so it is answered before the empty-set arm below,
+        // which would otherwise announce a queued task the aggregate has just landed Blocked
+        // (task: a stacked child can stand on a pull request another install owns).
+        if (stackedParent is { IsRemote: true, RemoteState: { ReleasesChild: false } remoteState })
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Task {shortId} assigned to {owner.Name.EscapeMarkup()}[/] — blocked on pull request "
+                + $"#{stackedParent.PullRequestNumber}, which it is stacked on and which was last observed "
+                + $"{remoteState.Describe()}. It dispatches once that pull request is observed open; the "
+                + "closeout watcher's own sweep looks on its cadence.");
+            return;
+        }
+
         if (assigned.UnmetDependencies.Count == 0)
         {
             AnsiConsole.MarkupLine(

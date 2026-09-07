@@ -377,6 +377,18 @@ internal static class TaskPhaseComposer
     private static string BlockedDetail(TaskListItem task) => task switch
     {
         _ when task.DependencyFailureReason.IsNotBlank() => "a blocker will not close out on its own",
+        // The remote twin of the line above: a stacked parent pull request that closed unmerged
+        // is a hold nothing will clear either (task: a stacked child can stand on a pull request
+        // another install owns). Ahead of the counts for the same reason its local sibling is.
+        _ when task.RemoteStackedParentHoldReason.IsNotBlank() =>
+            $"the pull request it is stacked on (#{task.StackedOnPullRequestNumber}) closed without merging",
+        // Waiting on a remote parent is the ordinary case with no unmet dependency at all behind
+        // it — there is no local task to name — so it is answered before the "no unmet dependency
+        // is recorded" arm, which would otherwise read this as a record disagreeing with itself.
+        _ when task.StackedOnPullRequestNumber is { } parentNumber
+            && !task.RemoteStackedParentState.ReleasesChild =>
+            $"waiting for pull request #{parentNumber}, which it is stacked on, to be open "
+            + $"(last observed {task.RemoteStackedParentState.Describe()})",
         // Blocked with nothing recorded as unmet is a record disagreeing with itself, so the
         // line says that rather than reporting a wait on zero things.
         { UnmetDependencies.Count: 0 } => "blocked, but no unmet dependency is recorded",

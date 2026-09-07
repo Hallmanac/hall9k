@@ -32,6 +32,8 @@ public sealed class TaskWorkClaimTests
     private static readonly DateTimeOffset Now = new(2026, 9, 2, 12, 0, 0, TimeSpan.Zero);
     private static readonly Guid Owner = DomainId.New();
 
+    private const int RemoteParentNumber = 264;
+
     [Fact]
     public void A_published_task_with_no_open_dependencies_is_assigned_and_claimed_in_one_unit()
     {
@@ -238,6 +240,60 @@ public sealed class TaskWorkClaimTests
         output.Should().Contain(dead.DescribeDeath());
     }
 
+    /// <summary>
+    /// A remote stacked parent holds the claim with nothing in the unmet set behind it, and the two
+    /// entries owe DIFFERENT advice (independent pre-PR review, cycle 1, adversarial lens). A
+    /// Published child is assigned to nobody, and both halves of the wait-it-out promise are false
+    /// for it: <c>RemoteStackedParentSweep</c> reads a remote parent only for an assigned task, so
+    /// nothing would ever observe this one's, and the dispatcher only picks up Queued tasks, so
+    /// nothing would dispatch it if something did. Told to wait, an operator waits forever — and
+    /// the only other named way out, the acknowledgment flag, cuts the branch from the project's
+    /// base and silently loses the parent's work.
+    /// </summary>
+    [Fact]
+    public void A_published_task_held_by_a_remote_stacked_parent_is_refused_and_named_the_assignment_that_starts_the_watch()
+    {
+        TaskAggregate task = RemoteStackedPublishedTask();
+
+        Action act = () => TaskWorkCommand.PrepareInteractiveClaimFromPublished(
+            task, Owner, [], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .WithMessage($"*stacked on pull request #{RemoteParentNumber}*")
+            .Where(exception => exception.Message.Contains($"h9k task assign {task.Id}")
+                    && exception.Message.Contains("--acknowledge-unmet-dependencies")
+                    && !exception.Message.Contains("It dispatches on its own"),
+                "an unassigned child is on no sweep's cadence and would not dispatch if it were, so the "
+                + "refusal names the assignment that starts the watch instead of promising it will happen");
+
+        task.State.Should().Be(TaskState.Published, "the refusal is up front and decides nothing");
+        task.AssignedOwnerId.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The other half of the pair above: an already-assigned child IS what the sweep reads, so
+    /// waiting really does resolve it and the refusal says so — without naming
+    /// <c>h9k task assign</c>, which refuses anything but a Published task.
+    /// </summary>
+    [Fact]
+    public void A_blocked_task_held_by_a_remote_stacked_parent_is_refused_and_told_it_dispatches_itself()
+    {
+        TaskAggregate task = RemoteStackedPublishedTask();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
+        task.State.Should().Be(TaskState.Blocked, "an unobserved parent holds the assignment");
+
+        Action act = () => TaskWorkCommand.PrepareInteractiveClaimFromBlocked(
+            task, Owner, [], DomainId.New(), Now, acknowledgeUnmetDependencies: false);
+
+        act.Should().Throw<DomainBusinessRuleException>()
+            .Where(exception => exception.Message.Contains("It dispatches on its own")
+                    && exception.Message.Contains("--acknowledge-unmet-dependencies")
+                    && !exception.Message.Contains("h9k task assign"),
+                "this one is on the sweep's cadence, so waiting is honest advice — and advice it can follow");
+
+        task.State.Should().Be(TaskState.Blocked, "the refusal decides nothing");
+    }
+
     /// <summary>The global console, swapped for a writer and put back — mirrors InstallCommandTests's own capture.</summary>
     private static string Capture(Action action)
     {
@@ -267,6 +323,22 @@ public sealed class TaskWorkClaimTests
         TaskAggregate task = PublishedTask(open.Id);
         task.Apply(TaskDecider.Assign(task, Owner, [open], Now, Owner));
         task.State.Should().Be(TaskState.Blocked);
+        return task;
+    }
+
+    /// <summary>
+    /// A Published child stacked on a pull request another install owns, with no local blocker at
+    /// all — the remote hold's own shape, since there is no task to name in <c>BlockedBy</c>.
+    /// </summary>
+    private static TaskAggregate RemoteStackedPublishedTask()
+    {
+        TaskAggregate task = new();
+        task.Apply(TaskDecider.Add(
+            DomainId.New(), DomainId.New(), "Stack on a teammate's pull request",
+            ["it cuts from that pull request's head branch"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: Owner, stackedOnPullRequestNumber: RemoteParentNumber));
+        task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner));
         return task;
     }
 

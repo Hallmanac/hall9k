@@ -194,6 +194,66 @@ public sealed class StackedSurfaceTests
             "a closed pull request cannot reach Delivered either, so the child needs a human");
     }
 
+    /// <summary>
+    /// A child stacked on a pull request another install owns has no unmet dependency at all —
+    /// there is no local task to name — so both lines that speak for a Blocked row have to answer
+    /// off the observation instead. Without that, the row would read "blocked, but no unmet
+    /// dependency is recorded", which is this build's own sentence for a record disagreeing with
+    /// itself: exactly the wrong thing to tell a human about a perfectly ordinary wait (task: a
+    /// stacked child can stand on a pull request another install owns).
+    /// </summary>
+    [Fact]
+    public void A_child_waiting_on_a_remote_pull_request_says_what_it_is_waiting_for()
+    {
+        TaskListItem task = StatusFixtures.Task(TaskState.Blocked);
+        task.StackedOnPullRequestNumber = 264;
+        task.RemoteStackedParentState = RemoteParentState.Absent;
+
+        string facts = string.Join(" · ", PublishedFacts.Compose(task, LifecycleState.Published));
+        facts.Should().Contain("waiting for pull request #264");
+        facts.Should().Contain("absent from this repository",
+            "the last observation is named — and named as what was actually seen, since the provider "
+            + "answers the same way for a pull request nobody has opened and for a mistyped number");
+        facts.Should().NotContain("no unmet dependency is recorded");
+    }
+
+    /// <summary>
+    /// The phase line's own copy of the same reading, for the row where the derived-facts line is
+    /// not composed at all. The two must not disagree about what the child is waiting for.
+    /// </summary>
+    [Fact]
+    public void The_phase_line_agrees_about_the_remote_parent()
+    {
+        RunDetails run = StackedRun();
+        TaskListItem task = StatusFixtures.Task(TaskState.Blocked, run.Id, PullRequest);
+        task.StackedOnPullRequestNumber = 264;
+        task.RemoteStackedParentState = RemoteParentState.Absent;
+
+        StatusFixtures.Compose(task, run).Phase.Detail.Should().Contain("waiting for pull request #264");
+    }
+
+    /// <summary>
+    /// A parent pull request that closed unmerged is a hold nothing will clear, so it reaches the
+    /// human on the same footing as a local blocker observed dead — the same level, from the same
+    /// property, so one form of the edge can never surface while the other stays silent.
+    /// </summary>
+    [Fact]
+    public void A_remote_parent_that_closed_unmerged_reads_as_needs_you()
+    {
+        TaskListItem task = StatusFixtures.Task(TaskState.Blocked);
+        task.StackedOnPullRequestNumber = 264;
+        task.RemoteStackedParentState = RemoteParentState.ClosedUnmerged;
+        task.RemoteStackedParentHoldReason =
+            RemoteStackedParentHold.ReasonFor(RemoteParentState.ClosedUnmerged, 264);
+
+        TaskStatusRow row = StatusFixtures.Compose(task);
+
+        row.Attention.Level.Should().Be(AttentionLevel.NeedsYou);
+        row.Attention.Cause.Should().Contain("closed without merging");
+        string.Join(" · ", PublishedFacts.Compose(task, LifecycleState.Published))
+            .Should().Contain("closed without merging");
+    }
+
     private static readonly Guid StackedRunId = DomainId.New();
 
     private static TaskStatusRow ComposeDelivered(RunDetails run) =>

@@ -185,8 +185,13 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             // Delivered no longer holds this task, so naming --acknowledge-unmet-dependencies for
             // it would tell the human to acknowledge a dependency the dispatcher will not ask them
             // about (task: a stacked pull-request edge exists as an explicit opt-in dependency).
-            bool hasOpenDependency = graph.Resolve(task.BlockedBy)
-                .Any(dependency => StackedEdgeRules.Blocks(task, dependency));
+            // A remote stacked parent counts here too (task: a stacked child can stand on a pull
+            // request another install owns): it holds the assignment Blocked with no dependency
+            // behind it, so a hint that named the plain claim would send a human at a command the
+            // claim guard refuses.
+            bool hasOpenDependency = task.AwaitsRemoteStackedParent
+                || graph.Resolve(task.BlockedBy)
+                    .Any(dependency => StackedEdgeRules.Blocks(task, dependency));
             string interactiveClaimHint = task.Type == TaskType.PrReview
                 ? string.Empty
                 : hasOpenDependency
@@ -200,7 +205,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
         await TaskAssignCommand.AnnounceAsync(
-            assigned, assignee, session, cancellationToken, task.StackedOnTaskId);
+            assigned, assignee, session, cancellationToken, task.StackedOnTaskId,
+            StackedParentDeclaration.From(task));
 
         // The same claim-gate warning h9k task assign gives, since this is the same act (idea
         // 64c75e43) — and read here, at the very end, rather than beside the assignment above,

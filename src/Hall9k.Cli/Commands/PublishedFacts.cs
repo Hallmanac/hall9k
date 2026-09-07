@@ -138,6 +138,26 @@ internal static class PublishedFacts
             // The recorded death itself stays on the attention line, which quotes it whole.
             "Blocked" when task.DependencyFailureReason.IsNotBlank() =>
                 ["a blocker will not close out on its own", .. BlockedBy(task)],
+            // The remote twin of the line above, in the same words and the same order its
+            // phase-line twin uses (TaskPhaseComposer.BlockedDetail): a stacked parent pull request
+            // that closed unmerged is a hold nothing will clear (task: a stacked child can stand on
+            // a pull request another install owns).
+            "Blocked" when task.RemoteStackedParentHoldReason.IsNotBlank() =>
+            [
+                $"the pull request it is stacked on (#{task.StackedOnPullRequestNumber}) closed without "
+                + "merging",
+                .. BlockedBy(task),
+            ],
+            // A remote stacked parent holds with no unmet dependency behind it — there is no local
+            // task to name — so it is answered before the arm below, which would otherwise read
+            // this as a record disagreeing with itself.
+            "Blocked" when task.StackedOnPullRequestNumber is { } remoteParentNumber
+                && !task.RemoteStackedParentState.ReleasesChild =>
+            [
+                $"waiting for pull request #{remoteParentNumber}, which it is stacked on, to be open "
+                + $"(last observed {task.RemoteStackedParentState.Describe()})",
+                .. BlockedBy(task),
+            ],
             // A Blocked task with nothing recorded as unmet is a record disagreeing with itself,
             // so the line says that rather than reporting a wait on zero things.
             "Blocked" when task.UnmetDependencies.Count == 0 =>
