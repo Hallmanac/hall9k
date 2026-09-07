@@ -103,7 +103,7 @@ it. The option implies the `--blocked-by` edge, so the parent needs naming only 
 task dispatches at its parent's `Delivered` rather than its merge, cuts its branch from the
 parent's branch head, opens its pull request against that branch, reviews and recomposes against
 it, is kept off the merge bar until the parent merges, and is then retargeted onto the base branch
-and mechanically replayed there (a parent that force-pushes short of merging gets the replay alone,
+and mechanically replayed there (a parent branch that moves short of merging gets the replay alone,
 with the base left where it is). The tool never infers a stack from an ordinary `--blocked-by`;
 reserve the edge for slices of one feature that are genuinely cohesive. Full behaviour:
 [concepts.md](concepts.md#stacked-pull-requests).
