@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -100,6 +101,9 @@ public sealed class ProjectAggregate
 
     private readonly List<ContextLink> _contextLinks = [];
     public IReadOnlyList<ContextLink> ContextLinks => _contextLinks;
+
+    private readonly List<LaunchText> _launchTexts = [];
+    public IReadOnlyList<LaunchText> LaunchTexts => _launchTexts;
 
     public void Apply(ProjectRegistered @event)
     {
@@ -226,6 +230,12 @@ public sealed class ProjectAggregate
         if (@event.ClaimGate.HasValue)
         {
             ClaimGate = @event.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        if (@event.LaunchTexts.HasValue)
+        {
+            _launchTexts.Clear();
+            _launchTexts.AddRange(@event.LaunchTexts.Value ?? []);
         }
     }
 }

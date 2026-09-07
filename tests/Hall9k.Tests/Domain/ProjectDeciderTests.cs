@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -535,5 +536,50 @@ public sealed class ProjectDeciderTests
             Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
             backlogRoutingGuidance: Optional<string>.Of(string.Empty)));
         project.BacklogRoutingGuidance.Should().BeNull("present but empty clears it, the ContextLinks/JiraProjectKey idiom");
+    }
+
+    [Fact]
+    public void ChangeSettings_records_launch_texts_normalizing_the_cli_name()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            launchTexts: Optional<IReadOnlyList<LaunchText>>.Of([new LaunchText("Claude-Code", "claude --strict-mcp-config")])));
+
+        project.LaunchTexts.Should().ContainSingle();
+        project.LaunchTexts[0].Cli.Should().Be("claude-code", "the stored key is normalized so a later lookup by any casing finds it");
+        project.LaunchTexts[0].Text.Should().Be("claude --strict-mcp-config");
+    }
+
+    [Fact]
+    public void ChangeSettings_refuses_a_launch_text_with_no_cli_or_no_text()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action noCli = () => ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            launchTexts: Optional<IReadOnlyList<LaunchText>>.Of([new LaunchText(" ", "some text")]));
+        noCli.Should().Throw<DomainValidationException>();
+
+        Action noText = () => ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            maxParallelAgents: Optional<int>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            launchTexts: Optional<IReadOnlyList<LaunchText>>.Of([new LaunchText("claude-code", " ")]));
+        noText.Should().Throw<DomainValidationException>();
     }
 }
