@@ -132,4 +132,38 @@ public static class GateDurationHistoryQuery
         GateDurationHistory history = await LoadRecentHistoryAsync(session, projectId, excludingRunId, cancellationToken);
         return history.Compare(gateName, observed, ranFullScope);
     }
+
+    /// <summary>
+    /// The single most recent recorded wall-clock duration for <paramref name="gateName"/> from a
+    /// run <paramref name="nodeId"/> itself dispatched — the raw material for a clean-base
+    /// comparison's own budget (task: the clean-base comparison can actually finish — origin
+    /// incident 2026-09-05/06, a fixed 5-minute cap that this project's own 11-12 minute test gate
+    /// could never meet). Node-scoped for the identical reason <c>NodeLoad.LiveSlots</c> filters
+    /// its own runs by node: a duration observed on one machine says nothing reliable about
+    /// another's. This wants "how long did this take here last time", not
+    /// <see cref="GateDurationHistory"/>'s own trailing average, so it is the newest matching
+    /// entry across the same <see cref="RecentRunWindow"/>, not an aggregate over it. Passed or
+    /// failed both count — either one ran the gate command to completion the same way a clean-base
+    /// comparison itself does, so either is as honest an estimate of the command's own wall clock
+    /// as the other. Null when nothing has been recorded for this gate on this node yet, never
+    /// guessed at.
+    /// </summary>
+    public static async Task<TimeSpan?> MostRecentDurationOnNodeAsync(
+        IQuerySession session, Guid projectId, Guid nodeId, string gateName, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RunListItem> runs = await session.Query<RunListItem>()
+            .Where(run => run.NodeId == nodeId)
+            .Where(run => run.MatchesSql(
+                "exists (select 1 from mt_doc_tasklistitem t where t.id = (d.data ->> 'taskId')::uuid and t.data ->> 'projectId' = ?)",
+                projectId.ToString()))
+            .OrderByDescending(run => run.DispatchedAt)
+            .Take(RecentRunWindow)
+            .ToListAsync(cancellationToken);
+
+        return runs
+            .SelectMany(run => run.GateDurations ?? [])
+            .Where(gate => gate.Gate == gateName)
+            .Select(gate => (TimeSpan?)gate.Duration)
+            .FirstOrDefault();
+    }
 }

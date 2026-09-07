@@ -224,6 +224,124 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// The other half of the origin incident (task: the clean-base comparison can actually
+    /// finish): a red main was diagnosed the same way five separate times across five failed
+    /// runs, because nothing remembered the first comparison's own answer. The gate's own command
+    /// only increments <c>counterFile</c> when it runs inside a directory carrying a <c>.git</c>
+    /// folder — true for <paramref name="cleanBase"/>, never true for the plain non-git
+    /// <c>_worktree</c> every run's own gate also executes this same command against — so the
+    /// counter is an honest count of how many times the comparison itself actually ran, distinct
+    /// from how many times the run's own gate ran. Kept outside <paramref name="cleanBase"/>
+    /// entirely so the checkout itself never carries an untracked file of its own, which would
+    /// make <c>CheckoutCleanliness.DescribeNotConfirmedCleanAsync</c> call it "not confirmed
+    /// clean" and defeat the very caching this test is proving.
+    /// </summary>
+    [Fact]
+    public async Task The_same_base_commit_is_compared_once_across_two_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
+        string counterFile = Path.Combine(Path.GetTempPath(), $"hall9k-vt-counter-{Guid.NewGuid():N}");
+        await InitializeCleanCheckoutAsync(cleanBase, "main", cts.Token);
+        try
+        {
+            Guid projectId = DomainId.New();
+            Guid nodeId = DomainId.New();
+            VerifyCommand gate = new(
+                "broken",
+                $"if [ -d .git ]; then c=$(cat '{counterFile}' 2>/dev/null || echo 0); " +
+                $"echo $((c+1)) > '{counterFile}'; fi; echo unconditionally-broken; exit 1");
+
+            (Guid taskId1, Guid runId1) = await SeedAsync(
+                store, [gate], cts.Token, repositoryPath: cleanBase, projectId: projectId, nodeId: nodeId);
+            await NewRunner(store).VerifyAsync(runId1, taskId1, scopeSinceSha: null, "test", cts.Token);
+
+            (Guid taskId2, Guid runId2) = await SeedAsync(
+                store, [gate], cts.Token, projectId: projectId, nodeId: nodeId, registerProject: false);
+            await NewRunner(store).VerifyAsync(runId2, taskId2, scopeSinceSha: null, "test", cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run1 = (await query.LoadAsync<RunDetails>(runId1, cts.Token))!;
+            RunDetails run2 = (await query.LoadAsync<RunDetails>(runId2, cts.Token))!;
+            run1.FailureReason.Should().Contain("also fails when run against a clean checkout of 'main'");
+            run2.FailureReason.Should().Contain(
+                "also fails when run against a clean checkout of 'main'",
+                "the second run's failure reason comes from the cached verdict, not a fresh comparison");
+
+            File.ReadAllText(counterFile).Trim().Should().Be(
+                "1", "the clean-base comparison itself only actually ran once across both runs");
+        }
+        finally
+        {
+            Directory.Delete(cleanBase, recursive: true);
+            File.Delete(counterFile);
+        }
+    }
+
+    /// <summary>
+    /// The other half of the caching rule: an <see cref="GateCheckOutcome.Inconclusive"/> attempt
+    /// is never remembered (AGENTS.md's own "never guess at unobserved facts"), so the next run
+    /// against the same base commit genuinely tries again rather than treating the first attempt's
+    /// silence as a permanent answer. <c>markerFile</c> lives outside <paramref name="cleanBase"/>
+    /// so the checkout itself stays confirmed clean across both attempts — proving the retry
+    /// happens because nothing was cached, not merely because the checkout became dirty. The first
+    /// attempt against <c>cleanBase</c> sleeps well past the deliberately tiny
+    /// <c>VerifyGateTimeout</c> and gets killed (Inconclusive); the second attempt, marker already
+    /// on disk, resolves immediately (Failed) — the run's own gate against the plain non-git
+    /// <c>_worktree</c> always takes the immediate branch, so it is never what forces the timeout.
+    /// </summary>
+    [Fact]
+    public async Task An_inconclusive_comparison_is_retried_on_the_next_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
+        string markerFile = Path.Combine(Path.GetTempPath(), $"hall9k-vt-marker-{Guid.NewGuid():N}");
+        await InitializeCleanCheckoutAsync(cleanBase, "main", cts.Token);
+        try
+        {
+            Guid projectId = DomainId.New();
+            Guid nodeId = DomainId.New();
+            VerifyCommand gate = new(
+                "broken",
+                $"if [ -d .git ]; then " +
+                $"if [ -f '{markerFile}' ]; then echo unconditionally-broken; exit 1; " +
+                $"else touch '{markerFile}'; sleep 30; fi; " +
+                "else echo unconditionally-broken; exit 1; fi");
+
+            VerificationRunner runner = new(
+                store,
+                Options.Create(new DaemonOptions { VerifyGateTimeout = TimeSpan.FromSeconds(2) }),
+                NullLogger<VerificationRunner>.Instance,
+                NewWorktreeManager(), new InstantRecoveryFailureExecutor(), new FakeProcessManager());
+
+            (Guid taskId1, Guid runId1) = await SeedAsync(
+                store, [gate], cts.Token, repositoryPath: cleanBase, projectId: projectId, nodeId: nodeId);
+            await runner.VerifyAsync(runId1, taskId1, scopeSinceSha: null, "test", cts.Token);
+
+            (Guid taskId2, Guid runId2) = await SeedAsync(
+                store, [gate], cts.Token, projectId: projectId, nodeId: nodeId, registerProject: false);
+            await runner.VerifyAsync(runId2, taskId2, scopeSinceSha: null, "test", cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run1 = (await query.LoadAsync<RunDetails>(runId1, cts.Token))!;
+            RunDetails run2 = (await query.LoadAsync<RunDetails>(runId2, cts.Token))!;
+            run1.FailureReason.Should().NotContain(
+                "also fails when run against a clean checkout",
+                "the first comparison never reached a verdict, so it must say nothing rather than guess");
+            run2.FailureReason.Should().Contain(
+                "also fails when run against a clean checkout of 'main'",
+                "the second run's comparison actually ran again and this time reached a real verdict");
+        }
+        finally
+        {
+            Directory.Delete(cleanBase, recursive: true);
+            File.Delete(markerFile);
+        }
+    }
+
+    /// <summary>
     /// The origin incident (2026-08-23): a gate died on a connection-class signature — the
     /// container, not the agent's work — and was fine on the very next attempt. Backlog 53:
     /// the retry happens in place, is recorded on the stream, and never fails the run.
@@ -1669,41 +1787,59 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     // tests uses, so a fake here would be one more thing to keep in sync with the interface.
     private static GitWorktreeManager NewWorktreeManager() => new(NullLogger<GitWorktreeManager>.Instance);
 
+    /// <summary>
+    /// <paramref name="projectId"/> and <paramref name="nodeId"/> let a caller pin the ids a run
+    /// gets seeded with rather than a fresh random one each time — the clean-base verdict cache
+    /// (task: the clean-base comparison can actually finish) is keyed on both, so a test proving
+    /// "the same base commit is compared once across two runs" needs two runs that actually share
+    /// them rather than two independent projects that merely look alike.
+    /// <paramref name="registerProject"/> set false skips starting a new <c>ProjectAggregate</c>
+    /// stream entirely — for a caller's own second <see cref="SeedAsync"/> call reusing a
+    /// <paramref name="projectId"/> its first call already registered, the same way a real second
+    /// run reads the project's already-recorded settings rather than re-registering them;
+    /// <paramref name="gates"/> and <paramref name="repositoryPath"/> are ignored in that case.
+    /// </summary>
     private async Task<(Guid TaskId, Guid RunId)> SeedAsync(
         DocumentStore store, IReadOnlyList<VerifyCommand> gates, CancellationToken cancellationToken,
-        TaskType? taskType = null, string? repositoryPath = null)
+        TaskType? taskType = null, string? repositoryPath = null, Guid? projectId = null, Guid? nodeId = null,
+        bool registerProject = true)
     {
         Directory.CreateDirectory(_worktree);
         Guid ownerId = DomainId.New();
         Guid connectionId = DomainId.New();
-        Guid projectId = DomainId.New();
+        Guid resolvedProjectId = projectId ?? DomainId.New();
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
 
         await using IDocumentSession session = store.LightweightSession();
 
-        ProjectAggregate project = new();
-        // The clean-base comparison (task: a verify gate that cannot pass on clean main is caught
-        // before it costs a run) reads the project's own RepositoryPath as its stand-in for a
-        // clean checkout of the base branch — a real project keeps that separate from any given
-        // run's own worktree, and a caller that wants to exercise the "fails on the branch, not on
-        // clean base" distinction passes its own directory here instead of reusing _worktree.
-        ProjectRegistered registered = ProjectDecider.Register(
-            projectId, ownerId, connectionId, $"verify-{projectId:N}", repositoryPath ?? _worktree, null, "main", Now);
-        project.Apply(registered);
-        session.Events.StartStream<ProjectAggregate>(projectId, registered, ProjectDecider.ChangeSettings(
-            project,
-            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
-            skipPermissions: Optional<bool>.None,
-            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
-            Now, ownerId));
+        if (registerProject)
+        {
+            ProjectAggregate project = new();
+            // The clean-base comparison (task: a verify gate that cannot pass on clean main is
+            // caught before it costs a run) reads the project's own RepositoryPath as its stand-in
+            // for a clean checkout of the base branch — a real project keeps that separate from
+            // any given run's own worktree, and a caller that wants to exercise the "fails on the
+            // branch, not on clean base" distinction passes its own directory here instead of
+            // reusing _worktree.
+            ProjectRegistered registered = ProjectDecider.Register(
+                resolvedProjectId, ownerId, connectionId, $"verify-{resolvedProjectId:N}",
+                repositoryPath ?? _worktree, null, "main", Now);
+            project.Apply(registered);
+            session.Events.StartStream<ProjectAggregate>(resolvedProjectId, registered, ProjectDecider.ChangeSettings(
+                project,
+                verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.Of(gates),
+                skipPermissions: Optional<bool>.None,
+                contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+                Now, ownerId));
+        }
 
         TaskAggregate task = new();
         (task, object[] lifecycle) = TaskSeed.Start(
-            TaskDecider.Add(taskId, projectId, "Verify me", ["gates run"], taskType ?? TaskType.Chore,
+            TaskDecider.Add(taskId, resolvedProjectId, "Verify me", ["gates run"], taskType ?? TaskType.Chore,
                 null, null, null, Now, ownerId),
             ownerId, Now);
-        var claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+        var claimed = TaskDecider.Claim(task, nodeId ?? DomainId.New(), ownerId, runId, Now);
         session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = claimed.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
 

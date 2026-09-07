@@ -280,6 +280,74 @@ public sealed class GateDurationHistoryQueryTests(PostgresFixture postgres) : IC
         comparison!.SampleCount.Should().Be(5);
     }
 
+    /// <summary>
+    /// The raw material for a clean-base comparison's own budget (task: the clean-base comparison
+    /// can actually finish — origin incident 2026-09-05/06, this project's own 11-12 minute test
+    /// gate against a fixed 5-minute cap alone): the newest recorded duration for a gate on the
+    /// SAME node, not an average, and never a duration recorded on a different node.
+    /// </summary>
+    [Fact]
+    public async Task The_most_recent_duration_on_a_node_is_returned_rather_than_an_average()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            SeedRun(session, projectId, ownerId, Now.AddMinutes(-2), "test", TimeSpan.FromMinutes(8), nodeId: nodeId);
+            SeedRun(session, projectId, ownerId, Now.AddMinutes(-1), "test", TimeSpan.FromMinutes(12), nodeId: nodeId);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
+            query, projectId, nodeId, "test", cts.Token);
+
+        recentDuration.Should().Be(
+            TimeSpan.FromMinutes(12), "the newest recorded run's own duration, not an average of the two");
+    }
+
+    [Fact]
+    public async Task A_duration_recorded_on_a_different_node_never_counts()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid recordingNodeId = DomainId.New();
+        Guid comparisonNodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            SeedRun(session, projectId, ownerId, Now, "test", TimeSpan.FromMinutes(12), nodeId: recordingNodeId);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
+            query, projectId, comparisonNodeId, "test", cts.Token);
+
+        recentDuration.Should().BeNull("this node has recorded nothing for this gate — a sibling node's duration is not this node's own");
+    }
+
+    [Fact]
+    public async Task No_recorded_duration_for_the_gate_on_this_node_returns_null()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        Guid projectId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using IQuerySession query = store.QuerySession();
+        TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
+            query, projectId, nodeId, "test", cts.Token);
+
+        recentDuration.Should().BeNull();
+    }
+
     private DocumentStore NewStore() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);
@@ -288,7 +356,7 @@ public sealed class GateDurationHistoryQueryTests(PostgresFixture postgres) : IC
 
     private static void SeedRun(
         IDocumentSession session, Guid projectId, Guid ownerId, DateTimeOffset at, string gateName,
-        TimeSpan duration, bool passed = true, bool ranFullScope = true, Guid? runId = null)
+        TimeSpan duration, bool passed = true, bool ranFullScope = true, Guid? runId = null, Guid? nodeId = null)
     {
         Guid taskId = DomainId.New();
         session.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
@@ -305,7 +373,7 @@ public sealed class GateDurationHistoryQueryTests(PostgresFixture postgres) : IC
 
         session.Events.StartStream<RunAggregate>(resolvedRunId,
             new RunDispatched(
-                resolvedRunId, taskId, DomainId.New(), ownerId, 1, DomainId.New(),
+                resolvedRunId, taskId, nodeId ?? DomainId.New(), ownerId, 1, DomainId.New(),
                 $"/tmp/hall9k-{resolvedRunId:N}", $"task/{resolvedRunId:N}", ExecutorMode.Subscription, at),
             verificationEvent);
     }
