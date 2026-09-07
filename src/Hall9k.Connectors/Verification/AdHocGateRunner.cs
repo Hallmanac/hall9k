@@ -60,8 +60,9 @@ public static class AdHocGateRunner
     /// full test suite. This constant survives there as <see cref="ComputeComparisonBudget"/>'s own
     /// starting point when no duration has been recorded yet (or the recorded one is small) — not a
     /// floor it never budgets below, since the caller's own <c>verifyGateTimeout</c> can still clamp
-    /// the result under it (a project configured with <c>VerifyGateTimeout</c> under five minutes
-    /// gets exactly that shorter budget; the test
+    /// the result under it (a daemon configured with <c>DaemonOptions.VerifyGateTimeout</c> under
+    /// five minutes — a node-level setting shared by every project it serves, not a per-project
+    /// override — gets exactly that shorter budget for every comparison it runs; the test
     /// <c>An_inconclusive_comparison_is_retried_on_the_next_run</c> relies on this). It also
     /// survives — on both sides of the split — as the budget a caller is
     /// willing to wait to *acquire* the checkout lock before giving up on the comparison rather than
