@@ -2,6 +2,8 @@ using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.Closeout;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -27,7 +29,8 @@ namespace Hall9k.Daemon.Execution;
 /// </summary>
 public sealed class PullRequestOpener(
     IDocumentStore store,
-    ILogger<PullRequestOpener> logger)
+    ILogger<PullRequestOpener> logger,
+    IPullRequestInspector? inspector = null)
 {
     public async Task OpenAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
     {
@@ -170,11 +173,116 @@ public sealed class PullRequestOpener(
                     "Run {RunId} task {TaskId}: branch pushed (origin is not GitHub; no PR) — task complete",
                     runId, taskId);
             }
+
+            // The lap has pushed, so the reviewer who blocked this pull request is asked to look
+            // at the new head (task: a changes-requested pull-request review from a human becomes
+            // a fix lap). Here rather than in the next closeout sweep, because "when the lap
+            // pushes" is the moment: a sweep-based re-request would sit behind the poll interval,
+            // and this reviewer's CHANGES_REQUESTED verdict is what blocks the merge until they
+            // change it. Last in this method, after the task is completed and the lease released,
+            // so a provider refusal costs the request and not the delivery.
+            //
+            // `task` is deliberately the snapshot read at the top of this method, before the
+            // TaskCompleted appended above: Apply(TaskCompleted) clears both FollowUpKind and
+            // ChangesRequestedReviews, so re-loading the task here would read Unknown and an empty
+            // list and silently stop re-requesting anyone. That is load-bearing, not incidental.
+            if (pullRequestUrl is not null && task.FollowUpKind == FollowUpKind.ReviewRequestedChanges)
+            {
+                await RerequestChangesRequestedReviewersAsync(
+                    runId, taskId, task, project.RepositoryPath, pullRequestUrl, pullRequestNumber, cancellationToken);
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception, "PR opening failed for run {RunId}", runId);
             await RecordFailureAsync(runId, taskId, exception.Message, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Asks each reviewer whose changes-requested review this lap answered to review the new head
+    /// (task: a changes-requested pull-request review from a human becomes a fix lap), one request
+    /// per reviewer, recording only the ones the provider accepted.
+    /// <para>
+    /// Best-effort by construction, and per reviewer rather than all-or-nothing: one refused login
+    /// must not silence the request to a second reviewer who also blocked the pull request. A
+    /// refusal is logged and left there — the reviewer's verdict still stands on GitHub, so the
+    /// pull request does not merge past them either way, and the next lap re-reads the same review
+    /// and asks again. Recording a request the provider rejected would be worse than not asking:
+    /// closeout's human-engagement check reads
+    /// <c>RunDetails.RequestedReviewerLogins</c> as "this pending request is ours", so a
+    /// fabricated entry would make the reviewer's own later re-request read as the platform's and
+    /// lose a lap the human genuinely granted.
+    /// </para>
+    /// <para>
+    /// Nothing here can throw. It runs inside <see cref="OpenAsync"/>'s own try, whose catch fails
+    /// the run — and by this point the branch is pushed, the pull request updated, the task
+    /// completed and the lease released, so failing the run on a bookkeeping append would report a
+    /// delivery that demonstrably happened as a failure and send the operator to
+    /// <c>h9k task retry</c> for work already delivered. The per-reviewer catch covers the
+    /// provider call; this method's own catch covers the append.
+    /// </para>
+    /// </summary>
+    private async Task RerequestChangesRequestedReviewersAsync(
+        Guid runId, Guid taskId, TaskDetails task, string repositoryPath, string pullRequestUrl,
+        int pullRequestNumber, CancellationToken cancellationToken)
+    {
+        if (inspector is null || task.ChangesRequestedReviews.Count == 0)
+        {
+            return;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        List<string> asked = [];
+        foreach (ChangesRequestedReview review in task.ChangesRequestedReviews)
+        {
+            try
+            {
+                // Human by construction — ReadChangesRequestedReviews admits no other actor kind
+                // — so the login is sent exactly as the provider reported it, never [bot]-suffixed
+                // (RerequestReviewAsync's own rule).
+                await inspector.RerequestReviewAsync(
+                    repositoryPath, pullRequestUrl, pullRequestNumber,
+                    new PullRequestReviewer(review.Reviewer, ReviewerKind.Human), cancellationToken);
+                session.Events.Append(runId, new ChangesRequestedReviewerRerequested(
+                    runId, review.Reviewer, review.ReviewUrl, DateTimeOffset.UtcNow));
+                asked.Add(review.Reviewer);
+                logger.LogInformation(
+                    "Run {RunId} task {TaskId}: re-requested @{Reviewer}'s review on the new head after "
+                    + "answering their changes-requested review {ReviewUrl}",
+                    runId, taskId, review.Reviewer, review.ReviewUrl);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception,
+                    "Run {RunId} task {TaskId}: could not re-request @{Reviewer}'s review after the fix lap "
+                    + "pushed — their changes-requested verdict still stands on GitHub, so nothing merges past "
+                    + "them; the next sweep reads the same review and asks again",
+                    runId, taskId, review.Reviewer);
+            }
+        }
+
+        if (asked.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The requests themselves landed on GitHub; only the record of them did not. Logged
+            // rather than thrown, per this method's own contract: the alternative is failing a run
+            // whose delivery already completed. The cost is that closeout's human-engagement check
+            // may later read these pending requests as a human's and grant one extra lap past the
+            // progress cap — a bounded over-grant under the lifetime ceiling, which is the safe
+            // direction when the alternative is losing a delivery.
+            logger.LogWarning(exception,
+                "Run {RunId} task {TaskId}: re-requested {Reviewers} but could not record it on the run — "
+                + "the requests are on GitHub, unrecorded here",
+                runId, taskId, string.Join(", ", asked));
         }
     }
 

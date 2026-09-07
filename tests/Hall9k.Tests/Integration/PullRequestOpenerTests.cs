@@ -829,4 +829,190 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             }
         }
     }
+
+    /// <summary>
+    /// Records what <see cref="PullRequestOpener"/> asked the provider for after the push. Every
+    /// read throws: this opener only ever writes through the inspector, so a read reaching here
+    /// would be a silent new dependency rather than a passing test.
+    /// </summary>
+    private sealed class RecordingRerequestInspector(bool refuse = false) : Hall9k.Daemon.Closeout.IPullRequestInspector
+    {
+        public List<Hall9k.Daemon.Closeout.PullRequestReviewer> Rerequested { get; } = [];
+
+        public Task<Hall9k.Daemon.Closeout.PullRequestSnapshot> InspectAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("the opener never reads a snapshot");
+
+        public Task<Hall9k.Daemon.Closeout.PullRequestStateSnapshot> InspectStateAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("the opener never reads a state snapshot");
+
+        public Task RerequestReviewAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber,
+            Hall9k.Daemon.Closeout.PullRequestReviewer reviewer, CancellationToken cancellationToken)
+        {
+            if (refuse)
+            {
+                return Task.FromException(new InvalidOperationException("HTTP 422: Reviews may only be requested from collaborators."));
+            }
+
+            Rerequested.Add(reviewer);
+            return Task.CompletedTask;
+        }
+
+        public Task MergeAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken) => throw new NotSupportedException("the opener never merges");
+
+        public Task RetargetAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
+            CancellationToken cancellationToken) => throw new NotSupportedException("the opener never retargets");
+    }
+
+    /// <summary>
+    /// The lap has pushed, so the person who blocked the pull request is asked to look at the new
+    /// head (task: a changes-requested pull-request review from a human becomes a fix lap). The
+    /// login is recorded on the run too, which is what keeps closeout's human-engagement check
+    /// from reading the platform's own request back as a human's.
+    /// </summary>
+    [Fact]
+    public async Task A_changes_requested_lap_rerequests_the_reviewer_once_it_has_pushed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        RecordingRerequestInspector inspector = new();
+        (Guid taskId, Guid runId, DocumentStore store) =
+            await RunChangesRequestedFollowUpAsync(inspector, cts.Token);
+        using IDisposable storeLifetime = store;
+
+        Hall9k.Daemon.Closeout.PullRequestReviewer asked =
+            inspector.Rerequested.Should().ContainSingle().Subject;
+        asked.Login.Should().Be("teammate");
+        asked.Kind.Should().Be(
+            Hall9k.Daemon.Closeout.ReviewerKind.Human,
+            "a human login is never [bot]-suffixed by the re-request call");
+
+        await using IQuerySession query = store.QuerySession();
+        Hall9k.Domain.Features.Run.Projections.RunDetails run =
+            (await query.LoadAsync<Hall9k.Domain.Features.Run.Projections.RunDetails>(runId, cts.Token))!;
+        run.RequestedReviewerLogins.Should().Equal("teammate");
+        run.ReviewRerequestsAfterFixes.Should().Be(
+            0, "this is not the opt-in countersign and must not spend its pass cap");
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be(
+            "Done", "the delivery is complete either way — the re-request is the last thing, not a gate on it");
+    }
+
+    /// <summary>
+    /// A refused re-request costs the request and not the delivery: the reviewer's own
+    /// changes-requested verdict still stands on GitHub, so nothing merges past them, and recording
+    /// a request the provider rejected would corrupt closeout's own human-engagement comparison.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_rerequest_still_completes_the_task_and_records_no_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (Guid taskId, Guid runId, DocumentStore store) =
+            await RunChangesRequestedFollowUpAsync(new RecordingRerequestInspector(refuse: true), cts.Token);
+        using IDisposable storeLifetime = store;
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be("Done");
+        (await query.LoadAsync<Hall9k.Domain.Features.Run.Projections.RunDetails>(runId, cts.Token))!
+            .RequestedReviewerLogins.Should().BeEmpty(
+                "a request nobody accepted is never written as though it had been asked");
+    }
+
+    /// <summary>
+    /// The follow-up lifecycle of <see cref="Follow_up_flow_pushes_the_existing_branch_and_updates_the_pull_request_in_place"/>,
+    /// reopened as a changes-requested lap instead of a thread lap, run through the opener.
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId, DocumentStore Store)> RunChangesRequestedFollowUpAsync(
+        Hall9k.Daemon.Closeout.IPullRequestInspector inspector, CancellationToken cancellationToken)
+    {
+        const string pullRequestUrl = "https://github.com/x/y/pull/11";
+        DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# changes-requested test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Worktree first = await worktrees.CreateAsync(
+            new WorktreeRequest(
+                repoPath, "main", taskId, firstRunId, "Bound the limiter", BranchNameTemplate.Default,
+                ExternalReference: null),
+            cancellationToken);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+        Git(first.Path, $"push -q origin {first.Branch}");
+        await worktrees.RemoveAsync(repoPath, first.Path, cancellationToken);
+
+        Guid followUpRunId = DomainId.New();
+        Worktree followUp = await worktrees.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(repoPath, first.Branch, taskId, followUpRunId), cancellationToken);
+        File.WriteAllText(Path.Combine(followUp.Path, "FIX.md"), "the limiter resets per window\n");
+        Git(followUp.Path, "add -A");
+        Git(followUp.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Answer the review\"");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Bound the limiter", ["the limiter resets per window"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
+            task.Apply(firstClaim);
+            var completed = TaskDecider.Complete(task, firstRunId, pullRequestUrl, Now);
+            task.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                task, firstRunId, first.Branch, "@teammate requested changes.",
+                FollowUpKind.ReviewRequestedChanges, automatic: true, Now, ownerId,
+                changesRequestedReviews:
+                [
+                    new Hall9k.Domain.Features.Run.ChangesRequestedReview(
+                        "teammate", $"{pullRequestUrl}#pullrequestreview-42", Now,
+                        [new Hall9k.Domain.Features.Run.ChangesRequestedFinding(
+                            "This limiter never resets.", "src/Limiter.cs:42", "PRRT_abc")]),
+                ]);
+            task.Apply(reopened);
+            var followUpClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, followUpRunId, Now);
+            task.Apply(followUpClaim);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, firstClaim, completed, reopened, followUpClaim]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = followUpClaim.NodeId, LeaseGeneration = 2, HeartbeatAt = Now,
+            });
+
+            session.Events.StartStream<RunAggregate>(followUpRunId,
+                new RunDispatched(followUpRunId, taskId, followUpClaim.NodeId, ownerId, 2, DomainId.New(),
+                    followUp.Path, followUp.Branch, ExecutorMode.Subscription, Now, IsFollowUp: true),
+                new AgentSessionCompleted(followUpRunId, Now),
+                new VerificationPassed(followUpRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector);
+        await opener.OpenAsync(followUpRunId, taskId, cancellationToken);
+        return (taskId, followUpRunId, store);
+    }
 }
