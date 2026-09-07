@@ -457,15 +457,34 @@ The checkpoints, in the order the window sees them:
    retargeted to a base other than the project's own) falls back to the ordinary follow-up dispatch
    above. `h9k task show` prints a **Mechanical rebase** line either way, so a branch rewritten
    under an open pull request is never silent about who did it or when.
-6. **The human merges.** Ordinarily, the platform never merges — with one deliberate, opt-in
+6. **The human merges**, and merging by hand is a four-gate check — the same four the daemon's own
+   pre-approved merge reads, so a hand merge and an automatic one hold to one standard (#135), and
+   every gate is a reason **not** to merge: **CI green**; **the review decision satisfied**
+   (`APPROVED`, or no branch rule requiring one — `CHANGES_REQUESTED` and `REVIEW_REQUIRED` are
+   both unsatisfied); **no outstanding requested reviewer**; **every review thread resolved**. The
+   third is a gate in its own right and not a formality: somebody was asked to look and has not,
+   and merging past them spends their goodwill on work they never saw. Copilot is not one of the
+   four — it has its own bounded settle window. You do not need a GitHub visit to answer any of
+   this: `h9k status` and `h9k task show` name the logins a pull request is waiting on (#150), so a
+   Delivered line reading `awaiting review from <logins>` rather than `the merge is yours` is the
+   third gate telling you it is shut, and which person it is shut on.
+   Ordinarily, the platform never merges — with one deliberate, opt-in
    exception: a task published or later set `h9k task publish --pre-approved` /
    `h9k task set-pre-approved <id> on` (Decisions Log #135) removes the owner as a synchronous gate
    at the pull request. For that task alone, the daemon reads GitHub's own gates — CI, the review
    decision from branch protection, requested reviewers (Copilot handled on its own bounded settle
    window, a required human approval or an outstanding requester stated as a visible wait, never a
    park), and thread resolution — and rebase-merges once every one of them reads satisfied, with no
-   agent session involved in the merge itself. Every other human waypoint (Failed, a review park, a
-   cap trip) still stops it exactly as it would an ordinary task. The observed merge is true
+   agent session involved in the merge itself. `h9k task set-pre-approved <id> after-human-review`
+   is the third value (#150): the same automatic merge, held until a human reviewer has actually
+   been requested on the pull request and every requested reviewer has approved the current head,
+   so a task can start pre-approved and still wait for whoever you add as a reviewer. With nobody
+   requested it waits and says so, naming you as the one who adds a reviewer in GitHub or flips it
+   to `on` — which is the emergency path and merges on the next sweep. Nothing here names a
+   reviewer and nothing here requests a review; both stay GitHub's and yours. Whichever mode a task
+   is in — and on one with none — `h9k status` and `h9k task show` name the logins the merge is
+   waiting on, so "is it my turn" no longer needs a GitHub visit. Every other human waypoint
+   (Failed, a review park, a cap trip) still stops it exactly as it would an ordinary task. The observed merge is true
    closeout either way: it is the moment the run completes, dependents unblock, and the worktree is
    removed. The task was already Done; what the merge changes is everything around it.
 

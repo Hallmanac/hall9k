@@ -106,6 +106,10 @@ first-class interface, always, for every command:
   (`PENDING`) review's comments from the API entirely, so a reviewer part-way through a draft is
   invisible to the closeout monitor and to any agent reading the PR. Never read silence as "the
   reviewer had nothing to say".
+- **Merging by hand is a four-gate check, and every gate is a reason not to merge** — the same four
+  the daemon's pre-approved merge reads (§16 #135): CI green, the review decision satisfied, **no
+  outstanding requested reviewer**, every review thread resolved. The third is a gate, not a
+  formality, and `h9k status` / `h9k task show` name who (§16 #150). Detail: ORCHESTRATOR-WINDOW.md.
 - Branch naming: `task/<id>-<slug>` unless the project set its own convention
   (`h9k project set <project> --branch-template`), created off `origin/main` with `--no-track` —
   except a task declared `--stacked-on` another, whose branch is cut from that parent's branch head
@@ -151,25 +155,21 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
   whoever opened it (Copilot, a teammate, or the author's own self-review): fix, reply
   in-thread, resolve. Supersedes the Copilot-only `resolve-copilot-reviews` skill (§16 #62)
 - **rebase-onto-main** — bring a PR branch conflicting with its base current: replay its own
-  commits onto the moved base, resolve conflicts with judgment, never leave a conflict
-  marker, re-run the verification gates against the rebased tree. The inverse of
-  absorb-review-fixes (that one folds new fixes in, this one replays existing commits
-  forward) (backlog 44)
+  commits onto the moved base, resolve conflicts with judgment, never leave a conflict marker,
+  re-run the gates against the rebased tree. The inverse of absorb-review-fixes (backlog 44)
 - **pr-summary** — generate a PR title/description from the branch's commits (text only — the
   daemon opens PRs; agents never do)
-- **walk-pr-review-findings** — walk a pr-review task's findings report with the owner, finding
-  by finding, and post only what they direct (a batched GitHub review or a plain comment) on
-  their explicit go, under their own login. Use once a pr-review task (§16 #99) parks NeedsHuman
-  with a findings report; an owner reviewing the pull request themselves runs `h9k pr review` (§16 #149)
+- **walk-pr-review-findings** — walk a pr-review task's findings report with the owner, finding by
+  finding, and post only what they direct (a batched GitHub review or a plain comment) on their
+  explicit go, under their own login. Use once such a task (§16 #99) parks NeedsHuman with one; an
+  owner reviewing the pull request themselves runs `h9k pr review` (§16 #149)
 - **hall9k-cli-reference** — the full `h9k`/`h9kd` command surface and platform domain semantics
   (task/idea/epic lifecycle, Jira/GitHub backlog integration, branch templates, auto-pr-review);
   load on demand rather than assuming a session was pre-briefed on the whole CLI surface
 - **orchestrator-recipe-generator** — write or regenerate a node's or project's orchestrator
-  recipe (the files behind `h9k orchestrator node`/`project`: `recipes/orchestrator.md` and the
-  scoped-session recipes) against the platform's own contract; the platform renders
-  `recipes/launch-anchor.md` and `recipes/settings.json` itself, always overwritten, and the skill
-  never writes either one (task: an operator starts a lean node or project orchestrator window).
-  Ships as a first draft; a follow-on task completes its content.
+  recipe (`recipes/orchestrator.md` and the scoped-session recipes) against the platform's own
+  contract; it never writes `recipes/launch-anchor.md` or `recipes/settings.json`, which the
+  platform renders itself, always overwritten. Ships as a first draft (§16 #147)
 
 There is deliberately no create-pr skill: PRs are opened by the daemon (`PullRequestOpener`),
 never by agents.

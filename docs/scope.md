@@ -388,14 +388,16 @@ built by this task) — reading the raw stream is the only way to see one today.
 
 ### Pre-approved merge
 
-A task published or later set `h9k task publish --pre-approved` / `h9k task set-pre-approved <id>
-on|off` removes the owner as a synchronous gate at its own pull request. `h9k task set-pre-approved`
+A task published or later set `h9k task publish --pre-approved [on|after-human-review]` /
+`h9k task set-pre-approved <id> on|after-human-review|off`
+removes the owner as a synchronous gate at its own pull request. `h9k task set-pre-approved`
 is settable without the unassign/draft/revise/publish ceremony, on any live task whose pull request
 has not actually merged yet — `TaskState.Done` alone does not refuse it, since Done is also the
 entire window a pull request is open and closeout is watching it. A Draft refuses too, for a
-different reason: the flag is part of the readiness contract set at publish, and a value set here
-first would be silently clobbered back to false by an ordinary `h9k task publish` that omitted
-`--pre-approved`.
+different reason: pre-approval is part of the readiness contract set at publish, and a value set
+here first would be silently clobbered back to off by an ordinary `h9k task publish` that omitted
+`--pre-approved`. The bare `--pre-approved` flag still means `on`, so nothing anybody already typed
+changed.
 
 Once every ordinary obstruction the closeout monitor already checks has had its say — no conflict,
 no pending or failing check, no unresolved thread, no errored review, and no countersign
@@ -412,7 +414,35 @@ human waypoint (Failed, a review park, a cap trip) still stops a pre-approved ta
 would an unflagged one, and the merge itself is unchanged as the platform's one true-closeout
 moment.
 
-Depth: PLAN.md Decisions Log #135.
+`after-human-review` is the same automatic merge with two more gates ahead of it, checked after
+all four above because they are strictly narrower: at least one human reviewer must have been
+requested on the pull request at some point, and every requested reviewer must have approved the
+current head. Requested-at-some-point is read from GitHub's own review-request timeline net of
+withdrawals, so a reviewer who answered still counts (GitHub retires their pending request
+silently) while one whose request a human took back drops out. Approval is per-reviewer and
+per-commit: a comment is not an approval, and an approval of a superseded commit is not an approval
+of the head. A requested team counts toward the first gate and is asked a different question by the
+second: GitHub satisfies a team's request when any member reviews, and it is that member's login,
+not the slug, that carries the review, so what clears the team is a standing approval of the head
+from anybody — while there is none, the merge waits and names the team. (Team membership is not in
+the pull request's own data, so which accounts belong to the slug is genuinely unknown to the
+platform and is not guessed at; requiring the slug itself to approve would instead hold the merge
+shut forever.) With nobody ever requested the task waits — a visible wait with no clock,
+naming the owner as the one who adds a reviewer in GitHub or flips the mode to `on`, which is the
+emergency path and merges on the next sweep. No project or task setting names reviewers, and hall9k
+requests no review to satisfy its own gate; Copilot is classified exactly as it is everywhere else,
+through its own bounded settle window, never as the human review this mode waits for.
+
+`h9k status` and `h9k task show` name the logins a pull request is waiting on, in either
+pre-approval mode and on a task with none: the outstanding requested reviewers, whoever requested
+changes, and which requested reviewers have not approved the current head. On a task that is not
+pre-approved this changes the Delivered line from "the merge is yours" to
+`awaiting review from <logins>` while any of that is true, and back once none of it is. Where the
+observation recorded no login — a branch rule wanting an approval nobody was asked for, a verdict
+whose author it did not record — the line states the fact rather than inventing one, or a reason for
+its absence.
+
+Depth: PLAN.md Decisions Log #135, #150.
 
 ### Recovery
 

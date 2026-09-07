@@ -576,7 +576,28 @@ an outstanding reviewer is a visible, self-resuming wait, never a park; every ot
 (Failed, a review park, a cap trip) still stops it exactly as it would an unflagged task. Nothing
 about this changes the merge's own meaning: it is still the platform's one true-closeout moment.
 
-Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62, #80, #81, #135.
+**Pre-approval has three values, and the third one waits for a person.** `off` is the default.
+`on` is what the paragraph above describes. `after-human-review` is the same automatic merge with
+two more gates in front of it: at least one human reviewer must have been requested on the pull
+request at some point, and every requested reviewer must have approved the current head. It exists
+because plain pre-approval can merge before anybody has been asked to look at all, so a task can
+now start pre-approved and still wait for whichever reviewers you end up adding. With nobody
+requested it simply waits, and the board says so, naming you as the one who adds a reviewer or
+flips the mode; flipping it to `on` is the emergency path and merges on the next sweep. Nothing in
+hall9k names a reviewer and nothing in hall9k requests a review — reviewers are GitHub's business
+and a human's — so what the platform stores is only your standing instruction about when to merge.
+
+**The people a pull request is waiting on are named.** Wherever the last closeout observation
+recorded logins, `h9k status` and `h9k task show` say whose review the merge is waiting on rather
+than "waiting on human approval": the outstanding requested reviewers, whoever requested changes,
+and — under `after-human-review` — which requested reviewers have not approved the current head.
+On a task that is not pre-approved, the same reading changes the Delivered line from "the merge is
+yours" to `awaiting review from <logins>` while any of that is true, and back again once none of it
+is. Where nothing was recorded — a branch rule wanting an approval nobody has been asked for, or a
+verdict whose author the last observation did not record — the line says the fact without inventing
+a login for it, or a reason for the login's absence.
+
+Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62, #80, #81, #135, #150.
 
 ## Owners, nodes, and connections
 
