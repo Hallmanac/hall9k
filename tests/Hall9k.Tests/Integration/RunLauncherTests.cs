@@ -1103,6 +1103,127 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// A stacked child's conflict follow-up is told to REPLAY, not to rebase (independent pre-PR
+    /// review, cycle 2, adversarial lens). Closeout reaches this dispatch when it could not observe
+    /// the parent that sweep (<c>StackedParentVerdict.Unobservable</c>) and GitHub reports the child
+    /// CONFLICTING anyway: the mechanical rebase refuses a base that is not the project's own, so a
+    /// <c>FollowUpKind.Rebase</c> judgment session is dispatched — and a plain
+    /// <c>git rebase origin/&lt;parent&gt;</c> there is the same operation the pre-final-pass gate
+    /// refuses outright, since a force-pushed parent collapses the merge base below this branch's
+    /// own fork point. This is the whole path, launcher through prompt, rather than the builder
+    /// alone: the fork point has to survive the follow-up's own dispatch to reach the instruction.
+    /// </summary>
+    [Fact]
+    public async Task A_rebase_follow_up_on_a_stacked_child_is_told_to_replay_from_its_fork_point()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid parentTaskId = DomainId.New();
+        Guid parentRunId = DomainId.New();
+        Guid childTaskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string parentBranch = "task/parent-slice-one";
+        const string childBranch = "task/child-slice-two";
+        const string forkPoint = "abc1234def5678";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"stacked-rebase-{childTaskId:N}",
+                "/tmp/stacked-rebase-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            // The parent, still Delivered rather than closed out — which is what keeps the stack
+            // edge live, so the follow-up's own base resolves to the parent's branch again.
+            (TaskAggregate parent, object[] parentLifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    parentTaskId, projectId, "Parent slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed parentClaimed =
+                TaskDecider.Claim(parent, node.NodeId, node.OwnerId, parentRunId, Now);
+            parent.Apply(parentClaimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted parentCompleted =
+                TaskDecider.Complete(parent, parentRunId, "https://github.com/x/y/pull/7", Now);
+            session.Events.StartStream<TaskAggregate>(
+                parentTaskId, [.. parentLifecycle, parentClaimed, parentCompleted]);
+            session.Events.StartStream<RunAggregate>(parentRunId,
+                new RunDispatched(parentRunId, parentTaskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/parent-wt", parentBranch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(parentRunId, Now),
+                new VerificationPassed(parentRunId, Now),
+                new PullRequestOpened(parentRunId, "https://github.com/x/y/pull/7", 7, Now));
+
+            TaskDependencyGraph graph = new([
+                new TaskDependency(
+                    parentTaskId, "Parent slice", TaskState.Done, IsClosedOut: false, RunState.AwaitingReview,
+                    "https://github.com/x/y/pull/7", TaskType.Feature, []),
+            ]);
+            (TaskAggregate child, object[] childLifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    childTaskId, projectId, "Child slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId,
+                    blockedBy: [parentTaskId], stackedOnTaskId: parentTaskId),
+                node.OwnerId, Now, graph);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed childClaimed =
+                TaskDecider.Claim(child, node.NodeId, node.OwnerId, firstRunId, Now);
+            child.Apply(childClaimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted childCompleted =
+                TaskDecider.Complete(child, firstRunId, PullRequestUrl, Now);
+            child.Apply(childCompleted);
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                child, firstRunId, childBranch, "the pull request conflicts with its base branch",
+                FollowUpKind.Rebase, automatic: true, Now, node.OwnerId);
+            child.Apply(reopened);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
+                TaskDecider.Claim(child, node.NodeId, node.OwnerId, followUpRunId, Now);
+            session.Events.StartStream<TaskAggregate>(
+                childTaskId, [.. childLifecycle, childClaimed, childCompleted, reopened, reclaimed]);
+
+            // The child's first run: cut from the parent's branch, at the fork point it observed.
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(firstRunId, childTaskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/child-wt", childBranch, ExecutorMode.Subscription, Now,
+                    BaseBranch: parentBranch, BaseCommit: forkPoint),
+                new AgentSessionCompleted(firstRunId, Now),
+                new VerificationPassed(firstRunId, Now),
+                new PullRequestOpened(firstRunId, PullRequestUrl, 12, Now),
+                new RunSuperseded(firstRunId, 2, Now));
+
+            session.Store(new TaskLease
+            {
+                Id = childTaskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(childTaskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
+
+        string prompt = executor.Request!.Prompt;
+        prompt.Should().Contain($"git rebase --onto origin/{parentBranch} {forkPoint} {childBranch}",
+            "the replay is keyed to the recorded fork point, which is what keeps the parent's own commits out");
+        prompt.Should().NotContain($"`git rebase origin/{parentBranch}`, resolving each conflict",
+            "a merge-base rebase onto a force-pushed parent replays this branch's copies of the parent's commits");
+        prompt.Should().NotContain($"--autosquash origin/{parentBranch}",
+            "and a gate fix folds back to an observed commit, never to the parent's own branch ref");
+    }
+
+    /// <summary>
     /// The pr-review dispatch branch itself (cycle-1 conformance finding, `PrReviewEngine.cs:50`
     /// — before this, LaunchAsync's own isPrReview branch had no coverage at all): a fresh read
     /// of the open pull request resolves the base branch and the checkout, the run's primary
