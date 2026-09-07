@@ -35,11 +35,31 @@ public sealed class GitHubPullRequestInspectorTests
             + $"'standingReviews':{{'nodes':[{standingReviews}]}}"
             + "}}}}").Replace('\'', '"');
 
-    private static string Thread(bool resolved, string author, string id = "thread-1", string? reviewId = null) =>
+    private static string Thread(
+        bool resolved, string author, string id = "thread-1", string? reviewId = null,
+        string? body = null, string? path = null, int? line = null, int? originalLine = null) =>
+        ThreadOf(resolved, id, Comment(author, reviewId, body, path, line, originalLine));
+
+    /// <summary>
+    /// A thread of several comments, in the order the provider reports them — the shape a
+    /// re-reviewing human leaves when their second review is written as replies inside the threads
+    /// their first one opened.
+    /// </summary>
+    private static string ThreadOf(bool resolved, string id, params string[] comments) =>
         $"{{'id':'{id}',"
-            + $"'isResolved':{(resolved ? "true" : "false")},'comments':{{'nodes':[{{'author':{author}"
+            + $"'isResolved':{(resolved ? "true" : "false")},"
+            + $"'comments':{{'nodes':[{string.Join(",", comments)}]}}}}";
+
+    private static string Comment(
+        string author, string? reviewId = null, string? body = null, string? path = null,
+        int? line = null, int? originalLine = null) =>
+        $"{{'author':{author}"
             + (reviewId is null ? "" : $",'pullRequestReview':{{'id':'{reviewId}'}}")
-            + "}]}}";
+            + (body is null ? "" : $",'body':'{body}'")
+            + (path is null ? "" : $",'path':'{path}'")
+            + (line is null ? "" : $",'line':{line}")
+            + (originalLine is null ? "" : $",'originalLine':{originalLine}")
+            + "}";
 
     private static string ThreadWithNullId(bool resolved, string author) =>
         "{'id':null,"
@@ -48,9 +68,13 @@ public sealed class GitHubPullRequestInspectorTests
     private static string Actor(string login, string typeName) =>
         $"{{'login':'{login}','__typename':'{typeName}'}}";
 
-    private static string Review(string author, string oid, string body = "", string id = "review-1") =>
-        $"{{'id':'{id}','author':{author},'body':'{body}','url':'https://x/y/pull/7#r1',"
-            + $"'commit':{{'oid':'{oid}'}}}}";
+    private static string Review(
+        string author, string oid, string body = "", string id = "review-1",
+        string? state = null, string? submittedAt = null, string url = "https://x/y/pull/7#r1") =>
+        $"{{'id':'{id}','author':{author},'body':'{body}','url':'{url}'"
+            + (state is null ? "" : $",'state':'{state}'")
+            + (submittedAt is null ? "" : $",'submittedAt':'{submittedAt}'")
+            + $",'commit':{{'oid':'{oid}'}}}}";
 
     // One node of the standingReviews alias — the reviews connection filtered to the three verdict
     // states, which is a DIFFERENT read from latestReviews above and the only one a verdict may be
@@ -966,5 +990,194 @@ public sealed class GitHubPullRequestInspectorTests
 
         observation.CopilotReviewState.Should().Be(ExternalReviewState.Stale);
         observation.CopilotReviewThreadCount.Should().Be(1, "the stale review's own thread counts toward it");
+    }
+
+    /// <summary>
+    /// The read the whole fix lap rests on (task: a changes-requested pull-request review from a
+    /// human becomes a fix lap): a person's CHANGES_REQUESTED review on the head, with its body
+    /// and each of its inline comments as findings, each carrying the thread a reply would land
+    /// inside.
+    /// </summary>
+    [Fact]
+    public void A_humans_changes_requested_review_on_the_head_is_read_with_its_body_and_comments()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            string.Join(",",
+                Thread(
+                    resolved: false, Actor("teammate", "User"), "thread-a", reviewId: "review-cr",
+                    body: "This limiter never resets.", path: "src/Limiter.cs", line: 42),
+                Thread(
+                    resolved: false, Actor("teammate", "User"), "thread-b", reviewId: "review-other",
+                    body: "unrelated older thread", path: "src/Other.cs", line: 9)),
+            Review(
+                Actor("teammate", "User"), "cafe1", body: "Two things before this ships.",
+                id: "review-cr", state: "CHANGES_REQUESTED", submittedAt: "2026-09-06T12:15:00Z"));
+
+        GitHubPullRequestInspector.ReviewObservation observation =
+            GitHubPullRequestInspector.ParseReviews(json);
+
+        ChangesRequestedReview review = observation.ChangesRequestedReviews.Should().ContainSingle().Subject;
+        review.Reviewer.Should().Be("teammate");
+        review.ReviewUrl.Should().Be("https://x/y/pull/7#r1");
+        review.SubmittedAt.Should().Be(new DateTimeOffset(2026, 9, 6, 12, 15, 0, TimeSpan.Zero));
+        review.Findings.Should().HaveCount(2);
+        review.Findings[0].Body.Should().Be("Two things before this ships.");
+        review.Findings[0].Location.Should().BeNull("a review body has no file and no line");
+        review.Findings[0].ThreadId.Should().BeNull("GitHub makes a review body unthreadable");
+        review.Findings[1].Body.Should().Be("This limiter never resets.");
+        review.Findings[1].Location.Should().Be("src/Limiter.cs:42");
+        review.Findings[1].ThreadId.Should().Be(
+            "thread-a", "the reply the implementer may send has to land inside the reviewer's own thread");
+    }
+
+    /// <summary>
+    /// The feature's own second lap: a re-reviewing human writes "still not fixed" as a REPLY
+    /// inside the thread their superseded review opened, so the comment belongs to the new review
+    /// while the thread's first comment belongs to the old one. Scoping findings to the thread's
+    /// opener dropped every such comment and handed the fix lap a review with nothing in it, which
+    /// the prompt then reported as a reviewer who stated nothing (independent pre-PR review, cycle
+    /// 1, conformance finding). The agent's own reply in between is excluded by the same rule that
+    /// admits the human's: it belongs to a different review.
+    /// </summary>
+    [Fact]
+    public void A_reviewers_reply_inside_an_earlier_thread_is_one_of_the_new_reviews_findings()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe2",
+            ThreadOf(
+                resolved: false,
+                "thread-a",
+                Comment(
+                    Actor("teammate", "User"), "review-first", "This limiter never resets.",
+                    "src/Limiter.cs", line: 42),
+                Comment(Actor("hallmanac", "User"), "review-agent-reply", "Reset added in 1af2c3d.",
+                    "src/Limiter.cs", line: 42),
+                Comment(
+                    Actor("teammate", "User"), "review-second", "Still not reset on the error path.",
+                    "src/Limiter.cs", line: 51)),
+            Review(
+                Actor("teammate", "User"), "cafe2", id: "review-second", state: "CHANGES_REQUESTED"));
+
+        ChangesRequestedReview review = GitHubPullRequestInspector.ParseReviews(json)
+            .ChangesRequestedReviews.Should().ContainSingle().Subject;
+
+        ChangesRequestedFinding finding = review.Findings.Should().ContainSingle(
+            "only the reviewer's own comment on the NEW review is one of its findings").Subject;
+        finding.Body.Should().Be("Still not reset on the error path.");
+        finding.Location.Should().Be("src/Limiter.cs:51");
+        finding.ThreadId.Should().Be(
+            "thread-a", "a reply belongs to the thread it sits in, which is where an answer goes");
+    }
+
+    /// <summary>
+    /// A comment-only review is not a verdict, so it stays on the thread-based path the platform
+    /// has always had — the boundary that keeps this feature from swallowing every review.
+    /// </summary>
+    [Fact]
+    public void A_comment_only_review_is_never_read_as_changes_requested()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            Thread(resolved: false, Actor("teammate", "User"), "thread-a", reviewId: "review-c", body: "nit"),
+            Review(Actor("teammate", "User"), "cafe1", body: "Looks fine.", id: "review-c", state: "COMMENTED"));
+
+        GitHubPullRequestInspector.ReviewObservation observation =
+            GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.ChangesRequestedReviews.Should().BeEmpty();
+        observation.UnresolvedThreads.Should().Be(1, "the thread-based path still sees it, unchanged");
+    }
+
+    /// <summary>
+    /// Copilot's changes-requested review stays on the automated thread path (Brian's ruling,
+    /// 2026-09-06 12:15): the social care this lap exists for is owed to a person, and routing a
+    /// bot here would park runs waiting on a human to answer a machine.
+    /// </summary>
+    [Fact]
+    public void A_bots_changes_requested_review_is_never_read_as_one()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            "",
+            Review(
+                Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", body: "Change this.",
+                id: "review-bot", state: "CHANGES_REQUESTED"));
+
+        GitHubPullRequestInspector.ParseReviews(json).ChangesRequestedReviews.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// "Lands on the current head" is an observation, not an inference: a review against an
+    /// earlier commit, and a review whose commit the provider never reported, both read as not on
+    /// the head rather than as maybe-on-it (AGENTS.md's never-guess rule).
+    /// </summary>
+    [Fact]
+    public void A_changes_requested_review_off_the_head_or_with_no_commit_is_not_read_as_one()
+    {
+        string stale = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("teammate", "User"), "older", body: "Change this.", state: "CHANGES_REQUESTED"));
+        GitHubPullRequestInspector.ParseReviews(stale).ChangesRequestedReviews.Should().BeEmpty();
+
+        string unreported = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            ("{'id':'review-cr','author':" + Actor("teammate", "User")
+                + ",'body':'Change this.','url':'https://x/y/pull/7#r1','state':'CHANGES_REQUESTED'}")
+                .Replace('\'', '"'));
+        GitHubPullRequestInspector.ParseReviews(unreported).ChangesRequestedReviews.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// An outdated comment keeps the line it was written against (<c>originalLine</c>), and a
+    /// comment with neither line names its file alone rather than borrowing a number.
+    /// </summary>
+    [Fact]
+    public void A_comments_location_falls_back_to_its_original_line_and_then_to_the_path_alone()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            string.Join(",",
+                Thread(
+                    resolved: false, Actor("teammate", "User"), "thread-outdated", reviewId: "review-cr",
+                    body: "outdated", path: "src/Moved.cs", originalLine: 17),
+                Thread(
+                    resolved: false, Actor("teammate", "User"), "thread-lineless", reviewId: "review-cr",
+                    body: "file-level", path: "src/Whole.cs")),
+            Review(Actor("teammate", "User"), "cafe1", id: "review-cr", state: "CHANGES_REQUESTED"));
+
+        ChangesRequestedReview review = GitHubPullRequestInspector.ParseReviews(json)
+            .ChangesRequestedReviews.Should().ContainSingle().Subject;
+
+        review.Findings.Should().HaveCount(2, "the review carried no body of its own");
+        review.Findings[0].Location.Should().Be("src/Moved.cs:17");
+        review.Findings[1].Location.Should().Be("src/Whole.cs");
+    }
+
+    /// <summary>
+    /// A finding an earlier lap already resolved is still part of the reviewer's verdict: the
+    /// verdict stands until they change it, so dropping the resolved thread would hand the fix lap
+    /// a review with a hole in it.
+    /// </summary>
+    [Fact]
+    public void A_resolved_thread_from_the_review_is_still_one_of_its_findings()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            Thread(
+                resolved: true, Actor("teammate", "User"), "thread-resolved", reviewId: "review-cr",
+                body: "already answered once", path: "src/A.cs", line: 3),
+            Review(Actor("teammate", "User"), "cafe1", id: "review-cr", state: "CHANGES_REQUESTED"));
+
+        GitHubPullRequestInspector.ParseReviews(json)
+            .ChangesRequestedReviews.Should().ContainSingle()
+            .Which.Findings.Should().ContainSingle()
+            .Which.ThreadId.Should().Be("thread-resolved");
     }
 }

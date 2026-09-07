@@ -76,6 +76,20 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     // is a verdict and a later one must not supersede a standing verdict. last: 50 is a cap on the
     // same terms as every other read here, and its truncation direction is safe: an approval old
     // enough to fall out of it reads as absent, which holds the merge rather than granting it.
+    //
+    // comments(first: 50) reads a thread WHOLE rather than only its opening comment, because a
+    // re-reviewing human's second changes-requested review is most often written as replies
+    // inside the threads their first one opened ("still not fixed here"). Such a reply belongs to
+    // the new review while the thread's first comment still belongs to the superseded one, so a
+    // read that stopped at the first comment dropped exactly the comments the fix lap exists to
+    // answer and handed it a review with zero findings (independent pre-PR review, cycle 1,
+    // conformance finding). Who STARTED the thread is still read from the first node alone
+    // (ThreadStarter, ThreadReviewId) — that invariant is unchanged. 50 is the same species of
+    // cap as the 100 above: a single thread carrying 50+ comments has left the range this
+    // automation is for. Deliberately first: 50 and not last: 50, even though GitHub returns a
+    // thread oldest-first and so it is the NEWEST reply a 50+ comment thread would lose: the
+    // thread's OPENER is what the starter and review-id reads above are, and every closeout
+    // count keyed on them would misattribute a thread whose first comment fell off the page.
     private const string ReviewsQuery =
         """
         query($owner: String!, $name: String!, $number: Int!) {
@@ -86,7 +100,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
               mergeable
               reviewDecision
               reviewThreads(first: 100) {
-                nodes { id isResolved comments(first: 1) { nodes { author { login __typename } pullRequestReview { id } } } }
+                nodes { id isResolved comments(first: 50) { nodes { author { login __typename } pullRequestReview { id } body path line originalLine } } }
                 pageInfo { hasNextPage }
               }
               reviewRequests(first: 20) {
@@ -105,7 +119,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 }
               }
               latestReviews(first: 100) {
-                nodes { id author { login __typename } body url commit { oid } }
+                nodes { id author { login __typename } body url state submittedAt commit { oid } }
               }
               standingReviews: reviews(last: 50, states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) {
                 nodes { author { login __typename } state commit { oid } }
@@ -161,7 +175,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             ReviewDecision: reviews.ReviewDecision,
             OutstandingReviewerLogins: reviews.OutstandingReviewerLogins,
             ReviewThreadsTruncated: reviews.ReviewThreadsTruncated,
-            RequestedHumanReviewerLogins: reviews.RequestedHumanReviewerLogins);
+            RequestedHumanReviewerLogins: reviews.RequestedHumanReviewerLogins,
+            ChangesRequestedReviews: reviews.ChangesRequestedReviews);
     }
 
     /// <summary>
@@ -258,7 +273,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         string? ReviewDecision = null,
         IReadOnlyList<string>? OutstandingReviewerLogins = null,
         bool ReviewThreadsTruncated = false,
-        IReadOnlyList<string>? RequestedHumanReviewerLogins = null)
+        IReadOnlyList<string>? RequestedHumanReviewerLogins = null,
+        IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null)
     {
         public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], [], ExternalReviewState.None, 0);
     }
@@ -363,7 +379,161 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             ReviewDecision: ReadReviewDecision(pullRequest),
             OutstandingReviewerLogins: ReadOutstandingReviewerLogins(pullRequest),
             ReviewThreadsTruncated: reviewThreadsTruncated,
-            RequestedHumanReviewerLogins: ReadRequestedHumanReviewerLogins(pullRequest));
+            RequestedHumanReviewerLogins: ReadRequestedHumanReviewerLogins(pullRequest),
+            ChangesRequestedReviews: ReadChangesRequestedReviews(pullRequest, headCommit));
+    }
+
+    /// <summary>
+    /// Every human reviewer whose LATEST review requested changes on the head this snapshot just
+    /// read (task: a changes-requested pull-request review from a human becomes a fix lap), with
+    /// the review's own body and each of its inline comments as findings.
+    /// <para>
+    /// Four filters, each earning its place. The author's own account is dropped for the reason
+    /// <see cref="ReadReviewers"/> drops it (a review request addressed there is refused, and the
+    /// lap re-requests). A BOT's changes-requested review is dropped because Copilot's findings
+    /// stay on the automated thread path they have always been on — the whole point of this lap is
+    /// that a person is owed a person's answer (Brian's ruling, 2026-09-06 12:15). Anything other
+    /// than <c>CHANGES_REQUESTED</c> is dropped, which is what leaves a comment-only review to the
+    /// existing <c>FollowUpKind.ReviewFeedback</c> path unchanged. And a review whose commit does
+    /// not equal the head is dropped — including one the provider reported NO commit for, which
+    /// reads as "cannot tell", never as "on the head": claiming a fix lap for a review that may
+    /// answer a superseded push would dispatch against feedback nobody can place, while leaving it
+    /// alone costs nothing, since its unresolved threads are still on the thread path.
+    /// </para>
+    /// <para>
+    /// <c>latestReviews</c> is per-reviewer latest, so a reviewer who requested changes and later
+    /// approved is structurally gone from here without needing a rule of its own — the same
+    /// property the errored-review match already relies on.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<ChangesRequestedReview> ReadChangesRequestedReviews(
+        JsonElement pullRequest, string? headCommit)
+    {
+        if (headCommit is null || !pullRequest.TryGetProperty("latestReviews", out JsonElement latest))
+        {
+            return [];
+        }
+
+        string? author = ReadActor(pullRequest)?.Login;
+        List<ChangesRequestedReview> reviews = [];
+        foreach (JsonElement review in latest.GetProperty("nodes").EnumerateArray())
+        {
+            if (ReadActor(review) is not { IsHuman: true } reviewer
+                || string.Equals(reviewer.Login, author, StringComparison.OrdinalIgnoreCase)
+                || ReadReviewState(review) != "CHANGES_REQUESTED"
+                // Compared the way ReadCopilotReviewState compares the same two facts, rather
+                // than case-sensitively: one shape, one comparison. A null reviewedCommit is
+                // "cannot tell" per ReadReviewedCommit's contract and is dropped by this, which is
+                // the intended read — headCommit is non-null by the guard above, so the two are
+                // never both unobserved here the way they can be there.
+                || !string.Equals(ReadReviewedCommit(review), headCommit, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            List<ChangesRequestedFinding> findings = [];
+            string body = review.GetProperty("body").GetString() ?? "";
+            if (body.IsNotBlank())
+            {
+                // No location and no thread: GitHub makes a review's body unthreadable, which is
+                // exactly why an answer to it can only ever be a top-level pull-request comment.
+                findings.Add(new ChangesRequestedFinding(body.Trim()));
+            }
+
+            if (review.GetProperty("id").GetString() is { } reviewId)
+            {
+                findings.AddRange(ReadInlineFindings(pullRequest, reviewId));
+            }
+
+            reviews.Add(new ChangesRequestedReview(
+                reviewer.Login,
+                review.GetProperty("url").GetString() ?? "",
+                ReadTimestamp(review, "submittedAt"),
+                findings));
+        }
+
+        return reviews;
+    }
+
+    /// <summary>
+    /// One review's inline comments, read from the review THREADS rather than from the review's
+    /// own comment list — which is what supplies the thread id a reply would land inside, since
+    /// nothing here ever starts a thread of its own (AGENTS.md). Resolved threads are included
+    /// deliberately: a reviewer who requested changes and whose comment an earlier lap already
+    /// resolved has still not had their verdict answered, and dropping it would hand the fix lap a
+    /// review with findings missing from it.
+    /// <para>
+    /// Every comment in every thread is considered, not just each thread's opening one, and the
+    /// membership test is the comment's OWN <c>pullRequestReview</c> id. That is what admits the
+    /// shape a re-reviewing human writes most: a second changes-requested review left as replies
+    /// inside the threads the first one opened, where the reply belongs to the new review and the
+    /// thread's first comment still belongs to the superseded one. Scoping by the thread's opener
+    /// instead dropped every such comment and handed the fix lap a review with nothing in it
+    /// (independent pre-PR review, cycle 1, conformance finding). The reply target is still the
+    /// thread, so nothing here starts one; and an agent's own earlier reply in the thread is
+    /// excluded structurally, since it belongs to a different review id than the human's.
+    /// </para>
+    /// </summary>
+    private static IEnumerable<ChangesRequestedFinding> ReadInlineFindings(JsonElement pullRequest, string reviewId)
+    {
+        foreach (JsonElement thread in pullRequest.GetProperty("reviewThreads").GetProperty("nodes").EnumerateArray())
+        {
+            string? threadId = thread.GetProperty("id").GetString();
+            foreach (JsonElement comment in thread.GetProperty("comments").GetProperty("nodes").EnumerateArray())
+            {
+                if (CommentReviewId(comment) != reviewId)
+                {
+                    continue;
+                }
+
+                string body = comment.GetProperty("body").GetString() ?? "";
+                if (body.IsBlank())
+                {
+                    continue;
+                }
+
+                yield return new ChangesRequestedFinding(
+                    body.Trim(), ReadCommentLocation(comment), threadId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Where a review comment points, in the same `path/to/file.cs:123` form every platform review
+    /// finding states. <c>line</c> is null on a comment GitHub considers outdated, where
+    /// <c>originalLine</c> still names the line it was written against; with neither, the path
+    /// alone is what was actually observed and no line is invented for it. Null when even the path
+    /// is absent.
+    /// </summary>
+    private static string? ReadCommentLocation(JsonElement comment)
+    {
+        string? path = comment.TryGetProperty("path", out JsonElement pathElement)
+            && pathElement.ValueKind == JsonValueKind.String
+                ? pathElement.GetString()
+                : null;
+        if (path.IsBlank())
+        {
+            return null;
+        }
+
+        int? line = ReadCommentLine(comment, "line") ?? ReadCommentLine(comment, "originalLine");
+        return line is { } stated ? $"{path}:{stated}" : path;
+    }
+
+    private static int? ReadCommentLine(JsonElement comment, string property) =>
+        comment.TryGetProperty(property, out JsonElement value) && value.ValueKind == JsonValueKind.Number
+            ? value.GetInt32()
+            : null;
+
+    /// <summary>The thread's first comment — the reviewer's own, per the thread-starter invariant.</summary>
+    private static JsonElement? ThreadFirstComment(JsonElement thread)
+    {
+        foreach (JsonElement comment in thread.GetProperty("comments").GetProperty("nodes").EnumerateArray())
+        {
+            return comment;
+        }
+
+        return null;
     }
 
     /// <summary>GitHub's own branch-protection-aware verdict, or null when the repository has no rule requiring one.</summary>
@@ -943,34 +1113,29 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// request's own human owner leaving themselves a note (AGENTS.md records the
     /// invariant, and what breaks if agents ever gain their own thread-opening voice).
     /// </summary>
-    private static PullRequestReviewer? ThreadStarter(JsonElement thread)
-    {
-        foreach (JsonElement comment in thread.GetProperty("comments").GetProperty("nodes").EnumerateArray())
-        {
-            return ReadActor(comment);
-        }
-
-        return null;
-    }
+    private static PullRequestReviewer? ThreadStarter(JsonElement thread) =>
+        ThreadFirstComment(thread) is { } comment ? ReadActor(comment) : null;
 
     /// <summary>
     /// The GraphQL review id the thread's first comment belongs to, or null when the comment
     /// carries none (a standalone pull-request comment, never part of a review). What
     /// <see cref="ParseReviews"/> compares against the currently-landed review's own id to scope
     /// <c>CopilotReviewThreadCount</c> to that review specifically, rather than to every thread
-    /// Copilot has ever opened across the pull request's history (Decisions Log #89).
+    /// Copilot has ever opened across the pull request's history (Decisions Log #89). Deliberately
+    /// the OPENER's review and not any reply's: what this answers is which review left the thread.
     /// </summary>
-    private static string? ThreadReviewId(JsonElement thread)
-    {
-        foreach (JsonElement comment in thread.GetProperty("comments").GetProperty("nodes").EnumerateArray())
-        {
-            return comment.TryGetProperty("pullRequestReview", out JsonElement review) && review.ValueKind == JsonValueKind.Object
-                ? review.GetProperty("id").GetString()
-                : null;
-        }
+    private static string? ThreadReviewId(JsonElement thread) =>
+        ThreadFirstComment(thread) is { } comment ? CommentReviewId(comment) : null;
 
-        return null;
-    }
+    /// <summary>
+    /// The GraphQL review one comment itself belongs to, or null when it belongs to none (a
+    /// standalone pull-request comment). What scopes a review's findings to its own comments
+    /// wherever in a thread they sit (<see cref="ReadInlineFindings"/>).
+    /// </summary>
+    private static string? CommentReviewId(JsonElement comment) =>
+        comment.TryGetProperty("pullRequestReview", out JsonElement review) && review.ValueKind == JsonValueKind.Object
+            ? review.GetProperty("id").GetString()
+            : null;
 
     // Copilot's reviewer authors under a small set of known app logins: GraphQL reports
     // the bare form (copilot-pull-request-reviewer), REST the [bot]-suffixed form, and
