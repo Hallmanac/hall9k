@@ -552,3 +552,72 @@ task honestly (abandoned, the go signal recalled by the same authority that gave
 after the run is Claimed or parked, it is recorded as an observation only — findings already
 produced are never discarded for a reviewer reshuffle. The pr-review run itself (#99) is entirely
 untouched: this changes only when a review starts, never what it does once it has.
+
+**A reviewer runs their own review lap on top of that same pr-review task** (Decisions Log #149,
+idea 21ddf2b3, walked 2026-09-06). `h9k pr review` is the reviewer's counterpart to
+`h9k task work`: it prepares the lap and hands over a briefing, and it deliberately builds on the
+pr-review task rather than beside it.
+
+```bash
+h9k pr review 42                       # attach to the pr-review task this node holds for #42, or adopt the PR when none exists
+h9k pr review https://github.com/o/r/pull/42 --project <name>   # a URL, and --project when several are registered
+h9k pr review 42 --no-worktree         # skip the read-only checkout: reviewing against a deployed environment
+h9k pr approve <task> --note "…"       # END the lap: posts APPROVE on the PR's current head under YOUR login
+h9k pr request-changes <task> --note "…" --finding "src/Foo.cs:42: <what is wrong>"   # END the lap with line comments; repeat --finding
+```
+
+What it attaches to, and when it adopts: the live pr-review task for that pull request, found
+through the identical project-blind one-live-task-per-item dedup `h9k task add --from-pr` and
+auto-pr-review already share (a Done pr-review does not hold its pull request hostage, so a lap
+after one closed gets a fresh task). Attaching to a task whose automated run is already
+ReviewParked rides on **that** run and reuses its worktree, so the reviewer's verdict resolves the
+same park the machines produced; a task that never dispatched is claimed interactively and gets a
+lap-owned run of its own. A run still mid-dispatch or mid-conformance-lens is refused by name — a
+live agent is reading that worktree.
+
+The connector is the prompt handoff (#126), never a launched process: `h9k pr review` prints a
+briefing to paste into a Claude Code session started anywhere, and there is no `--direct-launch`
+at all (a briefing quotes a whole findings report, so cmd.exe's embedded-newline problem is worse
+here than for a work prompt, not better). **The briefing is factual and unprescriptive by ruling**
+— the stated objective and acceptance criteria when this node can read the authoring task (and it
+says it is showing the pull request's own *description* instead when it cannot), the surfaces
+touched grouped two path segments deep with the diff's arithmetic, what CI ran with an unfinished
+check reported as having concluded nothing and an unobserved rollup told apart from an empty one,
+the merged findings report verbatim when one exists, and the author's own run's settlement,
+unclaimed residuals and rulings when this node can read them. It volunteers **no** test scenarios,
+areas of concern or review order; the session gives those the moment the reviewer asks, and helps
+with local setup, running the suites, or writing an end-to-end test. Nothing is ever written to the
+author's store.
+
+The lap's push guard is Claude Code's own `permissions.deny`, written both to the run's settings
+file and to `<worktree>/.claude/settings.local.json` so a session started in the checkout with no
+`--settings` flag is covered: `git push`, `gh pr review`, `gh pr comment`, `gh pr merge`,
+`gh pr close` and `gh api` are denied. `gh api` is in that list because it is the surface the
+others reach through — this platform's own poster uses `gh api .../pulls/<n>/reviews`, since
+`gh pr review` takes no line comments — and a lap loses nothing by it, because every read it makes
+goes through `gh pr view` / `gh pr diff`. It is a session-level permission deny matched on the
+command as spelled, not a sandbox: it refuses the ordinary route to each of these, and a command
+spelled around the prefix does not match it. `git commit` is deliberately **not** — the checkout is detached with no
+local branch, so a commit there moves nothing, and the reviewer's own tests have to be committable;
+the prompt sends those to a branch of their own, offered as a `--stacked-on` child of the authoring
+task. A git `pre-push` hook is not available for this: git resolves hooks from the clone's single
+shared hooks directory, so one written for this worktree would fire for the daemon's own legitimate
+pushes from every other.
+
+The lap **never ends on its own**. `h9k pr approve` / `h9k pr request-changes` post the GitHub
+review on the pull request's **current head** (read live moments before, so a lap open for hours
+never attaches a verdict to a push nobody read) under the reviewer's own login, then record the
+verdict on the task and `PrReviewDelivered` on the run — byte-for-byte where
+`h9k review resolve --merge-ready` already leaves a pr-review run, so `PrReviewEngine` finalizes
+from there with the worktree released and no merge ever observed. `--note` is required on both: a
+review body this platform wrote would be Hall9k speaking under a human's login on somebody else's
+pull request. **The post comes before the record**, deliberately — a failed post records nothing
+and the reviewer re-runs; the mirror-image window (posted, then the record failed) is named in the
+refusal text, which says the review IS on the pull request and points at
+`h9k review resolve --merge-ready` to close the task by hand. GitHub rejects the entire review —
+body and every other comment with it — when one `--finding` names a line the diff does not contain,
+so nothing is posted until every line is one it accepts.
+
+`h9k review resolve <id> --merge-ready` still closes a pr-review task out when the report was
+walked and nothing needs posting (the `walk-pr-review-findings` path); `h9k pr approve` /
+`h9k pr request-changes` are what replace that ceremony for somebody who actually reviewed.

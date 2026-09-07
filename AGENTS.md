@@ -100,7 +100,8 @@ first-class interface, always, for every command:
   incident (2026-08-20): a human's own PR comment was structurally indistinguishable from an
   agent's reply under the same login. The honest long-term fix is node-signed authorship in the
   P2P identity layer (§16 #38-#58); until then, breaking this invariant breaks review handling
-  (§16 #62).
+  (§16 #62). The one command that starts a thread, `h9k pr request-changes` (§16 #149), posts a
+  review a human typed and ran; a lap's push guard denies an agent every route to it.
 - **Feedback reaches the platform only when a review is submitted.** GitHub hides an unsubmitted
   (`PENDING`) review's comments from the API entirely, so a reviewer part-way through a draft is
   invisible to the closeout monitor and to any agent reading the PR. Never read silence as "the
@@ -159,7 +160,7 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
 - **walk-pr-review-findings** — walk a pr-review task's findings report with the owner, finding
   by finding, and post only what they direct (a batched GitHub review or a plain comment) on
   their explicit go, under their own login. Use once a pr-review task (§16 #99) parks NeedsHuman
-  with a findings report
+  with a findings report; an owner reviewing the pull request themselves runs `h9k pr review` (§16 #149)
 - **hall9k-cli-reference** — the full `h9k`/`h9kd` command surface and platform domain semantics
   (task/idea/epic lifecycle, Jira/GitHub backlog integration, branch templates, auto-pr-review);
   load on demand rather than assuming a session was pre-briefed on the whole CLI surface
