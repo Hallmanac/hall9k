@@ -142,6 +142,17 @@ public interface IWorktreeManager
     /// repository path may still name somewhere else entirely (<c>--keep-repo-path</c>,
     /// <c>h9k project set --repo</c>). A caller cannot pair them wrongly if it never pairs them.
     /// </para>
+    /// <para>
+    /// Internally takes both locks: the repository lock for the fetch (shared refs, not this
+    /// checkout's own tree), and — nested inside it — <see cref="AcquireCheckoutLockAsync"/>'s own
+    /// checkout lock around the rev-list and fast-forward that actually read and mutate
+    /// <paramref name="checkoutPath"/>. That second acquisition is what keeps this call mutually
+    /// exclusive with a gate command a caller is running in the identical checkout under its own
+    /// <see cref="AcquireCheckoutLockAsync"/> hold; for a linked worktree the two locks resolve to
+    /// different files, so without it this refresh could rewrite the tree out from under a gate
+    /// spawn already reading it (independent pre-PR review, cycle 3, conformance and adversarial
+    /// lenses, both high). A caller never needs to acquire either lock itself before calling this.
+    /// </para>
     /// </summary>
     Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
         string checkoutPath, string branch, CancellationToken cancellationToken);
