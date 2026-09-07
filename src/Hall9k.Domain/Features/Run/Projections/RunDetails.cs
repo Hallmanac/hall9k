@@ -1041,6 +1041,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.LastPreFinalPassRebaseOntoCommit = @event.Data.RebasedOntoCommit;
         view.LastPreFinalPassRebaseDetail = @event.Data.Detail;
         view.LastPreFinalPassRebaseAt = @event.Data.RebasedAt;
+
+        // See RunAggregate.Apply(RunRebasedOntoBase): a real rebase moves this branch's fork point,
+        // so the recorded one has to move with it or a later replay reads an upstream the branch may
+        // no longer contain.
+        if (!@event.Data.WasNoOp && @event.Data.OntoCommitObserved)
+        {
+            view.BaseCommit = @event.Data.RebasedOntoCommit;
+        }
     }
 
     public void Apply(IEvent<PreFinalPassRebaseRecoveryDispatched> @event, RunDetails view)

@@ -21,18 +21,23 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </summary>
 /// <param name="FromBase">The base the pull request carried before this attempt — the parent's branch.</param>
 /// <param name="ToBase">The base it was retargeted onto: the project's own base branch.</param>
-/// <param name="ParentHeadCommit">
-/// The parent branch's head at the moment its merge was observed — the commit this child's branch
-/// is built on top of, and therefore the <c>&lt;upstream&gt;</c> the replay drops the parent's
-/// commits at. Empty when the parent's head could not be read, which is why the replay refuses to
-/// dispatch rather than guessing a boundary.
+/// <param name="BoundaryCommit">
+/// The commit everything at or before which belongs to the parent, as this sweep observed it — the
+/// <c>&lt;upstream&gt;</c> the replay drops the parent's commits at. That is the parent branch's own
+/// head when the child still contains it (a parent that merged without ever being rewritten), and
+/// the child's recorded fork point when it does not; <c>StackedParentWatch</c>'s own doc has why
+/// those are the only two honest answers. Named for the role it plays rather than for one of the
+/// two things it can be, because a reader following the field has to know what it means when the
+/// parent DID advance past the child's cut point before merging (independent pre-PR review, cycle
+/// 1, conformance lens). Empty when no boundary could be observed, which is why the replay refuses
+/// to dispatch rather than guessing one.
 /// </param>
 /// <param name="Detail">What actually happened, readable from <c>h9k task show</c>.</param>
 public sealed record StackedPullRequestRetargeted(
     Guid Id,
     string FromBase,
     string ToBase,
-    string ParentHeadCommit,
+    string BoundaryCommit,
     bool Succeeded,
     string Detail,
     DateTimeOffset RetargetedAt);
