@@ -345,7 +345,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             {
                 return new CleanBaseComparisonResult(
                     CleanBaseComparisonOutcome.NotAttempted,
-                    $"Could not acquire the repository lock for {checkout} within " +
+                    $"Could not acquire the checkout lock for {checkout} within " +
                     $"{AdHocGateRunner.CleanBaseCheckTimeoutCap.TotalMinutes:0} minutes — recording the failure " +
                     "without this validation.");
             }
