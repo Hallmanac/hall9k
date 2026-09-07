@@ -732,11 +732,19 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     }
 
     /// <summary>
-    /// The mandatory final full pass's own pre-flight rebase (task: a run rebases its branch onto
-    /// the current base branch) — the before-push counterpart to
+    /// Whatever rebase this run took before anything was pushed (task: a run rebases its branch
+    /// onto the current base branch) — the before-push counterpart to
     /// <see cref="WriteMechanicalRebaseOutcome"/>'s after-push line, selected across every run the
     /// same defensive way for the same reason: this feature never reopens the task on its own, but
     /// an ordinary <c>h9k task retry</c> after a Failed run still starts a fresh one.
+    /// <para>
+    /// Labelled for when it happens rather than for what it precedes, and PLAN.md #138's own
+    /// "rendered as Pre-final-pass rebase" is superseded by that (task: a stacked child absorbs its
+    /// parent's post-delivery churn safely, #146): a stacked child's first checkpoint rebase lands
+    /// before its own first review cycle, hours before any final pass, and the recorded detail
+    /// beside this label says so — a heading that contradicted the sentence under it is the
+    /// word-versus-mark contradiction this repo has already been bitten by once (2026-08-22).
+    /// </para>
     /// </summary>
     private static void WritePreFinalPassRebaseOutcome(RunDetails? run)
     {
@@ -753,7 +761,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 : $"[green]clean[/] [dim]— {detail}[/]";
 
         AnsiConsole.MarkupLine(
-            $"\n[bold]Pre-final-pass rebase[/]  {outcome} "
+            $"\n[bold]Pre-push rebase[/]  {outcome} "
             + $"[dim]({run.LastPreFinalPassRebaseAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
     }
 
