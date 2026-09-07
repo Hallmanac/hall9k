@@ -406,6 +406,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 .Where(r => r.LastMechanicalRebaseAt is not null)
                 .OrderByDescending(r => r.LastMechanicalRebaseAt)
                 .FirstOrDefault();
+            // Across every run, not just the newest: closeout observes the review on the run that
+            // was watching the pull request and the fix lap parks its disagreement on the run
+            // dispatched to answer it, so a reader who only saw the newest run would see one half
+            // of the story (task: a changes-requested pull-request review from a human becomes a
+            // fix lap). Ordered by dispatch, which is the order the laps happened in.
+            WriteChangesRequestedReviews([.. runs.Select(r => runDetailsById.GetValueOrDefault(r.Id)).OfType<RunDetails>()]);
             WriteMechanicalRebaseOutcome(mechanicalRebaseRun);
             RunDetails? preFinalPassRebaseRun = runDetailsById.Values
                 .Where(r => r.LastPreFinalPassRebaseAt is not null)
@@ -728,6 +734,157 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                         ? $"{lens.Value.ToLowerInvariant()} review pass"
                         : "review pass";
         return retry.Cycle is { } cycle ? $"{label} (cycle {cycle})" : label;
+    }
+
+    /// <summary>
+    /// Every changes-requested review this task's pull request has taken, and what each fix lap
+    /// did about it (task: a changes-requested pull-request review from a human becomes a fix
+    /// lap): who asked, when, how many findings, and — under the review a disagreement names —
+    /// what the lap could not accept, what it would have said, and whether the implementer has
+    /// sent it yet. One row per review rather than per observation of it, since a review a lap
+    /// did not satisfy is read again by the next sweep.
+    /// <para>
+    /// A disagreement that named no review is rendered unattributed rather than filed under
+    /// whichever review happened to be first: a lap can answer more than one reviewer, and the
+    /// pairing is only a fact when the session stated it (AGENTS.md's never-guess rule).
+    /// </para>
+    /// </summary>
+    private static void WriteChangesRequestedReviews(IReadOnlyList<RunDetails> runs)
+    {
+        foreach (string line in ComposeChangesRequestedReviews(runs))
+        {
+            AnsiConsole.MarkupLine(line);
+        }
+    }
+
+    /// <summary>
+    /// The block's markup lines, composed rather than printed, so what a reader sees is assertable
+    /// (test: changes-requested rendering coverage) — the same split every pure rendering helper on
+    /// this command already uses (<see cref="DoneReason"/>, <see cref="StateGloss"/>). Empty when
+    /// this task has never taken a changes-requested review, which is what makes the block absent
+    /// rather than an empty heading.
+    /// <para>
+    /// Every outside string — a reviewer's login, their prose, the drafted reply — goes through
+    /// <see cref="ExternalText.OneLineMarkup"/>, which is what keeps a reviewer's stray bracket
+    /// from being read as Spectre markup.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<string> ComposeChangesRequestedReviews(IReadOnlyList<RunDetails> runs)
+    {
+        List<ChangesRequestedReviewObservation> observations =
+            [.. runs.SelectMany(run => run.ChangesRequestedReviewObservations)];
+        List<ReviewDisagreement> disagreements = [.. runs.SelectMany(run => run.ChangesRequestedDisagreements)];
+        List<ReviewDisagreementReplyDirection> directions =
+            [.. runs.SelectMany(run => run.ChangesRequestedReplyDirections)];
+        if (observations.Count == 0 && disagreements.Count == 0)
+        {
+            return [];
+        }
+
+        List<string> lines = ["\n[bold]Changes-requested reviews[/]"];
+        // One row per review, not per observation: the review's own url is the obstruction identity
+        // closeout keys on (CloseoutEngine.ObstructionKey), so a lap that pushed nothing the
+        // reviewer accepted leaves the next sweep re-reading the identical url and appending a
+        // second PullRequestChangesRequested. Rendering per observation printed that review twice,
+        // each row repeating the same parked disagreement underneath — the disagreements key on the
+        // url, not on which sweep saw it (independent pre-PR review, cycle 1, adversarial lens).
+        // Grouped by url, with the earliest read's facts on the row and the later reads counted
+        // beside them: that a reviewer's review was still standing after a lap is a fact of this
+        // task's history, and duplicate rows stated it by accident rather than saying it. An
+        // observation whose url the provider never reported groups with nothing — two reviews
+        // nobody can name are not thereby the same review (AGENTS.md's never-guess rule), so each
+        // keeps its own row exactly as it had before.
+        IEnumerable<IGrouping<string, ChangesRequestedReviewObservation>> reviews = observations
+            .Select((observation, index) => (observation, key: observation.ReviewUrl.IsNotBlank()
+                ? observation.ReviewUrl
+                : $"unidentified review {index}"))
+            .GroupBy(read => read.key, read => read.observation, StringComparer.Ordinal);
+        foreach (IGrouping<string, ChangesRequestedReviewObservation> review in reviews)
+        {
+            // Ordered by observation time rather than taken by position: the row's "still standing
+            // at N later sweeps" is a claim about when, and the run order this reads across is
+            // dispatch order rather than anything that guarantees it.
+            ChangesRequestedReviewObservation[] reads = [.. review.OrderBy(read => read.ObservedAt)];
+            ChangesRequestedReviewObservation first = reads[0];
+            ChangesRequestedReviewObservation latest = reads[^1];
+            int rereads = reads.Length - 1;
+            // The provider's own submission time when it reported one, this install's observation
+            // time otherwise — labelled, so the two are never read as the same fact.
+            string when = first.SubmittedAt is { } submitted
+                ? $"{submitted.ToLocalTime():g}"
+                : $"observed {first.ObservedAt.ToLocalTime():g}, submission time not reported";
+            // A later read's finding count is named only when it differs from the first, which
+            // closeout's thread read being capped at the pull request's first 100 threads can
+            // genuinely produce: collapsing the rows must not quietly drop a read that saw
+            // something else.
+            string reread = (rereads, latest.FindingCount == first.FindingCount) switch
+            {
+                (0, _) => "",
+                (_, true) => $", still standing at {Sweeps(rereads)} "
+                    + $"(last read {latest.ObservedAt.ToLocalTime():g})",
+                (_, false) => $", still standing at {Sweeps(rereads)} "
+                    + $"(last read {latest.ObservedAt.ToLocalTime():g}: {Findings(latest.FindingCount)})",
+            };
+            lines.Add(
+                $"  [yellow]@{ExternalText.OneLineMarkup(first.Reviewer)}[/] "
+                + $"[dim]{when} — {Findings(first.FindingCount)}{reread}[/] "
+                + $"[link]{ExternalText.OneLineMarkup(first.ReviewUrl)}[/]");
+            lines.AddRange(ComposeDisagreements(
+                disagreements.Where(d => d.ReviewUrl == first.ReviewUrl)));
+        }
+
+        // Never dropped for want of a review to sit under: a disagreement the session left
+        // unattributed still parked a run and still awaits a human's decision.
+        IReadOnlyList<ReviewDisagreement> unattributed =
+            [.. disagreements.Where(d => !observations.Exists(o => o.ReviewUrl == d.ReviewUrl))];
+        if (unattributed.Count > 0)
+        {
+            lines.Add("  [dim]disagreements not attributed to a specific review[/]");
+            lines.AddRange(ComposeDisagreements(unattributed));
+        }
+
+        // Listed once, after the reviews, rather than under each: one h9k review resolve directs
+        // whatever its park held rather than a single finding, so nesting a direction under a
+        // particular review would claim a pairing nobody recorded.
+        foreach (ReviewDisagreementReplyDirection direction in directions)
+        {
+            string what = direction.PostedTarget is not { } target
+                ? "nothing was posted — the reviewer has heard nothing"
+                : $"posted {(direction.Choice == ReviewDisagreementReplyChoice.Edited ? "an edited reply" : "the drafted reply")} "
+                    + $"to {ExternalText.OneLineMarkup(target)}";
+            lines.Add($"  [green]you directed:[/] [dim]{what} ({direction.DirectedAt.ToLocalTime():g})[/]");
+        }
+
+        return lines;
+
+        static string Findings(int count) => count == 1 ? "1 finding" : $"{count} findings";
+
+        static string Sweeps(int count) => count == 1 ? "1 later sweep" : $"{count} later sweeps";
+    }
+
+    /// <summary>One review's parked disagreements — the reviewer's point, the session's position, and the draft nobody has sent.</summary>
+    private static IEnumerable<string> ComposeDisagreements(IEnumerable<ReviewDisagreement> disagreements)
+    {
+        foreach (ReviewDisagreement disagreement in disagreements)
+        {
+            string at = disagreement.Location.IsNotBlank()
+                ? ExternalText.OneLineMarkup(disagreement.Location!)
+                : "the review's own body (no thread to reply inside)";
+            yield return $"    [red]disagreed[/] [dim]at {at}[/]";
+            if (disagreement.Finding.IsNotBlank())
+            {
+                yield return $"      [dim]reviewer asked:[/] {ExternalText.OneLineMarkup(disagreement.Finding)}";
+            }
+
+            if (disagreement.Reasoning.IsNotBlank())
+            {
+                yield return $"      [dim]session's reasoning:[/] {ExternalText.OneLineMarkup(disagreement.Reasoning)}";
+            }
+
+            yield return disagreement.ProposedReply.IsNotBlank()
+                ? $"      [dim]proposed reply:[/] {ExternalText.OneLineMarkup(disagreement.ProposedReply)}"
+                : "      [dim]proposed reply: none drafted[/]";
+        }
     }
 
     /// <summary>
