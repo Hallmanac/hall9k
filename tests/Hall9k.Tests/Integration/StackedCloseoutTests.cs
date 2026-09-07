@@ -324,6 +324,42 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
     }
 
     /// <summary>
+    /// A parent that merged somewhere other than the project's base — a mid-stack parent, itself
+    /// stacked, merged while still aimed at ITS parent's branch. The child's correct base is one
+    /// level up, and mechanically moving it onto the project's base would take it off a branch
+    /// holding the grandparent's work and replay its commits without it, in a session no reviewer
+    /// reads. This platform's own merge bar never merges an un-retargeted stacked pull request, so
+    /// nothing automatic produced this state and nothing automatic answers it: the child parks with
+    /// its stack intact (independent pre-PR review, 2026-09-07, adversarial lens; ordering across
+    /// three or more levels is out of this slice by design, docs/scope.md).
+    /// </summary>
+    [Fact]
+    public async Task A_parent_that_merged_into_its_own_parents_branch_parks_the_child_untouched()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token, parentBaseBranch: "task/grandparent-slice");
+        await MergeTheParentAsync(fixture, cts.Token);
+
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().BeEmpty(
+            "there is no base this child can be moved onto mechanically without dropping work");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.StackedOnBranch.Should().Be(fixture.ParentBranch,
+            "nothing was moved, so the record still names the stack the human inherits");
+        run.ParkedReason.Should().Contain("task/grandparent-slice")
+            .And.Contain("h9k pr resolve");
+
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        child.StackReplaysDispatched.Should().Be(0, "no replay was dispatched, so no budget was spent");
+    }
+
+    /// <summary>
     /// The boundary is what git can see NOW, not only what dispatch recorded. A parent that
     /// advanced past the child's cut point, and a child that has since been brought onto that new
     /// head, leaves the recorded fork point naming a commit that is no longer the highest parent
@@ -478,15 +514,13 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
     }
 
     /// <summary>
-    /// A parent review lap that folded its fixes into its own commit and force-pushed — the
-    /// ordinary shape a narrative-commit-style follow-up produces. Done in the parent run's own
-    /// retained worktree, which is where the real thing happens too and, incidentally, the only
-    /// place git will check that branch out (it is already checked out there).
-    /// </summary>
-    /// <summary>
     /// The parent adds a second commit on top of the one the child was cut from and pushes it —
     /// an ordinary follow-up landing new work, no rewrite, so the child's own copy of the parent's
-    /// first commit is untouched.
+    /// first commit is untouched. The counterpart to <see cref="ForcePushTheParent"/>, and the
+    /// reason ParentMoved's own account never claims a force-push it did not observe: an appended
+    /// commit reaches that verdict identically. Done in the parent run's own retained worktree,
+    /// which is where the real thing happens too and, incidentally, the only place git will check
+    /// that branch out (it is already checked out there).
     /// </summary>
     private static string AdvanceTheParent(StackedFixture fixture)
     {
@@ -521,8 +555,15 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
         return Git(parentWorktree, "rev-parse HEAD").Trim();
     }
 
+    /// <summary>
+    /// <paramref name="parentBaseBranch"/> is what the PARENT's own run records as its base, blank
+    /// (the project's own) for every test but the mid-stack one: a parent that is itself stacked
+    /// merges into its own parent's branch rather than into the project's base, and the child's
+    /// retarget cannot be aimed at the project's base from there.
+    /// </summary>
     private async Task<StackedFixture> SeedAsync(
-        CancellationToken cancellationToken, bool childPreApproved = false, int priorStackReplays = 0)
+        CancellationToken cancellationToken, bool childPreApproved = false, int priorStackReplays = 0,
+        string parentBaseBranch = "")
     {
         DocumentStore store = DocumentStore.For(opts =>
         {
@@ -577,7 +618,7 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
         Guid parentRunId = SeedDeliveredTask(
             session, node, projectId, parentTaskId, "Parent slice", parent.Branch,
             "https://github.com/x/y/pull/7", FakeStackedInspector.ParentNumber, stackedOn: null,
-            preApproved: false, baseBranch: string.Empty, baseCommit: baseCommit, priorStackReplays: 0);
+            preApproved: false, baseBranch: parentBaseBranch, baseCommit: baseCommit, priorStackReplays: 0);
 
         // The child's own recorded fork point IS the parent's head at the cut — which is what
         // GitWorktreeManager.CreateAsync observes and RunDispatched freezes, and what the replay

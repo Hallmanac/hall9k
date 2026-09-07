@@ -19,17 +19,28 @@ public enum StackedParentVerdict
     Aligned,
 
     /// <summary>
-    /// The parent's pull request merged. The child's own pull request needs retargeting onto the
-    /// project's base branch and its commits replaying there.
+    /// The parent's pull request merged into the project's own base branch. The child's own pull
+    /// request needs retargeting onto that branch and its commits replaying there.
     /// </summary>
     ParentMerged,
 
     /// <summary>
-    /// The parent's branch head moved without merging — a force-push, ordinarily a review lap
-    /// folding fixes into its own commits. The base stays the parent's branch; only the replay is
-    /// owed.
+    /// The parent's branch head moved without merging, to a commit the child's branch does not
+    /// contain: ordinarily a review lap folding fixes into its own commits and force-pushing, but
+    /// an ordinary commit appended since the child was cut reads identically here and is not
+    /// distinguished — nothing observable tells the two apart. The base stays the parent's branch;
+    /// only the replay is owed, and it is the same replay either way.
     /// </summary>
     ParentMoved,
+
+    /// <summary>
+    /// The parent's pull request merged, but into a branch other than the project's own — the
+    /// parent was itself stacked and something merged it while it was still aimed at ITS parent's
+    /// branch. Mechanically retargeting the child onto the project's base from here would move it
+    /// off a base holding work the project's base does not have; ordering a stack three levels deep
+    /// is not in this slice (docs/scope.md), so the child parks for a human instead.
+    /// </summary>
+    ParentMergedElsewhere,
 
     /// <summary>
     /// Something could not be read, so no claim is made either way. Never treated as Aligned: a
@@ -50,8 +61,9 @@ public enum StackedParentVerdict
 /// run's own recorded fork point (<c>RunDetails.BaseCommit</c>), once the child's branch is
 /// confirmed to contain it — never <c>git merge-base</c>: see
 /// <see cref="StackedParentWatch"/>'s own doc for the force-push case that proves merge-base wrong
-/// here. Blank on <see cref="StackedParentVerdict.Aligned"/> and
-/// <see cref="StackedParentVerdict.Unobservable"/>, where there is no replay to describe.
+/// here. Blank on <see cref="StackedParentVerdict.Aligned"/>,
+/// <see cref="StackedParentVerdict.Unobservable"/> and
+/// <see cref="StackedParentVerdict.ParentMergedElsewhere"/>, where there is no replay to describe.
 /// </param>
 /// <param name="OntoCommit">
 /// The commit the replay lands on, freshly observed: the parent's new head for a force-push, or the
@@ -72,6 +84,13 @@ public sealed record StackedParentObservation(
 
     public static StackedParentObservation Unobservable(string detail) =>
         new(StackedParentVerdict.Unobservable, string.Empty, string.Empty, string.Empty, detail);
+
+    /// <summary>
+    /// Carries the parent's branch, unlike the two above: the park this verdict produces names the
+    /// stack the human has to finish by hand, and that branch is half of it.
+    /// </summary>
+    public static StackedParentObservation ParentMergedElsewhere(string parentBranch, string detail) =>
+        new(StackedParentVerdict.ParentMergedElsewhere, parentBranch, string.Empty, string.Empty, detail);
 }
 
 /// <summary>
@@ -170,6 +189,25 @@ public sealed class StackedParentWatch(
 
         string parentBranch = childRun.BaseBranch;
         bool parentMerged = parent.State == TaskState.Done && parentRun?.State == RunState.Completed;
+
+        // Where the parent's own work actually landed, read off the parent's run rather than assumed
+        // to be the project's base (independent pre-PR review, 2026-09-07, adversarial lens). They
+        // differ in one shape: a mid-stack parent, itself stacked, merged while still aimed at ITS
+        // parent's branch. Refused here, before any git call and before anything is retargeted — a
+        // retarget onto the project's base would take this child off a base carrying the
+        // grandparent's work and replay its commits without it, and this platform's own merge bar
+        // never merges an un-retargeted stacked pull request, so nothing automatic produced this
+        // state and nothing automatic should answer it. Ordering across three or more levels is out
+        // of this slice by design (docs/scope.md), and a park leaves the human a coherent stack.
+        if (parentMerged && parentRun?.BaseBranchOr(project.BaseBranch) is { } mergedInto
+            && mergedInto != project.BaseBranch)
+        {
+            return StackedParentObservation.ParentMergedElsewhere(
+                parentBranch,
+                $"the parent task's pull request merged into {mergedInto} rather than the project's own "
+                + $"{project.BaseBranch} — it was itself stacked, so this pull request's base cannot be moved "
+                + "onto the project's base mechanically without dropping work that branch does not have");
+        }
 
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string repositoryPath = project.RepositoryPath;
@@ -308,10 +346,19 @@ public sealed class StackedParentWatch(
                     + $"onto {Short(baseTip)}");
             }
 
+            // "Moved to a head this branch does not contain" is the whole of what was observed, and
+            // the only honest account of it: --is-ancestor's exit 1 is returned identically by a
+            // force-pushed review lap and by an ordinary commit appended since this branch was cut
+            // (an append-style project's checks-fix lap), and nothing here read a reflog that could
+            // tell them apart. This detail becomes the reopen's recorded reason and any later park's
+            // obstruction summary, so a force-push asserted here would be an unobserved fact in an
+            // audit field (AGENTS.md's never-guess rule; independent pre-PR review, 2026-09-07,
+            // adversarial lens). The replay is the same operation either way.
             return new StackedParentObservation(
                 StackedParentVerdict.ParentMoved, parentBranch, boundary, parentHead,
-                $"the parent branch {parentBranch} was force-pushed past what this branch was built on, so this "
-                + $"branch's own commits replay from {Short(boundary)} onto its new head {Short(parentHead)}");
+                $"the parent branch {parentBranch} has moved to a head {childRun.Branch} does not contain — a "
+                + "force-pushed review lap, or commits appended since this branch was cut — so this branch's own "
+                + $"commits replay from {Short(boundary)} onto that new head {Short(parentHead)}");
         }
         catch (TimeoutException exception)
         {
