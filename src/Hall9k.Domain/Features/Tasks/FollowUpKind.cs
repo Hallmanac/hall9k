@@ -6,7 +6,8 @@ namespace Hall9k.Domain.Features.Tasks;
 /// <summary>
 /// Why a done task was reopened for a follow-up run (PR closeout, Decisions Log #18/#22).
 /// The launcher selects the agent prompt from it: ReviewFeedback gets the
-/// resolve-review-threads prompt, FailingChecks gets the fix-the-CI prompt, Rebase gets the
+/// resolve-review-threads prompt, ReviewRequestedChanges gets the changes-requested fix-lap
+/// prompt, FailingChecks gets the fix-the-CI prompt, Rebase gets the
 /// rebase-onto-main prompt (backlog 44), StackReplay gets the mechanical stacked-replay prompt.
 /// Unknown (including reopens recorded before this vocabulary existed) is treated as ReviewFeedback.
 /// </summary>
@@ -14,6 +15,25 @@ namespace Hall9k.Domain.Features.Tasks;
 public sealed record FollowUpKind
 {
     public static readonly FollowUpKind ReviewFeedback = new("ReviewFeedback");
+
+    /// <summary>
+    /// A human reviewer formally requested changes on the pull request's current head, and the
+    /// lap answers that review rather than a loose set of threads (task: a changes-requested
+    /// pull-request review from a human becomes a fix lap). Beside
+    /// <see cref="ReviewFeedback"/>, never replacing it: a review whose state carries no verdict
+    /// — a comment-only review, or threads left behind with no review state at all — still takes
+    /// the thread-based path, which replies and resolves on its own.
+    /// <para>
+    /// The difference that earns a kind of its own is what happens on disagreement. The
+    /// thread-based lap argues its case in the thread and resolves it, which is right for a bot
+    /// and right for the automated dispute path Copilot has always been on. Here the reviewer is
+    /// a person, and telling a person they are wrong is a social act the implementer owns: the
+    /// session drafts a reply, the run parks, and <c>h9k review resolve</c> is what actually
+    /// sends it, edits it, or drops it (Brian's ruling, 2026-09-06 12:15).
+    /// </para>
+    /// </summary>
+    public static readonly FollowUpKind ReviewRequestedChanges = new("ReviewRequestedChanges");
+
     public static readonly FollowUpKind FailingChecks = new("FailingChecks");
     /// <summary>The pull request's branch conflicts with its base; the follow-up rebases it (backlog 44).</summary>
     public static readonly FollowUpKind Rebase = new("Rebase");
