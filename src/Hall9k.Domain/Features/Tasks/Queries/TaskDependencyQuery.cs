@@ -92,7 +92,10 @@ public static class TaskDependencyQuery
         task.Type,
         task.BlockedBy,
         currentRun?.PullRequestNumber,
-        currentRun?.FailureReason);
+        currentRun?.FailureReason,
+        // Recorded on every snapshot, so the one rule that reads it — TaskDecider.Publish's
+        // cross-project stacked-edge refusal — never has to read a blank as a mismatch.
+        task.ProjectId);
 
     /// <summary>
     /// The run the task currently hangs on, or null when it has none — a task that never

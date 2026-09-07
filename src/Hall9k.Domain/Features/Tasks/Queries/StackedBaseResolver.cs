@@ -67,6 +67,20 @@ public static class StackedBaseResolver
                 $"stacked on {parentId}, which the platform no longer knows — based on {project.BaseBranch} instead");
         }
 
+        // A parent in another project has a branch in another repository, so there is nothing here
+        // to cut from: falling back is the same forgiving direction every other unhonourable shape
+        // takes, and it keeps the raw could-not-resolve-start-point git failure this used to
+        // produce off the child (independent pre-PR review, cycle 1, adversarial lens).
+        // TaskDecider.Publish refuses this edge outright now, which is where a human is taught;
+        // this arm is what an edge published before that gate existed lands on.
+        if (parent.ProjectId != task.ProjectId)
+        {
+            return new StackedBase(
+                project.BaseBranch, null,
+                $"stacked on {DomainId.Short(parentId)}, which belongs to another project — its branch is not in "
+                + $"this project's repository, so this is based on {project.BaseBranch}");
+        }
+
         RunDetails? parentRun = parent.CurrentRunId is { } parentRunId
             ? await query.LoadAsync<RunDetails>(parentRunId, cancellationToken)
             : null;
