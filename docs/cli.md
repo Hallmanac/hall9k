@@ -87,11 +87,25 @@ description becomes agent context, and the state read at import is recorded as a
 that moment and never re-checked. Acceptance criteria are never read out of a description; supply
 them with `--criteria` or at the prompt.
 
+The one exception, and not really one: an issue **another hall9k install published** carries a
+machine-readable task record at the foot of its body, and `--from-issue` reconstructs the whole
+draft from it — criteria become criteria rather than context, the context body becomes the agent
+context, and type, model, caps, dependencies (as issue numbers) and the epic (by title) all carry
+over. Pre-approval does not: the record states the origin's answer and this install gives its own
+with `--pre-approved` (default off), which the output names. The record is read once, here, and
+never re-checked, so the origin's later revisions reach this copy only by adopting again;
+`h9k task show` says which install published it and under what id. See
+[scope.md](scope.md#the-task-record-on-a-published-issue).
+
 `--file task.md` reads a whole task from a markdown file: a minimal `---` frontmatter block
 (project, type, objective, criteria, an optional model, optional blocked-by, optional stacked-on,
 optional epic)
-followed by a body that becomes the agent context. It is deliberately not YAML, since a handful
-of known keys does not warrant the dependency. The numbered [`backlog/`](../backlog) files are
+followed by a body that becomes the agent context — or a `context:` block scalar, which is the form
+the task record on a published issue uses. The document grammar is deliberately not whole-document
+YAML, since a handful of known keys does not warrant the dependency and this platform's own
+`task.md` renders plain scalars carrying colons; each **value**, though, is read as a real YAML
+scalar, so a double-quoted objective or criterion is stored without its quote characters and a
+`|` block scalar arrives as the multi-line text it denotes. The numbered [`backlog/`](../backlog) files are
 written in that format; the `IDEA-` notes beside them are earlier-stage prose with no
 frontmatter, so they are read and authored from rather than fed to `--file`.
 
@@ -517,10 +531,14 @@ too, since that session mints its card regardless of the flag. Once that gate is
 is deterministic: `h9k task publish` runs `gh issue create` itself — no agent involved, because an
 issue's shape (title, body, labels) is uniform enough for the platform to author on its own —
 reads the created issue straight back the same way `--from-issue` does, and records it through
-`link-issue`, the same observation-gate pattern `link-jira` uses. `--backlog-routing` is read as a
-comma-separated label list under `github-issues`. `jira` is agent-mediated (below); `none` is
-today's default, unchanged behavior. A task adopted with `--from-issue`/`--from-jira` already
-carries its reference, so the gate never fires for it.
+`link-issue`, the same observation-gate pattern `link-jira` uses. Once the issue is linked, publish
+writes the **task record** into it — a collapsed section holding the whole task, so a second install
+adopts the issue and gets the same task
+([scope.md](scope.md#the-task-record-on-a-published-issue)) — and `h9k task revise` rewrites only
+that section afterwards, leaving a human's own edits to the issue's prose alone. `--backlog-routing`
+is read as a comma-separated label list under `github-issues`. `jira` is agent-mediated (below);
+`none` is today's default, unchanged behavior. A task adopted with `--from-issue`/`--from-jira`
+already carries its reference, so the gate never fires for it.
 
 ### Jira
 
