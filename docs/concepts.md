@@ -183,7 +183,9 @@ that are genuinely cohesive, and the declaration is always the human's.
 What the edge changes, and nothing else does:
 
 - **It dispatches at the parent's `Delivered`, not its merge.** Pull request open, internal review
-  done, branch settled — that is everything a stacked child needs.
+  done, branch settled — that is everything a stacked child needs. A parent whose pull request was
+  *closed* without merging never delivered anything, however long its URL stays on the task: the
+  child stays blocked and reads as needing you, the same way any dead blocker does.
 - **Its branch is cut from the parent's branch head**, not from the base branch, and **its pull
   request opens against the parent's branch**, which is what forms the stack on GitHub. One
   exception, and it is the mainline race rather than an edge case: the child dispatches at the
@@ -237,9 +239,17 @@ What the edge changes, and nothing else does:
   stack left intact rather than aimed at the base with the replay undone. The
   replay runs the gates and triggers **no review cycle** — nothing new entered the branch, so there
   is nothing for a reviewer to have an opinion about.
-- **A parent force-push while the child is Delivered dispatches the same replay** onto the parent's
-  new head, bounded by the child's own rebase budget (`MaxStackReplayRuns`). Past that cap the
-  child parks for a human, which is the honest signal that the two branches are not converging.
+- **A parent branch that moves without merging dispatches the same replay** onto its new head,
+  bounded by the child's own rebase budget (`MaxStackReplayRuns`). Past that cap the child parks
+  for a human, which is the honest signal that the two branches are not converging. Ordinarily that
+  move is a review lap folding fixes into its own commits and force-pushing, but a commit merely
+  appended since the child was cut is the same observation and gets the same replay — so the
+  recorded account says the head moved, never that it was rewritten, which nothing here observed.
+- **A parent that merged somewhere other than the base branch parks the child**, base untouched.
+  That takes a human: the platform's own merge bar never merges a pull request still aimed at its
+  parent's branch. There is no base the child can be moved onto mechanically from there without
+  dropping the work its parent merged into, and ordering a stack three levels deep is not something
+  this slice does (see [scope.md](scope.md#stacked-pull-requests)).
 
 A plain `--blocked-by` task behaves exactly as it always has.
 

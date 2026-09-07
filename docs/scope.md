@@ -196,9 +196,11 @@ PLAN.md Decisions Log #144. An explicit opt-in dependency, never inferred from a
 branch head, opens its pull request against that branch, computes its diff and review packet
 against it, is kept off the merge bar while un-retargeted, and is mechanically replayed (gates, no
 review cycle) whenever the parent's branch moves out from under it — retargeted onto the base
-branch as well when the parent *merges*, since its branch is going away, and left aimed at the
-parent when it merely force-pushes. Bounded by a per-child rebase budget that parks for a human
-past its cap.
+branch as well when the parent *merges* into it, since its branch is going away, and left aimed at
+the parent when its branch merely moves. Bounded by a per-child rebase budget that parks for a human
+past its cap. A parent that merged into something other than the base branch (a mid-stack parent
+merged by hand while still aimed at its own parent) parks the child untouched rather than retarget
+it, which is the pairwise edges declining to guess at the multi-level ordering below.
 
 **Not** built here (slice two, deliberately): the child still starts at the parent's *Delivered*
 rather than at the parent's build-complete-before-review, which is where Brian would rather it
