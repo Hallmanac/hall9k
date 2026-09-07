@@ -458,7 +458,27 @@ doctrine (AGENTS.md/CLAUDE.md, and any decisions log it documents) rides along t
 deviation already ratified there reads as a deliberate choice rather than an oversight the
 reviewer just caught. A thread-dispute park (Decisions Log #62) is the one park that plays no
 part in this: it settles a disputed comment thread before any reviewer ever reads the diff, not a
-review finding, so its resolution is not carried forward as a settled ruling.
+review finding, so its resolution is not carried forward as a settled ruling. A human's own
+`h9k review fixed` rides the same surface, with the two shapes told apart: a fix with commits
+settles nothing (they are in the diff, and checking them is the point), while a `--no-change`
+entry's reason is read as a dismissal exactly as a `--merge-ready` reason is. A cycle is never
+both: `h9k review fixed` refuses `--no-change` over a branch tip it watched move, so a dismissal
+is never recorded over commits the next pass is reading.
+
+**A human at the wheel can take the fix role herself (Decisions Log #148).** On an
+interactive-mode task, the review-verdict-to-fix boundary has four choices rather than three:
+`h9k review proceed` dispatches the fix session the verdict asked for, `h9k review resolve
+--needs-fixes "<redirect>"` dispatches one carrying their redirect instead, `h9k review resolve
+--merge-ready` overrules the finding outright, and `h9k review fixed` records that the human did
+the fix by hand. The last one dispatches nothing: those commits are already on the branch, so the loop
+re-enters at the same fix-to-re-review boundary a completed fix session lands on — the gates run
+over those commits, that boundary asks for their go, and then a fresh review pass reads them
+scoped to the parked cycle's own head, exactly as a fix session's would have been. It spends no
+automatic fix budget and no cap a fix session consumes, while the review cycle it opens counts
+exactly as one a fix session opens does. The same lever works at a closeout-side fix park, on a
+follow-up reopened by a changes-requested review or by failing checks; there the branch is
+already published, so it pushes the fix before the reviewers and the pull request's own checks
+read it.
 
 **A repeat fix round over the same findings escalates to the review role's model (Decisions Log
 #90).** When a fix session dispatches over substantially the same findings an earlier fix round

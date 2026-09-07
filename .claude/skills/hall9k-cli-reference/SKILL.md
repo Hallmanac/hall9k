@@ -238,7 +238,17 @@ task, design ruling R2): from here on, this task's run — and any later follow-
 of it — parks at each of the review engine's own four routine phase boundaries (build done to
 review, review verdict to fix, fix to re-review, gates to pull request) for a recorded
 `h9k review proceed` or `h9k review resolve`, whether or not a human is still building it (see
-`ORCHESTRATOR-WINDOW.md`). `h9k task handback` and a default `h9k task release` are the two
+`ORCHESTRATOR-WINDOW.md`). The review-verdict-to-fix boundary takes a fourth verb too, on either
+side of the pull request (Decisions Log #148): `h9k review fixed <task> [--no-change "<why>"]`
+records that the human did the fix by hand in the run's own worktree, so the review agents check
+that fix the way they would check a fix session's and no headless fix agent runs. It pushes the
+branch when a pull request is already open, then re-enters the loop at the same fix-to-re-review
+boundary a completed fix session lands on; it refuses over an uncommitted worktree, naming the
+files, and refuses an unmoved branch tip unless `--no-change` states why — and refuses
+`--no-change` over a tip that did move, since the commits are that cycle's answer and it cannot
+also be a deliberate no-change dismissal. It spends no automatic
+fix budget and no cap a fix session consumes, and the review cycle it opens counts exactly as one
+a fix session opens does. `h9k task handback` and a default `h9k task release` are the two
 ordinary exit doors that turn it back off; `h9k task revise <id> --clear-interactive-mode` is the
 one that still reaches it once neither of those has an active interactive claim left to act on (a
 headless follow-up dispatched under a real node claim while the flag is still on, or the task has
