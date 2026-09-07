@@ -185,7 +185,10 @@ public sealed class TokenBudgetRetryEngineTests(PostgresFixture postgres) : ICla
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            new Hall9k.Daemon.Closeout.StackedParentWatch(
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance));
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),

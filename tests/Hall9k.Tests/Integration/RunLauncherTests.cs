@@ -1986,7 +1986,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            new StackedParentWatch(
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                NullLogger<StackedParentWatch>.Instance));
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
