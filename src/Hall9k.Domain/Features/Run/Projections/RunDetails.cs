@@ -377,6 +377,16 @@ public sealed class RunDetails
     /// </summary>
     public List<BoundaryApprovalRecord> BoundaryApprovals { get; set; } = [];
     /// <summary>
+    /// Every fix the human applied by hand at interactive mode's review-verdict-to-fix boundary on
+    /// this run (<c>h9k review fixed</c>, task: a human at the wheel takes the fix role herself),
+    /// oldest first — the settled-rulings surface's (#88) fourth source, alongside
+    /// <see cref="ReviewParkResolutions"/>, <see cref="ExternalInteractions"/> and
+    /// <see cref="BoundaryApprovals"/>. An entry with a <see cref="HumanFixRecord.NoChangeReason"/>
+    /// is the one that carries text a later review pass is told to treat as settled; an ordinary
+    /// entry says only that a human, not a fix session, wrote the commits this cycle re-reads.
+    /// </summary>
+    public List<HumanFixRecord> HumanFixes { get; set; } = [];
+    /// <summary>
     /// Whether this run handed anything down at true closeout, and when not, why (Decisions Log
     /// #36). Unknown on every run that has not closed out yet, and on streams written before
     /// handoffs existed — those replay as Unknown rather than as a reconstruction.
@@ -867,6 +877,30 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
+        EndSessions(view);
+        view.State = RunState.UnderReview;
+    }
+
+    /// <summary>
+    /// The human fixed the findings by hand (<c>h9k review fixed</c>, task: a human at the wheel
+    /// takes the fix role herself). Mirrors <c>Apply(IEvent&lt;ReviewBoundaryApproved&gt;)</c>'s
+    /// park bookkeeping — the park is over, so its reason and flags go — and
+    /// <c>Apply(IEvent&lt;ReviewFixCompleted&gt;)</c>'s session bookkeeping: the gates run next and
+    /// they are not a session, so nothing is left for the phase line to claim is running. Unlike
+    /// either, it also accumulates the fix itself for the settled-rulings surface.
+    /// <para>
+    /// <see cref="LastReviewVerdict"/> is deliberately left exactly as the cycle's own reviewers
+    /// left it: the findings were fixed, not overruled, so overwriting the reviewers' verdict
+    /// here would report a judgment nobody made.
+    /// </para>
+    /// </summary>
+    public void Apply(IEvent<ReviewHumanFixApplied> @event, RunDetails view)
+    {
+        view.HumanFixes.Add(new HumanFixRecord(
+            @event.Data.Cycle, @event.Data.NoChangeReason, @event.Data.AppliedAt));
+        view.ParkedReason = null;
+        view.ParkedNeedsFixesOffersNoProgress = false;
+        view.ParkedIsInteractiveGate = false;
         EndSessions(view);
         view.State = RunState.UnderReview;
     }

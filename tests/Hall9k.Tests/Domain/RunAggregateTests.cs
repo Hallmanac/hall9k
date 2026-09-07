@@ -1185,6 +1185,79 @@ public sealed class RunAggregateTests
         run.PendingHumanFindings.Should().BeNull("the fix session finished, so the human findings are consumed");
     }
 
+    /// <summary>
+    /// Task: a human at the wheel takes the fix role herself — the aggregate half of the fifth
+    /// criterion, DB-free. Her fix stands in for the dispatch-and-complete pair a fix session
+    /// records: it lands on the fix-to-re-review phase and owes that cycle a fresh-context read,
+    /// while touching neither the automatic fix count nor the repeat-findings escalation state a
+    /// dispatched round installs.
+    /// </summary>
+    [Fact]
+    public void A_human_applied_fix_re_enters_at_reverify_without_spending_the_automatic_fix_budget()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now, HeadSha: "aaa111"));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewParked(
+            id, "Interactive mode is on for this task: the review verdict calls for a fix.", Now,
+            IsInteractiveGate: true));
+        run.Apply(new ReviewBoundaryApproved(id, Now, DomainId.New()));
+        run.InteractiveGateCleared.Should().BeTrue("the boundary she is answering has a fresh approval on it");
+
+        run.Apply(new ReviewHumanFixApplied(
+            id, 1, "bbb222", NoChangeReason: null, PushedToRemote: false, Now, DomainId.New()));
+
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.Reverify, "the existing fix-to-re-review entry point, exactly where a fixed session lands");
+        run.State.Should().Be(RunState.UnderReview);
+        run.FixDispatchedThisCycle.Should().BeTrue(
+            "this cycle's tip moved after its reviewers read it, so a fresh-context read is still owed — "
+                + "the same guarantee a dispatched round earns (Decisions Log #92)");
+        run.InteractiveGateCleared.Should().BeFalse(
+            "her fix consumed the review-verdict-to-fix boundary, so fix-to-re-review asks its own question");
+        run.ParkedIsInteractiveGate.Should().BeFalse();
+        run.ReviewFixRuns.Should().Be(0, "no fix session was dispatched, so the automatic count must not move");
+        run.HumanFixRounds.Should().Be(1);
+        run.LastFixRoundCycle.Should().BeNull(
+            "the repeat-findings escalation compares against the most recent AUTOMATED round, and this run "
+                + "has had none; installing a human round as its previous side would escalate a later round "
+                + "against locations no fix session was ever dispatched over");
+        run.LastFixSessionEscalated.Should().BeFalse();
+        run.CycleHeadSha.Should().Be(
+            "aaa111", "the parked cycle's own head is untouched — it is what the next pass scopes her commits against");
+    }
+
+    /// <summary>
+    /// The <c>--no-change</c> shape (second criterion): the same phase transition, with her reason
+    /// carried on the event for the settled-rulings surface to hand a later review pass.
+    /// </summary>
+    [Fact]
+    public void A_human_applied_no_change_fix_carries_its_reason_and_still_re_enters_at_reverify()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now, HeadSha: "aaa111"));
+        run.Apply(new ReviewCompleted(id, 1, ReviewVerdict.NeedsFixes, Now));
+        run.Apply(new ReviewParked(id, "Interactive mode is on for this task.", Now, IsInteractiveGate: true));
+
+        run.Apply(new ReviewHumanFixApplied(
+            id, 1, "aaa111", NoChangeReason: "Already handled by the retry sweep.",
+            PushedToRemote: false, Now, DomainId.New()));
+
+        run.ReviewPhase.Should().Be(ReviewPhase.Reverify);
+        run.HumanFixRounds.Should().Be(1);
+        run.LastReviewVerdict.Should().Be(
+            ReviewVerdict.NeedsFixes,
+            "she fixed the findings rather than overruling them, so the reviewers' own verdict stands");
+    }
+
     [Fact]
     public void Review_parked_records_needs_fixes_offers_no_progress_and_resolve_clears_it()
     {
