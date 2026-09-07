@@ -259,6 +259,28 @@ per pull request; a withdrawn assignment concludes the task honestly before its 
 is recorded as an observation only once it has. No scheduling code of its own: every speed reuses
 a general dispatch lever, and the review itself is unchanged.
 
+### The claim gate
+
+`h9k project set <name> --claim-gate off|tracker-assignee` (default off, today's behaviour
+byte-for-byte) makes an external item's own assignment field the single act that hands out work
+on a team where every teammate runs their own install against their own database (idea 64c75e43,
+Decisions Log #142). With `tracker-assignee`, a task linked to a Jira card or a GitHub issue is
+claimed on this install only while the tracker shows that item assigned to this install's own
+tracker identity — the Jira `accountId` recorded on the registered connection, or the login `gh`
+is authenticated as, read live per check — so two installs cannot both run the same card. Each
+check reads the assignee field and nothing else, leaving the one-time content snapshot (#60)
+alone, and records what it saw on the task's own stream.
+
+Every claim door re-checks: the dispatcher leaves a refused task Queued and logs once per
+episode, and `h9k task work`/`h9k task start` refuse with the same wording and exit 70.
+`h9k task assign` warns and assigns anyway, because the tracker is the go signal and the queue is
+where the task is meant to wait. A queued task's own line on `h9k status`, `h9k task show` and
+`h9k project show` names the item and its current holder. Read-only, no override flag, and a
+`pr-review` task is untouched — a pull request's own assignment is already auto-pr-review's
+signal. A tracker that cannot be read holds the claim rather than releasing it, quoting the
+tracker's own error and naming what ends the hold (renew the token, restore the connection, or
+wait out the outage), and a held task is re-read no more often than every three minutes.
+
 ### Outside-interaction logging
 
 `h9k task log-interaction <task> --party "<who>" --summary "<what happened>"` is the escape-hatch

@@ -13,7 +13,7 @@ namespace Hall9k.Tests.Domain;
 
 /// <summary>
 /// What has to be true before a linked task may be claimed on this install (idea 64c75e43,
-/// Decisions Log #140) — the <see cref="AutoPrReviewSpeed"/> shape, so the same three things are
+/// Decisions Log #142) — the <see cref="AutoPrReviewSpeed"/> shape, so the same three things are
 /// pinned: <c>Parse</c> is the strict form <c>h9k project set --claim-gate</c> goes through, the
 /// implicit string conversion is the raw unvalidated wrap that leaves
 /// <see cref="ProjectDecider.ChangeSettings"/> the one place the closed set is enforced, and the

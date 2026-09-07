@@ -31,7 +31,7 @@ using Xunit;
 namespace Hall9k.Tests.Integration;
 
 /// <summary>
-/// A project whose claim gate is on (idea 64c75e43, Decisions Log #140), against a real store and
+/// A project whose claim gate is on (idea 64c75e43, Decisions Log #142), against a real store and
 /// recorded tracker answers: the tracker's own assignment is the one act that hands out work, so
 /// two teammates' installs cannot both run the same card.
 /// <para>

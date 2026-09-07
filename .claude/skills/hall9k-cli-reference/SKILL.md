@@ -26,6 +26,7 @@ h9k project set <name> --review-stage-composition <VALUE|default>   # which pre-
 h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub reviewer assignment to this install's own login auto-starts a pr-review task; default off (Decisions Log #34's amendment, #133)
 h9k project set <name> --max-parallel-tasks <N|default>   # this project's own ceiling in TASK RUNS, enforced by the dispatcher: a ceiling never a reservation, 0 pauses the project (held even on an idle node, and nothing but a human raises it), 'default' clears it so the node ceiling alone decides; takes effect next dispatch cycle, no restart. --max-parallel is a quiet alias; the old session-denominated value it used to record is retired, not converted (Decisions Log #140)
 h9k project set <name> --priority high|normal|low|default   # which tier this project's ready work competes in for a FREE dispatch slot. Default normal, and free slots rotate: the eligible project longest unserved wins the next one, oldest task first within it (nothing to set on a single-project node). 'high' is focus — wins every free slot over lower tiers while it has ready work and RELEASES ITSELF when its queue drains, which is the opposite of the sticky --max-parallel-tasks 0 pause. 'default' is the clearing word, restoring normal. Nothing preempts; every claim logs why that project won (Decisions Log #141)
+h9k project set <name> --claim-gate off|tracker-assignee   # a task linked to a Jira card or GitHub issue is claimed on this install only while the tracker shows that item assigned to this install's own identity; default off (Decisions Log #142)
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
@@ -423,6 +424,26 @@ the identical observation gate an agent's does. A task adopted with `--from-issu
 already carries its reference, so the pre-publish gate never fires and publishing it creates
 nothing a second time. Closeout comments a merged pull request onto a linked GitHub issue exactly
 as it does a linked Jira card — never a transition, same reasoning as above.
+
+**A project can make the tracker's own assignment the one act that hands out work** (Decisions
+Log #142, idea 64c75e43). `h9k project set <project> --claim-gate off|tracker-assignee` — default
+`off`, today's behaviour byte-for-byte — claims a task linked to a Jira card or a GitHub issue on
+this install only while the tracker shows that item assigned to this install's own tracker
+identity, so on a team where every teammate runs their own install against their own database,
+two installs cannot both run the same card. The identity is read from the tracker, never typed:
+the Jira `accountId` `/rest/api/2/myself` answers (captured at `h9k connection add jira`, read
+live and recorded on first use for a connection registered earlier), or the login `gh` is
+authenticated as, read live on every check and never stored. Each check reads the assignee field
+alone, so a task's one-time content snapshot is untouched, and records `TrackerAssignmentObserved`
+when it passes. Every claim door re-checks: the dispatcher leaves a refused task Queued and logs
+once per episode, `h9k task work` and `h9k task start` refuse with the same wording and exit 70,
+and `h9k task assign` warns on stderr naming the holder and the link but assigns anyway — the
+tracker is the go signal and the queue is where the task waits. A queued task's line on
+`h9k status`, `h9k task show` and `h9k project show` names the item and its holder. Untouched: a
+task with no linked item, an untracked one, and a `pr-review` task, whose pull request's own
+assignment is already auto-pr-review's signal. Read-only, no override flag; a tracker that cannot
+be read holds the claim rather than releasing it, quotes the tracker's error, tells a credential
+refusal apart from an outage, and is re-read no more often than every three minutes.
 
 **A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
 #121). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three
