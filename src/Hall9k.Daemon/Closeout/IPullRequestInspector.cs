@@ -151,6 +151,14 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// cannot tell the two apart the way it can for a review thread's starter or a review request.
 /// </para>
 /// <para>
+/// ChangesRequestedReviews is the narrower, sharper read alongside the thread counts above: a
+/// PERSON's latest review on this exact head formally requesting changes, body and inline
+/// comments and all (task: a changes-requested pull-request review from a human becomes a fix
+/// lap). A bot's changes-requested review is deliberately absent from it — Copilot's findings stay
+/// on the automated thread path, which argues and resolves on its own, because what earns a
+/// separate lap here is that a disagreement with a person must never be sent by an agent.
+/// </para>
+/// <para>
 /// One silence this cannot see: GitHub hides a review's comments while the review is still
 /// PENDING (unsubmitted). Feedback reaches the platform only when its author clicks Submit
 /// review, so a reviewer typing comments into a draft is invisible here — correctly, since
@@ -248,7 +256,8 @@ public sealed record PullRequestSnapshot(
     IReadOnlyList<string>? OutstandingReviewerLogins = null,
     bool HasObservedChecks = true,
     bool ReviewThreadsTruncated = false,
-    IReadOnlyList<string>? RequestedHumanReviewerLogins = null)
+    IReadOnlyList<string>? RequestedHumanReviewerLogins = null,
+    IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null)
 {
     /// <summary>
     /// How a requested TEAM reviewer is recorded in every reviewer list here, since GitHub exposes
@@ -260,6 +269,16 @@ public sealed record PullRequestSnapshot(
     /// person.
     /// </summary>
     public const string TeamReviewerPrefix = "team:";
+
+    /// <summary>
+    /// Every human reviewer's CHANGES_REQUESTED review sitting on this head, with the review body
+    /// and each inline comment as findings (task: a changes-requested pull-request review from a
+    /// human becomes a fix lap). Empty when there is none, and empty on a provider read that
+    /// predates this field being collected — which reads as "none observed", the same conservative
+    /// default every other field here takes, and leaves such a pull request on the thread-based
+    /// <c>FollowUpKind.ReviewFeedback</c> path exactly as before.
+    /// </summary>
+    public IReadOnlyList<ChangesRequestedReview> ChangesRequested => ChangesRequestedReviews ?? [];
 
     /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
     public IReadOnlyList<string> ThreadIds => UnresolvedReviewThreadIds ?? [];
