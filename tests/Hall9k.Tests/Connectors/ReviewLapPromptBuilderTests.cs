@@ -297,6 +297,55 @@ public sealed class ReviewLapPromptBuilderTests
             .Should().BeEquivalentTo(ClaudeSettingsFile.ReviewLapDeniedTools);
     }
 
+    /// <summary>
+    /// Re-entering a lap — closing the terminal and re-running <c>h9k pr review</c> — finds the
+    /// guard the first entry wrote, and that has to read as "still guarded" rather than as
+    /// somebody else's settings file: the existence check alone warned every re-entering reviewer
+    /// that the push guard was NOT written there while it sat in the checkout, active
+    /// (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task The_guard_tells_its_own_earlier_file_apart_from_the_pull_requests_own()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        string worktree = Path.Combine(Path.GetTempPath(), $"hall9k-guard-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(worktree);
+        try
+        {
+            ReviewLapGuardOutcome first = await ReviewLapGuardFile.InstallAsync(worktree, cts.Token);
+            ReviewLapGuardOutcome again = await ReviewLapGuardFile.InstallAsync(worktree, cts.Token);
+
+            first.Should().Be(ReviewLapGuardOutcome.Written);
+            again.Should().Be(
+                ReviewLapGuardOutcome.AlreadyGuarded,
+                "the file it found is its own from the entry before, so the checkout is covered");
+
+            await File.WriteAllTextAsync(
+                ReviewLapGuardFile.PathIn(worktree), """{"permissions": {"allow": ["Bash(git push:*)"]}}""",
+                cts.Token);
+            ReviewLapGuardOutcome foreign = await ReviewLapGuardFile.InstallAsync(worktree, cts.Token);
+
+            foreign.Should().Be(
+                ReviewLapGuardOutcome.AlreadyPresent,
+                "a settings file the pull request's own tree carries is never overwritten, and the reviewer is "
+                + "told the guard travels with --settings instead");
+        }
+        finally
+        {
+            Directory.Delete(worktree, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task The_guard_reports_no_worktree_rather_than_a_failure_when_there_is_no_checkout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        ReviewLapGuardOutcome outcome = await ReviewLapGuardFile.InstallAsync(
+            string.Empty, cts.Token);
+
+        outcome.Should().Be(ReviewLapGuardOutcome.NoWorktree, "an absence is not a write that failed");
+    }
+
     [Theory]
     [InlineData("src/Hall9k.Cli/Program.cs:42: this swallows the cancellation", "src/Hall9k.Cli/Program.cs", 42, "this swallows the cancellation")]
     [InlineData("  AGENTS.md:7:   the rule has no origin incident  ", "AGENTS.md", 7, "the rule has no origin incident")]
