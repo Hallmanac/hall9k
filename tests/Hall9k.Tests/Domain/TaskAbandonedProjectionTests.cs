@@ -92,6 +92,7 @@ public sealed class TaskAbandonedProjectionTests
 
         view.State.Should().Be(TaskState.Abandoned);
         view.RetryBranch.Should().BeNull("an abandoned task has no retry pending");
+        view.RetryPending.Should().BeFalse("an abandoned task has no retry pending");
         view.RetryReason.Should().Be("One more attempt.", "the retry's why is history, not a pending marker");
         view.FollowUpBranch.Should().BeNull("an abandoned task has no follow-up run pending");
         view.FollowUpKind.Should().Be(FollowUpKind.Unknown);
