@@ -263,7 +263,7 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
 
         StackedParentObservation observation = await new StackedParentWatch(
                 fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
-            .ObserveAsync(query, project, child.StackedOnTaskId, predicted, cts.Token);
+            .ObserveAsync(query, project, StackedParentDeclaration.From(child), predicted, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.Unobservable,
             "a boundary the branch never landed on is not an observation, and replaying from it would "
@@ -291,7 +291,7 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
 
         StackedParentObservation observation = await new StackedParentWatch(
                 fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
-            .ObserveAsync(query, project, child.StackedOnTaskId, run, cts.Token);
+            .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentMoved);
         observation.BoundaryCommit.Should().Be(fixture.ParentHeadCommit);
@@ -325,7 +325,7 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
 
         StackedParentObservation observation = await new StackedParentWatch(
                 fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
-            .ObserveAsync(query, project, child.StackedOnTaskId, run, cts.Token);
+            .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.Unobservable,
             "a fetch that could not be made says nothing about whether the parent's head exists — and a "
@@ -360,7 +360,7 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
 
         StackedParentObservation observation = await new StackedParentWatch(
                 fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
-            .ObserveAsync(query, project, child.StackedOnTaskId, run, cts.Token);
+            .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentUnresolvable,
             "every look answered, and what they answered is that there is no such ref");

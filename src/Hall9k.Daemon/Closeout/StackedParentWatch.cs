@@ -202,20 +202,33 @@ public sealed class StackedParentWatch(
 
     /// <summary>
     /// Looks at <paramref name="childRun"/>'s parent and reports whether the child is still built
-    /// on the parent's current head. <paramref name="childStackedOnTaskId"/> is the child's own
-    /// declared stacked edge — <c>TaskAggregate.StackedOnTaskId</c> for closeout, which holds the
-    /// aggregate, or <c>TaskDetails.StackedOnTaskId</c> for the review loop's own checkpoints,
-    /// which holds the projection — and the parent's own <c>TaskListItem</c> and current run supply
-    /// its state and pull request.
+    /// on the parent's current head. <paramref name="parent"/> is the child's own declared stacked
+    /// edge in whichever form it took, built through <c>StackedParentDeclaration.From</c> from
+    /// whichever of the aggregate or the projection the caller happens to hold — closeout holds the
+    /// first, the review loop's own checkpoints the second.
+    /// <para>
+    /// A LOCAL parent's state comes from its own <c>TaskListItem</c> and current run. A REMOTE
+    /// parent's comes from what the closeout watcher's own sweep recorded about its pull request
+    /// (<c>RemoteStackedParentSweep</c>) — never a provider call made here, so this and everything
+    /// else downstream of that sweep read one fact rather than each reaching its own. The git half
+    /// below is identical for both: once the parent's branch and whether it merged are known, where
+    /// the boundary is and whether the child still holds the parent's head are questions only the
+    /// repository can answer.
+    /// </para>
     /// </summary>
     public async Task<StackedParentObservation> ObserveAsync(
         IQuerySession query,
         ProjectDetails project,
-        Guid? childStackedOnTaskId,
+        StackedParentDeclaration parent,
         RunDetails childRun,
         CancellationToken cancellationToken)
     {
-        if (childStackedOnTaskId is not { } parentId)
+        if (parent.IsRemote)
+        {
+            return await ObserveRemoteParentAsync(project, parent, childRun, cancellationToken);
+        }
+
+        if (parent.TaskId is not { } parentId)
         {
             // The run records a non-project base but the task declares no edge. Not a
             // contradiction to resolve here: a human can retarget a pull request on GitHub by hand
@@ -226,18 +239,18 @@ public sealed class StackedParentWatch(
                 + "stacked edge — nothing here is watching a parent");
         }
 
-        TaskListItem? parent = await query.LoadAsync<TaskListItem>(parentId, cancellationToken);
-        RunDetails? parentRun = parent?.CurrentRunId is { } parentRunId
+        TaskListItem? parentTask = await query.LoadAsync<TaskListItem>(parentId, cancellationToken);
+        RunDetails? parentRun = parentTask?.CurrentRunId is { } parentRunId
             ? await query.LoadAsync<RunDetails>(parentRunId, cancellationToken)
             : null;
-        if (parent is null)
+        if (parentTask is null)
         {
             return StackedParentObservation.Unobservable(
                 $"the parent task {parentId} is no longer in the platform's records, so its branch cannot be read");
         }
 
         string parentBranch = childRun.BaseBranch;
-        bool parentMerged = parent.State == TaskState.Done && parentRun?.State == RunState.Completed;
+        bool parentMerged = parentTask.State == TaskState.Done && parentRun?.State == RunState.Completed;
 
         // Asked first, and off task state alone: a parent that can no longer reach even Delivered
         // has a branch that is going nowhere, so whether it moved since the cut is beside the point
@@ -280,6 +293,97 @@ public sealed class StackedParentWatch(
                 + "onto the project's base mechanically without dropping work that branch does not have");
         }
 
+        return await ObserveAgainstRepositoryAsync(
+            project, parentBranch, parentMerged, parentRun?.PullRequestNumber, childRun, cancellationToken);
+    }
+
+    /// <summary>
+    /// The remote half's front end: everything about the parent that comes from the record rather
+    /// than from the repository (task: a stacked child can stand on a pull request another install
+    /// owns). Reaches the same verdicts the local front end does, off the pull request's own
+    /// observed state instead of a parent task's lifecycle, and then hands the identical git
+    /// question to <see cref="ObserveAgainstRepositoryAsync"/>.
+    /// </summary>
+    private async Task<StackedParentObservation> ObserveRemoteParentAsync(
+        ProjectDetails project,
+        StackedParentDeclaration parent,
+        RunDetails childRun,
+        CancellationToken cancellationToken)
+    {
+        int parentNumber = parent.PullRequestNumber!.Value;
+        string parentBranch = childRun.BaseBranch;
+
+        // Nothing observed yet, so nothing claimed. The sweep looks again on its own cadence, and a
+        // child whose parent has not been read is exactly as unknown as one whose git call failed —
+        // which is what Unobservable means (AGENTS.md's never-guess rule).
+        if (!parent.RemoteState.WasObserved)
+        {
+            return StackedParentObservation.Unobservable(
+                $"pull request #{parentNumber}, which this task is stacked on, has not been observed yet, so "
+                + $"nothing is known about whether {parentBranch} moved");
+        }
+
+        // Every look answered, and what they answered is that there is no such pull request. The
+        // same reading ParentUnresolvable's own doc gives a branch that is not there: stable, in
+        // that no later sweep finds one this missed, but not permanent — the ordinary shape is a
+        // number declared before the teammate opened the pull request.
+        if (parent.RemoteState == RemoteParentState.Absent)
+        {
+            return StackedParentObservation.ParentUnresolvable(
+                parentBranch,
+                $"this repository has no pull request #{parentNumber}, the one this task declared itself "
+                + $"stacked on, so there is no parent head for {parentBranch} to be brought onto");
+        }
+
+        // Slice two's dead-parent rule, one pull request over: a pull request that closed without
+        // merging is a base nothing further arrives on, so the child parks rather than keeping up
+        // with a branch that is going nowhere.
+        if (parent.RemoteState == RemoteParentState.ClosedUnmerged)
+        {
+            return StackedParentObservation.ParentDead(
+                parentBranch,
+                $"pull request #{parentNumber}, the one this task is stacked on, closed without merging — so "
+                + $"{parentBranch} is a base nothing further arrives on");
+        }
+
+        bool parentMerged = parent.RemoteState == RemoteParentState.Merged;
+
+        // The mid-stack case, read off the parent pull request's own base rather than assumed: a
+        // parent that was itself stacked merges into ITS parent's branch, and retargeting this
+        // child onto the project's base from there would drop work that branch does not have. An
+        // OBSERVED mismatch only — a read that reported no base at all reads as unknown rather than
+        // as a different one, exactly as the local arm treats a run that recorded none.
+        if (parentMerged && parent.RemoteBaseBranch.IsNotBlank()
+            && parent.RemoteBaseBranch != project.BaseBranch)
+        {
+            return StackedParentObservation.ParentMergedElsewhere(
+                parentBranch,
+                $"pull request #{parentNumber}, the one this task is stacked on, merged into "
+                + $"{parent.RemoteBaseBranch} rather than the project's own {project.BaseBranch} — it was itself "
+                + "stacked, so this pull request's base cannot be moved onto the project's base mechanically "
+                + "without dropping work that branch does not have");
+        }
+
+        return await ObserveAgainstRepositoryAsync(
+            project, parentBranch, parentMerged, parentNumber, childRun, cancellationToken);
+    }
+
+    /// <summary>
+    /// The half only the repository can answer, shared by both forms of parent: where the boundary
+    /// a replay drops the parent's commits at is, and whether the child still holds the parent's
+    /// current head. <paramref name="parentPullRequestNumber"/> is the pull request whose immutable
+    /// head ref stands in when the branch itself is gone from origin — the parent run's own for a
+    /// local parent, the declared one for a remote parent, and null when there is none to fall back
+    /// on.
+    /// </summary>
+    private async Task<StackedParentObservation> ObserveAgainstRepositoryAsync(
+        ProjectDetails project,
+        string parentBranch,
+        bool parentMerged,
+        int? parentPullRequestNumber,
+        RunDetails childRun,
+        CancellationToken cancellationToken)
+    {
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string repositoryPath = project.RepositoryPath;
         await using IAsyncDisposable repositoryLock =
@@ -296,11 +400,11 @@ public sealed class StackedParentWatch(
             ParentHeadRead branchRead = await ReadRemoteBranchHeadAsync(
                 git, repositoryPath, parentBranch, cancellationToken);
             ParentHeadRead? pullRequestRead = null;
-            if (branchRead.Commit is null && parentRun?.PullRequestNumber is > 0)
+            if (branchRead.Commit is null && parentPullRequestNumber is > 0)
             {
-                fetchedRef = ParentHeadRef(parentRun.PullRequestNumber.Value);
+                fetchedRef = ParentHeadRef(parentPullRequestNumber.Value);
                 pullRequestRead = await ReadPullRequestHeadAsync(
-                    git, repositoryPath, parentRun.PullRequestNumber.Value, fetchedRef, cancellationToken);
+                    git, repositoryPath, parentPullRequestNumber.Value, fetchedRef, cancellationToken);
                 if (pullRequestRead.Commit is null)
                 {
                     fetchedRef = null;

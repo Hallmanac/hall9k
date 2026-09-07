@@ -2299,14 +2299,26 @@ public sealed class ReviewEngine(
 
             parentBranch = current.BaseBranch;
 
-            // The declared edge is read off the run's own task snapshot rather than fresh: a
-            // stacked edge cannot change under a claimed task at all (TaskDecider.Revise is
-            // Draft-only, and stackedOnTaskId is not one of the two marker fields that gate
-            // carves out), so there is nothing here for a re-read to learn.
-            observation = await stackedParents.ObserveAsync(
-                query, context.Project, context.Task.StackedOnTaskId, current, cancellationToken);
             TaskAggregate? task = await query.Events.AggregateStreamAsync<TaskAggregate>(
                 context.TaskId, token: cancellationToken);
+
+            // The declared EDGE cannot change under a claimed task at all (TaskDecider.Revise is
+            // Draft-only, and neither stacked field is one of the two marker fields that gate
+            // carves out), so context.Task's own snapshot would answer that half. What a snapshot
+            // cannot answer is a REMOTE parent's observed state: the closeout watcher's sweep
+            // appends a fresh observation while this run is claimed, which is the entire signal a
+            // checkpoint rebase exists to act on (task: a stacked child can stand on a pull request
+            // another install owns). So the declaration is built from the task's own stream, freshly
+            // aggregated, and falls back to the dispatch-time snapshot only when that read came back
+            // with nothing — which for a local parent is the identical answer either way.
+            observation = await stackedParents.ObserveAsync(
+                query,
+                context.Project,
+                task is null
+                    ? StackedParentDeclaration.From(context.Task)
+                    : StackedParentDeclaration.From(task),
+                current,
+                cancellationToken);
 
             // The budget lives on the task, so it is read from the task's own stream rather than
             // from a projection: no view carries it (see TaskAggregate.StackReplaysDispatched),
