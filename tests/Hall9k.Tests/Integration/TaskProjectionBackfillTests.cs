@@ -373,17 +373,21 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     /// <see cref="Dispatch.DispatchEngine.ClaimEligibleAsync"/>'s <c>OrderByDescending(QueuePriorityMarked)</c>
     /// sees a missing key as SQL <c>NULL</c>, and PostgreSQL's default <c>DESC</c> ordering sorts
     /// <c>NULL</c> <em>first</em> — ahead of a genuinely marked row — so a stale unmarked document
-    /// is served before the very task a human just marked queue-first (independent pre-PR review,
-    /// cycle 1, both lenses). The backfill runs at daemon start, before the claim query ever
-    /// executes, which is what the two calls below reproduce against the one queue: the first
-    /// claims with no backfill run first (the defect, against the original stale document — once
-    /// claimed, its own TaskClaimed event rewrites it in full and it stops being stale, which is
-    /// why a second stale document joins the queue afterward to stand in for the daemon's next
-    /// sweep finding one), the second runs the backfill first, as the daemon always does, and
-    /// gets the marker's own promise honoured.
+    /// was served before the very task a human just marked queue-first (independent pre-PR review,
+    /// cycle 1, both lenses).
+    /// <para>
+    /// The cross-project rotation (Decisions Log #141) took the marker's own promise off that
+    /// ordering entirely: the claim query now reads the marker as a field and
+    /// <see cref="Dispatch.ProjectRotation"/> picks the marked candidate outright, so a NULL that
+    /// sorts first can no longer decide which task is claimed. The first claim below is what
+    /// asserts that. The backfill still runs at daemon start and still repairs the document — the
+    /// missing key is the staleness marker, and the SQL ordering it corrupts still decides between
+    /// two <em>unmarked</em> rows — which the second half asserts, ending on the marked task's own
+    /// promise being kept after the repair as well as before it.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task A_stale_unmarked_document_no_longer_outranks_a_marked_one_once_the_backfill_runs_first()
+    public async Task A_stale_unmarked_document_does_not_outrank_a_marked_one_before_or_after_the_backfill()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         using DocumentStore store = NewStore();
@@ -402,29 +406,31 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
         await StripKeyAsync(staleUnmarked, "queuePriorityMarked", ["mt_doc_tasklistitem"], cts.Token);
 
         (await engine.ClaimEligibleAsync(cts.Token)).Should().ContainSingle()
-            .Which.TaskId.Should().Be(staleUnmarked,
-                "this is the defect: NULL sorts first under DESC, so the stale document is served "
-                + "ahead of the one a human actually marked");
+            .Which.TaskId.Should().Be(genuinelyMarked,
+                "the marker is read as a field and picked outright now, so the NULL that sorts "
+                + "first under DESC cannot decide the claim even with no backfill run yet");
 
-        // The slot the wrong claim just took, freed the way every other test in this file frees
-        // one — and a second stale document, standing in for the next pre-upgrade task the
-        // daemon's startup sweep would find, since the one above stopped being stale the moment
-        // its own TaskClaimed event rewrote it.
+        // The slot that claim took, freed the way every other test in this file frees one. The
+        // marked task stopped being marked the moment its own TaskClaimed event rewrote its
+        // document, so what is left is the stale one and the repair the backfill owes it.
         await using (IDocumentSession session = store.LightweightSession())
         {
-            session.Delete<TaskLease>(staleUnmarked);
+            session.Delete<TaskLease>(genuinelyMarked);
             await session.SaveChangesAsync(cts.Token);
         }
 
-        Guid anotherStaleUnmarked = await SeedQueuedAsync(store, node, "Also queued before the marker existed", cts.Token);
-        await StripKeyAsync(anotherStaleUnmarked, "queuePriorityMarked", ["mt_doc_tasklistitem"], cts.Token);
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Contain(staleUnmarked,
+            "the missing key is still the staleness marker, and the ordering it corrupts still "
+            + "decides between two unmarked rows");
 
-        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Contain(anotherStaleUnmarked);
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem repaired = (await query.LoadAsync<TaskListItem>(staleUnmarked, cts.Token))!;
+            repaired.QueuePriorityMarked.Should().BeFalse("the stream never marked it, and now the document says so");
+        }
 
         (await engine.ClaimEligibleAsync(cts.Token)).Should().ContainSingle()
-            .Which.TaskId.Should().Be(genuinelyMarked,
-                "the backfill restored the missing key before the claim query ran, so the marker "
-                + "now sorts ahead exactly as intended");
+            .Which.TaskId.Should().Be(staleUnmarked, "it is the only task left queued");
     }
 
     /// <summary>One queued task, assigned to the node, never marked.</summary>

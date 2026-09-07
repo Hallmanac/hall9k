@@ -83,6 +83,30 @@ public sealed class DispatchEngine(
     private bool _reportedSpendExhausted;
 
     /// <summary>
+    /// When this node last dispatched for each project — the rotation's whole memory (Decisions
+    /// Log #141), written only by a claim that actually committed. A project absent from it is
+    /// unserved and so outranks every project that has been served, which is what makes the
+    /// rotation starvation-proof without a counter to reconcile.
+    /// <para>
+    /// In memory, per daemon process, exactly like <see cref="_deferredClaims"/>,
+    /// <see cref="_reportedOverCeiling"/> and <see cref="_spendExhaustedSincePeriodStart"/>: every
+    /// other thing this engine remembers between sweeps lives here too, and none of it is worth a
+    /// durable record of its own. A cold start therefore reads every project as unserved, and the
+    /// documented tie-break takes over — the queue's own order, so the first claim after a restart
+    /// is exactly the claim the platform would have made before any of this existed. A restart is
+    /// not a fairness hole: the rotation re-forms from the first slot onward, and one uneven
+    /// first slot cannot starve anything, because being served is what makes a project yield.
+    /// </para>
+    /// <para>
+    /// An interactive claim (<c>h9k task work</c>, <c>h9k task start</c>) never lands here: it
+    /// costs no slot at either ceiling (Decisions Log #111, #140) and this dispatcher never made
+    /// it, so counting it as this node having served that project would make a rotation turn out
+    /// of something that consumed nothing.
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<Guid, DateTimeOffset> _lastServedByProject = [];
+
+    /// <summary>
     /// The period start <see cref="SpendBudgetExhaustedAsync"/> last confirmed exhausted, or null
     /// when the current period isn't known to be. Spend within a period only ever grows —
     /// <c>TokensRecorded</c> is append-only — so once a period is exhausted it stays exhausted
@@ -353,13 +377,20 @@ public sealed class DispatchEngine(
     /// Draft, Published and Blocked tasks are structurally invisible here — a task becomes
     /// claimable only through an explicit human assignment (Decisions Log #34).
     /// <para>
+    /// Which project each free slot goes to is <see cref="ProjectRotation"/>'s decision
+    /// (Decisions Log #141): round-robin across the eligible projects by default, with an optional
+    /// priority tier over it, asked once per slot because this sweep's own claims change who is
+    /// eligible as it goes. Every claim logs the one sentence naming the winner and why.
+    /// </para>
+    /// <para>
     /// Everything either ceiling turns away simply stays Queued, which already honestly means
-    /// waiting, and is claimed as slots free up in the same order the queue always had. There
-    /// is no throttled state and no reservation: nothing is written about a deferral beyond the
-    /// load measurement <see cref="NodeDispatchLoad"/> carries for the attention pane. A project
-    /// cap is a ceiling in exactly that sense — nothing is set aside for an idle project, so a
-    /// project capped above its share simply fills whatever the node and the other projects'
-    /// activity leave free.
+    /// waiting, and is claimed as slots free up. There is no throttled state and no reservation:
+    /// nothing is written about a deferral beyond the load measurement
+    /// <see cref="NodeDispatchLoad"/> carries for the attention pane. A project cap is a ceiling
+    /// in exactly that sense — nothing is set aside for an idle project, so a project capped above
+    /// its share simply fills whatever the node and the other projects' activity leave free. The
+    /// rotation adds no third cause: a project that loses a slot is turned away by the node
+    /// ceiling or by its own cap, and that is what its deferral names.
     /// </para>
     /// </summary>
     public async Task<IReadOnlyList<ClaimedWork>> ClaimEligibleAsync(CancellationToken cancellationToken)
@@ -394,57 +425,58 @@ public sealed class DispatchEngine(
 
         List<ClaimedWork> claimed = [];
         Dictionary<Guid, int> claimedByProject = [];
-        List<Guid> deferredByCeiling = [];
-        List<QueuedCandidate> deferredByProjectCap = [];
-        List<Guid> deferredBySpend = [];
-        foreach (QueuedCandidate candidate in queued)
+        List<QueuedCandidate> waiting = [.. queued];
+
+        // One slot at a time, each with its own winner and its own recorded reason (Decisions Log
+        // #141). The rotation is asked again per slot rather than once per sweep because this
+        // sweep's own claims move the answer: a project that just took a slot is no longer the
+        // longest unserved, and one that just reached its cap is no longer eligible at all. The
+        // spend gate is checked once, in the loop's own condition, since it is a node-wide figure
+        // no claim of this sweep's can change.
+        while (!spendExhausted
+            && claimed.Count < load.Node.Capacity
+            && ProjectRotation.NextSlot(waiting, load, claimedByProject, _lastServedByProject) is { } slot)
         {
-            // The project's own cap is asked before either of this node's limits, so a task its
-            // project is holding back is never reported against a node-level lever that would not
-            // release it: neither a raised ceiling nor a rolled-over period starts a paused
-            // project's work, and the cap is the lever that owns those rows. Both surfaces resolve
-            // the limits in this same order (Hall9k.Cli.Commands.QueueHold), so the daemon log and
-            // h9k status can never name different causes for one row. Asked per candidate, because
-            // this sweep's own claims fill the cap as it goes.
-            //
-            // Asked ahead of the spend gate specifically for the mixed sweep the anyProjectAdmits
-            // guard above cannot cover: one project paused (or full) while another admits, on a
-            // spent budget. That guard reads such a sweep as worth scanning — correctly, since the
-            // admitting project's rows really are held by the budget — and gating on spend first
-            // would then sweep the paused project's rows into the same log line, promising they
-            // are "claimed once the period rolls" when the rollover releases nothing, while
-            // h9k status went on naming the pause for the very same row (independent pre-PR
-            // review, cycle 1, adversarial lens). Nothing about what gets claimed changes: a
-            // candidate past this check still faces the spend gate below.
-            if (!load.Project(candidate.ProjectId).Ceiling
-                .Admits(claimedByProject.GetValueOrDefault(candidate.ProjectId)))
-            {
-                deferredByProjectCap.Add(candidate);
-                continue;
-            }
+            // Removed whether or not the claim lands: a candidate that lost the claim race (or
+            // whose previous generation is still alive here) is not this sweep's to place, and
+            // leaving it in would spin the loop on the same task until the capacity ran out.
+            waiting.Remove(slot.Candidate);
 
-            // The spend budget gates claiming only (AGENTS.md #11's never-auto-kill restraint):
-            // it never touches a run already claimed, and a task it turns away simply stays
-            // Queued, exactly as the ceiling's own turned-away tasks do.
-            if (spendExhausted)
-            {
-                deferredBySpend.Add(candidate.TaskId);
-                continue;
-            }
-
-            if (claimed.Count >= load.Node.Capacity)
-            {
-                deferredByCeiling.Add(candidate.TaskId);
-                continue;
-            }
-
-            if (await TryClaimAsync(candidate.TaskId, cancellationToken) is { } work)
+            if (await TryClaimAsync(slot.Candidate.TaskId, cancellationToken) is { } work)
             {
                 claimed.Add(work);
-                claimedByProject[candidate.ProjectId] =
-                    claimedByProject.GetValueOrDefault(candidate.ProjectId) + 1;
+                claimedByProject[slot.Candidate.ProjectId] =
+                    claimedByProject.GetValueOrDefault(slot.Candidate.ProjectId) + 1;
+
+                // Served is recorded only for a claim that actually committed, so a lost race
+                // costs a project nothing in the rotation — it was never dispatched for.
+                _lastServedByProject[slot.Candidate.ProjectId] = DateTimeOffset.UtcNow;
+                ReportSlotClaimed(slot, load);
             }
         }
+
+        // Whatever is still waiting is deferred, and named against the limit that actually holds
+        // it. The project's own cap is asked before either of this node's limits, so a task its
+        // project is holding back is never reported against a node-level lever that would not
+        // release it: neither a raised ceiling nor a rolled-over period starts a paused project's
+        // work, and the cap is the lever that owns those rows. Both surfaces resolve the limits in
+        // this same order (Hall9k.Cli.Commands.QueueHold), so the daemon log and h9k status can
+        // never name different causes for one row.
+        //
+        // The cap is asked ahead of the spend gate specifically for the mixed sweep the
+        // anyProjectAdmits guard above cannot cover: one project paused (or full) while another
+        // admits, on a spent budget. That guard reads such a sweep as worth scanning — correctly,
+        // since the admitting project's rows really are held by the budget — and gating on spend
+        // first would then sweep the paused project's rows into the same log line, promising they
+        // are "claimed once the period rolls" when the rollover releases nothing, while h9k status
+        // went on naming the pause for the very same row (independent pre-PR review, cycle 1,
+        // adversarial lens).
+        List<QueuedCandidate> deferredByProjectCap = [.. waiting.Where(candidate =>
+            !load.Project(candidate.ProjectId).Ceiling
+                .Admits(claimedByProject.GetValueOrDefault(candidate.ProjectId)))];
+        Guid[] deferredByNode = [.. waiting.Except(deferredByProjectCap).Select(candidate => candidate.TaskId)];
+        Guid[] deferredBySpend = spendExhausted ? deferredByNode : [];
+        Guid[] deferredByCeiling = spendExhausted ? [] : deferredByNode;
 
         await PublishLoadAsync(
             session, load, queuedProjects, claimed.Count, deferredByCeiling, deferredByProjectCap, cancellationToken);
@@ -452,16 +484,74 @@ public sealed class DispatchEngine(
         return claimed;
     }
 
-    /// <summary>One queued task as the claim loop needs it: the task, and the project whose cap it answers to.</summary>
-    private sealed record QueuedCandidate(Guid TaskId, Guid ProjectId);
+    /// <summary>
+    /// One plain sentence per claim, naming the project that won the free slot and why (Decisions
+    /// Log #141's hard requirement): the reason rides the claim rather than being reconstructible
+    /// only from a scheduler state dump, so any dispatch decision is explainable from the log
+    /// alone, the same discipline the deferral lines already follow from the other side.
+    /// <para>
+    /// One call per reason rather than one template with substituted clauses, because the numbers
+    /// each reason states differ, and a shared template would either drop them or print a
+    /// placeholder against the wrong argument (the lesson
+    /// <see cref="ReportProjectCapDeferrals"/>'s own two templates carry).
+    /// </para>
+    /// </summary>
+    private void ReportSlotClaimed(RotationSlot slot, DispatchLoad load)
+    {
+        string project = load.Project(slot.Candidate.ProjectId).Name;
+        switch (slot.Reason)
+        {
+            case SlotReason.QueueFirstMarker:
+                logger.LogInformation(
+                    "Free slot to project {Project} (task {TaskId}): a human marked this task queue-first, "
+                    + "which takes the next free slot ahead of the rotation and of every tier, and clears "
+                    + "itself as this claim commits",
+                    project, slot.Candidate.TaskId);
+                break;
+            case SlotReason.PriorityTier:
+                logger.LogInformation(
+                    "Free slot to project {Project} (task {TaskId}): priority {Priority} outranks the rotation "
+                    + "while this project has ready work, of {EligibleProjects} project(s) with any — it "
+                    + "releases itself the moment its queue drains",
+                    project, slot.Candidate.TaskId, slot.Priority.Value.ToLowerInvariant(), slot.EligibleProjects);
+                break;
+            case SlotReason.LongestUnserved when slot.LastServedAt is { } servedAt:
+                logger.LogInformation(
+                    "Free slot to project {Project} (task {TaskId}): longest unserved of {EligibleProjects} "
+                    + "project(s) with ready work — last dispatched for at {LastServedAt:u}, oldest task first "
+                    + "within it",
+                    project, slot.Candidate.TaskId, slot.EligibleProjects, servedAt);
+                break;
+            case SlotReason.LongestUnserved:
+                logger.LogInformation(
+                    "Free slot to project {Project} (task {TaskId}): longest unserved of {EligibleProjects} "
+                    + "project(s) with ready work — nothing has been dispatched for it since this daemon "
+                    + "started, oldest task first within it",
+                    project, slot.Candidate.TaskId, slot.EligibleProjects);
+                break;
+            case SlotReason.OnlyEligibleProject:
+            default:
+                logger.LogInformation(
+                    "Free slot to project {Project} (task {TaskId}): the only project with ready work under "
+                    + "every applicable limit this sweep — oldest task first within it",
+                    project, slot.Candidate.TaskId);
+                break;
+        }
+    }
 
     /// <summary>
-    /// This owner's queue, in the order the dispatcher serves it.
+    /// This owner's queue, in the order the queue itself is served.
     /// <para>
     /// The whole claim rule, as one indexed-friendly filter (Decisions Log #34): Queued
     /// means a human assigned it and every dependency has closed out, and the owner match
     /// means those were this node's owner's decisions. The ceilings shape how much of this
     /// set is taken, never which end of it (Decisions Log #64).
+    /// </para>
+    /// <para>
+    /// This order is the queue's own, and it stays what decides <em>within</em> one project and
+    /// what breaks a tie between two equally unserved ones (Decisions Log #141). Across projects
+    /// under contention it is <see cref="ProjectRotation"/> that picks, so this list is the set
+    /// and the tie-break rather than the running order.
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<QueuedCandidate>> ReadQueueAsync(
@@ -484,24 +574,44 @@ public sealed class DispatchEngine(
         // The same is true of queuePriorityMarked itself: a document old enough to predate the
         // marker is missing that key too, and OrderByDescending over a missing key sorts it NULL
         // first under Postgres's default DESC ordering, ahead of a genuinely marked row, so the
-        // same startup backfill rebuilds it before this query runs.
+        // same startup backfill rebuilds it before this query runs. What that ordering can still
+        // get wrong is narrower than it was: the marker's own promise no longer rides on it, since
+        // ProjectRotation picks the marked candidate by value (Decisions Log #141), leaving the
+        // NULL to misplace a stale row only among the unmarked ones.
         //
-        // Two fields, never the documents: nothing below reads any other projection field.
-        // TryClaimAsync decides from the task's own stream, and a deferral is logged by id and by
-        // the project whose cap held it, so every other document body fetched here would be
-        // deserialized and dropped. It is worth saying because of what follows — the whole queue
+        // Three fields, never the documents: nothing below reads any other projection field.
+        // TryClaimAsync decides from the task's own stream, a deferral is logged by id and by the
+        // project whose cap held it, and the rotation needs the project and the marker, so every
+        // other document body fetched here would be deserialized and dropped. It is worth saying
+        // because of what follows — the whole queue
         // is read rather than just the claimable head, so that every task either ceiling defers
         // can be named in the log exactly once, which makes this the one read here whose size
         // grows with the backlog rather than with the ceiling.
-        return await session.Query<TaskListItem>()
+        IReadOnlyList<QueuedRow> rows = await session.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
             .Where(t => t.AssignedOwnerId == ownerId)
             .OrderByDescending(t => t.QueuePriorityMarked)
             .ThenBy(t => t.AssignedAt)
             .ThenBy(t => t.AddedAt)
-            .Select(t => new QueuedCandidate(t.Id, t.ProjectId))
+            .Select(t => new QueuedRow(t.Id, t.ProjectId, t.QueuePriorityMarked))
             .ToListAsync(cancellationToken);
+
+        return [.. rows.Select(row => new QueuedCandidate(row.Id, row.ProjectId, row.QueuePriorityMarked ?? false))];
     }
+
+    /// <summary>
+    /// The three selected columns, with the marker <em>nullable</em> — the shape a document
+    /// written before the marker existed actually has (see the ordering note above: it carries no
+    /// such key at all). Selected into a non-nullable bool, a missing key deserializes as JSON
+    /// null against a bool and throws, which would take the whole sweep down and wedge the queue
+    /// rather than merely misordering one row — a far worse failure than the one the startup
+    /// backfill exists to repair, and reachable by any sweep that races that repair. Absent reads
+    /// as unmarked, which is what an absent marker means. Origin incident (2026-09-06): the queue
+    /// read's own first version selected it as a bool and
+    /// <c>TaskProjectionBackfillTests.A_stale_unmarked_document_does_not_outrank_a_marked_one_before_or_after_the_backfill</c>
+    /// — which strips exactly that key — failed on the deserialization.
+    /// </summary>
+    private sealed record QueuedRow(Guid Id, Guid ProjectId, bool? QueuePriorityMarked);
 
     /// <summary>
     /// Whether this node's periodic token-spend budget (backlog: spend-governor step three) is
@@ -726,7 +836,12 @@ public sealed class DispatchEngine(
                 return new ProjectLoad(
                     projectId,
                     details?.Name ?? projectId.ToString(),
-                    new ProjectRunCeiling(liveByProject.GetValueOrDefault(projectId), details?.MaxParallelTasks));
+                    new ProjectRunCeiling(liveByProject.GetValueOrDefault(projectId), details?.MaxParallelTasks),
+                    // The tier comes off the same document read as the cap (Decisions Log #141),
+                    // so a sweep can never rotate on one project's tier and admit against another
+                    // moment's cap. A project no document answered for rotates in the default
+                    // tier, the same honest fallback its cap takes.
+                    details?.Priority ?? ProjectPriority.Normal);
             });
     }
 

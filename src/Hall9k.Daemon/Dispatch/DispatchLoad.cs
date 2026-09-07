@@ -22,18 +22,27 @@ public sealed record DispatchLoad(NodeLoad Node, IReadOnlyDictionary<Guid, Proje
     /// uncapped one carrying nothing, named by its own id since no document answered for it.
     /// Uncapped is the honest fallback: the cap lives on the project document, so a project whose
     /// document could not be read has no cap this sweep can enforce, and inventing one would hold
-    /// work back for a rule nobody set (AGENTS.md: never guess at unobserved facts).
+    /// work back for a rule nobody set (AGENTS.md: never guess at unobserved facts). Its tier
+    /// falls back the same way, to the default one: a project nothing answered for rotates like
+    /// every other rather than being quietly focused or quietly starved.
     /// </summary>
     public ProjectLoad Project(Guid projectId) =>
         Projects.TryGetValue(projectId, out ProjectLoad? project)
             ? project
-            : new ProjectLoad(projectId, projectId.ToString(), ProjectRunCeiling.Uncapped(0));
+            : new ProjectLoad(
+                projectId, projectId.ToString(), ProjectRunCeiling.Uncapped(0), ProjectPriority.Normal);
 }
 
 /// <summary>
-/// One project as a sweep measured it: what it is carrying, the cap it is admitting against, and
-/// the name every operator-facing line about it uses. The name is carried rather than looked up
-/// again at log time, so the line an operator reads names the project the decision was actually
-/// made about.
+/// One project as a sweep measured it: what it is carrying, the cap it is admitting against, the
+/// tier it competes for a free slot in, and the name every operator-facing line about it uses. The
+/// name is carried rather than looked up again at log time, so the line an operator reads names
+/// the project the decision was actually made about.
 /// </summary>
-public sealed record ProjectLoad(Guid ProjectId, string Name, ProjectRunCeiling Ceiling);
+/// <param name="Priority">
+/// This project's dispatch tier (Decisions Log #141), read off the same project document the cap
+/// is: one read, so the rotation and the cap can never be decided from documents fetched at
+/// different moments.
+/// </param>
+public sealed record ProjectLoad(
+    Guid ProjectId, string Name, ProjectRunCeiling Ceiling, ProjectPriority Priority);
