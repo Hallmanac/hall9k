@@ -72,7 +72,8 @@ public static class ProjectDecider
         Optional<AutoPrReviewSpeed> autoPrReview = default,
         bool acceptedBrokenGate = false,
         Optional<int?> maxParallelTasks = default,
-        Optional<ProjectPriority> priority = default)
+        Optional<ProjectPriority> priority = default,
+        Optional<ClaimGate> claimGate = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -230,6 +231,22 @@ public static class ProjectDecider
                 + "--max-parallel-tasks 0.");
         }
 
+        // Off is not a value to defer with here either — the same BacklogPolicy/AutoPrReviewSpeed
+        // idiom, and for the same reason: there is no owner- or node-level claim gate underneath
+        // this project one to fall back to, so the closed set is exactly the two static instances,
+        // checked here because this is the one place that enforces it (ClaimGate's own implicit
+        // string conversion deliberately wraps anything).
+        if (claimGate.HasValue
+            && claimGate.Value is { } chosenGate
+            && chosenGate != ClaimGate.Off
+            && chosenGate != ClaimGate.TrackerAssignee)
+        {
+            throw new DomainValidationException(
+                $"The claim gate must be {ClaimGate.Off} or {ClaimGate.TrackerAssignee} (whether a task "
+                + "linked to a Jira card or a GitHub issue may be claimed on this install only while the "
+                + "tracker shows that item assigned to this install's own tracker identity).");
+        }
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -265,7 +282,8 @@ public static class ProjectDecider
             // recorded no gate at all.
             AcceptedBrokenGate: acceptedBrokenGate && verifyCommands.HasValue,
             MaxParallelTasks: maxParallelTasks,
-            Priority: priority);
+            Priority: priority,
+            ClaimGate: claimGate);
     }
 
     /// <summary>
