@@ -32,6 +32,14 @@ public sealed class ProjectAggregate
     public int? MaxParallelTasks { get; private set; }
 
     /// <summary>
+    /// Which tier this project's ready work competes in for a free dispatch slot (Decisions Log
+    /// #141). <see cref="ProjectPriority.Normal"/> on every project that never set one — the tier
+    /// the whole rotation runs in by default — and <see cref="ProjectPriority"/> owns what a higher
+    /// tier means and why it releases itself.
+    /// </summary>
+    public ProjectPriority Priority { get; private set; } = ProjectPriority.Normal;
+
+    /// <summary>
     /// What <see cref="MaxParallelAgents"/> reads on a project that never recorded one. A
     /// recorded 3 is indistinguishable from this default — deliberately not worked around,
     /// because retiring a 3 and retiring an absence come to the same enforced behaviour
@@ -203,6 +211,11 @@ public sealed class ProjectAggregate
         if (@event.AutoPrReview.HasValue)
         {
             AutoPrReview = @event.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
+        }
+
+        if (@event.Priority.HasValue)
+        {
+            Priority = @event.Priority.Value ?? ProjectPriority.Normal;
         }
     }
 }
