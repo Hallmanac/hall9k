@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -124,6 +125,13 @@ public sealed class TaskAggregate
     /// <c>Hall9k.Domain.Features.Run.ReviewStageComposition</c>'s own doc for why.
     /// </summary>
     public ReviewStageComposition? ReviewStageComposition { get; private set; }
+    /// <summary>
+    /// This task's own override of whether true closeout closes its linked GitHub issue; null
+    /// defers to the project's own close-linked-issue setting, live (task: a task's linked GitHub
+    /// issue is closed at true closeout under a configurable rule). Set at
+    /// <see cref="Events.TaskPublished"/> or revised at <see cref="Events.TaskRevised"/>.
+    /// </summary>
+    public CloseLinkedIssueRule? CloseLinkedIssue { get; private set; }
     public int LeaseGeneration { get; private set; }
     public Guid? ClaimedByNodeId { get; private set; }
 
@@ -583,6 +591,10 @@ public sealed class TaskAggregate
     {
         State = TaskState.Published;
         PreApproval = @event.EffectivePreApproval;
+        if (@event.CloseLinkedIssue.HasValue)
+        {
+            CloseLinkedIssue = @event.CloseLinkedIssue.Value;
+        }
     }
 
     public void Apply(TaskPreApprovedSet @event) => PreApproval = @event.EffectivePreApproval;
@@ -662,6 +674,11 @@ public sealed class TaskAggregate
         if (@event.ReviewStageComposition.HasValue)
         {
             ReviewStageComposition = @event.ReviewStageComposition.Value;
+        }
+
+        if (@event.CloseLinkedIssue.HasValue)
+        {
+            CloseLinkedIssue = @event.CloseLinkedIssue.Value;
         }
 
         // The third clearing act alongside Apply(TaskHandedBack) and a default

@@ -292,7 +292,8 @@ public static class TaskDecider
         BacklogPolicy? backlogPolicy = null,
         bool noExistingItemAttested = false,
         bool untracked = false,
-        PreApprovalMode? preApproval = null)
+        PreApprovalMode? preApproval = null,
+        Optional<string?> closeLinkedIssue = default)
     {
         if (task.State != TaskState.Draft)
         {
@@ -488,9 +489,12 @@ public static class TaskDecider
         // the ordinary default publish.
         PreApprovalMode preApprovalRecorded =
             preApproval is null ? task.PreApproval : VetPreApprovalMode(preApproval, task.Id);
+        Optional<CloseLinkedIssueRule?> closeLinkedIssueForEvent = closeLinkedIssue.HasValue
+            ? Optional<CloseLinkedIssueRule?>.Of(CloseLinkedIssueRule.ParseOverride(closeLinkedIssue.Value))
+            : Optional<CloseLinkedIssueRule?>.None;
         return new TaskPublished(
             task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded,
-            preApprovalRecorded.LegacyPreApproved, preApprovalRecorded);
+            preApprovalRecorded.LegacyPreApproved, preApprovalRecorded, closeLinkedIssueForEvent);
     }
 
     /// <summary>
@@ -622,7 +626,8 @@ public static class TaskDecider
         bool reviewStageCompositionAcknowledged = false,
         bool clearInteractiveMode = false,
         Optional<Guid?> stackedOnTaskId = default,
-        Optional<int?> stackedOnPullRequestNumber = default)
+        Optional<int?> stackedOnPullRequestNumber = default,
+        Optional<string?> closeLinkedIssue = default)
     {
         // Both markers are scheduling/mode facts, not part of the readiness contract, so they
         // are the two exceptions Revise's own Draft-only gate carves out (task 45136b29 for
@@ -636,7 +641,7 @@ public static class TaskDecider
             && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !reviewStageComposition.HasValue && !stackedOnTaskId.HasValue
-            && !stackedOnPullRequestNumber.HasValue;
+            && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue;
 
         if (task.State != TaskState.Draft && !onlyMarkerFieldsChanging)
         {
@@ -749,16 +754,22 @@ public static class TaskDecider
         RevisedStackedEdge stackedOn = VetRevisedStackedEdge(
             task, stackedOnTaskId, stackedOnPullRequestNumber, dependencies, effectiveType);
 
+        Optional<CloseLinkedIssueRule?> closeLinkedIssueForEvent = closeLinkedIssue.HasValue
+            ? Optional<CloseLinkedIssueRule?>.Of(CloseLinkedIssueRule.ParseOverride(closeLinkedIssue.Value))
+            : Optional<CloseLinkedIssueRule?>.None;
+
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue
             && !queuePriority.HasValue && !normalizedComposition.HasValue && !clearInteractiveMode
-            && !stackedOn.TaskId.HasValue && !stackedOn.PullRequestNumber.HasValue)
+            && !stackedOn.TaskId.HasValue && !stackedOn.PullRequestNumber.HasValue
+            && !closeLinkedIssueForEvent.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
                 "--type, --model, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
                 "--stacked-on, --stacked-on-pull-request, --clear-stacked-on, --queue-first, " +
-                "--clear-queue-first, --review-stage-composition, or --clear-interactive-mode.");
+                "--clear-queue-first, --review-stage-composition, --clear-interactive-mode, or " +
+                "--close-linked-issue.");
         }
 
         Optional<Run.ReviewStageComposition?> compositionForEvent = normalizedComposition.HasValue
@@ -774,7 +785,8 @@ public static class TaskDecider
                 normalizedComposition.Value, reviewStageCompositionAcknowledged),
             clearInteractiveMode,
             stackedOn.TaskId,
-            stackedOn.PullRequestNumber);
+            stackedOn.PullRequestNumber,
+            closeLinkedIssueForEvent);
     }
 
     /// <summary>What a revision records about the stacked edge, in both its forms.</summary>

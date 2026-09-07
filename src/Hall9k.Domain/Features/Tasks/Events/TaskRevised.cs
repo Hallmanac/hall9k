@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -70,4 +71,12 @@ public sealed record TaskRevised(
     /// like its twin, and mutually exclusive with it — both enforced by
     /// <see cref="Handlers.TaskDecider.Revise"/>.
     /// </summary>
-    Optional<int?> StackedOnPullRequestNumber = default);
+    Optional<int?> StackedOnPullRequestNumber = default,
+    /// <summary>
+    /// This task's own override of whether true closeout closes its linked GitHub issue (task: a
+    /// task's linked GitHub issue is closed at true closeout under a configurable rule);
+    /// present-with-null clears the override so the project's own close-linked-issue setting
+    /// decides again, live, exactly as <see cref="ReviewStageComposition"/>'s own clearing idiom
+    /// works for its setting.
+    /// </summary>
+    Optional<CloseLinkedIssueRule?> CloseLinkedIssue = default);

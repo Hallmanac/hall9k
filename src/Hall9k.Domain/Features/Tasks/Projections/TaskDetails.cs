@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -211,6 +212,8 @@ public sealed class TaskDetails
     public int? LifetimeReviewCycleBudget { get; set; }
     /// <summary>This task's own override of which pre-PR review stages a run gets; null defers to the project or node (task: the review pipeline's stage composition becomes configuration recorded per run).</summary>
     public ReviewStageComposition? ReviewStageComposition { get; set; }
+    /// <summary>This task's own override of whether true closeout closes its linked GitHub issue; null defers to the project's own close-linked-issue setting, live.</summary>
+    public CloseLinkedIssueRule? CloseLinkedIssue { get; set; }
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
@@ -396,6 +399,10 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.UntrackedAttestedByOwnerId = @event.Data.UntrackedAttested ? @event.Data.PublishedByOwnerId : null;
         view.PreApproval = @event.Data.EffectivePreApproval;
         view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
+        if (@event.Data.CloseLinkedIssue.HasValue)
+        {
+            view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
+        }
     }
 
     public void Apply(IEvent<TaskPreApprovedSet> @event, TaskDetails view)
@@ -468,6 +475,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         if (@event.Data.ReviewStageComposition.HasValue)
         {
             view.ReviewStageComposition = @event.Data.ReviewStageComposition.Value;
+        }
+
+        if (@event.Data.CloseLinkedIssue.HasValue)
+        {
+            view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
         }
 
         // Mirrors TaskAggregate.Apply(TaskRevised): the third clearing act alongside
