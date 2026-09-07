@@ -206,6 +206,12 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         await RunGhAsync(repositoryPath, arguments, cancellationToken);
     }
 
+    public async Task RetargetAsync(
+        string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
+        CancellationToken cancellationToken) =>
+        await RunGhAsync(
+            repositoryPath, ["pr", "edit", pullRequestNumber.ToString(), "--base", baseBranch], cancellationToken);
+
     /// <summary>What one GraphQL call saw about a pull request's reviews.</summary>
     internal sealed record ReviewObservation(
         int UnresolvedThreads,

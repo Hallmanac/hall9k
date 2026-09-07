@@ -155,6 +155,25 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
                 : Task.CompletedTask;
         }
 
+        /// <summary>The base branch each RetargetAsync call was told to move a pull request onto, in call order.</summary>
+        public List<string> Retargets { get; } = [];
+
+        /// <summary>Set to make RetargetAsync throw, as the provider seam's own convention says a refused write does.</summary>
+        public string? RetargetFailureMessage { get; set; }
+
+        public Task RetargetAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
+            CancellationToken cancellationToken)
+        {
+            if (RetargetFailureMessage is { } message)
+            {
+                return Task.FromException(new InvalidOperationException(message));
+            }
+
+            Retargets.Add(baseBranch);
+            return Task.CompletedTask;
+        }
+
         public static PullRequestSnapshot Quiet() => new(
             IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
             FailingChecks: [], HasPendingChecks: false, UnresolvedReviewThreadCount: 0,
@@ -3883,6 +3902,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         TimeSpan? copilotReviewSettleWindow = null,
         TimeSpan? checksRegistrationSettleWindow = null) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
+            new StackedParentWatch(worktrees, NullLogger<StackedParentWatch>.Instance),
             (github ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
             (jira ?? RecordingJiraRequester.Succeeding(200, "{}")).Requester,
             Options.Create(new DaemonOptions
