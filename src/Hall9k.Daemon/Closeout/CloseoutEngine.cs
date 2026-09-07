@@ -1907,8 +1907,8 @@ public sealed class CloseoutEngine(
     {
         GitHubWorkItemProvider provider = new(processRunner);
 
-        // Decided before the comment is posted, not after: the note's own wording says whether
-        // the issue is being closed alongside it (MergeComment), and a decision that fails must
+        // Decided before anything is written, not after: the note's own wording says whether the
+        // issue was actually closed alongside it (MergeComment), and a decision that fails must
         // never abort the comment — the merge is already recorded and dependents already
         // unblocked, so the note is the one thing this method must still say regardless.
         bool shouldClose;
@@ -1924,10 +1924,31 @@ public sealed class CloseoutEngine(
             shouldClose = false;
         }
 
+        // The close is attempted before the comment is posted, not after, so the comment's own
+        // wording can say what actually happened rather than what was merely intended — a close
+        // that later fails must not leave a permanent note claiming it succeeded.
+        bool closed = false;
+        if (shouldClose)
+        {
+            try
+            {
+                await provider.CloseAsync(reference, project.RepositoryPath, cancellationToken);
+                closed = true;
+                logger.LogInformation("Task {TaskId}: closed {Reference} per the close-linked-issue rule", taskId, reference);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception,
+                    "Could not close {Reference} after {Url} merged. Nothing is retried automatically; "
+                    + "close it by hand if it matters",
+                    reference, task.PullRequestUrl);
+            }
+        }
+
         try
         {
             await provider.CommentAsync(
-                reference, MergeComment(project, task, shouldClose), project.RepositoryPath, cancellationToken);
+                reference, MergeComment(project, task, closed), project.RepositoryPath, cancellationToken);
             logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -1935,24 +1956,6 @@ public sealed class CloseoutEngine(
             logger.LogWarning(exception,
                 "Could not comment the merge of {Url} on {Reference}. Nothing is retried automatically; "
                 + "add the note by hand if it matters",
-                task.PullRequestUrl, reference);
-        }
-
-        if (!shouldClose)
-        {
-            return;
-        }
-
-        try
-        {
-            await provider.CloseAsync(reference, project.RepositoryPath, cancellationToken);
-            logger.LogInformation("Task {TaskId}: closed {Reference} per this project's close-linked-issue rule", taskId, reference);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(exception,
-                "Could not close {Reference} after {Url} merged. Nothing is retried automatically; "
-                + "close it by hand if it matters",
                 task.PullRequestUrl, reference);
         }
     }
@@ -2125,19 +2128,23 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
-    /// What the card is told. Short, factual, and explicit about whether anything else is going
-    /// to happen to it — a card that silently gains a comment and never moves reads like an
-    /// integration that half worked, and saying so costs one sentence; a card that is about to be
+    /// What the card is told. Short, factual, and explicit about whether anything else has
+    /// happened to it — a card that silently gains a comment and never moves reads like an
+    /// integration that half worked, and saying so costs one sentence; a card that was actually
     /// closed alongside this note deserves the same explicitness rather than the platform's older,
-    /// now only sometimes true, promise never to touch its status at all.
+    /// now only sometimes true, promise never to touch its status at all. <paramref name="closed"/>
+    /// reports what actually happened (the caller only passes true once <c>CloseAsync</c> has
+    /// already succeeded), not merely what the close-linked-issue rule decided, since the two can
+    /// differ when the write itself fails — and the wording names no source (project setting vs.
+    /// task override), since either can be the one that decided it.
     /// </summary>
-    internal static string MergeComment(ProjectDetails project, TaskAggregate task, bool closing = false) =>
+    internal static string MergeComment(ProjectDetails project, TaskAggregate task, bool closed = false) =>
         $"""
          The pull request for this work has merged: {task.PullRequestUrl}
 
          Recorded by Hall9k as task {task.Id} in project {project.Name}. This is a one-off note at
-         merge{(closing
-             ? " — the issue is being closed alongside it, per this project's close-linked-issue setting."
+         merge{(closed
+             ? " — the issue was closed alongside it, per the close-linked-issue rule."
              : ". Hall9k does not change this item's status or close it here, because which status a "
                + "merge means is this project's workflow to decide.")}
          """;
