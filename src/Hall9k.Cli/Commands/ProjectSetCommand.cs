@@ -875,7 +875,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 AnsiConsole.MarkupLine(
                     $"[yellow]Could not confirm whether gate '{gate.Name.EscapeMarkup()}' passes against a "
                     + $"clean checkout of '{project.BaseBranch.EscapeMarkup()}': could not acquire the "
-                    + $"repository lock for {checkout.EscapeMarkup()} within "
+                    + $"checkout lock for {checkout.EscapeMarkup()} within "
                     + $"{AdHocGateRunner.CleanBaseCheckTimeoutCap.TotalMinutes:0} minutes — recording it "
                     + "without this validation.[/]");
                 continue;
