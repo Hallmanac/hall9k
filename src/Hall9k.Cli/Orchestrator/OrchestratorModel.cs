@@ -19,14 +19,25 @@ public static class OrchestratorModel
 {
     /// <summary>
     /// The node's own orchestrator override, else its agent-dispatch default, else the platform
-    /// fallback.
+    /// fallback. Both raw strings are read through <see cref="AgentModel.FromInput"/> rather than
+    /// a bare length check, so a hand-edited <c>config.json</c> carrying <c>"default"</c> (or
+    /// whitespace) lands on <see cref="AgentModel.Unknown"/> here the same way it does everywhere
+    /// else <see cref="AgentModel"/> is resolved — otherwise this chain would render that literal
+    /// string into <c>recipes/settings.json</c> while <see cref="AgentModel.Resolve"/> maps it to
+    /// the platform fallback for every dispatched agent, leaving the orchestrator window on a
+    /// model the two chains disagree about (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
-    public static string ForNode(OperatingSettings settings) =>
-        settings.OrchestratorModel is { Length: > 0 } orchestratorOverride
-            ? orchestratorOverride
-            : settings.DefaultModel is { Length: > 0 } configured
-                ? configured
-                : AgentModel.PlatformFallback;
+    public static string ForNode(OperatingSettings settings)
+    {
+        AgentModel orchestratorOverride = AgentModel.FromInput(settings.OrchestratorModel);
+        if (orchestratorOverride != AgentModel.Unknown)
+        {
+            return orchestratorOverride.Value;
+        }
+
+        AgentModel configured = AgentModel.FromInput(settings.DefaultModel);
+        return configured != AgentModel.Unknown ? configured.Value : AgentModel.PlatformFallback;
+    }
 
     /// <summary>
     /// The project's own orchestrator override, else its agent-dispatch model, else the node's
