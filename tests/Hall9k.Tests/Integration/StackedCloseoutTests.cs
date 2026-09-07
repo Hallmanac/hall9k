@@ -263,7 +263,7 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
 
         StackedParentObservation observation = await new StackedParentWatch(
                 fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
-            .ObserveAsync(query, project, child, predicted, cts.Token);
+            .ObserveAsync(query, project, child.StackedOnTaskId, predicted, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.Unobservable,
             "a boundary the branch never landed on is not an observation, and replaying from it would "
@@ -291,11 +291,81 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
 
         StackedParentObservation observation = await new StackedParentWatch(
                 fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
-            .ObserveAsync(query, project, child, run, cts.Token);
+            .ObserveAsync(query, project, child.StackedOnTaskId, run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentMoved);
         observation.BoundaryCommit.Should().Be(fixture.ParentHeadCommit);
         observation.OntoCommit.Should().Be(rewrittenParentHead);
+    }
+
+    /// <summary>
+    /// A read that FAILED is not the same fact as a ref that does not EXIST, and only the second
+    /// one is a claim about the parent (independent pre-PR review, cycle 1, conformance lens: both
+    /// arrived here as ParentUnresolvable, which parks a stacked child's checkpoint on the
+    /// assertion that its parent has no head at all — an unobserved claim on what may have been a
+    /// network blip, and AGENTS.md's never-guess rule forbids exactly that). Origin unreachable is
+    /// this test's stand-in for the blip: git cannot answer, so nothing was observed, and the next
+    /// look asks again.
+    /// </summary>
+    [Fact]
+    public async Task A_parent_head_that_could_not_be_read_at_all_is_unobservable_rather_than_unresolvable()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+
+        // Origin unreachable — the shape a network blip, an expired credential or a killed
+        // transfer all produce: every fetch fails, and none of them says the ref is missing.
+        Git(fixture.RepoPath, $"remote set-url origin \"{Path.Combine(_root, "gone-away.git")}\"");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(fixture.ProjectId, cts.Token))!;
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+
+        StackedParentObservation observation = await new StackedParentWatch(
+                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+            .ObserveAsync(query, project, child.StackedOnTaskId, run, cts.Token);
+
+        observation.Verdict.Should().Be(StackedParentVerdict.Unobservable,
+            "a fetch that could not be made says nothing about whether the parent's head exists — and a "
+            + "checkpoint parks on ParentUnresolvable, so misreading this one parks a run for a transient");
+        observation.Detail.Should().Contain("could not be fetched")
+            .And.Contain("nothing was observed",
+                "the account names the failed read rather than asserting there is no parent head");
+    }
+
+    /// <summary>
+    /// The other side of the same line: origin answering "no such ref" — git's own
+    /// <c>couldn't find remote ref</c> — for both the parent's branch and its pull-request head IS
+    /// an observation, and the stable one a checkpoint is entitled to park on. Asserted against
+    /// real git rather than a fake runner precisely because the distinction is drawn from git's own
+    /// wording.
+    /// </summary>
+    [Fact]
+    public async Task A_parent_branch_origin_does_not_have_at_all_is_an_unresolvable_parent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+
+        // The parent's own closeout deleting its branch, against an origin that — being a plain
+        // bare repository rather than GitHub — keeps no refs/pull/<n>/head to fall back to either.
+        Git(fixture.RepoPath, $"push -q origin --delete {fixture.ParentBranch}");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(fixture.ProjectId, cts.Token))!;
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+
+        StackedParentObservation observation = await new StackedParentWatch(
+                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+            .ObserveAsync(query, project, child.StackedOnTaskId, run, cts.Token);
+
+        observation.Verdict.Should().Be(StackedParentVerdict.ParentUnresolvable,
+            "every look answered, and what they answered is that there is no such ref");
+        observation.ParentBranch.Should().Be(fixture.ParentBranch, "the park this feeds names the stack");
+        observation.Detail.Should().Contain("no parent head for this branch to be brought onto");
     }
 
     /// <summary>
@@ -357,6 +427,53 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
         TaskAggregate child =
             (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
         child.StackReplaysDispatched.Should().Be(0, "no replay was dispatched, so no budget was spent");
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely. A parent whose own
+    /// pull request was closed without merging stays Done forever, carrying the URL it always had,
+    /// and can no longer reach even Delivered — so its branch is one nothing further arrives on.
+    /// The child parks with the situation named rather than being retargeted or replayed onto it,
+    /// and the rule is <c>TaskDependency.IsDeadForStackedChild</c> asked through
+    /// <c>StackedEdgeRules</c>: the same rule assignment and the dependency resolver ask, so a dead
+    /// parent cannot mean one thing before the child dispatches and another after.
+    /// </summary>
+    [Fact]
+    public async Task A_parent_that_can_no_longer_deliver_parks_the_child_untouched()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+        ForcePushTheParent(fixture);
+
+        // The parent's own pull request, observed closed rather than merged — the one observation
+        // that unmakes a Delivered reading.
+        await using (IDocumentSession session = fixture.Store.LightweightSession())
+        {
+            session.Events.Append(fixture.ParentRunId, new PullRequestClosed(fixture.ParentRunId, Now, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().BeEmpty("there is nothing to retarget onto and nothing coming that changes that");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("can no longer reach even Delivered")
+            .And.Contain("never delivered a pull request that can merge")
+            .And.Contain("h9k pr resolve");
+        run.ParkedReason.Should().Contain("does not move it onto another base",
+            "a follow-up carries the base its previous run recorded, so handing this back after a hand "
+            + "retarget brings this same park straight back — the park says so rather than naming a lever "
+            + "that cannot clear it (independent pre-PR review, cycle 1, adversarial lens, by class sweep)");
+        run.StackedOnBranch.Should().Be(fixture.ParentBranch,
+            "nothing was moved, so the record still names the stack the human inherits");
+
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        child.StackReplaysDispatched.Should().Be(0, "a dead parent is not something to spend rebase budget on");
     }
 
     /// <summary>
