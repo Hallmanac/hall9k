@@ -287,7 +287,9 @@ internal static class TaskStatusComposer
             task.AddedAt,
             task.AssignedOwnerId is { } assignee ? context.Owners.GetValueOrDefault(assignee) ?? "?" : string.Empty,
             task.UnmetDependencies,
-            task.DependencyFailureReason,
+            // Whichever hold this row carries, so a stacked child whose parent pull request closed
+            // unmerged reads the same as one whose local blocker died (TaskListItem.BlockingHoldReason).
+            task.BlockingHoldReason,
             held,
             task.AssignedAt,
             task.QueuePriorityMarked,

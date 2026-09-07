@@ -242,6 +242,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Review verdict", ReviewerVerdictMarkup(details));
         }
 
+        if (details.RemoteStackedParentHoldReason.IsNotBlank())
+        {
+            header.AddRow("Stacked parent", $"[red]{details.RemoteStackedParentHoldReason.EscapeMarkup()}[/]");
+        }
+
         // A failure the task has already moved on from — retried, resolved, or abandoned. While
         // it is still Failed the attention block above leads with the composed cause, so this
         // row exists for the history rather than for the ask. That suppression is only honest
@@ -336,6 +341,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                       + "h9k task start --acknowledge-unmet-dependencies)[/]");
             }
         }
+
+        await WriteRemoteStackedParentAsync(session, details, cancellationToken);
 
         if (details.AgentContext.IsNotBlank())
         {
@@ -1315,6 +1322,109 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine(
             $"  [dim]none recorded: {handoff.Outcome.Describe().EscapeMarkup()}. "
             + "Dependents fall back to this task's objective and acceptance criteria.[/]");
+    }
+
+    /// <summary>
+    /// The stacked parent that is a pull request another install owns (task: a stacked child can
+    /// stand on a pull request another install owns). It gets a block of its own rather than a row
+    /// in "Blocked by", because it is not a blocker: there is no local task, so nothing here can be
+    /// listed among this task's dependencies.
+    /// <para>
+    /// Everything printed is labelled as an observation and carries when it was made. That is not
+    /// hedging — the state is read on the closeout watcher's cadence, so it genuinely can be a few
+    /// minutes behind GitHub, and a human comparing this screen against the pull request in a
+    /// browser needs to be able to tell a lag from a disagreement.
+    /// </para>
+    /// </summary>
+    private static async Task WriteRemoteStackedParentAsync(
+        IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
+    {
+        if (details.StackedOnPullRequestNumber is not { } parentNumber)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine("\n[bold]Stacked on[/] [dim](a pull request another install owns)[/]");
+
+        string headBranch = details.RemoteStackedParentHeadBranch.IsNotBlank()
+            ? $"branch [blue]{details.RemoteStackedParentHeadBranch.EscapeMarkup()}[/]"
+            : "[dim]no head branch observed[/]";
+        string link = details.RemoteStackedParentUrl.IsNotBlank()
+            ? $" [link]{details.RemoteStackedParentUrl.EscapeMarkup()}[/]"
+            : string.Empty;
+        AnsiConsole.MarkupLine($"  pull request [blue]#{parentNumber}[/], {headBranch}{link}");
+
+        AnsiConsole.MarkupLine(details.RemoteStackedParentObservedAt is { } observedAt
+            // "as of", not "last looked at": an unchanged look appends nothing
+            // (RemoteStackedParentObserved's own doc), so this timestamp is when the reading last
+            // CHANGED. Spelled out because the whole point of the block is letting a human compare
+            // it against the pull request in a browser — reading it as the last look would have
+            // them conclude the sweep has been down for the hours a stable parent sat unchanged
+            // (independent pre-PR review, cycle 1, adversarial lens).
+            ? $"  observed [yellow]{details.RemoteStackedParentState.Describe().EscapeMarkup()}[/] "
+              + $"[dim]as of {observedAt:g} — when that reading last changed, not when the sweep last "
+              + "looked: a look that sees no change records nothing[/]"
+            // Never looked at yet, which is what a child added moments ago reads as. Said plainly
+            // rather than shown as a state, because "not observed" is not a state the pull request
+            // is in (AGENTS.md's never-guess rule).
+            : "  [dim]not observed yet — the closeout watcher's sweep looks on its own cadence[/]");
+
+        // That cadence only exists for a task the sweep actually reads: it queries tasks assigned
+        // to this owner in Blocked/Queued/Claimed/Done (RemoteStackedParentSweep.SweepOnceAsync).
+        // A Draft or Published child is in neither set, so its parent is never observed and it
+        // would not dispatch even if it were — leaving the line above as the last word would send a
+        // human off to wait for a look nothing takes (independent pre-PR review, cycle 1,
+        // adversarial lens; the claim refusal carries the same correction).
+        if (details.State == TaskState.Draft || details.State == TaskState.Published)
+        {
+            string shortId = TaskListCommand.ShortId(details.Id);
+            string step = details.State == TaskState.Draft
+                ? $"h9k task publish {shortId}, then h9k task assign {shortId},"
+                : $"h9k task assign {shortId}";
+            AnsiConsole.MarkupLine(
+                "  [yellow]Nothing is watching that pull request for this task yet[/] [dim]— the sweep reads a "
+                + "remote parent only for an assigned task, and an unassigned one never dispatches on its own. "
+                + $"{step} holds it Blocked and starts that watch.[/]");
+        }
+
+        if (details.RemoteStackedParentDetail.IsNotBlank())
+        {
+            AnsiConsole.MarkupLine($"  [dim]{details.RemoteStackedParentDetail.EscapeMarkup()}[/]");
+        }
+
+        // What a child that has not dispatched is waiting for, in its own words. Only while it is
+        // actually waiting: once the pull request is open (or merged) the edge has released it, and
+        // repeating the bar would read as a hold that is no longer there.
+        if (details.State == TaskState.Blocked && !details.RemoteStackedParentState.ReleasesChild)
+        {
+            AnsiConsole.MarkupLine(
+                "  [yellow]Waiting for that pull request to be open — an open pull request is the remote "
+                + "parent's Delivered, and this task dispatches then, cutting its branch from that head "
+                + "branch on origin[/]");
+        }
+
+        // A local task linked to the same issue or tracker item the pull request closes, when one
+        // exists — nothing requires one to (Brian's ruling, 2026-09-07: the edge is declared by
+        // pull request number precisely because not every repository tracks its backlog in GitHub
+        // issues). Named because it is the one thread back into this install's own records for a
+        // parent that otherwise lives entirely on somebody else's node.
+        if (details.RemoteStackedParentWorkItem.IsNotBlank())
+        {
+            AnsiConsole.MarkupLine(
+                $"  [dim]that pull request closes {details.RemoteStackedParentWorkItem.EscapeMarkup()}[/]");
+            IReadOnlyList<TaskListItem> linked = await session.Query<TaskListItem>()
+                .Where(task => task.ExternalReference == details.RemoteStackedParentWorkItem)
+                .ToListAsync(cancellationToken);
+            // Named, not graded: this row exists so a human can find the local task, and printing
+            // a lifecycle word for it would need that task's own run to say anything honest — a
+            // read this screen has no reason to pay for about a task it is only mentioning.
+            foreach (TaskListItem task in linked.Where(task => task.Id != details.Id))
+            {
+                AnsiConsole.MarkupLine(
+                    $"  [dim]tracked here as[/] {TaskListCommand.ShortId(task.Id)} "
+                    + ExternalText.OneLineMarkup(task.Objective));
+            }
+        }
     }
 
     /// <summary>

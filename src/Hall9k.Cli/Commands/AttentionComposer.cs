@@ -107,9 +107,13 @@ internal static class AttentionComposer
         // itself. The recorded reason already names the lever the platform will honour (log #61)
         // and is quoted whole rather than re-derived into a second, possibly different, piece of
         // advice about the same blocker.
-        if (task.State == TaskState.Blocked && task.DependencyFailureReason.IsNotBlank())
+        // Read through BlockingHoldReason rather than off DependencyFailureReason alone, so a
+        // stacked child whose parent pull request closed unmerged reaches a human on exactly the
+        // same footing as one whose local blocker died (task: a stacked child can stand on a pull
+        // request another install owns). Both are holds nothing about them will clear.
+        if (task.State == TaskState.Blocked && task.BlockingHoldReason.IsNotBlank())
         {
-            return new TaskAttention(AttentionLevel.NeedsYou, task.DependencyFailureReason);
+            return new TaskAttention(AttentionLevel.NeedsYou, task.BlockingHoldReason);
         }
 
         if (stalled)

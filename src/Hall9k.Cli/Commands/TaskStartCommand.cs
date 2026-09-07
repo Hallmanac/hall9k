@@ -576,6 +576,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         IReadOnlyList<TaskDependency> unmet =
             [.. dependencies.Where(dependency => assigned.UnmetDependencies.Contains(dependency.Id))];
 
+        // The remote stacked parent's own hold, asked ahead of the assignment for the reason
+        // TaskWorkCommand.PrepareInteractiveClaimFromPublished's twin gives (task: a stacked child
+        // can stand on a pull request another install owns).
+        if (task.AwaitsRemoteStackedParent && !acknowledgeUnmetDependencies)
+        {
+            throw new DomainBusinessRuleException(
+                TaskWorkCommand.RemoteStackedParentClaimRefusal(task, "h9k task start", alreadyAssigned: false));
+        }
+
         if (unmet.Count > 0 && !acknowledgeUnmetDependencies)
         {
             // Same class-sweep finding as the AnsiConsole warning list below (adversarial
@@ -600,7 +609,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         task.Apply(assigned);
         TaskClaimed claimed = TaskDecider.ClaimDeliberately(
-            task, ownerId, runId, now, unmet.Count > 0, dependencyOverrideCarriedForward: false, interactiveMode);
+            task, ownerId, runId, now, unmet.Count > 0 || task.AwaitsRemoteStackedParent,
+            dependencyOverrideCarriedForward: false, interactiveMode);
         return (assigned, claimed, unmet);
     }
 
@@ -626,6 +636,16 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         bool acknowledgeUnmetDependencies, bool interactiveMode = false)
     {
         bool carriedForward = !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
+        // The remote-parent-only hold, for the reason its twin in
+        // TaskWorkCommand.PrepareInteractiveClaimFromBlocked gives: the refusal below would
+        // otherwise report "0 task(s) that have not closed out".
+        if (unmetDependencies.Count == 0 && task.AwaitsRemoteStackedParent
+            && !acknowledgeUnmetDependencies && !carriedForward)
+        {
+            throw new DomainBusinessRuleException(
+                TaskWorkCommand.RemoteStackedParentClaimRefusal(task, "h9k task start", alreadyAssigned: true));
+        }
+
         if (!acknowledgeUnmetDependencies && !carriedForward)
         {
             throw new DomainBusinessRuleException(
