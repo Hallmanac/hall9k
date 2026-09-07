@@ -572,9 +572,16 @@ public static class CliCommandTree
                     "Assign a published task to an owner: the dispatch trigger, and the only way a task "
                     + "becomes claimable. It queues when every dependency has reached true closeout (the "
                     + "pull request merged), and blocks otherwise — unblocking itself when the last one lands. "
-                    + "Only that owner's nodes may claim it.")
+                    + "Only that owner's nodes may claim it. In a project whose claim gate is "
+                    + "tracker-assignee (h9k project set --claim-gate), --take also takes the linked Jira "
+                    + "card or GitHub issue for this install's own tracker identity when the tracker shows "
+                    + "nobody holds it, so one command moves the tracker and the board together and the gate "
+                    + "passes on its own — an item somebody else holds is refused and nothing is written, "
+                    + "and nothing here ever transitions the item, though a team's own board automation may "
+                    + "react to the assignment.")
                 .WithExample("task", "assign", "28b19893")
-                .WithExample("task", "assign", "28b19893", "brian");
+                .WithExample("task", "assign", "28b19893", "brian")
+                .WithExample("task", "assign", "28b19893", "brian", "--take");
             task.AddCommand<TaskSetSessionCapCommand>("set-session-cap")
                 .WithDescription(
                     "Override how many agent sessions this task's own run may hold simultaneously (Decisions Log "
