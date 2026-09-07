@@ -38,7 +38,10 @@ public static class AgentPromptBuilder
     /// is the branch this run's work sits on top of, which the caller resolved once at dispatch
     /// (<c>RunDispatched.BaseBranch</c>): the project's own for every ordinary run, a stacked
     /// child's parent branch instead. Null defers to the project's, which is what every caller
-    /// that has no run to read one from passes.
+    /// that has no run to read one from passes. <paramref name="baseCommit"/> is that branch
+    /// resolved to a commit at the cut (<c>RunDispatched.BaseCommit</c>), which is the fork point a
+    /// stacked session's own recompose and self-review range are taken from — a ref cannot answer
+    /// that once the parent is force-pushed (<c>WorkPromptBuilder.StackedForkPoint</c>).
     /// </summary>
     public static string Build(
         TaskDetails task,
@@ -48,11 +51,12 @@ public static class AgentPromptBuilder
         bool resumesPreviousWork = false,
         string? blockerContext = null,
         string? interactiveMilestoneAddress = null,
-        string? baseBranch = null) =>
+        string? baseBranch = null,
+        string? baseCommit = null) =>
         WorkPromptBuilder.Build(
             task, project, branch, worktreePath, resumesPreviousWork, blockerContext, task.RetryReason,
             isHandback: task.ResumesFromHandback, interactiveMilestoneAddress: interactiveMilestoneAddress,
-            baseBranch: baseBranch);
+            baseBranch: baseBranch, baseCommit: baseCommit);
 
     /// <summary>
     /// The line a follow-up ends with when a review thread is a disagreement it cannot

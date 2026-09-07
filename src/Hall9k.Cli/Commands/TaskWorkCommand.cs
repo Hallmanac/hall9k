@@ -828,7 +828,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 // Blank whenever the resolved base IS the project's own, which is every ordinary
                 // task — the invariant RunDetails.StackedOnBranch reads, held identically here and
                 // in RunLauncher.
-                BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch));
+                BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch,
+                // This cut's own observed start point, recorded exactly as RunLauncher records it
+                // for a headless dispatch (independent pre-PR review, cycle 1, both lenses): a
+                // stacked child claimed through the CLI with no recorded fork point left
+                // StackedParentWatch permanently Unobservable, so a parent force-push while the
+                // child was Delivered dispatched no replay and its later merge no retarget. Blank
+                // only when the checkout resumed an existing worktree or the rev-parse could not
+                // be read — the two cases RunDispatched.BaseCommit's own doc already admits.
+                BaseCommit: worktree.StartPointCommit));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

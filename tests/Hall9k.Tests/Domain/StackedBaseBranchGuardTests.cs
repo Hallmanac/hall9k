@@ -103,4 +103,115 @@ public sealed class StackedBaseBranchGuardTests
             + "branch's own. If a new site genuinely wants the project's base (a long-lived reading checkout, "
             + "say), add its file to ExemptFiles here with a recorded why.");
     }
+
+    /// <summary>
+    /// The same class one layer up, and the one the scan above missed (independent pre-PR review,
+    /// cycle 1, conformance lens): a build prompt that never receives a base at all falls back to
+    /// the project's inside the builder, which is invisible at the call site — no
+    /// <c>project.BaseBranch</c> to spot. The prompt is where the recompose's own mixed reset is
+    /// authored, so an omission here is the most destructive shape this defect class has: it
+    /// recomposes the parent's commits as the child's authored history, and the recompose's
+    /// tree-identity check passes by construction because a mixed reset never moves the tree.
+    /// <para>
+    /// An interactive claim's prompt is exempt, and only because it names no base branch anywhere:
+    /// the <c>isInteractive</c> arm of <c>WorkPromptBuilder.Build</c> appends neither the
+    /// checkpoint/recompose protocol nor the self-review phase, which are the only rules that read
+    /// one. If that ever changes, this exemption has to go with it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Every_build_prompt_is_handed_the_runs_own_base_branch()
+    {
+        List<string> offenders = [];
+
+        foreach ((string file, string[] lines, int i) in ProductionLines())
+        {
+            if (!lines[i].Contains("PromptBuilder.Build(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Long argument lists here, so a wider window than the git-call scan's three lines —
+            // baseBranch sits last by convention (CancellationToken aside, prompts take none).
+            string window = string.Join(' ', lines.Skip(i).Take(10));
+            if (window.Contains("isInteractive: true", StringComparison.Ordinal)
+                || window.Contains("baseBranch:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            offenders.Add($"{Path.GetFileName(file)}:{i + 1}: {lines[i].Trim()}");
+        }
+
+        offenders.Should().BeEmpty(
+            "a build prompt must be handed the base this run actually recorded (baseBranch:, and baseCommit: "
+            + "with it wherever a fork point was observed), never left to default to the project's — the "
+            + "prompt's self-review range and end-of-work recompose both read it, and on a stacked child the "
+            + "recompose would reset to the PARENT's fork point and rewrite the parent's commits as this "
+            + "branch's own history.");
+    }
+
+    /// <summary>
+    /// The third face of the same class, and the other one the git-call scan above could not see
+    /// (independent pre-PR review, cycle 1, conformance lens): a dispatch that records the base
+    /// BRANCH but not the base COMMIT leaves the stacked replay permanently unobservable — the
+    /// force-push arm has nothing but that record to read a boundary from, and it refuses to
+    /// dispatch on a blank rather than guessing one, so the child silently never replays and never
+    /// retargets. Every dispatch site records both or neither is any use.
+    /// </summary>
+    [Fact]
+    public void Every_dispatch_records_both_the_base_branch_and_the_base_commit()
+    {
+        List<string> offenders = [];
+
+        foreach ((string file, string[] lines, int i) in ProductionLines())
+        {
+            if (!lines[i].Contains("new RunDispatched(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // RunDispatched's argument list is the longest in the codebase and its two base fields
+            // sit at the end of it, so this window is generous on purpose.
+            string window = string.Join(' ', lines.Skip(i).Take(30));
+            if (window.Contains("BaseBranch:", StringComparison.Ordinal)
+                && window.Contains("BaseCommit:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            offenders.Add($"{Path.GetFileName(file)}:{i + 1}: {lines[i].Trim()}");
+        }
+
+        offenders.Should().BeEmpty(
+            "every dispatch records BaseBranch AND BaseCommit — the branch this run's work sits on and that "
+            + "branch resolved to a commit at the cut. A site that records only the branch leaves a stacked "
+            + "child with no fork point, which StackedParentWatch reads as Unobservable forever: no replay on a "
+            + "parent force-push, and no retarget when it later merges.");
+    }
+
+    /// <summary>
+    /// Every real source line under <c>src/</c>, with its file and index, skipping build output and
+    /// whole-line comments — the shared walk all three scans above run over.
+    /// </summary>
+    private static IEnumerable<(string File, string[] Lines, int Index)> ProductionLines()
+    {
+        foreach (string file in Directory.EnumerateFiles(
+            TestSourceTree.SourceDirectory(), "*.cs", SearchOption.AllDirectories))
+        {
+            if (TestSourceTree.IsBuildOutput(TestSourceTree.SourceDirectory(), file))
+            {
+                continue;
+            }
+
+            string[] lines = File.ReadAllLines(file);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (!lines[i].TrimStart().StartsWith("//", StringComparison.Ordinal))
+                {
+                    yield return (file, lines, i);
+                }
+            }
+        }
+    }
 }
