@@ -375,6 +375,61 @@ public static class CliCommandTree
                 .WithExample("config", "set", "--review-stage-composition", "skip-final-pass", "--accept-reduced-review");
         });
 
+        config.AddBranch("orchestrator", orchestrator =>
+        {
+            orchestrator.SetDescription(
+                "A lean node or project orchestrator window: what it is running, its launch text, and where "
+                + "its recipe and journal are (task: an operator starts a lean node or project orchestrator "
+                + "window). Every command here prints; none of them launch a session — an operator copies the "
+                + "printed line and pastes it into a fresh terminal themselves.");
+            orchestrator.AddCommand<OrchestratorNodeCommand>("node")
+                .WithDescription(
+                    "The node orchestrator's own view: h9k daemon status's liveness, the node's launch text "
+                    + "for the given CLI, the recipe path (~/.hall9k/recipes/orchestrator.md, written once by "
+                    + "the orchestrator-recipe-generator skill), the journal path with its last-written time, "
+                    + "and the last measured turn-one cost with its date, or 'not measured'. Never launches.")
+                .WithExample("orchestrator", "node")
+                .WithExample("orchestrator", "node", "--cli", "claude-code");
+            orchestrator.AddCommand<OrchestratorProjectCommand>("project")
+                .WithDescription(
+                    "A project orchestrator's own view, the same shape as h9k orchestrator node. With no "
+                    + "project named and exactly one registered, that one is used; with several, one block "
+                    + "prints per project rather than prompting. Never launches.")
+                .WithExample("orchestrator", "project")
+                .WithExample("orchestrator", "project", "hall9k");
+            orchestrator.AddBranch("launch-text", launchText =>
+            {
+                launchText.SetDescription(
+                    "The exact command line an operator pastes to start a window, one setting per agent CLI "
+                    + "(--cli, default claude-code) — on the node by default, or on a project with --project.");
+                launchText.AddCommand<OrchestratorLaunchTextShowCommand>("show")
+                    .WithDescription(
+                        "Print a CLI's launch text and when it was last measured. Before anything is ever set, "
+                        + "this prints the platform's own computed default for claude-code — --strict-mcp-config, "
+                        + "--setting-sources project, the scope's --settings and --append-system-prompt-file, its "
+                        + "working directory, and an opening message — so there is always something to paste.")
+                    .WithExample("orchestrator", "launch-text", "show")
+                    .WithExample("orchestrator", "launch-text", "show", "--cli", "claude-code", "--project", "hall9k");
+                launchText.AddCommand<OrchestratorLaunchTextSetCommand>("set")
+                    .WithDescription(
+                        "Replace a CLI's launch text outright. Any measurement already recorded for this CLI is "
+                        + "cleared: it was observed against the line being replaced, not this one.")
+                    .WithExample("orchestrator", "launch-text", "set", "--cli", "claude-code",
+                        "\"claude --strict-mcp-config --append-system-prompt-file recipes/launch-anchor.md\"")
+                    .WithExample("orchestrator", "launch-text", "set", "--cli", "claude-code", "--project", "hall9k",
+                        "\"claude --strict-mcp-config --append-system-prompt-file recipes/launch-anchor.md\"");
+            });
+            orchestrator.AddCommand<OrchestratorMeasureCommand>("measure")
+                .WithDescription(
+                    "Run the fixed one-turn probe against a window started from the launch text (only "
+                    + "claude-code is implemented today) and stamp the observed turn-one token count, with "
+                    + "today's date, onto that launch-text record. The method never changes between runs, so a "
+                    + "number recorded today is comparable to one recorded next month, or on a different "
+                    + "project. On the node by default, or on a project with --project.")
+                .WithExample("orchestrator", "measure")
+                .WithExample("orchestrator", "measure", "--cli", "claude-code", "--project", "hall9k");
+        });
+
         config.AddBranch("idea", idea =>
         {
             idea.SetDescription(
