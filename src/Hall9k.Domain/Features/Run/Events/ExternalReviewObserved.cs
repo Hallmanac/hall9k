@@ -45,6 +45,29 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// Copilot-detection table, which lives only in the daemon and is not reachable from
 /// <c>Hall9k.Cli</c> (task: a task can be published pre-approved).
 /// </param>
+/// <param name="ChangesRequestedByLogins">
+/// The human reviewers whose STANDING verdict on this pull request requests changes
+/// (<c>PullRequestSnapshot.HumanChangesRequestedBy</c>) — who to name when
+/// <paramref name="ReviewDecision"/> reads <c>CHANGES_REQUESTED</c>, since the decision itself is
+/// a verdict about the pull request and says nothing about whose verdict it is (task: the people a
+/// pull request is waiting on are named, and pre-approval gains a mode that waits for human
+/// review). Null on an observation recorded before this was collected — an unrecorded list, never
+/// a claimed empty one.
+/// </param>
+/// <param name="HumanReviewEverRequested">
+/// Whether a human review has ever been requested on this pull request, as of this observation
+/// (<c>PullRequestSnapshot.HasEverRequestedHumanReviewer</c>) — the fact
+/// <c>PreApprovalMode.AfterHumanReview</c> holds the merge on, and what <c>h9k task show</c>
+/// renders under that mode. Null on an observation recorded before this was collected: unknown,
+/// not "no reviewer was ever asked".
+/// </param>
+/// <param name="HumanReviewersAwaitingApprovalLogins">
+/// The ever-requested human reviewers whose standing verdict is not an approval of the current head
+/// (<c>PullRequestSnapshot.HumanReviewersAwaitingApproval</c>) — exactly who
+/// <c>PreApprovalMode.AfterHumanReview</c> is still waiting on, so the display names the same
+/// people the daemon's own gate is holding for rather than deriving a second, possibly different
+/// answer. Null on an observation recorded before this was collected.
+/// </param>
 public sealed record ExternalReviewObserved(
     Guid Id,
     ExternalReviewState State,
@@ -53,4 +76,7 @@ public sealed record ExternalReviewObserved(
     DateTimeOffset ObservedAt,
     string? ReviewDecision = null,
     IReadOnlyList<string>? OutstandingReviewerLogins = null,
-    IReadOnlyList<string>? OutstandingHumanReviewerLogins = null);
+    IReadOnlyList<string>? OutstandingHumanReviewerLogins = null,
+    IReadOnlyList<string>? ChangesRequestedByLogins = null,
+    bool? HumanReviewEverRequested = null,
+    IReadOnlyList<string>? HumanReviewersAwaitingApprovalLogins = null);
