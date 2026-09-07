@@ -348,6 +348,16 @@ public static class WorkPromptBuilder
                 prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress,
                 parksAtBoundaryAfterward: !isDeliberateHeadlessStart, isDelegatedContractor: isDelegatedContractor);
         }
+        else if (task.InteractiveModeEnabled)
+        {
+            // The attended half of the same contract (task: a human at the wheel takes the fix role
+            // herself, fourth criterion). A headless dispatch above is told how to REPORT to the human; the
+            // session they are sitting at is told what they can CHOOSE, so it can offer them the four
+            // choices at the review-verdict-to-fix boundary — their own fix among them — in words.
+            // Last for the same reason the call above is: it opens its own "##" heading, so placing
+            // it mid-list would nest every rule after it underneath.
+            AppendInteractiveBoundaryChoices(prompt, task.Id);
+        }
 
         if (!isInteractive)
         {
@@ -1418,9 +1428,21 @@ public static class WorkPromptBuilder
     /// before calling this, so a null address here does not mean "never registered" the way it does
     /// everywhere else — this flag keeps the null-address branch from asserting that anyway.
     /// </param>
+    /// <param name="verdictBoundaryChoicesTaskId">
+    /// The task's own id, supplied only by the review role (task: a human at the wheel takes the
+    /// fix role herself, fourth criterion), which makes the end-of-phase report below also name
+    /// the choices the human actually has at the park this session's own verdict lands them at —
+    /// with the exact command for each, from the one shared vocabulary
+    /// (<see cref="InteractiveBoundaryChoices"/>). Null for the build and fix roles: each of those
+    /// ends at a boundary whose only levers are the plain proceed-or-redirect pair the milestone
+    /// sentence already names, so a whole block enumerating them would be noise. A review pass is
+    /// the one role whose own verdict decides WHICH boundary comes next, which is exactly why it
+    /// is the one that has to say.
+    /// </param>
     public static void AppendOutboundMilestoneRules(
         StringBuilder prompt, string phaseLabel, IReadOnlyList<string> milestones, string? address,
-        bool parksAtBoundaryAfterward = true, bool isDelegatedContractor = false)
+        bool parksAtBoundaryAfterward = true, bool isDelegatedContractor = false,
+        Guid? verdictBoundaryChoicesTaskId = null)
     {
         prompt.AppendLine();
         prompt.AppendLine("## Reporting to the human (interactive mode)");
@@ -1512,6 +1534,123 @@ public static class WorkPromptBuilder
                 : "milestones; nothing parks here either — h9k task deliver is still a human's to trigger by hand.");
             prompt.AppendLine("Log this once for the phase, not once per milestone, through the rule above.");
         }
+
+        if (verdictBoundaryChoicesTaskId is { } choicesTaskId)
+        {
+            AppendVerdictBoundaryChoices(prompt, choicesTaskId);
+        }
+    }
+
+    /// <summary>
+    /// What the review role's own end-of-phase report has to tell the human besides the verdict
+    /// and findings themselves (task: a human at the wheel takes the fix role herself, fourth
+    /// criterion): the choices the human actually has at the park this verdict lands them at, each
+    /// with its exact command, so answering a boundary never means reading the docs first — and so
+    /// a human agent reading this report can offer them in words.
+    /// <para>
+    /// Written as two conditionals rather than one list because a review pass does not know, at
+    /// prompt-build time, which boundary its own verdict will produce — and a prompt that asserted
+    /// one would be guessing. A needs-fixes verdict lands squarely at the review-verdict-to-fix
+    /// boundary and its four choices. A merge-ready one is less determinate: the loop may still owe
+    /// the mandatory final full pass (Decisions Log #92) and park at fix-to-re-review first, so
+    /// that arm says out loud that one more review boundary can come first and names both — the
+    /// fix-to-re-review pair, then the gates-to-pull-request choices for when the run actually
+    /// settles. Every one of them rendered from
+    /// <see cref="InteractiveBoundaryChoices.Lines"/>, never described in prose: a boundary
+    /// summarised as "or an h9k review resolve redirect" is exactly the bare, un-copy-pasteable
+    /// command that promise above forbids (Copilot review on PR #272).
+    /// </para>
+    /// </summary>
+    private static void AppendVerdictBoundaryChoices(StringBuilder prompt, Guid taskId)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine("### What the human chooses from, once your report lands");
+        prompt.AppendLine();
+        prompt.AppendLine("Your verdict decides which boundary this run parks at, so your report names the");
+        prompt.AppendLine("choices that actually apply there — with the exact command for each — rather than");
+        prompt.AppendLine("leaving them to be looked up. Include them verbatim; they are the platform's own");
+        prompt.AppendLine("wording, not a suggestion to paraphrase.");
+        prompt.AppendLine();
+        prompt.AppendLine("**If your verdict is needs-fixes**, the run parks at the review-verdict-to-fix");
+        prompt.AppendLine("boundary, where there are four choices:");
+        prompt.AppendLine();
+        AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.ReviewVerdictToFix, taskId);
+        prompt.AppendLine();
+        prompt.AppendLine("**If your verdict is merge-ready**, the loop may still owe this branch one more");
+        prompt.AppendLine("review dispatch (the mandatory final full pass), which parks at the fix-to-re-review");
+        prompt.AppendLine("boundary first, where there are two:");
+        prompt.AppendLine();
+        AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.ProceedOrRedirect, taskId);
+        prompt.AppendLine();
+        prompt.AppendLine("Once the run does settle, the last boundary before the pull request opens is the");
+        prompt.AppendLine("human's too:");
+        prompt.AppendLine();
+        AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.GatesToPullRequest, taskId);
+    }
+
+    /// <summary>
+    /// One bullet per choice, wrapped at the width the rest of these prompts use so a long command
+    /// plus its explanation does not run off as a single line. Renders from
+    /// <see cref="InteractiveBoundaryChoices.Lines"/> rather than restating the choices here: three
+    /// surfaces each writing their own is how one of them ends up naming three where there are
+    /// four.
+    /// </summary>
+    private static void AppendBoundaryChoiceBullets(
+        StringBuilder prompt, InteractiveBoundaryLevers levers, Guid taskId)
+    {
+        foreach (string choice in InteractiveBoundaryChoices.Lines(levers, taskId))
+        {
+            prompt.AppendLine($"- {choice}");
+        }
+    }
+
+    /// <summary>
+    /// The same four-choice vocabulary, taught to the operator's OWN attached session at claim
+    /// time (task: a human at the wheel takes the fix role herself, fourth criterion): the
+    /// starting prompt <c>h9k task work</c> prints for the operator to paste into their own Claude
+    /// Code session. They are the arbiter at every boundary this run reaches, and that session is
+    /// what they will ask "what are my options here" — so it is told the same thing the review
+    /// agents' own outbound reports will tell them, from the same source, rather than being left
+    /// to read the docs or infer the commands from a park reason.
+    /// <para>
+    /// Only ever appended for an ATTACHED interactive claim on a task whose interactive-mode flag
+    /// is on. A headless dispatch under the same flag has nobody at the terminal to offer choices
+    /// to; the outbound-milestone rules are that path's own half of the same contract.
+    /// </para>
+    /// </summary>
+    public static void AppendInteractiveBoundaryChoices(StringBuilder prompt, Guid taskId)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine("## The boundaries this task will park at, and the operator's choices there");
+        prompt.AppendLine();
+        prompt.AppendLine("This task runs under interactive mode: once the operator delivers, the platform's");
+        prompt.AppendLine("own review loop holds at four phase boundaries rather than advancing on its own, and");
+        prompt.AppendLine("each one waits for their recorded decision. Review and fix agents report to this");
+        prompt.AppendLine("session as they finish, and the operator decides what happens next. When they ask");
+        prompt.AppendLine("you what their options are, these are them — offer them in words, with the");
+        prompt.AppendLine("commands, rather than sending them to the docs.");
+        prompt.AppendLine();
+        prompt.AppendLine("**Build done to review** — the gates passed and the first review is ready to");
+        prompt.AppendLine("dispatch. Also **fix to re-review**, after any fix lands:");
+        prompt.AppendLine();
+        AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.ProceedOrRedirect, taskId);
+        prompt.AppendLine();
+        prompt.AppendLine("**Review verdict to fix** — a review pass filed findings and something has to be");
+        prompt.AppendLine("done about them. Four choices, and the second is the one that is easy to miss: the");
+        prompt.AppendLine("operator can do the fix by hand, in this worktree, and hand the branch back for the");
+        prompt.AppendLine("review agents to check exactly as they would check a fix session's work. No fix");
+        prompt.AppendLine("agent runs unless they ask for one:");
+        prompt.AppendLine();
+        AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.ReviewVerdictToFix, taskId);
+        prompt.AppendLine();
+        prompt.AppendLine("**Gates to pull request** — review settled merge-ready and only opening the pull");
+        prompt.AppendLine("request is left:");
+        prompt.AppendLine();
+        AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.GatesToPullRequest, taskId);
+        prompt.AppendLine();
+        prompt.AppendLine("Every one of these is the operator's to run, never yours to run on their behalf");
+        prompt.AppendLine("unless they ask you to — and if they do, that is a human-directed act, so log it");
+        prompt.AppendLine("through the interaction rule above rather than reporting it as your own decision.");
     }
 
     /// <summary>

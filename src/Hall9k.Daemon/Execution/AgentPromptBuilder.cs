@@ -1216,18 +1216,19 @@ public static class AgentPromptBuilder
         string? sinceSha = null,
         IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
         string? interactiveSessionAddress = null,
-        bool? interactiveModeEnabledOverride = null)
+        bool? interactiveModeEnabledOverride = null,
+        IReadOnlyList<HumanFixRecord>? priorHumanFixes = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         return lens == ReviewLens.Adversarial
             ? BuildAdversarialReview(
                 task.Id, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
                 priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals,
-                interactiveModeEnabled, interactiveSessionAddress)
+                interactiveModeEnabled, interactiveSessionAddress, priorHumanFixes)
             : BuildConformanceReview(
                 task, project, branch, cycle, mode ?? ReviewMode.Discovery, priorRulings,
                 priorHumanDirectedInteractions, mechanicsOverride, sinceSha, priorBoundaryApprovals,
-                interactiveSessionAddress, interactiveModeEnabled);
+                interactiveSessionAddress, interactiveModeEnabled, priorHumanFixes);
     }
 
     /// <summary>
@@ -1397,7 +1398,8 @@ public static class AgentPromptBuilder
         string? interactiveSessionAddress = null,
         bool? interactiveModeEnabledOverride = null,
         string? baseBranch = null,
-        string? baseCommit = null)
+        string? baseCommit = null,
+        IReadOnlyList<HumanFixRecord>? priorHumanFixes = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
@@ -1451,7 +1453,9 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
-        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals: priorBoundaryApprovals);
+        AppendSettledRulings(
+            prompt, priorRulings, priorHumanDirectedInteractions,
+            priorBoundaryApprovals: priorBoundaryApprovals, priorHumanFixes: priorHumanFixes);
         prompt.AppendLine("## The prior cycle's findings");
         prompt.AppendLine();
         if (priorFindings.IsBlank())
@@ -1522,7 +1526,9 @@ public static class AgentPromptBuilder
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         if (interactiveModeEnabled)
         {
-            AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
+            AppendOutboundMilestoneRules(
+                prompt, "review", OutboundMilestone.Review, interactiveSessionAddress,
+                verdictBoundaryChoicesTaskId: task.Id);
         }
 
         // The scope rule decides in-scope from out-of-scope, so it has to name the same boundary
@@ -1614,7 +1620,8 @@ public static class AgentPromptBuilder
         ReviewMechanicsOverride? mechanicsOverride = null, string? sinceSha = null,
         IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
         string? interactiveSessionAddress = null,
-        bool interactiveModeEnabled = false)
+        bool interactiveModeEnabled = false,
+        IReadOnlyList<HumanFixRecord>? priorHumanFixes = null)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1704,7 +1711,9 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals);
+        AppendSettledRulings(
+            prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals,
+            priorHumanFixes);
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1748,7 +1757,9 @@ public static class AgentPromptBuilder
         // for a milestone message to precede.
         if (interactiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
         {
-            AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
+            AppendOutboundMilestoneRules(
+                prompt, "review", OutboundMilestone.Review, interactiveSessionAddress,
+                verdictBoundaryChoicesTaskId: task.Id);
         }
 
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
@@ -1792,7 +1803,8 @@ public static class AgentPromptBuilder
         string? sinceSha = null,
         IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
         bool interactiveModeEnabled = false,
-        string? interactiveSessionAddress = null)
+        string? interactiveSessionAddress = null,
+        IReadOnlyList<HumanFixRecord>? priorHumanFixes = null)
     {
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
@@ -1850,7 +1862,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("Those are where the last incident's defects were, not where the next one will be.");
         prompt.AppendLine("Work through them, then keep going where they do not point.");
         prompt.AppendLine();
-        AppendSettledRulings(prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals);
+        AppendSettledRulings(
+            prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals,
+            priorHumanFixes);
         prompt.AppendLine("## How to review");
         prompt.AppendLine();
         prompt.AppendLine("- Read the changed code in its surroundings, not as isolated hunks: a defect is often");
@@ -1861,7 +1875,9 @@ public static class AgentPromptBuilder
         // identical guard for why that engine's park never reaches slice 8's boundaries.
         if (interactiveModeEnabled && mechanicsOverride is not { DiffIsForeignPullRequest: true })
         {
-            AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
+            AppendOutboundMilestoneRules(
+                prompt, "review", OutboundMilestone.Review, interactiveSessionAddress,
+                verdictBoundaryChoicesTaskId: taskId);
         }
 
         AppendFindingContract(prompt, project, mode, mechanicsOverride);
@@ -1892,7 +1908,7 @@ public static class AgentPromptBuilder
 
     /// <summary>
     /// What a fresh-context review pass is told about questions this task has already settled
-    /// (task: review prompts carry prior rulings). Three sources, always in this order:
+    /// (task: review prompts carry prior rulings). Five sources, always in this order:
     /// <list type="number">
     /// <item>This task's own prior <c>h9k review resolve</c> verdicts, if any — bounded to the
     /// newest <see cref="MaxPriorRulings"/> and each reason summarized to
@@ -1911,6 +1927,16 @@ public static class AgentPromptBuilder
     /// <c>HumanDirected</c> and bounded the same way, a standing instruction rather than a
     /// ruling on a review park, so the reviewer is told to treat it the same way a needs-fixes
     /// ruling above is treated.</item>
+    /// <item>This task's own interactive-mode boundary approvals, if any (<c>h9k review
+    /// proceed</c>, #88) — historical context rather than a ruling to weigh: a bare proceed
+    /// carries no defect text or redirect, and the section says out loud that it does not mean
+    /// interactive mode is on now.</item>
+    /// <item>This task's own human-applied fixes, if any (<c>h9k review fixed</c>, task: a human at
+    /// the wheel takes the fix role herself) — bounded the same way, and the two shapes told apart
+    /// for the same reason the two verdicts above are: a fix with commits settles nothing (they are
+    /// in the diff, and checking them is the whole point of the lever), while a
+    /// <c>--no-change</c> entry's reason is a dismissal read exactly as a <c>--merge-ready</c>
+    /// reason is.</item>
     /// <item>This project's own repo doctrine, named unconditionally rather than quoted and
     /// deliberately generic (the daemon serves whatever project registered it, the same reason
     /// this method's own doctrine sentence hedges "AGENTS.md or CLAUDE.md, and whatever they
@@ -1942,7 +1968,8 @@ public static class AgentPromptBuilder
         StringBuilder prompt, IReadOnlyList<ReviewParkResolution>? priorRulings,
         IReadOnlyList<ExternalInteractionRecord>? priorHumanDirectedInteractions = null,
         ReviewMechanicsOverride? mechanicsOverride = null,
-        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null)
+        IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
+        IReadOnlyList<HumanFixRecord>? priorHumanFixes = null)
     {
         if (priorRulings is { Count: > 0 })
         {
@@ -2037,6 +2064,44 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
+        // The surface's fourth source (task: a human at the wheel takes the fix role herself): a
+        // human took the fix role at the review-verdict-to-fix boundary rather than sending an
+        // agent. Two shapes, told apart the way the two verdicts above are, because they ask
+        // opposite things. Commits are the ordinary shape and they carry no text at all — the diff
+        // under review IS the answer, so nothing here is settled and the fix gets exactly the
+        // scrutiny a fix session's would (which is the whole point of the lever: the review agents
+        // check a human's fix the same way). A --no-change entry is the dismissal-shaped one: the
+        // findings were considered and deliberately left alone, with a stated why, which is the
+        // same class of fact a --merge-ready --reason ruling records and is read the same way.
+        if (priorHumanFixes is { Count: > 0 })
+        {
+            prompt.AppendLine("## Fixes a human applied by hand on this task");
+            prompt.AppendLine();
+            prompt.AppendLine("At the review-verdict-to-fix boundary below, a human took the fix role themselves");
+            prompt.AppendLine("(h9k review fixed) instead of dispatching a fix session. Read the two shapes");
+            prompt.AppendLine("differently:");
+            prompt.AppendLine();
+            prompt.AppendLine("- **a fix with commits** settles nothing. Those commits are in the diff you are");
+            prompt.AppendLine("  reading, and checking them is exactly what you are here for — hold them to the");
+            prompt.AppendLine("  same bar you would hold a fix session's, no higher and no lower, and report what");
+            prompt.AppendLine("  you find. That a human wrote them is not evidence that they are correct.");
+            prompt.AppendLine("- **a fix recorded as no-change** is a dismissal, on the same terms as a");
+            prompt.AppendLine("  merge-ready ruling above: the finding was read, nothing was deliberately changed,");
+            prompt.AppendLine("  and the reason says why. Do not re-raise that question without new evidence — if");
+            prompt.AppendLine("  your own reading lands on it, say so and move on. Only raise it again if you can");
+            prompt.AppendLine("  point to a changed line or behavior since, and say what changed.");
+            prompt.AppendLine();
+            foreach (HumanFixRecord fix in priorHumanFixes.TakeLast(MaxPriorRulings))
+            {
+                string appliedAt = fix.AppliedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                prompt.AppendLine(fix.NoChangeReason.IsNotBlank()
+                    ? $"- Cycle {fix.Cycle}, {appliedAt}, no change: {PrintedNoChangeReason(fix)}"
+                    : $"- Cycle {fix.Cycle}, {appliedAt}: fixed by hand, in commits on this branch.");
+            }
+
+            prompt.AppendLine();
+        }
+
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
             prompt.AppendLine("This project's own repo doctrine can settle a question at a wider scope than one");
@@ -2092,6 +2157,36 @@ public static class AgentPromptBuilder
             : [.. priorRulings.TakeLast(MaxPriorRulings)
                 .Where(ruling => ruling.Verdict == ReviewVerdict.MergeReady && ruling.Reason.IsNotBlank())
                 .Select(PrintedReason)];
+
+    /// <summary>
+    /// A <c>--no-change</c> reason exactly as <see cref="AppendSettledRulings"/> prints it —
+    /// summarized to <see cref="MaxRulingReasonLength"/> the way every other human free-text field
+    /// in that section is. Only ever called for an entry that carries one, which the CLI's own
+    /// option shape guarantees is non-blank (<c>--no-change &lt;REASON&gt;</c> takes the reason as
+    /// its own argument, the way <c>--needs-fixes</c> does), so there is no "none recorded" arm to
+    /// invent: an ordinary human fix has no reason field at all rather than a blank one.
+    /// </summary>
+    private static string PrintedNoChangeReason(HumanFixRecord fix) =>
+        RelayedText.Truncate(RelayedText.OneLine(fix.NoChangeReason ?? string.Empty).Trim(), MaxRulingReasonLength);
+
+    /// <summary>
+    /// The <c>--no-change</c> reason text this prompt actually prints (the newest
+    /// <see cref="MaxPriorRulings"/>, truncated exactly as <see cref="AppendSettledRulings"/>
+    /// prints it) — handed to <see cref="ReviewVerdictValidation.NamesAFinding"/> alongside
+    /// <see cref="RulingReasonsShown"/> so a reviewer's verbatim echo of it is stripped before
+    /// validation the same way an echoed merge-ready <c>--reason</c> already is. It belongs in that
+    /// list for exactly the reason a merge-ready reason does and a needs-fixes one does not: it is
+    /// a dismissal the reviewer is told not to re-raise, so echoing it back manufactures no new
+    /// finding. An ordinary human fix contributes nothing here — it prints no free text at all, only
+    /// the platform's own "fixed by hand, in commits on this branch" sentence.
+    /// </summary>
+    internal static IReadOnlyList<string> HumanFixNoChangeReasonsShown(
+        IReadOnlyList<HumanFixRecord>? priorHumanFixes) =>
+        priorHumanFixes is null
+            ? []
+            : [.. priorHumanFixes.TakeLast(MaxPriorRulings)
+                .Where(fix => fix.NoChangeReason.IsNotBlank())
+                .Select(PrintedNoChangeReason)];
 
     /// <summary>The human's own reason text exactly as <see cref="AppendSettledRulings"/> prints it for a logged interaction — summarized, never blank (a human-directed entry always carries one, the CLI command's own requirement).</summary>
     private static string PrintedInteractionReason(ExternalInteractionRecord interaction) =>

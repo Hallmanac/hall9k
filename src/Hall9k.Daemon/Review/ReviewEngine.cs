@@ -333,7 +333,7 @@ public sealed class ReviewEngine(
                     // review is next; under the flag, that dispatch waits for a recorded proceed.
                     if (!await EnsureInteractiveProceedAsync(
                         context, run, "the verification gates just passed and cycle 1's review is ready to dispatch",
-                        cancellationToken))
+                        InteractiveBoundaryLevers.ProceedOrRedirect, cancellationToken))
                     {
                         return false;
                     }
@@ -664,7 +664,8 @@ public sealed class ReviewEngine(
                         // review dispatch, whichever code path decided it is next.
                         if (!await EnsureInteractiveProceedAsync(
                             context, run,
-                            "gates passed and the mandatory final review pass is ready to dispatch", cancellationToken))
+                            "gates passed and the mandatory final review pass is ready to dispatch",
+                            InteractiveBoundaryLevers.ProceedOrRedirect, cancellationToken))
                         {
                             return false;
                         }
@@ -720,9 +721,16 @@ public sealed class ReviewEngine(
                     // caller (RunSupervisor), so this run's own PullRequestOpener dispatch parks
                     // exactly like every other boundary rather than living as a special case one
                     // layer up.
+                    // The one boundary whose park also names the hands-off exit (task: a human at the
+                    // wheel takes the fix role herself, fourth criterion): once the pull request is
+                    // open there is a whole closeout ahead of it, and a human who wants the daemon
+                    // to shepherd that without them has a lever for it already
+                    // (h9k task revise --clear-interactive-mode). Naming it here is all that was
+                    // missing — interactive mode stays the default, and this is offered as the
+                    // option it is.
                     if (!await EnsureInteractiveProceedAsync(
                         context, run, "review is merge-ready and the pull request is ready to open",
-                        cancellationToken))
+                        InteractiveBoundaryLevers.GatesToPullRequest, cancellationToken))
                     {
                         return false;
                     }
@@ -768,9 +776,14 @@ public sealed class ReviewEngine(
                     // of a routine gate that would only bounce right back to it. h9k review resolve
                     // --needs-fixes "<redirect>" here keeps its exact existing meaning, and
                     // --merge-ready still overrules the verdict outright — the proceed verb is only
-                    // for agreeing with the fix the reviewer already asked for.
+                    // for agreeing with the fix the reviewer already asked for. h9k review fixed is
+                    // the fourth choice added here (task: a human at the wheel takes the fix role
+                    // herself): the human does the fix in the worktree by hand and hands the branch
+                    // back, which re-enters at the Reverify boundary below rather than dispatching
+                    // anything — so this park is the only one whose text names four levers.
                     if (!await EnsureInteractiveProceedAsync(
-                        context, run, "the review verdict calls for a fix session", cancellationToken))
+                        context, run, "the review verdict calls for a fix",
+                        InteractiveBoundaryLevers.ReviewVerdictToFix, cancellationToken))
                     {
                         return false;
                     }
@@ -1020,7 +1033,7 @@ public sealed class ReviewEngine(
                     // path rather than a routine gate bouncing right back to it.
                     if (!await EnsureInteractiveProceedAsync(
                         context, run, "the fix's gates passed and the next review cycle is ready to dispatch",
-                        cancellationToken))
+                        InteractiveBoundaryLevers.ProceedOrRedirect, cancellationToken))
                     {
                         return false;
                     }
@@ -1466,7 +1479,8 @@ public sealed class ReviewEngine(
             sinceSha: sinceSha,
             priorBoundaryApprovals: context.PriorBoundaryApprovals,
             interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName,
-            interactiveModeEnabledOverride: interactiveModeEnabled);
+            interactiveModeEnabledOverride: interactiveModeEnabled,
+            priorHumanFixes: context.PriorHumanFixes);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) — except
         // the mandatory FinalFullPass, which resolves its own knob (task: completing the per-stage
@@ -1546,7 +1560,8 @@ public sealed class ReviewEngine(
             // baseCommit rides along with baseBranch for the same reason StackedMechanics carries
             // it: this pass's full-diff fallback range is a three-dot diff, and a force-pushed
             // parent moves origin/<parent> out from under it.
-            baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit);
+            baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
+            priorHumanFixes: context.PriorHumanFixes);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -3152,8 +3167,14 @@ public sealed class ReviewEngine(
                 // HumanDirectedInteractionPartiesShown's own doc comment for why that is the
                 // correct, if narrower, guarantee rather than a stronger one this strip cannot
                 // actually provide).
+                // A human's own --no-change reason joins this list on exactly the terms a
+                // merge-ready ruling reason does (task: a human at the wheel takes the fix role
+                // herself): it is a dismissal the reviewer is told not to re-raise, so an echo of
+                // it manufactures no finding. An ordinary human fix contributes nothing — it prints
+                // no free text at all, only the platform's own sentence.
                 [.. AgentPromptBuilder.RulingReasonsShown(context.PriorRulings),
-                    .. AgentPromptBuilder.HumanDirectedInteractionPartiesShown(context.PriorHumanDirectedInteractions)]))
+                    .. AgentPromptBuilder.HumanDirectedInteractionPartiesShown(context.PriorHumanDirectedInteractions),
+                    .. AgentPromptBuilder.HumanFixNoChangeReasonsShown(context.PriorHumanFixes)]))
         {
             // A needs-fixes verdict that names nothing is not a real answer (origin: ten
             // occurrences filed 2026-08-25): recording it as Unknown routes it through the exact
@@ -4585,9 +4606,25 @@ public sealed class ReviewEngine(
     /// is loaded once at the top of <see cref="DriveAsync"/> and held for the run's whole review
     /// phase, so a stale read here would miss <c>h9k task revise --clear-interactive-mode</c>
     /// applied while this run's own review or fix session is still in flight.
+    /// <para>
+    /// <paramref name="levers"/> decides which choices the park text names, from the one shared
+    /// vocabulary every surface renders (<see cref="InteractiveBoundaryChoices"/>): the
+    /// review-verdict-to-fix boundary names four, because a human can also take the fix role by
+    /// hand there (<c>h9k review fixed</c>, task: a human at the wheel takes the fix role
+    /// herself), and the gates-to-pull-request boundary additionally names the hands-off exit. The
+    /// other two boundaries have only "go" and "go somewhere else"
+    /// (<see cref="InteractiveBoundaryLevers.ProceedOrRedirect"/>), which every call site states
+    /// outright rather than leaving to a parameter default — the token stays last, per AGENTS.md,
+    /// and which boundary this is stays readable at the call. That
+    /// fourth choice does not clear <see cref="RunAggregate.InteractiveGateCleared"/> the way a
+    /// proceed or a resolve does — it CONSUMES this boundary's own question and lands the run at the
+    /// next boundary, which then asks its own (see <c>RunAggregate.Apply(ReviewHumanFixApplied)</c>).
+    /// </para>
     /// </summary>
+    /// <param name="levers">Which of the four boundaries this is, for the park text's own choices.</param>
     private async Task<bool> EnsureInteractiveProceedAsync(
-        ReviewContext context, RunAggregate run, string boundaryDescription, CancellationToken cancellationToken)
+        ReviewContext context, RunAggregate run, string boundaryDescription,
+        InteractiveBoundaryLevers levers, CancellationToken cancellationToken)
     {
         if (run.InteractiveGateCleared || !await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken))
         {
@@ -4596,8 +4633,8 @@ public sealed class ReviewEngine(
 
         await ParkAsync(
             context.RunId, context.TaskId,
-            $"Interactive mode is on for this task: {boundaryDescription}. h9k review proceed {context.TaskId} " +
-            "to continue, or h9k review resolve to redirect it.",
+            $"Interactive mode is on for this task: {boundaryDescription}. " +
+            InteractiveBoundaryChoices.ParkText(levers, context.TaskId),
             isInteractiveGate: true, cancellationToken: cancellationToken);
         return false;
     }
@@ -4732,10 +4769,12 @@ public sealed class ReviewEngine(
         }
 
         (IReadOnlyList<ReviewParkResolution> priorRulings, IReadOnlyList<ExternalInteractionRecord> priorHumanDirectedInteractions,
-                IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals) =
+                IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals,
+                IReadOnlyList<HumanFixRecord> priorHumanFixes) =
             await LoadPriorRulingsAndInteractionsAsync(query, taskId, cancellationToken);
         return new ReviewContext(
-            runId, taskId, run, task, project, priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals);
+            runId, taskId, run, task, project, priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals,
+            priorHumanFixes);
     }
 
     /// <summary>
@@ -4808,7 +4847,7 @@ public sealed class ReviewEngine(
     /// <c>BlockerHandoffQuery.ClosedOutRunsAsync</c> already reads a task's run history, rather
     /// than looping <c>FetchStreamAsync</c> per run id or paying for the same query twice over.
     /// </summary>
-    private static async Task<(IReadOnlyList<ReviewParkResolution> PriorRulings, IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions, IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals)>
+    private static async Task<(IReadOnlyList<ReviewParkResolution> PriorRulings, IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions, IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals, IReadOnlyList<HumanFixRecord> PriorHumanFixes)>
         LoadPriorRulingsAndInteractionsAsync(IQuerySession query, Guid taskId, CancellationToken cancellationToken)
     {
         IReadOnlyList<RunDetails> taskRuns = await query.Query<RunDetails>()
@@ -4828,8 +4867,16 @@ public sealed class ReviewEngine(
         IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals = [.. taskRuns
             .SelectMany(run => run.BoundaryApprovals)
             .OrderBy(approval => approval.ApprovedAt)];
+        // The surface's fourth source (task: a human at the wheel takes the fix role herself):
+        // every h9k review fixed this task has recorded, oldest first, the same task-wide reach the
+        // three lists above have. A --no-change entry's reason is the part a later pass is told to
+        // treat as settled; an ordinary entry is context — a human, not a fix session, wrote the
+        // commits the cycle it names re-reads.
+        IReadOnlyList<HumanFixRecord> priorHumanFixes = [.. taskRuns
+            .SelectMany(run => run.HumanFixes)
+            .OrderBy(fix => fix.AppliedAt)];
 
-        return (priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals);
+        return (priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals, priorHumanFixes);
     }
 
     private async Task<RunAggregate> LoadRunAsync(Guid runId, CancellationToken cancellationToken)
@@ -5885,7 +5932,8 @@ public sealed class ReviewEngine(
         Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project,
         IReadOnlyList<ReviewParkResolution> PriorRulings,
         IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions,
-        IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals)
+        IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals,
+        IReadOnlyList<HumanFixRecord> PriorHumanFixes)
     {
         /// <summary>
         /// The branch this run's work sits on top of, as resolved once at dispatch and recorded on
