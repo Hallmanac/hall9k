@@ -58,6 +58,23 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "values is refused rather than resolved.")]
         public string? MaxParallelAlias { get; init; }
 
+        [CommandOption("--priority <high|normal|low|default>")]
+        [Description(
+            "Which tier this project's ready work competes in for a FREE dispatch slot (Decisions Log "
+            + "#141). Default 'normal', and a single-project node never needs it: free slots rotate — "
+            + "whichever eligible project has gone longest without a dispatch takes the next one, oldest "
+            + "task first within it — which is starvation-proof with no setting at all. 'high' is FOCUS: it "
+            + "wins every free slot over every lower tier while it has ready work, and RELEASES ITSELF the "
+            + "moment its queue drains, so the other projects resume with nothing for you to remember. That "
+            + "is the whole difference from --max-parallel-tasks 0, which is a deliberate, sticky pause "
+            + "nothing but you ever lifts: 'drain A first, then carry on with B' is a tier, 'never run B' is "
+            + "a pause. 'low' takes a slot only when no higher tier has ready work, so a standing queue "
+            + "elsewhere can hold it indefinitely. Ordering decides only who receives the next free slot: "
+            + "NOTHING PREEMPTS — a live run always finishes, whatever you change mid-flight. Rotation "
+            + "applies within a tier, and every claim logs one sentence naming the project that won and "
+            + "why. Takes effect on the next dispatch cycle — no daemon restart. 'default' restores normal.")]
+        public string? Priority { get; init; }
+
         [CommandOption("--verify <NAME=COMMAND>")]
         [Description("Verification gate, e.g. --verify \"test=dotnet test\"; repeat for more. Replaces the whole list.")]
         public string[] Verify { get; init; } = [];
@@ -413,7 +430,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 ? Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Parse(autoPrReview))
                 : Optional<AutoPrReviewSpeed>.None,
             acceptedBrokenGate: acceptedBrokenGateValue,
-            maxParallelTasks: maxParallelTasks);
+            maxParallelTasks: maxParallelTasks,
+            // 'default' is the clearing word and reaches ProjectPriority.Parse as the word rather
+            // than as a tier, the --commit-style idiom: it restores 'normal', which is the tier
+            // the rotation itself runs in, so clearing a focus and never setting one read alike.
+            priority: settings.Priority is { } priority
+                ? Optional<ProjectPriority>.Of(ProjectPriority.Parse(priority))
+                : Optional<ProjectPriority>.None);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 
@@ -455,6 +478,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         if (settings.AutoPrReview is not null && AutoPrReviewSpeed.Parse(settings.AutoPrReview) is { } speed && speed != AutoPrReviewSpeed.Off)
         {
             AnsiConsole.MarkupLine(AutoPrReviewConsequence(speed));
+        }
+
+        // Said at the moment of consent and only then, the discipline every standing consequence
+        // in this command follows: a tier is standing state h9k project show reports, so an
+        // unrelated h9k project set must not repeat it. What it buys and what it costs are both
+        // named, because a tier reorders other projects' work as much as it advances this one's.
+        if (settings.Priority is not null)
+        {
+            AnsiConsole.MarkupLine(PriorityConsequence(ProjectPriority.Parse(settings.Priority), details.Name));
         }
 
         // The home's AGENTS.md is a render of exactly the facts this command changes (the Jira
@@ -596,6 +628,36 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "--max-concurrent-task-runs enforces and this project's own --max-parallel-tasks cap.[/]",
         _ => string.Empty,
     };
+
+    /// <summary>
+    /// What a tier change just did, in the terms the operator will judge it by (Decisions Log
+    /// #141): what it buys, what it costs the other projects, and — for the higher tier — that it
+    /// is self-releasing, which is the one property that decides whether a pause or a tier is the
+    /// right lever. Every tier gets a line, the clearing one included, because "back in the
+    /// rotation" is the outcome somebody who just dropped a focus is checking for.
+    /// </summary>
+    private static string PriorityConsequence(ProjectPriority priority, string projectName)
+    {
+        string project = projectName.EscapeMarkup();
+        return priority switch
+        {
+            { } tier when tier == ProjectPriority.High =>
+                $"[yellow]From now on, project '{project}' wins every free dispatch slot over every "
+                + "lower-tier project while it has ready work, at the cost of holding their queues back for "
+                + "as long as that lasts. It releases itself: the moment this project's queue drains, the "
+                + "others resume with no command from you. Nothing preempts — runs already live finish "
+                + "normally, whatever the tiers say.[/]",
+            { } tier when tier == ProjectPriority.Low =>
+                $"[yellow]From now on, project '{project}' takes a free dispatch slot only when no normal- "
+                + "or high-tier project has ready work — a standing queue elsewhere can hold it "
+                + "indefinitely, and nothing lifts that but a tier change. Runs already live finish "
+                + "normally.[/]",
+            _ =>
+                $"[dim]Project '{project}' is in the default tier: free slots rotate, and whichever eligible "
+                + "project has gone longest without a dispatch takes the next one — oldest task first within "
+                + "it.[/]",
+        };
+    }
 
     /// <summary>
     /// The word that clears a binding rather than setting one. Spelled out here because "none" is

@@ -109,7 +109,8 @@ public static class CliCommandTree
             project.AddCommand<ProjectSetCommand>("set")
                 .WithDescription(
                     "Change project settings: verify gates, skip-permissions, links, this project's own "
-                    + "run ceiling (--max-parallel-tasks; 0 pauses the project), "
+                    + "run ceiling (--max-parallel-tasks; 0 pauses the project), the dispatch tier free "
+                    + "slots are shared by (--priority; high is a self-releasing focus, unlike the pause), "
                     + "commit style, agent model, review re-requests, the Jira board, the backlog "
                     + "policy that tracks every published task (none, github-issues, jira) and its "
                     + "routing guidance, the branch-name template task branches are cut under, "
@@ -119,6 +120,8 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--commit-style", "narrative")
                 .WithExample("project", "set", "hall9k", "--max-parallel-tasks", "1")
                 .WithExample("project", "set", "hall9k", "--max-parallel-tasks", "0")
+                .WithExample("project", "set", "hall9k", "--priority", "high")
+                .WithExample("project", "set", "hall9k", "--priority", "normal")
                 .WithExample("project", "set", "hall9k", "--home", "~/.hall9k/projects/hall9k")
                 .WithExample("project", "set", "hall9k", "--model", "claude-opus-5")
                 .WithExample("project", "set", "hall9k", "--rerequest-review", "on")

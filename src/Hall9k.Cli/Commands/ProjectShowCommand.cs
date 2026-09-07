@@ -91,6 +91,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             table.AddRow("Max parallel agents", retired);
         }
 
+        table.AddRow("Priority", PriorityRow(project));
+
         table.AddRow("Commit style", project.CommitStyle == CommitStyle.Unknown
             ? "[dim]platform default — DaemonOptions.DefaultCommitStyle, narrative unless configured otherwise (log #26)[/]"
             : project.CommitStyle.Value.EscapeMarkup());
@@ -179,6 +181,32 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         int cap => $"{cap} [dim]— at most {cap} of this project's task runs are live at once; a ceiling, never a "
             + "reservation, so nothing is held free for it. A run's own review sessions do not count "
             + "separately (they are that run's, bounded by h9k config show's session cap per run)[/]",
+    };
+
+    /// <summary>
+    /// Which tier this project's ready work competes in for a free dispatch slot (Decisions Log
+    /// #141), stating the one thing a reader would otherwise have to work out: the default tier is
+    /// not a lack of scheduling — it is the rotation, which is starvation-proof on its own — and a
+    /// higher tier releases itself, unlike the cap of 0 immediately above it in this pane.
+    /// </summary>
+    internal static string PriorityRow(ProjectDetails project) => project.Priority switch
+    {
+        { } tier when tier == ProjectPriority.High =>
+            "[yellow]high — focus[/] [dim]— this project wins every free slot over lower tiers while it has "
+            + "ready work, and releases itself the moment its queue drains: nothing to remember, unlike a "
+            + "pause. Nothing preempts — runs already live finish regardless[/]",
+        { } tier when tier == ProjectPriority.Low =>
+            "[yellow]low — background[/] [dim]— this project takes a free slot only when no normal- or "
+            + "high-tier project has ready work, so a standing queue elsewhere can hold it indefinitely: "
+            + $"h9k project set {project.Name.EscapeMarkup()} --priority normal[/]",
+        { } tier when tier == ProjectPriority.Normal =>
+            "[dim]normal — the default. Free slots rotate: whichever eligible project has gone longest "
+            + "without a dispatch takes the next one, oldest task first within it. Focus on this project "
+            + $"instead: h9k project set {project.Name.EscapeMarkup()} --priority high[/]",
+        var tier =>
+            $"[yellow]{tier.Value.EscapeMarkup()} — unrecognized[/] [dim]— recorded by a build that knew a "
+            + "tier this one does not, so it is scheduled as normal rather than guessed at. Set one this "
+            + $"build knows: h9k project set {project.Name.EscapeMarkup()} --priority normal[/]",
     };
 
     /// <summary>
