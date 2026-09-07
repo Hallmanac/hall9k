@@ -2416,14 +2416,21 @@ public sealed class CloseoutEngine(
         CancellationToken cancellationToken)
     {
         StackedParentObservation observation = await stackedParents.ObserveAsync(
-            session, project, task, run, cancellationToken);
+            session, project, task.StackedOnTaskId, run, cancellationToken);
 
         if (observation.Verdict == StackedParentVerdict.Aligned)
         {
             return false;
         }
 
-        if (observation.Verdict == StackedParentVerdict.Unobservable)
+        // Unobservable and ParentUnresolvable are answered together here, and only here: the first
+        // is a read that failed and the second is a parent head that does not exist to be read
+        // (their own docs draw the line), but from an already-open pull request both come to the
+        // same thing — no replay is owed on what was not observed, and the next sweep asks again.
+        // The review loop's own checkpoints part company on exactly this pair, because a checkpoint
+        // has no next sweep before the final pass runs: it parks on the second and proceeds on the
+        // first.
+        if (observation.Verdict is StackedParentVerdict.Unobservable or StackedParentVerdict.ParentUnresolvable)
         {
             // Nothing learned, so nothing claimed and nothing spent. Returning false — letting the
             // ordinary inspection carry on — is deliberate rather than a bail-out: a stacked child
@@ -2432,6 +2439,34 @@ public sealed class CloseoutEngine(
             logger.LogInformation(
                 "Task {TaskId}: stacked child not evaluated this sweep — {Detail}", task.Id, observation.Detail);
             return false;
+        }
+
+        if (observation.Verdict == StackedParentVerdict.ParentDead)
+        {
+            // The parent's branch is never going anywhere (task: a stacked child absorbs its
+            // parent's post-delivery churn safely), so this child's pull request cannot be
+            // retargeted mechanically and must not keep being replayed onto a base with no future.
+            // Parked for the same reason ParentMergedElsewhere is: nothing about it changes on its
+            // own, and a park with the situation named leaves a human a coherent stack rather than
+            // a child quietly following a dead parent.
+            // Which levers this names is load-bearing, and "hand it back with h9k pr resolve" on
+            // its own would not be one of them (independent pre-PR review, cycle 1, adversarial
+            // lens, by its own class sweep — the checkpoint's twin park carried the same defect):
+            // a follow-up run carries the previous run's recorded base forward rather than
+            // re-resolving it (StackedBaseResolver.ResumedBaseAsync, deliberately), so a hand
+            // retarget on GitHub does not change what the next sweep observes and this park comes
+            // straight back. What does change it is the parent itself reaching Delivered again.
+            await ParkAsync(
+                session, run,
+                $"This is a stacked pull request and {observation.Detail}. If that parent should live after "
+                + "all, put it back on its feet first — h9k task retry for one that ended Failed, h9k pr resolve "
+                + "for one whose own pull request closed unmerged, nothing for an abandoned one — and then hand "
+                + "this one back with h9k pr resolve. Otherwise this pull request is yours to land or close: "
+                + "handing it back does not move it onto another base, because a run carries the base it was "
+                + "dispatched against and a claimed task's stacked edge cannot be revised, so work that belongs "
+                + "on the project's base continues as a fresh, unstacked task.",
+                now, cancellationToken);
+            return true;
         }
 
         if (observation.Verdict == StackedParentVerdict.ParentMergedElsewhere)
@@ -2451,7 +2486,7 @@ public sealed class CloseoutEngine(
         }
 
         // Everything past here is ParentMerged or ParentMoved: the parent's branch moved out from
-        // under this child, and a replay is owed. Written as three early returns above rather than a
+        // under this child, and a replay is owed. Written as early returns above rather than a
         // switch precisely so that reading is explicit — a switch statement's silent fall-through
         // would route a verdict added later into the replay path by default.
 
@@ -2465,7 +2500,11 @@ public sealed class CloseoutEngine(
             await ParkAsync(
                 session, run,
                 $"This is a stacked pull request and {observation.Detail}. Its rebase budget is spent "
-                + $"({task.StackReplaysDispatched}/{_options.MaxStackReplayRuns} replay(s)) — the parent branch has "
+                // "rebase(s)", not "replay(s)": this counter is spent by the checkpoint rebases a
+                // child takes in-run as well as by the replays dispatched here, so naming only one
+                // of the two would misreport what the number counted (task: a stacked child absorbs
+                // its parent's post-delivery churn safely).
+                + $"({task.StackReplaysDispatched}/{_options.MaxStackReplayRuns} rebase(s)) — the parent branch has "
                 + "kept moving faster than this branch can follow it. Rebase and retarget this pull request by "
                 + "hand, or grant another attempt with h9k pr resolve.",
                 now, cancellationToken);

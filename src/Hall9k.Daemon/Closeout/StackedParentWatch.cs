@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Marten;
 
 namespace Hall9k.Daemon.Closeout;
@@ -43,6 +44,36 @@ public enum StackedParentVerdict
     ParentMergedElsewhere,
 
     /// <summary>
+    /// The parent can no longer reach even <em>Delivered</em>, so the base this child is built on
+    /// is never going anywhere: the parent task was abandoned, ended Failed, or reads Done having
+    /// never delivered a pull request that can merge (its own closed unmerged, or it never opened
+    /// one). The one rule for this lives on <c>TaskDependency.IsDeadForStackedChild</c>, asked
+    /// through <see cref="StackedEdgeRules"/> — the same seam assignment and the dependency
+    /// resolver ask, so a dead parent can never mean one thing before the child dispatches and
+    /// another after. A child here parks for a human rather than building on a dead base (task: a
+    /// stacked child absorbs its parent's post-delivery churn safely).
+    /// </summary>
+    ParentDead,
+
+    /// <summary>
+    /// The parent's branch is not on origin and no head for it could be resolved from task state
+    /// either — not even from the parent's own pull request, which is the ref GitHub keeps after a
+    /// branch is deleted. Deliberately distinct from <see cref="Unobservable"/>, which is a read
+    /// that FAILED: nothing here failed, every look answered, and what they answered is that there
+    /// is no such ref — so no later sweep finds a head this one missed. What that does NOT mean is
+    /// permanence: one of the two shapes producing it is a parent branch never pushed yet (a child
+    /// claimed ahead of its parent with <c>--acknowledge-unmet-dependencies</c>), which resolves
+    /// itself the moment the parent delivers, and the checkpoint's own park says so rather than
+    /// telling a human to unstack a branch whose parent is about to push (independent pre-PR
+    /// review, cycle 1, adversarial lens). The other shape — a parent whose records carry no pull
+    /// request to fall back on — needs the human either way. Closeout treats this verdict as it
+    /// treats an unobservable sweep — the child's pull request is open and its own inspection still
+    /// owes its answers — while a checkpoint rebase, which has no later sweep to defer to before
+    /// the final pass runs, parks with the situation named.
+    /// </summary>
+    ParentUnresolvable,
+
+    /// <summary>
     /// Something could not be read, so no claim is made either way. Never treated as Aligned: a
     /// failed git call is not evidence the branches agree (AGENTS.md's never-guess rule). The next
     /// sweep looks again.
@@ -61,9 +92,12 @@ public enum StackedParentVerdict
 /// run's own recorded fork point (<c>RunDetails.BaseCommit</c>), once the child's branch is
 /// confirmed to contain it — never <c>git merge-base</c>: see
 /// <see cref="StackedParentWatch"/>'s own doc for the force-push case that proves merge-base wrong
-/// here. Blank on <see cref="StackedParentVerdict.Aligned"/>,
-/// <see cref="StackedParentVerdict.Unobservable"/> and
-/// <see cref="StackedParentVerdict.ParentMergedElsewhere"/>, where there is no replay to describe.
+/// here. Blank on every verdict but <see cref="StackedParentVerdict.ParentMerged"/> and
+/// <see cref="StackedParentVerdict.ParentMoved"/> — <see cref="StackedParentVerdict.Aligned"/>,
+/// <see cref="StackedParentVerdict.Unobservable"/>,
+/// <see cref="StackedParentVerdict.ParentMergedElsewhere"/>,
+/// <see cref="StackedParentVerdict.ParentDead"/> and
+/// <see cref="StackedParentVerdict.ParentUnresolvable"/> all have no replay to describe.
 /// </param>
 /// <param name="OntoCommit">
 /// The commit the replay lands on, freshly observed: the parent's new head for a force-push, or the
@@ -91,12 +125,24 @@ public sealed record StackedParentObservation(
     /// </summary>
     public static StackedParentObservation ParentMergedElsewhere(string parentBranch, string detail) =>
         new(StackedParentVerdict.ParentMergedElsewhere, parentBranch, string.Empty, string.Empty, detail);
+
+    /// <summary>Carries the parent's branch for the reason <see cref="ParentMergedElsewhere"/> gives.</summary>
+    public static StackedParentObservation ParentDead(string parentBranch, string detail) =>
+        new(StackedParentVerdict.ParentDead, parentBranch, string.Empty, string.Empty, detail);
+
+    /// <summary>Carries the parent's branch for the reason <see cref="ParentMergedElsewhere"/> gives.</summary>
+    public static StackedParentObservation ParentUnresolvable(string parentBranch, string detail) =>
+        new(StackedParentVerdict.ParentUnresolvable, parentBranch, string.Empty, string.Empty, detail);
 }
 
 /// <summary>
 /// Watches the parent branch a stacked child's pull request is built on and targeted at (task: a
 /// stacked pull-request edge exists as an explicit opt-in dependency), and answers the one question
-/// closeout asks each sweep: has that branch moved out from under this child?
+/// its two readers ask: has that branch moved out from under this child, and is it still a branch
+/// worth following? Closeout asks once per sweep about a child whose pull request is already open;
+/// the review loop asks at a child's own two rebase checkpoints, before it has one (task: a stacked
+/// child absorbs its parent's post-delivery churn safely). One observation, two callers, so the two
+/// can never read the same parent differently.
 /// <para>
 /// Everything here is read from git and from the parent's own recorded state — never inferred from
 /// elapsed time or from the child's own age. The boundary the replay drops the parent's commits at
@@ -156,18 +202,20 @@ public sealed class StackedParentWatch(
 
     /// <summary>
     /// Looks at <paramref name="childRun"/>'s parent and reports whether the child is still built
-    /// on the parent's current head. <paramref name="childTask"/>'s declared stacked edge names the
-    /// parent; the parent's own <c>TaskListItem</c> and current run supply its state and pull
-    /// request.
+    /// on the parent's current head. <paramref name="childStackedOnTaskId"/> is the child's own
+    /// declared stacked edge — <c>TaskAggregate.StackedOnTaskId</c> for closeout, which holds the
+    /// aggregate, or <c>TaskDetails.StackedOnTaskId</c> for the review loop's own checkpoints,
+    /// which holds the projection — and the parent's own <c>TaskListItem</c> and current run supply
+    /// its state and pull request.
     /// </summary>
     public async Task<StackedParentObservation> ObserveAsync(
         IQuerySession query,
         ProjectDetails project,
-        TaskAggregate childTask,
+        Guid? childStackedOnTaskId,
         RunDetails childRun,
         CancellationToken cancellationToken)
     {
-        if (childTask.StackedOnTaskId is not { } parentId)
+        if (childStackedOnTaskId is not { } parentId)
         {
             // The run records a non-project base but the task declares no edge. Not a
             // contradiction to resolve here: a human can retarget a pull request on GitHub by hand
@@ -190,6 +238,28 @@ public sealed class StackedParentWatch(
 
         string parentBranch = childRun.BaseBranch;
         bool parentMerged = parent.State == TaskState.Done && parentRun?.State == RunState.Completed;
+
+        // Asked first, and off task state alone: a parent that can no longer reach even Delivered
+        // has a branch that is going nowhere, so whether it moved since the cut is beside the point
+        // (task: a stacked child absorbs its parent's post-delivery churn safely). Routed through
+        // StackedEdgeRules rather than re-enumerated here, which is the whole reason that type
+        // exists — TaskDecider.Assign and TaskDependencyResolver ask the identical question of the
+        // identical rule, and a third reading of "dead parent" invented here is exactly how the two
+        // halves of this edge would come to disagree. Its snapshot is loaded through
+        // TaskDependencyQuery for the same reason: that is the one production producer of a
+        // TaskDependency, and mapping a TaskListItem plus a RunDetails into one by hand here would
+        // be a second mapping to drift.
+        IReadOnlyList<TaskDependency> parentSnapshot =
+            await TaskDependencyQuery.LoadAsync(query, [parentId], cancellationToken);
+        if (parentSnapshot.FirstOrDefault() is { } parentDependency
+            && StackedEdgeRules.IsDead(parentId, parentDependency))
+        {
+            return StackedParentObservation.ParentDead(
+                parentBranch,
+                $"the parent task {parentDependency.Describe()} can no longer reach even Delivered — "
+                + $"{DescribeParentDeath(parentDependency)} — so {parentBranch} is a base nothing further "
+                + "arrives on");
+        }
 
         // Where the parent's own work actually landed, read off the parent's run rather than assumed
         // to be the project's base (independent pre-PR review, 2026-09-07, adversarial lens). They
@@ -223,24 +293,54 @@ public sealed class StackedParentWatch(
             // tip, which is exactly the boundary, and it costs one ordinary fetch. Only when that
             // branch is gone from origin — the parent's closeout deletes it — is the pull request's
             // own immutable head ref fetched instead, which GitHub keeps forever.
-            string? parentHead = await TryResolveRemoteBranchAsync(
+            ParentHeadRead branchRead = await ReadRemoteBranchHeadAsync(
                 git, repositoryPath, parentBranch, cancellationToken);
-            if (parentHead is null && parentRun?.PullRequestNumber is > 0)
+            ParentHeadRead? pullRequestRead = null;
+            if (branchRead.Commit is null && parentRun?.PullRequestNumber is > 0)
             {
                 fetchedRef = ParentHeadRef(parentRun.PullRequestNumber.Value);
-                parentHead = await TryFetchPullRequestHeadAsync(
+                pullRequestRead = await ReadPullRequestHeadAsync(
                     git, repositoryPath, parentRun.PullRequestNumber.Value, fetchedRef, cancellationToken);
-                if (parentHead is null)
+                if (pullRequestRead.Commit is null)
                 {
                     fetchedRef = null;
                 }
             }
 
-            if (parentHead is null)
+            if ((pullRequestRead?.Commit ?? branchRead.Commit) is not { } parentHead)
             {
-                return StackedParentObservation.Unobservable(
-                    $"neither origin/{parentBranch} nor the parent's own pull-request head could be resolved, so "
-                    + "whether the parent's branch has moved is unobserved rather than assumed");
+                // A lookup that FAILED and a ref that does not EXIST are two different facts, and
+                // this is where they part company (independent pre-PR review, cycle 1, conformance
+                // lens: every failed fetch used to arrive here as ParentUnresolvable, which parks a
+                // checkpoint on the assertion that no parent head exists — an unobserved claim on
+                // what may have been a network blip, and AGENTS.md's never-guess rule forbids
+                // exactly that). A failure is reported as what it was: nothing observed, ask again.
+                if (FailedRead(branchRead, pullRequestRead) is { } failed)
+                {
+                    return StackedParentObservation.Unobservable(
+                        $"{failed.Detail}, so nothing was observed about {parentBranch} this look — not whether it "
+                        + "exists, and not whether it moved");
+                }
+
+                // ParentUnresolvable, then: every lookup answered, and what they answered is that
+                // there is no such ref. Two shapes produce it — a parent branch never pushed at all
+                // (a child claimed ahead of its parent with --acknowledge-unmet-dependencies, an
+                // explicitly supported override), or a parent whose records carry no pull request
+                // whose head could stand in for a deleted branch. Stable, in that no later sweep
+                // finds a head this one missed; permanent only in the second shape, since the first
+                // resolves the moment the parent pushes — which is why the checkpoint's own park
+                // names waiting for that delivery as a path rather than only unstacking
+                // (independent pre-PR review, cycle 1, adversarial lens). Nothing is claimed about
+                // whether the parent MOVED either way — that is still unobserved, and neither
+                // reader replays on it.
+                string fallbackAccount = pullRequestRead is null
+                    ? "and the parent's records carry no pull request whose head could be fetched instead"
+                    : "and the parent's own pull-request head — the ref GitHub keeps after a branch is deleted — "
+                      + "does not exist either";
+                return StackedParentObservation.ParentUnresolvable(
+                    parentBranch,
+                    $"origin has no branch {parentBranch} {fallbackAccount}, so there is no parent head for this "
+                    + "branch to be brought onto");
             }
 
             ProcessResult isAncestor = await git(
@@ -330,14 +430,16 @@ public sealed class StackedParentWatch(
             if (parentMerged)
             {
                 // Onto the project's base branch's own freshly observed tip, which is where the
-                // retarget is about to aim the pull request.
-                string? baseTip = await TryResolveRemoteBranchAsync(
+                // retarget is about to aim the pull request. Unobservable whichever way that read
+                // came back short — a failed fetch or a base branch origin does not have — because
+                // neither is a fact about the PARENT, which is what this verdict speaks about.
+                ParentHeadRead baseTipRead = await ReadRemoteBranchHeadAsync(
                     git, repositoryPath, project.BaseBranch, cancellationToken);
-                if (baseTip is null)
+                if (baseTipRead.Commit is not { } baseTip)
                 {
                     return StackedParentObservation.Unobservable(
                         $"the parent's pull request merged, but origin/{project.BaseBranch}'s own tip could not be "
-                        + "resolved, so there is no observed commit for the replay to land on");
+                        + $"resolved ({baseTipRead.Detail}), so there is no observed commit for the replay to land on");
                 }
 
                 return new StackedParentObservation(
@@ -383,33 +485,106 @@ public sealed class StackedParentWatch(
     }
 
     /// <summary>
-    /// <paramref name="branch"/>'s tip on origin, freshly fetched, or null when origin has no such
-    /// branch. A fetch failure and a missing branch are both null here on purpose: the caller's next
-    /// step (the pull request's own head ref) covers either, and distinguishing them would only
-    /// change which sentence an unobservable outcome carries.
+    /// Why one look for a head produced no commit — an unpersisted in-process outcome, so an enum
+    /// is right here (TASK-MODEL.md §8).
     /// </summary>
-    private static async Task<string?> TryResolveRemoteBranchAsync(
+    private enum ParentHeadLookup
+    {
+        /// <summary>A commit was read.</summary>
+        Resolved,
+
+        /// <summary>The remote answered, and it has no such ref — git said so in as many words.</summary>
+        Missing,
+
+        /// <summary>The look itself failed, so nothing was observed either way.</summary>
+        ReadFailed,
+    }
+
+    /// <summary>
+    /// One look for a head: the commit when there is one, and an account of why not when there
+    /// isn't. The <see cref="Lookup"/>/<see cref="Commit"/> pair is what lets
+    /// <see cref="ObserveAsync"/> tell <see cref="StackedParentVerdict.ParentUnresolvable"/> — a
+    /// ref the remote does not have — from <see cref="StackedParentVerdict.Unobservable"/>, a read
+    /// that could not be made; collapsing both to a bare null is what let a network blip park a
+    /// checkpoint on the claim that no parent head exists (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </summary>
+    /// <param name="Commit">Non-null exactly when <paramref name="Lookup"/> is <see cref="ParentHeadLookup.Resolved"/>.</param>
+    /// <param name="Detail">Why there is no commit, as a clause a caller's own sentence can carry. Empty on a resolved read.</param>
+    private sealed record ParentHeadRead(ParentHeadLookup Lookup, string? Commit, string Detail)
+    {
+        public static ParentHeadRead Resolved(string commit) =>
+            new(ParentHeadLookup.Resolved, commit, string.Empty);
+
+        public static ParentHeadRead Missing(string detail) => new(ParentHeadLookup.Missing, null, detail);
+
+        public static ParentHeadRead ReadFailed(string detail) => new(ParentHeadLookup.ReadFailed, null, detail);
+    }
+
+    /// <summary>
+    /// Whichever look failed to read, or null when both of them answered — the discriminator
+    /// between <see cref="StackedParentVerdict.Unobservable"/> and
+    /// <see cref="StackedParentVerdict.ParentUnresolvable"/>. The branch's own look is preferred
+    /// when both failed, since it is the ref this child is actually built on.
+    /// </summary>
+    private static ParentHeadRead? FailedRead(ParentHeadRead branchRead, ParentHeadRead? pullRequestRead) =>
+        (branchRead, pullRequestRead) switch
+        {
+            ({ Lookup: ParentHeadLookup.ReadFailed }, _) => branchRead,
+            (_, { Lookup: ParentHeadLookup.ReadFailed }) => pullRequestRead,
+            _ => null,
+        };
+
+    /// <summary>
+    /// Whether a failed <c>git fetch</c> said the remote has no such ref, in git's own words.
+    /// That message is the one observation that separates "there is nothing there to fetch" from
+    /// "the fetch could not be made" — an unreachable host, an expired credential, a killed
+    /// transfer — and the two are different facts carrying different verdicts. Anything git says
+    /// that this does not recognise counts as the read failing rather than the ref missing, which
+    /// is the direction that proceeds instead of parking a run on an unobserved claim.
+    /// </summary>
+    private static bool NamesAMissingRemoteRef(string? standardError) =>
+        standardError.IsNotBlank()
+        && standardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// <paramref name="branch"/>'s tip on origin, freshly fetched — and, when there is no tip to
+    /// return, whether that is because origin has no such branch or because the fetch could not be
+    /// made at all (see <see cref="ParentHeadRead"/>).
+    /// </summary>
+    private static async Task<ParentHeadRead> ReadRemoteBranchHeadAsync(
         ProcessRunner git, string repositoryPath, string branch, CancellationToken cancellationToken)
     {
         ProcessResult fetch = await git("git", ["fetch", "origin", branch], repositoryPath, cancellationToken);
         if (fetch.ExitCode != 0)
         {
-            return null;
+            return NamesAMissingRemoteRef(fetch.StandardError)
+                ? ParentHeadRead.Missing($"origin has no branch {branch}")
+                : ParentHeadRead.ReadFailed(
+                    $"origin/{branch} could not be fetched: {FirstLine(fetch.StandardError)}");
         }
 
         ProcessResult head = await git(
             "git", ["rev-parse", "--verify", "--quiet", $"refs/remotes/origin/{branch}^{{commit}}"],
             repositoryPath, cancellationToken);
-        return head.ExitCode == 0 && head.StandardOutput.Trim().IsNotBlank() ? head.StandardOutput.Trim() : null;
+
+        // The fetch succeeded, which is origin confirming it has the branch, so a tracking ref
+        // that then will not resolve to a commit is this repository failing to answer — never
+        // evidence the branch is gone.
+        return head.ExitCode == 0 && head.StandardOutput.Trim().IsNotBlank()
+            ? ParentHeadRead.Resolved(head.StandardOutput.Trim())
+            : ParentHeadRead.ReadFailed(
+                $"origin/{branch} was fetched but its tracking ref would not resolve to a commit");
     }
 
     /// <summary>
     /// The parent pull request's own head commit, fetched into <paramref name="destinationRef"/>
     /// from <c>refs/pull/&lt;n&gt;/head</c> — the ref GitHub keeps after the branch itself is
     /// deleted, which is the whole reason this fallback exists (the same ref
-    /// <c>CreatePrReviewCheckoutAsync</c> already relies on).
+    /// <c>CreatePrReviewCheckoutAsync</c> already relies on). Reports a missing ref apart from a
+    /// failed fetch for the reason <see cref="ReadRemoteBranchHeadAsync"/> does.
     /// </summary>
-    private static async Task<string?> TryFetchPullRequestHeadAsync(
+    private static async Task<ParentHeadRead> ReadPullRequestHeadAsync(
         ProcessRunner git, string repositoryPath, int pullRequestNumber, string destinationRef,
         CancellationToken cancellationToken)
     {
@@ -420,13 +595,20 @@ public sealed class StackedParentWatch(
             cancellationToken);
         if (fetch.ExitCode != 0)
         {
-            return null;
+            return NamesAMissingRemoteRef(fetch.StandardError)
+                ? ParentHeadRead.Missing($"origin has no head ref for pull request #{pullRequestNumber}")
+                : ParentHeadRead.ReadFailed(
+                    $"pull request #{pullRequestNumber}'s own head ref could not be fetched: "
+                    + FirstLine(fetch.StandardError));
         }
 
         ProcessResult head = await git(
             "git", ["rev-parse", "--verify", "--quiet", $"{destinationRef}^{{commit}}"],
             repositoryPath, cancellationToken);
-        return head.ExitCode == 0 && head.StandardOutput.Trim().IsNotBlank() ? head.StandardOutput.Trim() : null;
+        return head.ExitCode == 0 && head.StandardOutput.Trim().IsNotBlank()
+            ? ParentHeadRead.Resolved(head.StandardOutput.Trim())
+            : ParentHeadRead.ReadFailed(
+                $"pull request #{pullRequestNumber}'s head ref was fetched but would not resolve to a commit");
     }
 
     private async Task DeleteRefBestEffortAsync(
@@ -442,6 +624,24 @@ public sealed class StackedParentWatch(
                 exception, "Could not delete the temporary ref {Ref} in {Repository}", reference, repositoryPath);
         }
     }
+
+    /// <summary>
+    /// Which door out of its own lifecycle the parent took, in a clause a park message can carry.
+    /// Deliberately not <c>TaskDependency.DescribeDeath</c>, which is written for a dependent that
+    /// has not dispatched yet and whose only lever is "revise this task's dependencies": a child
+    /// already holding a branch of its own has other options, and the park that quotes this one
+    /// names them itself. Only ever called once <see cref="StackedEdgeRules.IsDead(Guid?, TaskDependency)"/>
+    /// has said the parent is dead, so the final arm is that rule's own third arm rather than a
+    /// guess at anything unobserved.
+    /// </summary>
+    private static string DescribeParentDeath(TaskDependency parent) =>
+        parent.State == TaskState.Abandoned
+            ? "it was abandoned, which is a dead end by design"
+            : parent.State == TaskState.Failed
+                ? "it ended Failed, which waits on a human decision (retry, resolve, or abandon) before its "
+                  + "branch means anything"
+                : "it reads Done having never delivered a pull request that can merge — its own was observed "
+                  + "closed without merging, or it never opened one";
 
     private static string Short(string commit) => commit.Length > 8 ? commit[..8] : commit;
 
