@@ -1091,7 +1091,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
@@ -1102,6 +1102,112 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             "resuming a branch does not move its fork point, and nothing can re-derive it later — "
             + "a blank here would leave the next replay with no observable boundary");
         worktrees.CreateRequests.Should().BeEmpty("a follow-up resumes the branch rather than cutting one");
+    }
+
+    /// <summary>
+    /// The other half of that fact, and the harder one (adversarial review, cycle 6): a recorded
+    /// fork point is carried forward only while the branch actually SITS on it. A stacked replay
+    /// records <c>RunDispatched.BaseCommit</c> as the commit it was dispatched to land on — a
+    /// prediction, written before the session rebases anything — and its own prompt sanctions
+    /// `git rebase --abort` on a conflict it cannot honestly resolve, which leaves the branch where
+    /// it was with that prediction on the record. Re-asserting it here would hand the next rebase
+    /// session `git rebase --onto origin/&lt;parent&gt; &lt;a commit this branch never landed on&gt;`,
+    /// whose replay range still holds the parent's own commits, and scope a review lap's diff from
+    /// the same place. Blank is the honest record: the prompts already dispute an unobserved
+    /// boundary rather than guessing one.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_on_a_stacked_child_blanks_a_fork_point_its_branch_never_landed_on()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid replayRunId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string parentBranch = "task/parent-slice-one";
+        const string childBranch = "task/child-slice-two";
+        const string neverLanded = "9999888877776666555544443333222211110000";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"aborted-replay-{taskId:N}",
+                "/tmp/aborted-replay-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Child slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, replayRunId, Now);
+            aggregate.Apply(claimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+                TaskDecider.Complete(aggregate, replayRunId, PullRequestUrl, Now);
+            aggregate.Apply(completed);
+
+            // The lap after the replay: GitHub reports the child conflicting, so closeout dispatches
+            // an ordinary judgment rebase rather than another replay — the dispatch that would
+            // otherwise be told to replay from a commit the aborted rebase never landed on.
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                aggregate, replayRunId, childBranch, "the pull request conflicts with its base branch",
+                FollowUpKind.Rebase, automatic: true, Now, node.OwnerId);
+            aggregate.Apply(reopened);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, followUpRunId, Now);
+
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, claimed, completed, reopened, reclaimed]);
+
+            // The replay run's own record: the commit it was TOLD to land on, not one it reached.
+            session.Events.StartStream<RunAggregate>(replayRunId,
+                new RunDispatched(replayRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/child-wt", childBranch, ExecutorMode.Subscription, Now,
+                    BaseBranch: parentBranch, BaseCommit: neverLanded),
+                new AgentSessionCompleted(replayRunId, Now),
+                new VerificationPassed(replayRunId, Now),
+                new PullRequestOpened(replayRunId, PullRequestUrl, 14, Now),
+                new RunSuperseded(replayRunId, 2, Now));
+
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: false),
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails followUp = (await query.LoadAsync<RunDetails>(followUpRunId, cts.Token))!;
+        followUp.BaseCommit.Should().BeEmpty(
+            "the branch does not contain the recorded commit, so this run records no fork point rather "
+            + "than re-asserting one the branch never landed on");
+        followUp.BaseBranch.Should().Be(parentBranch,
+            "the base is a fact about the branch and is untouched by this — the retarget is still owed");
+        followUp.StackedForkPoint("main").Should().BeNull(
+            "which is what keeps every consumer of the record off a boundary nothing observed");
+
+        string prompt = executor.Request!.Prompt;
+        prompt.Should().NotContain(neverLanded,
+            "no instruction may name a commit this branch never landed on");
+        prompt.Should().Contain("do not rebase this branch",
+            "with no observed boundary the stacked rebase prompt disputes instead of guessing one");
     }
 
     /// <summary>
@@ -1211,7 +1317,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(childTaskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
@@ -1307,7 +1413,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(childTaskId, retriedRunId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
@@ -1408,7 +1514,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(childTaskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
@@ -1891,4 +1997,18 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     /// </summary>
     private static readonly ProcessRunner UnusedProcessRunner =
         RecordingProcessRunner.Failing("this test never reviews a pull request").Runner;
+
+    /// <summary>
+    /// The one git question a stacked resume asks: does the branch still contain the fork point the
+    /// previous run recorded (adversarial review, cycle 6 — a replay that aborted its rebase leaves
+    /// a recorded commit the branch never landed on)? <paramref name="contained"/> is git's own
+    /// answer: exit 0 for yes, 1 for no. Everything else still fails loudly, for the reason
+    /// <see cref="UnusedProcessRunner"/> gives.
+    /// </summary>
+    private static ProcessRunner ForkPointContainmentRunner(bool contained) =>
+        (fileName, arguments, _, _) => fileName == "git" && arguments.Contains("--is-ancestor")
+            ? Task.FromResult(new ProcessResult(contained ? 0 : 1, string.Empty, string.Empty))
+            : throw new InvalidOperationException(
+                $"this test only answers the fork-point containment check, but '{fileName}' was invoked "
+                + $"with {arguments.Count} argument(s)");
 }

@@ -335,6 +335,43 @@ public sealed class RunLauncher(
                 ? task.StackReplayOntoCommit ?? string.Empty
                 : resumedBase?.ForkPointCommit ?? worktree.StartPointCommit;
 
+            // Of those three, exactly one can name a commit this branch never landed on, and it is
+            // the inherited one: a StackReplay's own record is a dispatch-time PREDICTION — the
+            // commit the replay was TOLD to land on, written above before the session has rebased
+            // anything — and its prompt sanctions `git rebase --abort` on a conflict it cannot
+            // honestly resolve, which leaves the branch where it was with the prediction recorded
+            // as though it were the fork point (adversarial review, cycle 6). Every later consumer
+            // of the record then asserts it as observed fact: a Rebase follow-up is told
+            // `git rebase --onto origin/<parent> <that commit>`, whose replay range still holds the
+            // parent's own commits, and a review lap scopes `git diff <that commit>...HEAD`, whose
+            // merge base collapses to the project's base and folds the parent's delta into what a
+            // reviewer grades as this branch's work. So the inherited value is checked against the
+            // branch before this run re-asserts it, the same containment check — and the same
+            // three-way reading of --is-ancestor — StackedParentWatch already applies to it.
+            //
+            // A fresh cut's start point needs no check (the cut just observed it) and a replay's
+            // own prediction must not have one (the branch is not meant to contain it yet — that
+            // is what the replay is for). Only a stacked run pays for the call at all, because
+            // blank-versus-recorded changes nothing an unstacked run reads (RunDetails.StackedForkPoint).
+            if (!isStackReplay
+                && resumedBase is not null
+                && baseCommit.IsNotBlank()
+                && runBaseBranch != project.BaseBranch
+                && await BranchContainsCommitAsync(
+                    worktree.Path, worktree.Branch, baseCommit, cancellationToken) == false)
+            {
+                // Blank, not a substitute: nothing else on record names where this branch actually
+                // forked from, and the prompts already have an honest path for an unobserved
+                // boundary — a stacked rebase says so and disputes rather than replaying from a
+                // guess (AgentPromptBuilder.AppendStackedRebaseRules' own null arm).
+                logger.LogWarning(
+                    "Task {TaskId}: run {RunId} resumes branch {Branch}, which does NOT contain the fork point "
+                    + "{ForkPoint} the previous run recorded — recording no fork point rather than a commit this "
+                    + "branch never landed on (ordinarily a stacked replay that aborted its rebase)",
+                    taskId, runId, worktree.Branch, baseCommit);
+                baseCommit = string.Empty;
+            }
+
             // The follow-up's own opening Discovery cycle scope seed (task: a lap reviews only what
             // it changed): task.FollowUpPullRequestHeadSha already carries the kind-aware gate —
             // CloseoutEngine only ever records one for an automatic ReviewFeedback or FailingChecks
@@ -709,6 +746,49 @@ public sealed class RunLauncher(
                         pullRequestNumber);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="branch"/> actually contains <paramref name="commit"/> — true, false,
+    /// or null for "git could not answer", which is deliberately not the same as false (AGENTS.md's
+    /// never-guess rule, and the identical three-way reading of <c>--is-ancestor</c>
+    /// <c>StackedParentWatch.ObserveAsync</c> takes: git documents exit 0 as contained, 1 as not,
+    /// and anything else as a failure to answer). Null and true are both treated as "keep the
+    /// record" by the one caller: a failed git call is not evidence a branch is missing a commit,
+    /// and discarding an honest fork point over a transient would cost this branch its boundary
+    /// permanently — nothing can re-derive one later.
+    /// <para>
+    /// Asks the branch ref rather than <c>HEAD</c>: the claim being checked is about the branch, and
+    /// a retained worktree can be sitting on a detached HEAD left by an earlier session's own
+    /// interrupted rebase.
+    /// </para>
+    /// </summary>
+    private async Task<bool?> BranchContainsCommitAsync(
+        string worktreePath, string branch, string commit, CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProcessResult contained = await processRunner(
+                "git",
+                ["merge-base", "--is-ancestor", commit, $"refs/heads/{branch}"],
+                worktreePath,
+                cancellationToken);
+            return contained.ExitCode switch
+            {
+                0 => true,
+                1 => false,
+                _ => null,
+            };
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not read whether branch {Branch} in {Worktree} contains {Commit}; leaving the recorded "
+                + "fork point as it was",
+                branch, worktreePath, commit);
+            return null;
         }
     }
 
