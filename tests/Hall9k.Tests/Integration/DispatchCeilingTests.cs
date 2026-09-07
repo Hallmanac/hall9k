@@ -37,6 +37,18 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 21, 12, 0, 0, TimeSpan.Zero);
 
+    /// <summary>
+    /// The one project every task seeded here belongs to. Every assertion in this class is about
+    /// the node's own ceiling and the queue's own order, so the tasks share a project deliberately:
+    /// seeded one project apiece — which is what these helpers used to do, each passing a fresh id
+    /// — they would also be exercising the cross-project rotation (Decisions Log #141), and a
+    /// second sweep would hand the free slot to whichever pseudo-project had not been dispatched
+    /// for yet rather than to the oldest queued task this class is asserting about. No project
+    /// document is ever written for it, which leaves it uncapped and in the default tier: exactly
+    /// the shape a task whose project predates either setting has.
+    /// </summary>
+    private static readonly Guid Project = DomainId.New();
+
     /// <summary>A terminal result line, the one thing the daemon reads out of a stream file.</summary>
     private const string ResultLine =
         """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"output_tokens":300},"total_cost_usd":0.0123}""";
@@ -438,7 +450,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         {
             session.Events.StartStream<TaskAggregate>(ids[index], TaskSeed.Dispatchable(
                 TaskDecider.Add(
-                    ids[index], DomainId.New(), $"Task {index}", ["done"], TaskType.Chore,
+                    ids[index], Project, $"Task {index}", ["done"], TaskType.Chore,
                     null, null, null, Now.AddSeconds(index), node.OwnerId),
                 node.OwnerId, Now));
         }
@@ -455,7 +467,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         Guid id = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
         session.Events.StartStream<TaskAggregate>(id, TaskSeed.Dispatchable(
-            TaskDecider.Add(id, DomainId.New(), objective, ["done"], TaskType.Chore,
+            TaskDecider.Add(id, Project, objective, ["done"], TaskType.Chore,
                 null, null, null, addedAt, node.OwnerId),
             node.OwnerId, assignedAt));
 
@@ -470,7 +482,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
     {
         Guid id = DomainId.New();
         (TaskAggregate task, object[] events) = TaskSeed.Start(
-            TaskDecider.Add(id, DomainId.New(), objective, ["done"], TaskType.Chore,
+            TaskDecider.Add(id, Project, objective, ["done"], TaskType.Chore,
                 null, null, null, addedAt, node.OwnerId),
             node.OwnerId, assignedAt);
         TaskRevised marked = TaskDecider.Revise(
@@ -493,7 +505,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         await using IDocumentSession session = store.LightweightSession();
 
         (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
-            TaskDecider.Add(taskId, DomainId.New(), "Theirs", ["done"], TaskType.Chore,
+            TaskDecider.Add(taskId, Project, "Theirs", ["done"], TaskType.Chore,
                 null, null, null, Now, node.OwnerId),
             node.OwnerId, Now);
         session.Events.StartStream<TaskAggregate>(taskId,
@@ -536,7 +548,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         await using IDocumentSession session = store.LightweightSession();
 
         (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
-            TaskDecider.Add(taskId, DomainId.New(), "Parked", ["done"], TaskType.Chore,
+            TaskDecider.Add(taskId, Project, "Parked", ["done"], TaskType.Chore,
                 null, null, null, Now, node.OwnerId),
             node.OwnerId, Now);
         session.Events.StartStream<TaskAggregate>(taskId,
