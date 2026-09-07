@@ -281,6 +281,44 @@ state: the write is recorded pending, `h9k status` surfaces a needs-you row poin
 `h9k connection add jira` to refresh it, and the daemon retries the identical write automatically
 once the connection is fixed.
 
+#### The task record on a published issue
+
+A task published under `github-issues` carries its whole self in the issue: below the
+human-readable objective and criteria checklist, a collapsed **Hall9k task record** section holds
+one fenced YAML block in the same shape `h9k task add --file` accepts — project, type, objective,
+criteria, model, epic (by title, beside the origin's own epic id), the agent context, plus
+pre-approval, any review-cycle or session cap the task overrode, the origin install's node id, task
+id and branch name, and the publish time. Dependencies are written as **issue numbers**, never as
+the origin's task ids: ids differ per install by design and an issue number is the one identifier
+that means the same thing on both. `h9k task revise` rewrites only that block, so a human's edits
+to the issue's prose survive, and the checklist above it is regenerated only when the criteria
+actually changed — and then only the checklist itself, item lines and the blank lines between them,
+so a note somebody wrote under the list with no heading of its own is left where it is. The
+confirmation says which of the two it rewrote.
+
+`h9k task add --from-issue` reads the record when one is there and reconstructs the whole draft
+from it — criteria become criteria rather than context, the context body becomes the agent context,
+type/model/caps carry over, each blocked-by issue number resolves to the local task that already
+adopted that issue or is reported as an unresolved edge naming the command that adopts the parent
+first, and the epic maps to the local epic of that title or names the command that creates one. An
+issue with no record adopts exactly as it always did. A field this build cannot use — because a
+later build wrote it, or because somebody hand-wrote the block — degrades rather than failing the
+adoption, and the output names the value it dropped: a `type` this build has never heard of, a
+`model` it will not spawn, a cap outside its own floors each leave the draft on the local default
+and cost that one field and nothing else. A record naming type `pr-review` is the one refusal,
+since that work reviews a pull request rather than an issue. The record is read once and never
+re-checked
+(#60): the adopting install owns its copy from then on, and the origin's later revisions reach it
+only by adopting again. Pre-approval is the one field that deliberately does not carry: the record
+states the **origin's** answer, and the adopting install gives its own with `--pre-approved`
+(default off), which the adoption output names. The adopted task records the origin's node id and
+task id, and `h9k task show` says which install published it and under what id.
+
+**Jira is the next provider to carry the same record**, in the same shape — the record's own class
+is provider-neutral and only where the YAML sits inside an item (a collapsed `<details>` section, in
+GitHub's case) is provider business. Nothing about the record touches the Jira write path today: a
+Jira card's content is still composed by an agent and executed only through `h9k task write-jira`.
+
 ### Pull-request review
 
 `h9k task add --from-pr` adopts an existing, open pull request (a number, `owner/repo#42`, or a
