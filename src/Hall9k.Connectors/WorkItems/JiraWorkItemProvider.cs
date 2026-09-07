@@ -8,6 +8,24 @@ using Hall9k.Domain.Shared.ValueObjects;
 namespace Hall9k.Connectors.WorkItems;
 
 /// <summary>
+/// The account a registered Jira connection's credentials actually are, as
+/// <c>/rest/api/2/myself</c> answered: the <c>accountId</c> Jira's own assignee field carries —
+/// the identity a <c>tracker-assignee</c> claim gate compares against (idea 64c75e43) — and the
+/// display name beside it, which is what a human reads. Never the email that was typed: that is
+/// the credential's own half of the Basic header, not what the tenant calls this person.
+/// </summary>
+public sealed record JiraSelfAccount(string AccountId, string DisplayName);
+
+/// <summary>
+/// The <c>/rest/api/2/myself</c> read, with its refusal kept rather than thrown: exactly one of
+/// <see cref="Self"/> and <see cref="Failure"/> is ever set, and <see cref="FailureKind"/> says
+/// what could end a hold that rests on it — a token to renew, an answer about the tenant itself,
+/// or an outage to wait out. <see cref="JiraWorkItemProvider.VerifyAccessAsync"/> is the same read
+/// with the classification dropped and the refusal thrown.
+/// </summary>
+public sealed record JiraSelfRead(JiraSelfAccount? Self, DomainException? Failure, TrackerReadFailure FailureKind);
+
+/// <summary>
 /// Jira Cloud through its REST API, on the credentials of a registered connection (PLAN.md §10,
 /// backlog 18). The second implementation of the seam decision #60 built, and the first one that
 /// needs construction: <c>gh</c> carries the machine's own login, while a Jira site and token are
@@ -39,6 +57,14 @@ public sealed class JiraWorkItemProvider(
 {
     /// <summary>Exactly the fields the import maps. Asking for more would be storing what we do not use.</summary>
     private const string RequestedFields = "summary,description,status";
+
+    /// <summary>
+    /// The one field the claim gate reads (idea 64c75e43), asked for by itself rather than by
+    /// taking <see cref="RequestedFields"/> and ignoring the rest: nothing else about the card is
+    /// re-read at a gate check, which is what leaves the one-time content snapshot the adoption
+    /// took untouched (Decisions Log #60).
+    /// </summary>
+    private const string AssigneeField = "assignee";
 
     private readonly JiraRequester requester = requester ?? JiraHttp.Requester;
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
@@ -98,14 +124,43 @@ public sealed class JiraWorkItemProvider(
     /// command that caused it — rather than surfacing weeks later inside a dispatched run.
     /// <para>
     /// It returns Jira's own display name for the account rather than echoing back what was
-    /// typed, because the useful confirmation is the one that could have come out different.
+    /// typed, because the useful confirmation is the one that could have come out different — and,
+    /// beside it, the <c>accountId</c> the same answer already carries. That id is the identity a
+    /// project's <c>tracker-assignee</c> claim gate compares an assignee against (idea 64c75e43),
+    /// and it is captured here rather than by a second call of its own precisely because this call
+    /// is already made, at registration, for a reason of its own.
     /// </para>
     /// </summary>
-    public async Task<string> VerifyAccessAsync(CancellationToken cancellationToken)
+    public async Task<JiraSelfAccount> VerifyAccessAsync(CancellationToken cancellationToken)
     {
-        string authorization = await account.AuthorizationAsync(
-            $"sign in to {account.Site}", cancellationToken);
-        JiraResponse response = await SendAsync(
+        JiraSelfRead read = await ReadSelfAsync(cancellationToken);
+        return read.Self ?? throw read.Failure!;
+    }
+
+    /// <summary>
+    /// The same read with the refusal kept instead of thrown — what a <c>tracker-assignee</c>
+    /// claim gate needs (idea 64c75e43), and the Jira-side mirror of
+    /// <see cref="GitHubReviewAssignments.ReadCurrentLoginAsync"/>: a gate that fails closed has to
+    /// say what could possibly end the hold, and an exception carries the sentence but not the
+    /// classification. <see cref="VerifyAccessAsync"/> is this method with the classification
+    /// dropped and the refusal thrown, which is right for registration — there, any failure at all
+    /// means the connection is not recorded.
+    /// </summary>
+    public async Task<JiraSelfRead> ReadSelfAsync(CancellationToken cancellationToken)
+    {
+        string authorization;
+        try
+        {
+            authorization = await account.AuthorizationAsync($"sign in to {account.Site}", cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            // The vault could not produce the token at all. Not the tenant refusing it, but the
+            // same remedy — register the connection again — so it is classified with it.
+            return new JiraSelfRead(null, exception, TrackerReadFailure.Credentials);
+        }
+
+        JiraAttempt attempt = await AttemptAsync(
             new JiraRequest(HttpMethod.Get, account.Endpoint("/rest/api/2/myself"), authorization),
             account.AccountEmail,
             // "as" rather than "to", because the subject every failure message interpolates after
@@ -116,6 +171,11 @@ public sealed class JiraWorkItemProvider(
             cancellationToken,
             subjectIsCard: false);
 
+        if (attempt.Response is not { } response)
+        {
+            return new JiraSelfRead(null, attempt.Failure!, Classify(attempt.StatusCode));
+        }
+
         JsonDocument document;
         try
         {
@@ -125,7 +185,7 @@ public sealed class JiraWorkItemProvider(
         {
             // A 2xx that is not JSON is a proxy or a portal answering for the tenant. The
             // credentials are unproven, so this reports the honest thing rather than success.
-            throw NotASignedInUser(RelayedText.OneLine(exception.Message));
+            return NotSignedIn(RelayedText.OneLine(exception.Message));
         }
 
         using (document)
@@ -143,18 +203,137 @@ public sealed class JiraWorkItemProvider(
             // guards its own document the same way and for the same reason.
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
-                throw NotASignedInUser(
+                return NotSignedIn(
                     $"the JSON it answered with is {document.RootElement.ValueKind}, not an object");
             }
 
-            if (ReadString(document.RootElement, "accountId") is null)
+            if (ReadString(document.RootElement, "accountId") is not { } accountId)
             {
-                throw NotASignedInUser("the JSON it answered with carries no accountId, so it is not a Jira account");
+                return NotSignedIn("the JSON it answered with carries no accountId, so it is not a Jira account");
             }
 
-            return ReadString(document.RootElement, "displayName") ?? account.AccountEmail;
+            return new JiraSelfRead(
+                new JiraSelfAccount(
+                    accountId, ReadString(document.RootElement, "displayName") ?? account.AccountEmail),
+                null,
+                TrackerReadFailure.None);
         }
     }
+
+    /// <summary>
+    /// A 2xx that proved nothing, as a read rather than a throw. Classified as
+    /// <see cref="TrackerReadFailure.Item"/> — the tenant answered and will answer the same way
+    /// again, so the remedy is the site URL rather than a token or a wait.
+    /// </summary>
+    private JiraSelfRead NotSignedIn(string reported) =>
+        new(null, NotASignedInUser(reported), TrackerReadFailure.Item);
+
+    /// <summary>
+    /// Who the tracker says holds one card right now — the whole of the read a
+    /// <c>tracker-assignee</c> claim gate makes (idea 64c75e43). Only the assignee field is asked
+    /// for, so the one-time content snapshot the adoption took is untouched (Decisions Log #60),
+    /// and nothing here writes: the gate reads the tenant's own decision, it never makes one.
+    /// <para>
+    /// Returns rather than throws, because a gate has three outcomes and only one of them is an
+    /// error: assigned to this identity, assigned to somebody else (or nobody), and unreadable.
+    /// The unreadable one carries Jira's own sentence verbatim — the same one every other caller
+    /// of this class is refused with — plus whether the tenant was refusing the credentials
+    /// (401/403) rather than failing to answer, which is what tells "renew the token" apart from
+    /// "wait out the outage" in the hold this produces.
+    /// </para>
+    /// <para>
+    /// Jira has exactly one assignee, so the list this returns is empty or one long — the shape is
+    /// shared with GitHub, whose issues may carry several. A card with nobody on it answers
+    /// <c>"assignee": null</c>, which is an empty list here and never an error.
+    /// </para>
+    /// </summary>
+    public async Task<TrackerAssigneeRead> ReadAssigneeAsync(JiraIssueKey key, CancellationToken cancellationToken)
+    {
+        string authorization;
+        try
+        {
+            authorization = await account.AuthorizationAsync(
+                $"read who {key.Value} is assigned to at {account.Site}", cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            // The vault could not produce the token at all (an unset variable, a keychain item
+            // that is gone, a file this platform wrote and something deleted). That is the
+            // credential being unavailable rather than the tenant refusing it, but the remedy is
+            // the same one — register the connection again — so it is reported as a credential
+            // refusal rather than as an outage nobody can wait out.
+            return TrackerAssigneeRead.Unreadable(exception.Message, TrackerReadFailure.Credentials);
+        }
+
+        JiraAttempt attempt = await AttemptAsync(
+            new JiraRequest(
+                HttpMethod.Get,
+                account.Endpoint($"/rest/api/2/issue/{key.Value}?fields={AssigneeField}"),
+                authorization),
+            key.Value,
+            "read the assignee of",
+            cancellationToken);
+
+        if (attempt.Response is not { } response)
+        {
+            return TrackerAssigneeRead.Unreadable(attempt.Failure!.Message, Classify(attempt.StatusCode));
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(response.Body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("fields", out JsonElement fields)
+                || fields.ValueKind != JsonValueKind.Object)
+            {
+                // The same reasoning Map() applies to a card document: a 2xx from a proxy or an
+                // SSO portal parses cleanly and carries none of what was asked for, and reading
+                // that as "nobody is assigned" would hold the claim while blaming the tenant's
+                // assignment rather than the answer nobody could read.
+                return TrackerAssigneeRead.Unreadable(
+                    NotACardDocument(
+                        key, "the JSON it answered with carries no fields, so there is no assignee in it").Message,
+                    TrackerReadFailure.Item);
+            }
+
+            if (!fields.TryGetProperty(AssigneeField, out JsonElement assignee)
+                || assignee.ValueKind != JsonValueKind.Object)
+            {
+                // "assignee": null — nobody holds it. A genuinely unassigned card, not a failure.
+                return TrackerAssigneeRead.Nobody();
+            }
+
+            return ReadString(assignee, "accountId") is { } accountId
+                ? TrackerAssigneeRead.HeldBy(accountId, ReadString(assignee, "displayName"))
+                // An assignee object with no accountId is a document this platform cannot compare
+                // against anything, so it is unreadable rather than silently unassigned.
+                : TrackerAssigneeRead.Unreadable(
+                    NotACardDocument(
+                        key, "the assignee it answered with carries no accountId, so there is nobody in it "
+                        + "to compare this install's own identity against").Message,
+                    TrackerReadFailure.Item);
+        }
+        catch (JsonException exception)
+        {
+            return TrackerAssigneeRead.Unreadable(
+                NotACardDocument(key, RelayedText.OneLine(exception.Message)).Message, TrackerReadFailure.Item);
+        }
+    }
+
+    /// <summary>
+    /// Which of the three remedies a failed call earns, from the status code Jira answered with.
+    /// A 4xx other than a rate limit is Jira answering definitively about this request — the key,
+    /// the project, the account's access to it — and nothing on this install retries into a
+    /// different answer, so calling that an outage would name a wait that never ends. 0 is a
+    /// request that got no answer at all.
+    /// </summary>
+    private static TrackerReadFailure Classify(int statusCode) => statusCode switch
+    {
+        401 or 403 => TrackerReadFailure.Credentials,
+        429 => TrackerReadFailure.Outage,
+        >= 400 and < 500 => TrackerReadFailure.Item,
+        _ => TrackerReadFailure.Outage,
+    };
 
     /// <summary>
     /// What a sign-in check that came back 2xx and proved nothing is refused with. It names what
@@ -166,7 +345,22 @@ public sealed class JiraWorkItemProvider(
         + "That is usually a proxy or an SSO portal in front of the tenant: check the site URL is the "
         + "Jira address itself (https://your-org.atlassian.net).");
 
-    private async Task<JiraResponse> SendAsync(
+    /// <summary>
+    /// One call and what came back, without throwing: either the 2xx response, or the refusal
+    /// <see cref="SendAsync"/> would have thrown, alongside the raw status code that produced it
+    /// (0 when the request never got an answer at all — a timeout, an unreachable host).
+    /// <para>
+    /// It is split out of <see cref="SendAsync"/> for the claim gate (idea 64c75e43), which needs
+    /// two things from a failure that an exception alone cannot carry both of: the message
+    /// verbatim, and whether Jira was refusing the credentials rather than failing to answer —
+    /// the one distinction that decides whether the remedy is renewing a token or waiting out an
+    /// outage. Every message stays the one <see cref="Explain"/> already writes, so the gate and
+    /// every other caller quote the tenant identically.
+    /// </para>
+    /// </summary>
+    private sealed record JiraAttempt(JiraResponse? Response, DomainException? Failure, int StatusCode);
+
+    private async Task<JiraAttempt> AttemptAsync(
         JiraRequest request,
         string key,
         string verb,
@@ -182,22 +376,35 @@ public sealed class JiraWorkItemProvider(
         {
             // HttpClient reports its own timeout this way. Separated from a real cancellation so
             // the message can say the site stopped answering rather than that somebody stopped it.
-            throw new DomainValidationException(
+            return new JiraAttempt(null, new DomainValidationException(
                 $"{account.Site} did not answer within {JiraHttp.Deadline.TotalSeconds:0} seconds while "
                 + $"trying to {verb} {key}. Check the site is reachable from this machine (a VPN or a "
-                + "proxy is the usual reason it is not from here but is from the browser) and try again.");
+                + "proxy is the usual reason it is not from here but is from the browser) and try again."),
+                StatusCode: 0);
         }
         catch (HttpRequestException exception)
         {
-            throw new DomainValidationException(
+            return new JiraAttempt(null, new DomainValidationException(
                 $"Could not reach {account.Site} to {verb} {key}: {RelayedText.OneLine(exception.Message)}. "
                 + "Check the site URL on the registered connection (h9k connection list) and that this "
-                + "machine can reach it.");
+                + "machine can reach it."),
+                StatusCode: 0);
         }
 
         return response.StatusCode is >= 200 and < 300
-            ? response
-            : throw Explain(response, key, verb, subjectIsCard);
+            ? new JiraAttempt(response, null, response.StatusCode)
+            : new JiraAttempt(null, Explain(response, key, verb, subjectIsCard), response.StatusCode);
+    }
+
+    private async Task<JiraResponse> SendAsync(
+        JiraRequest request,
+        string key,
+        string verb,
+        CancellationToken cancellationToken,
+        bool subjectIsCard = true)
+    {
+        JiraAttempt attempt = await AttemptAsync(request, key, verb, cancellationToken, subjectIsCard);
+        return attempt.Response ?? throw attempt.Failure!;
     }
 
     /// <summary>

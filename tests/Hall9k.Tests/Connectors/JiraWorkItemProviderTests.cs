@@ -79,9 +79,12 @@ public sealed class JiraWorkItemProviderTests : IDisposable
                 new Uri("https://hall9k.atlassian.net"), "brian@example.com", "a-fresh-token"),
             requester.Requester);
 
-        string displayName = await provider.VerifyAccessAsync(Token);
+        JiraSelfAccount self = await provider.VerifyAccessAsync(Token);
 
-        displayName.Should().Be("Brian Hall");
+        self.DisplayName.Should().Be("Brian Hall");
+        self.AccountId.Should().Be("5b10a2844c20165700ede21g",
+            "the accountId is the identity a tracker-assignee claim gate compares an assignee against, "
+            + "and this call is where it is captured");
         requester.Requests.Should().ContainSingle().Which.Authorization.Should().Be(
             "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("brian@example.com:a-fresh-token")),
             "the token being checked is the one the human just typed, not one read back from a file");
@@ -405,9 +408,10 @@ public sealed class JiraWorkItemProviderTests : IDisposable
     {
         RecordingRequester jira = new(200, """{ "displayName": "Brian Hall", "accountId": "abc" }""");
 
-        string who = await Provider(jira).VerifyAccessAsync(Token);
+        JiraSelfAccount who = await Provider(jira).VerifyAccessAsync(Token);
 
-        who.Should().Be("Brian Hall", "the useful confirmation is the one that could have come out different");
+        who.DisplayName.Should().Be("Brian Hall", "the useful confirmation is the one that could have come out different");
+        who.AccountId.Should().Be("abc", "the same answer already carries the id the claim gate compares against");
         jira.Requests.Should().ContainSingle()
             .Which.Url.ToString().Should().Be("https://hall9k.atlassian.net/rest/api/2/myself");
     }

@@ -226,6 +226,127 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     }
 
     /// <summary>
+    /// Who GitHub says holds one issue right now — the whole of the read a
+    /// <c>tracker-assignee</c> claim gate makes (idea 64c75e43). Only the assignees field is
+    /// asked for, so the one-time content snapshot the adoption took is untouched (Decisions Log
+    /// #60), and nothing here writes: the gate reads the repository's own decision, it never
+    /// makes one.
+    /// <para>
+    /// An issue may carry several assignees, and being among them passes — the whole list comes
+    /// back and the caller decides. Returns rather than throws, for the reason
+    /// <see cref="JiraWorkItemProvider.ReadAssigneeAsync"/>'s own doc gives: a gate has three
+    /// outcomes and only one of them is an error, and the unreadable one has to carry gh's own
+    /// sentence plus whether gh was unauthenticated rather than merely unable to answer.
+    /// </para>
+    /// </summary>
+    public async Task<TrackerAssigneeRead> ReadAssigneesAsync(
+        ExternalReference reference, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (!TryParseCanonical(reference.Reference, out string repository, out int number))
+        {
+            return TrackerAssigneeRead.Unreadable(
+                $"'{RelayedText.OneLine(reference.ToString())}' does not read as a github owner/repo#number "
+                + "reference, so there is no issue whose assignees could be read.",
+                TrackerReadFailure.Item);
+        }
+
+        ProcessResult result;
+        try
+        {
+            result = await RunGhAsync(
+                [
+                    "issue", "view", number.ToString(CultureInfo.InvariantCulture),
+                    "--repo", repository, "--json", "assignees",
+                ],
+                workingDirectory, cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            // gh never started, went quiet, or exited with its stderr held open — RunGhAsync has
+            // already turned each of those into the sentence that names what to do about it. None
+            // of them is GitHub refusing the credentials, and none is a definitive answer about
+            // the issue either: the tool or the machine is what has to recover, so the next sweep
+            // reading again is the whole of the remedy this platform can offer.
+            return TrackerAssigneeRead.Unreadable(exception.Message, TrackerReadFailure.Outage);
+        }
+
+        if (result.ExitCode != 0)
+        {
+            return TrackerAssigneeRead.Unreadable(
+                Explain(result.StandardError, repository, number, workingDirectory).Message,
+                Classify(result.StandardError));
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("assignees", out JsonElement assignees)
+                || assignees.ValueKind != JsonValueKind.Array)
+            {
+                // The same reasoning ReadIssueJson applies to every other gh read: exit code zero
+                // is not a promise of shape, and something else on PATH named gh answering its own
+                // prose must not be read as "nobody is assigned" — that would hold the claim while
+                // blaming a repository decision nobody made.
+                return TrackerAssigneeRead.Unreadable(
+                    $"gh answered for {repository}#{number} with something that carries no assignees "
+                    + "array, so there is nothing in it to read as an assignment. Run the same gh "
+                    + $"command by hand from {workingDirectory} to see what answered.",
+                    TrackerReadFailure.Item);
+            }
+
+            return TrackerAssigneeRead.HeldBy(
+                [
+                    .. assignees.EnumerateArray()
+                        .Select(assignee => ReadString(assignee, "login"))
+                        .OfType<string>()
+                        .Where(login => login.Length > 0)
+                        .Select(login => new TrackerAssignee(login, null)),
+                ],
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException exception)
+        {
+            return TrackerAssigneeRead.Unreadable(
+                $"gh answered for {repository}#{number} with something that is not JSON: "
+                + $"{RelayedText.OneLine(exception.Message)}. Run the same gh command by hand from "
+                + $"{workingDirectory} to see what answered.",
+                TrackerReadFailure.Item);
+        }
+    }
+
+    /// <summary>
+    /// Which of the three remedies a failed <c>gh</c> call earns, read off the same strings
+    /// <see cref="Explain"/> itself matches on — the account being the problem, and the reference
+    /// or the account's access to it being the problem — and nothing else.
+    /// <para>
+    /// The bare word "authentication" is deliberately not matched: "HTTP 407 Proxy Authentication
+    /// Required" is somebody else's failure, and calling it gh's would send the reader to
+    /// re-authenticate a login that was never refused. Anything unmatched is an outage rather than
+    /// a definitive answer, because that is the classification whose remedy — read again next
+    /// sweep — is harmless when it turns out to be wrong.
+    /// </para>
+    /// </summary>
+    private static TrackerReadFailure Classify(string standardError)
+    {
+        string reported = RelayedText.OneLine(standardError).Trim();
+        if (reported.Contains("gh auth login", StringComparison.OrdinalIgnoreCase)
+            || reported.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase))
+        {
+            return TrackerReadFailure.Credentials;
+        }
+
+        // GitHub answers "could not resolve" both for a thing that does not exist and for one the
+        // signed-in account cannot see, deliberately, so this one classification covers both — and
+        // Explain's own message already names both for the reader.
+        return reported.Contains("Could not resolve to a Repository", StringComparison.OrdinalIgnoreCase)
+            || reported.Contains("Could not resolve to an Issue", StringComparison.OrdinalIgnoreCase)
+            || reported.Contains("no issues found", StringComparison.OrdinalIgnoreCase)
+                ? TrackerReadFailure.Item
+                : TrackerReadFailure.Outage;
+    }
+
+    /// <summary>
     /// <c>github:owner/repo#42</c> points at
     /// <c>https://github.com/owner/repo/issues/42</c>. A format rule rather than a lookup, so it
     /// is safe to apply without asking GitHub; a reference that does not carry an owner and a
