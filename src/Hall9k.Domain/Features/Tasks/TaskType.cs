@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Hall9k.Domain.Shared.Exceptions;
@@ -36,17 +37,36 @@ public sealed record TaskType
     /// prompt template, and verification profile, so a typo must not slip through as nothing.
     /// A blank input is the documented default rather than an error: Feature.
     /// </summary>
-    public static TaskType Parse(string? value) => value?.Trim().ToLowerInvariant() switch
+    public static TaskType Parse(string? value) =>
+        TryParse(value, out TaskType? parsed)
+            ? parsed
+            : throw new DomainValidationException(
+                $"Unknown task type '{value}'. Use feature, bugfix, refactor, chore, research, or pr-review.");
+
+    /// <summary>
+    /// The same vocabulary as <see cref="Parse"/>, answering false instead of refusing. For a
+    /// reader that is not reading a human's command line and has somewhere honest to fall back to:
+    /// a task record written by a LATER build can name a type this one has never heard of, and that
+    /// record is documented to degrade to the fields this build understands rather than refuse the
+    /// whole adoption (<c>Hall9k.Connectors.WorkItems.TaskRecord.CurrentVersion</c>). A typo on the
+    /// command line still goes through <see cref="Parse"/> and is still refused with the choices
+    /// quoted.
+    /// </summary>
+    public static bool TryParse(string? value, [NotNullWhen(true)] out TaskType? parsed)
     {
-        null or "" or "feature" => Feature,
-        "bugfix" or "bug" => Bugfix,
-        "refactor" => Refactor,
-        "chore" => Chore,
-        "research" => Research,
-        "pr-review" or "pr_review" or "prreview" => PrReview,
-        _ => throw new DomainValidationException(
-            $"Unknown task type '{value}'. Use feature, bugfix, refactor, chore, research, or pr-review."),
-    };
+        parsed = value?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "feature" => Feature,
+            "bugfix" or "bug" => Bugfix,
+            "refactor" => Refactor,
+            "chore" => Chore,
+            "research" => Research,
+            "pr-review" or "pr_review" or "prreview" => PrReview,
+            _ => null,
+        };
+
+        return parsed is not null;
+    }
 
     public bool Equals(TaskType? other) => other is not null && Value == other.Value;
 

@@ -13,12 +13,21 @@ namespace Hall9k.Domain.Shared.ValueObjects;
 /// is the task-level floor of 0 for the three per-run caps, where 0 is the documented takeover
 /// lever: cycles-since-last-grant can never be negative, so a cap of 0 always parks at the very
 /// next cap check, regardless of the track's own count.
+/// <para>
+/// Both floors are also askable as questions rather than only enforceable as refusals
+/// (<see cref="IsPositive"/>, <see cref="IsAtOrAboveZero"/>), which is what
+/// <c>TaskDecider</c>'s public cap predicates answer for a caller holding a value that came from
+/// OUTSIDE this install — a cap read off another install's task record — and that has to decide
+/// whether to degrade it or set it before it has an event to build. One floor per cap, asked
+/// either way (independent pre-PR review, cycle 1: an out-of-floor cap in a hand-written record
+/// used to wall the whole adoption).
+/// </para>
 /// </summary>
 internal static class ReviewCapValidation
 {
     public static void RefuseNonPositiveCap(Optional<int?> cap, string name)
     {
-        if (cap is { HasValue: true, Value: { } value } && value < 1)
+        if (cap is { HasValue: true, Value: { } value } && !IsPositive(value))
         {
             throw new DomainValidationException($"{name} must be at least 1.");
         }
@@ -26,9 +35,17 @@ internal static class ReviewCapValidation
 
     public static void RefuseNegativeCap(Optional<int?> cap, string name)
     {
-        if (cap is { HasValue: true, Value: { } value } && value < 0)
+        if (cap is { HasValue: true, Value: { } value } && !IsAtOrAboveZero(value))
         {
             throw new DomainValidationException($"{name} must be at least 0.");
         }
     }
+
+    /// <summary>The floor of 1 as a question: every cap with no takeover role.</summary>
+    internal static bool IsPositive(int cap) => cap >= 1;
+
+    /// <summary>
+    /// The floor of 0 as a question: the three per-run caps, where 0 is the takeover lever.
+    /// </summary>
+    internal static bool IsAtOrAboveZero(int cap) => cap >= 0;
 }

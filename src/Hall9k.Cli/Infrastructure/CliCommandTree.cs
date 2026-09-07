@@ -600,11 +600,14 @@ public static class CliCommandTree
                     + "you direct otherwise). Creation is identity, not readiness: a project and an "
                     + "objective are all it takes, and the draft is invisible to the dispatcher until you "
                     + "publish and assign it. Acceptance criteria are what h9k task publish demands, and "
-                    + "an adopted issue or pull request never supplies them.")
+                    + "an adopted issue or pull request never supplies them — unless the issue carries a "
+                    + "task record another hall9k install published into it, which holds the whole task "
+                    + "(criteria, context, type, model, caps, dependencies, epic) and is read once, here.")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Add the project browse surface\"",
                     "--criteria", "\"h9k project list shows one row per project\"")
                 .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
+                .WithExample("task", "add", "--project", "hall9k", "--from-issue", "266", "--pre-approved")
                 .WithExample("task", "add", "--project", "hall9k", "--from-jira", "PROJ-123")
                 .WithExample("task", "add", "--project", "hall9k",
                     "--from-pr", "https://github.com/Hallmanac/hall9k/pull/42")

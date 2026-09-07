@@ -65,6 +65,19 @@ public sealed record TaskRecord(
     /// The only version this build writes. A reader accepts anything it can read rather than
     /// demanding an exact match: every field is optional on the way in, so a record written by a
     /// later build degrades to the fields this one understands instead of refusing the adoption.
+    /// <para>
+    /// <c>type</c>, <c>model</c> and the cap lines included — the three fields whose values this
+    /// build validates rather than merely stores. A type it has never heard of, a model name it
+    /// will not spawn, a cap outside its own floors: each is degraded like any other unreadable
+    /// field — the draft takes this install's own value and the adoption output names the one it
+    /// could not use — rather than failing the whole adoption, which is what feeding them to the
+    /// command line's own strict parsers used to do (independent pre-PR review, cycle 1, both
+    /// lenses; the cap floors are asked through <c>TaskDecider</c>'s own predicates so the two
+    /// readings cannot drift). The single refusal is a record naming type <c>pr-review</c>, and
+    /// that one is not a field this build cannot read: it is work of a different kind, pointed at a
+    /// pull request rather than an issue (<c>Hall9k.Cli.Commands.TaskRecordAdoption</c> names the
+    /// two routes that work).
+    /// </para>
     /// </summary>
     public const int CurrentVersion = 1;
 

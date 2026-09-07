@@ -792,7 +792,7 @@ public static class TaskDecider
     public static TaskSessionCapOverridden OverrideSessionCap(
         TaskAggregate task, int? sessionCap, DateTimeOffset overriddenAt, Guid overriddenByOwnerId)
     {
-        if (sessionCap is { } value && value < 1)
+        if (sessionCap is { } value && !IsUsableSessionCap(value))
         {
             throw new DomainValidationException(
                 $"The session cap must be at least 1 (task {task.Id}) — a cap of zero would dispatch nothing for "
@@ -838,6 +838,28 @@ public static class TaskDecider
             task.Id, maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds,
             lifetimeReviewCycleBudget, overriddenAt, overriddenByOwnerId);
     }
+
+    /// <summary>
+    /// The three cap floors above, asked as questions rather than enforced as refusals — the same
+    /// floors, from the same place, so the two readings can never disagree.
+    /// <para>
+    /// Public for a reason the throwing setters cannot serve: a cap can arrive from OUTSIDE this
+    /// install, in the task record on a published issue that <c>h9k task add --from-issue</c>
+    /// adopts, and a value that install's own build never validated (a hand-written block) must
+    /// degrade to "no override" with the adoption saying so — never wall the whole adoption with a
+    /// message quoting a flag the operator never passed, which is exactly what feeding it straight
+    /// into <see cref="OverrideSessionCap"/> and <see cref="OverrideReviewCaps"/> used to do
+    /// (independent pre-PR review, cycle 1, both lenses; the same failure class
+    /// <c>TaskRecordAdoption.VetType</c> already answers for the type field).
+    /// </para>
+    /// </summary>
+    public static bool IsUsableSessionCap(int cap) => ReviewCapValidation.IsPositive(cap);
+
+    /// <inheritdoc cref="IsUsableSessionCap"/>
+    public static bool IsUsablePerRunReviewCap(int cap) => ReviewCapValidation.IsAtOrAboveZero(cap);
+
+    /// <inheritdoc cref="IsUsableSessionCap"/>
+    public static bool IsUsableLifetimeReviewCycleBudget(int cap) => ReviewCapValidation.IsPositive(cap);
 
     /// <summary>
     /// Published -> Draft: the explicit revert that reopens a task for revision. Refused from

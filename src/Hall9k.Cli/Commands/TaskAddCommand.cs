@@ -88,9 +88,15 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "objective and the body becomes agent context; the issue is recorded as the task's external "
             + "reference and rendered as a link by h9k task show. Acceptance criteria are NEVER "
             + "read out of an issue body — they are the readiness contract, so you supply them with "
-            + "--criteria or at the prompt. Only an issue the source reports as open is adopted, so a "
-            + "closed or missing one is refused; the state read at import is recorded as an "
-            + "observation of that moment, never re-checked afterwards")]
+            + "--criteria or at the prompt. An issue another hall9k install PUBLISHED is the one "
+            + "exception, and not really one: it carries a machine-readable task record holding the "
+            + "criteria their owner already wrote, plus the agent context, type, model, caps, "
+            + "dependencies (as issue numbers) and epic, and adoption reconstructs the whole draft "
+            + "from it rather than asking. That record is read once here and never re-checked, so "
+            + "the origin's later revisions reach this copy only by adopting again. Only an issue "
+            + "the source reports as open is adopted, so a closed or missing one is refused; the "
+            + "state read at import is recorded as an observation of that moment, never re-checked "
+            + "afterwards")]
         public string? FromIssue { get; init; }
 
         [CommandOption("--from-jira <KEY-OR-URL>")]
@@ -160,6 +166,20 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "adversarial-only, or conformance-only; passed alongside any other value it is silently "
             + "dropped rather than refused, since there is no consequence to acknowledge there.")]
         public bool AcceptReducedReview { get; init; }
+
+        [CommandOption("--pre-approved [MODE]")]
+        [Description(
+            "Give this task standing pre-approval from the start (task: a task can be published "
+            + "pre-approved): the owner stops being a synchronous gate at the pull request, and the "
+            + "daemon merges it on its own once GitHub's own gates read satisfied. The bare flag, or "
+            + "on, means exactly that; after-human-review holds the same automatic merge until a human "
+            + "reviewer has actually been requested on the pull request and every requested reviewer has "
+            + "approved the current head; off is the default. Add the reviewers you want in GitHub — "
+            + "hall9k stores no reviewer setting and requests no reviews. h9k task publish carries what "
+            + "is granted here forward rather than clearing it. Most useful when adopting an issue whose "
+            + "task record says how the ORIGIN install answered pre-approval for its copy — that is a "
+            + "fact about the other install, and this is how this one gives its own answer")]
+        public FlagValue<string> PreApproved { get; init; } = new();
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -289,7 +309,53 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         ImportedWorkItem? imported = adoption is null
             ? null
             : await AdoptAsync(session, projectDetails, adoption, cancellationToken);
-        if (imported is not null && adoption is not null)
+        TaskRecord? record = imported is not null && adoption is not null
+            ? TaskRecordAdoption.Read(adoption.Provider, imported)
+            : null;
+        TaskRecordAdoption.Resolution? resolution = null;
+        // What the record came to, held for the adoption output and for the cap events below: it
+        // carries the values this build could not use — a type, a model, a cap outside this build's
+        // floors — because the record degrades rather than refusing, and a degrade nobody is told
+        // about is the failure (AGENTS.md, never guess at unobserved facts).
+        TaskRecordAdoption.Reconstruction? reconstructed = null;
+        if (record is not null && imported is not null)
+        {
+            // The record is the whole task the origin published, so there is no seed to confirm and
+            // nothing to ask at the prompt: criteria are criteria rather than context, and the
+            // context body is the agent context verbatim. An explicit flag on this command line
+            // still wins over all of it — adopting is not the same as surrendering the local call.
+            resolution = await TaskRecordAdoption.ResolveAsync(
+                session, record, imported.Reference, projectDetails.Id, cancellationToken);
+            reconstructed = TaskRecordAdoption.Reconstruct(
+                record,
+                resolution,
+                new TaskRecordAdoption.Overrides(
+                    objective, criteria, agentContext, type, model, epic, blockedBy),
+                imported.Reference.ToString());
+
+            objective = reconstructed.Objective;
+            criteria = reconstructed.Criteria;
+            agentContext = reconstructed.AgentContext;
+            if (reconstructed.Type is { } recordType)
+            {
+                taskType = TaskType.Parse(recordType);
+            }
+
+            if (reconstructed.Model is { } recordModel)
+            {
+                taskModel = TaskDecider.VetModel(AgentModel.FromInput(recordModel));
+            }
+
+            epicId ??= reconstructed.EpicId;
+            // The record's edges join whatever this command line already declared rather than
+            // replacing it: an explicit --blocked-by states the set outright (and then the
+            // reconstruction hands back none), and a --stacked-on parent is already in there and
+            // must stay.
+            dependencies = [.. dependencies, .. reconstructed.Dependencies.Where(id => !dependencies.Contains(id))];
+
+            TaskDecider.VetStackedEdge(taskId, stackedOnId, dependencies, taskType);
+        }
+        else if (imported is not null && adoption is not null)
         {
             objective = ChooseObjective(objective, imported, adoption);
             string? linkedContext = adoptingPullRequest
@@ -318,8 +384,16 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             epicId: epicId,
             reviewStageComposition: reviewStageComposition,
             reviewStageCompositionAcknowledged: settings.AcceptReducedReview,
-            stackedOnTaskId: stackedOnId);
+            stackedOnTaskId: stackedOnId,
+            preApproval: PreApprovalInput.FromFlag(settings.PreApproved),
+            // Recorded only when the record actually named the origin's own task. A hand-written
+            // block that says nothing about where it came from leaves this null rather than an
+            // origin with empty ids, which would read as a mirror of nowhere (AGENTS.md, never
+            // guess at unobserved facts).
+            origin: record?.Origin is { } candidate && candidate.TaskId != Guid.Empty ? candidate : null);
         session.Events.StartStream<TaskAggregate>(taskId, added);
+        AppendRecordCaps(
+            session, taskId, added, reconstructed?.Caps ?? TaskRecordCaps.None, context.OwnerId);
 
         await session.SaveChangesAsync(cancellationToken);
 
@@ -353,6 +427,23 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 + $"{imported.ObservedStamp}[/]");
         }
 
+        if (record is not null && resolution is not null && reconstructed is not null)
+        {
+            AnnounceRecord(
+                record, resolution, reconstructed, projectDetails.Name, added,
+                shortId: TaskListCommand.ShortId(taskId));
+        }
+        else if (added.EffectivePreApproval.MergesAutomatically)
+        {
+            // Named on the accepting path too, not only where a record made it a comparison: this
+            // removes the owner as a synchronous gate at the merge, and a flag that quietly does
+            // that is a flag somebody will be surprised by later.
+            AnsiConsole.MarkupLine(
+                $"[dim]  pre-approved ({PreApprovalInput.Word(added.EffectivePreApproval)}): "
+                + $"{PreApprovalInput.Describe(added.EffectivePreApproval)} — h9k task set-pre-approved "
+                + "to change.[/]");
+        }
+
         if (epicId is { } joinedEpic)
         {
             AnsiConsole.MarkupLine($"[dim]  in epic {TaskListCommand.ShortId(joinedEpic)}[/]");
@@ -379,6 +470,198 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             : $"[dim]Next:[/] h9k task publish {shortId} [dim](a draft never dispatches; publishing then assigning is what starts it)[/]");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// Carry the origin's cap overrides onto the adopted copy. They are separate events rather than
+    /// fields on <see cref="TaskAdded"/> because that is what they are everywhere else in the
+    /// platform — deliberately state-agnostic, settable mid-run — and adoption is not the place to
+    /// invent a second way to record them.
+    /// <para>
+    /// <paramref name="caps"/> are the record's caps as
+    /// <see cref="TaskRecordAdoption.Reconstruction.Caps"/> vetted them, never the record's own: a
+    /// value outside this build's floors is already dropped there and named in the adoption output,
+    /// because a cap this build cannot set is worth one degraded field and not the whole adoption
+    /// (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
+    /// </summary>
+    internal static void AppendRecordCaps(
+        IDocumentSession session, Guid taskId, TaskAdded added, TaskRecordCaps caps, Guid ownerId)
+    {
+        if (!caps.Any)
+        {
+            return;
+        }
+
+        TaskAggregate task = new();
+        task.Apply(added);
+        // The adoption's own moment, not a second clock reading: these events are appended to the
+        // stream TaskAdded starts, in the same transaction, and they record the same observation —
+        // that this install adopted the origin's caps as it created the task. A fresh UtcNow here
+        // would stamp them microseconds after the creation they are part of and make the ordering
+        // of one transaction's events depend on the clock (external review on PR #276).
+        DateTimeOffset now = added.AddedAt;
+        if (caps.MaxComplianceReviewCycles is not null || caps.MaxAdversarialReviewCycles is not null
+            || caps.MaxFinalFullPassRounds is not null || caps.LifetimeReviewCycleBudget is not null)
+        {
+            session.Events.Append(taskId, TaskDecider.OverrideReviewCaps(
+                task,
+                Cap(caps.MaxComplianceReviewCycles),
+                Cap(caps.MaxAdversarialReviewCycles),
+                Cap(caps.MaxFinalFullPassRounds),
+                Cap(caps.LifetimeReviewCycleBudget),
+                now,
+                ownerId));
+        }
+
+        if (caps.SessionCap is { } sessionCap)
+        {
+            session.Events.Append(taskId, TaskDecider.OverrideSessionCap(task, sessionCap, now, ownerId));
+        }
+
+        // A cap the record did not name is left alone rather than cleared: absent means "the origin
+        // stated no override", and the levels above this task decide it here exactly as they did
+        // there.
+        static Optional<int?> Cap(int? value) =>
+            value is null ? Optional<int?>.None : Optional<int?>.Of(value);
+    }
+
+    /// <summary>
+    /// What the record actually gave this draft, said plainly — including every field it could not
+    /// give it. The snapshot rule is stated outright (Decisions Log #60): this copy is read once
+    /// and never re-checked, so the origin's later revisions reach it only by adopting again, and a
+    /// human who does not know that will believe they are looking at a live mirror.
+    /// </summary>
+    private static void AnnounceRecord(
+        TaskRecord record,
+        TaskRecordAdoption.Resolution resolution,
+        TaskRecordAdoption.Reconstruction reconstructed,
+        string projectName,
+        TaskAdded added,
+        string shortId)
+    {
+        // Every value quoted out of the record goes through ExternalText, not EscapeMarkup alone.
+        // The record is text in a GitHub issue body: anybody who can edit that issue authored it,
+        // and EscapeMarkup neutralises only Spectre's syntax, never the terminal's own — the same
+        // rule ObjectivePrompt's doc comment spells out for an adopted title.
+        string origin = record.Origin.NodeName.IsNotBlank()
+            ? ExternalText.OneLineMarkup(record.Origin.NodeName)
+            : "another install";
+        string originTask = record.Origin.TaskId == Guid.Empty
+            ? string.Empty
+            : $" as task {TaskListCommand.ShortId(record.Origin.TaskId)}";
+        AnsiConsole.MarkupLine(
+            $"[dim]  read the task record {origin} published{originTask}: objective, "
+            + $"{record.Criteria.Count} criteria, agent context, type {ExternalText.OneLineMarkup(record.Type)}"
+            + $"{(record.Model.IsNotBlank() ? $", model {ExternalText.OneLineMarkup(record.Model)}" : string.Empty)}"
+            + $"{(reconstructed.Caps.Any ? ", caps" : string.Empty)}[/]");
+        AnsiConsole.MarkupLine(
+            "[dim]  read once, now yours: nothing re-checks the issue, so a later revision on "
+            + "the origin reaches this copy only by adopting it again.[/]");
+
+        if (reconstructed.UnrecognizedType.IsNotBlank())
+        {
+            // The record's forward-compatibility promise is that a later build's record degrades to
+            // the fields this one understands rather than refusing the adoption — and this is the
+            // field where that degrade is a real change to the work, so it is stated rather than
+            // left to be noticed (independent pre-PR review, cycle 1, adversarial lens).
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Unknown type:[/] [dim]the record says type "
+                + $"{ExternalText.OneLineMarkup(reconstructed.UnrecognizedType)}, which this build does not "
+                + "know — a later one wrote it. Everything else the record carries was read; this draft took "
+                + $"type {added.Type.Value.ToLowerInvariant().EscapeMarkup()} instead. Name the type you want "
+                + $"with:[/] h9k task revise {shortId} --type <type>");
+        }
+
+        if (reconstructed.UnusableModel.IsNotBlank())
+        {
+            // Same degrade, same reason it is said out loud: a model name reaches the executor's
+            // shell command line, so one this build will not spawn costs the draft its model and
+            // nothing else — the node's own default stands, and the operator is told which word
+            // was dropped (independent pre-PR review, cycle 1).
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Unusable model:[/] [dim]the record says model "
+                + $"{ExternalText.OneLineMarkup(reconstructed.UnusableModel)}, which this build will not "
+                + "spawn. This draft took no model of its own, so the node's default decides. Name the model "
+                + $"you want with:[/] h9k task revise {shortId} --model <model>");
+        }
+
+        foreach (TaskRecordAdoption.UnusableCap cap in reconstructed.UnusableCaps)
+        {
+            // A cap outside this build's floors is the same class of degrade, and reachable only
+            // from a block written by hand — a record hall9k wrote carries values its own origin
+            // validated at set time. One line per cap, each naming the command that sets that cap
+            // here, so an operator can self-correct from the message (AGENTS.md, CLI standards).
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Unusable cap:[/] [dim]the record says {cap.Key} {cap.Value}, which is outside "
+                + "what this build accepts, so this task took no override for it and the project or node "
+                + "level decides it. Set one here with:[/] "
+                + cap.Command(shortId));
+        }
+
+        // Both answers named as MODES, not as yes and no: after-human-review is neither, and the
+        // whole point of this line is comparing the answer this install just gave against the one
+        // the record says the origin gave. An unrecognized word in the record is reported as
+        // unrecognized rather than read as off, the same degrade every other field gets.
+        PreApprovalMode here = added.EffectivePreApproval;
+        PreApprovalMode there = record.PreApproval;
+        AnsiConsole.MarkupLine(here.MergesAutomatically
+            ? $"[dim]  pre-approved here: {PreApprovalInput.Word(here).EscapeMarkup()}, because you passed "
+                + $"--pre-approved (the origin's copy is {OriginsAnswer(there)}).[/]"
+            : $"[dim]  pre-approved here: off{(there.MergesAutomatically
+                ? $" — the origin's copy is {PreApprovalInput.Word(there).EscapeMarkup()}, which is a fact "
+                    + $"about that install. Match it with h9k task publish {shortId} --pre-approved "
+                    + PreApprovalInput.Word(there).EscapeMarkup()
+                : string.Empty)}.[/]");
+
+        foreach (int issue in resolution.UnresolvedIssues)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Unresolved dependency:[/] [dim]the record blocks this task on issue #{issue}, "
+                + "and no task here has adopted it. Adopt the parent first, then add the edge:[/] "
+                + $"h9k task add --project {projectName.EscapeMarkup()} --from-issue {issue} "
+                + $"[dim]then[/] h9k task revise {shortId} --blocked-by <that task>");
+        }
+
+        if (record.DependenciesWithoutIssues > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]  the origin had {record.DependenciesWithoutIssues} more blocker(s) with no issue "
+                + "of their own, so the record could not name them and neither can this copy.[/]");
+        }
+
+        if (resolution.UnmatchedEpicTitle is { } epicTitle)
+        {
+            string title = ExternalText.OneLineMarkup(epicTitle);
+            // "joined none" only when it really joined none: an explicit --epic wins over the
+            // record (Reconstruct hands back no epic when one was named), so this task can have
+            // joined an epic the operator chose while the record's own title still matched nothing
+            // here. Printing the create-and-join guidance there contradicted the "in epic <id>"
+            // line two lines below it (independent pre-PR review, cycle 1, conformance lens).
+            AnsiConsole.MarkupLine(added.EpicId is { } joined
+                ? $"[dim]  no open epic titled '{title}' here, which is the epic the record named — this "
+                    + $"task joined epic {TaskListCommand.ShortId(joined)}, the one you named instead.[/]"
+                : $"[dim]  no open epic titled '{title}' here, so this task joined none. "
+                    + "Create it and join:[/] "
+                    + $"h9k epic add --project {projectName.EscapeMarkup()} --title \"{title}\" "
+                    + $"[dim]then[/] h9k task revise {shortId} --epic <that epic>");
+        }
+    }
+
+    /// <summary>
+    /// How the origin's own answer reads inside the comparison line, in the record's own words. A
+    /// mode this build does not recognize is named as unrecognized rather than flattened to "not
+    /// pre-approved": the record states what the ORIGIN chose, and a later build's answer read as
+    /// off would misreport that install (AGENTS.md, never guess at unobserved facts).
+    /// </summary>
+    private static string OriginsAnswer(PreApprovalMode origin) => origin.Value switch
+    {
+        "Off" => "off",
+        // TaskRecord.TryParse reads the field through PreApprovalMode.FromInput, which collapses a
+        // field that was absent and one carrying a word this build does not know into the same
+        // Unknown — so this says neither, rather than picking the one it cannot tell.
+        "" => "not stated in a way this build reads",
+        _ => $"{PreApprovalInput.Word(origin).EscapeMarkup()} too",
+    };
 
     /// <summary>
     /// Which source a draft is being seeded from, and the words to say about it. It is a type
