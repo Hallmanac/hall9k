@@ -1388,15 +1388,21 @@ public sealed partial class VerificationRunner(
             // Re-observed now that the lock is actually held, not reused from the capture above
             // (adversarial review, cycle 1, medium): acquiring this lock can wait — the whole
             // reason its own wait is bounded rather than instant — and RefreshReadingCheckoutAsync
-            // takes this identical checkout's lock to fast-forward it, so a sibling refresh can
-            // move the checkout's HEAD (or dirty it) while this call queues for the lock above.
-            // Without re-observing here, the gate that is about to run under the lock — against
-            // whatever commit the checkout actually holds right now — would be recorded and
+            // internally takes this identical checkout's lock (nested inside its own repository
+            // lock, around the rev-list/merge it runs) before fast-forwarding it, so a sibling
+            // refresh can move the checkout's HEAD (or dirty it) while this call queues for the
+            // lock above. Without re-observing here, the gate that is about to run under the lock —
+            // against whatever commit the checkout actually holds right now — would be recorded and
             // reported as an observation of the stale commit captured before the wait, which is
             // exactly the unobserved-fact-as-fact mistake AGENTS.md's "never guess" rule exists to
             // catch. Once this lock is held, nothing else can move or dirty this checkout until it
-            // is released (every other caller of it takes the identical lock first), so this
-            // observation stays valid for the rest of the block.
+            // is released — every other caller that mutates it (a sibling gate spawn via
+            // AcquireCheckoutLockAsync, or RefreshReadingCheckoutAsync's own internal use of the
+            // identical lock) takes it first — so this observation stays valid for the rest of the
+            // block (independent pre-PR review, cycle 3, conformance and adversarial lenses, both
+            // high: RefreshReadingCheckoutAsync used to take only the broader repository lock here,
+            // a different file for a linked worktree, so it could fast-forward this checkout while
+            // a gate command ran under this one unguarded).
             uncleanNote = await CheckoutCleanliness.DescribeNotConfirmedCleanAsync(checkout, project.BaseBranch, cancellationToken);
             baseCommitSha = await GetHeadShaAsync(checkout, cancellationToken);
             cacheable = baseCommitSha is not null && uncleanNote is null;
@@ -1442,8 +1448,8 @@ public sealed partial class VerificationRunner(
 
                 if (cacheable)
                 {
-                    await RecordCleanBaseVerdictAsync(
-                        nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!, basePasses: true, failureNote: null,
+                    await TryRecordCleanBaseVerdictAsync(
+                        runId, nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!, basePasses: true, failureNote: null,
                         cancellationToken);
                 }
 
@@ -1457,12 +1463,44 @@ public sealed partial class VerificationRunner(
 
             if (cacheable)
             {
-                await RecordCleanBaseVerdictAsync(
-                    nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!, basePasses: false, failureNote: note,
+                await TryRecordCleanBaseVerdictAsync(
+                    runId, nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!, basePasses: false, failureNote: note,
                     cancellationToken);
             }
 
             return note;
+        }
+    }
+
+    /// <summary>
+    /// Best-effort: the verdict this wraps was already actually observed by the gate run that just
+    /// finished, so a failure persisting it (a transient Postgres error, or the cache document's
+    /// first-ever write failing under a database whose daemon role cannot create tables) must never
+    /// discard that observation — only the ability to reuse it on a later run without re-running
+    /// the gate (independent pre-PR review, cycle 3, conformance lens, low: this call used to throw
+    /// straight out of <see cref="DescribeCleanBaseComparisonAsync"/> into
+    /// <see cref="RecordFailureAsync"/>'s best-effort catch, which logs and records a bare gate
+    /// failure — silently losing the clean-base note this method exists to attach). Cancellation
+    /// tied to the run's own token still propagates, since that is the run stopping, not a
+    /// persistence failure.
+    /// </summary>
+    private async Task TryRecordCleanBaseVerdictAsync(
+        Guid runId, Guid nodeId, Guid projectId, string gate, string gateCommand, string baseCommitSha, bool basePasses,
+        string? failureNote, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RecordCleanBaseVerdictAsync(
+                nodeId, projectId, gate, gateCommand, baseCommitSha, basePasses, failureNote, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                ex,
+                "Run {RunId}: observed the clean-base comparison for gate '{Gate}' at base commit {Sha} but could " +
+                "not persist it for reuse — a later run against this same commit will re-run the gate instead of " +
+                "reusing this observation",
+                runId, gate, baseCommitSha);
         }
     }
 
