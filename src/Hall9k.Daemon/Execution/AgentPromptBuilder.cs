@@ -1257,6 +1257,7 @@ public static class AgentPromptBuilder
             task, project, branch, cycle: 1, lens, priorRulings: null,
             mechanicsOverride: new ReviewMechanicsOverride(
                 baseBranch,
+                CheckoutDescription:
                 "- You are in a read-only, detached checkout of this pull request's current head — there "
                 + "is no branch to be \"on\"; do not attempt to commit.",
                 GatesObserved: false,
@@ -1282,12 +1283,27 @@ public static class AgentPromptBuilder
     /// diff belongs to someone else's pull request, and a stacked child's ordinary pre-PR loop,
     /// where the diff is this task's own but the base it is a delta against is the parent's branch
     /// rather than the project's (task: a stacked pull-request edge exists as an explicit opt-in
-    /// dependency) — that one passes <see cref="BaseBranch"/> alone and takes every other default,
+    /// dependency) — that one passes <see cref="BaseBranch"/> and <see cref="ForkPointCommit"/> and
+    /// takes every other default,
     /// which is what makes its reviewers see the child's own delta rather than the parent's work
     /// alongside it. Null everywhere else, so an unstacked pre-PR loop keeps reading
     /// <c>project.BaseBranch</c>, the real `on branch` wording, and the real gate-status
     /// observation exactly as it always has.
     /// </summary>
+    /// <param name="ForkPointCommit">
+    /// The commit this branch was actually cut from (<c>RunDispatched.BaseCommit</c>), named as the
+    /// boundary of every range this pass reads and scopes against in place of
+    /// <c>origin/{BaseBranch}</c>. Set only for a stacked child, and only when its run recorded
+    /// one: its base is another task's branch, and an ordinary review lap on that branch
+    /// force-pushes <c>origin/&lt;parent&gt;</c> past the point this child was cut from — which
+    /// collapses the merge base a three-dot range resolves and folds the parent's whole
+    /// rewritten-away delta into what the reviewer reads, and scopes, as this child's own work
+    /// (conformance and adversarial review, cycle 4). The same hazard the build session's
+    /// self-review range, the recompose reset, the rebase replay and both fixup-fold instructions
+    /// are already keyed to a commit for — see <c>WorkPromptBuilder.StackedForkPoint</c>. Null
+    /// everywhere else, including a stacked child whose run recorded no fork point, which falls
+    /// back to the parent branch's ref rather than inventing a boundary.
+    /// </param>
     /// <param name="CheckoutDescription">
     /// The first mechanics line, replacing the ordinary "you are in the implementation's git
     /// worktree on branch X". Null keeps that ordinary wording, which is right for a stacked child:
@@ -1312,8 +1328,8 @@ public static class AgentPromptBuilder
     /// worktree's <c>obj/</c>/<c>bin/</c> at the same time — <see cref="AppendReviewMechanics"/>.
     /// </param>
     public sealed record ReviewMechanicsOverride(
-        string BaseBranch, string? CheckoutDescription = null, bool GatesObserved = true,
-        bool DiffIsForeignPullRequest = false);
+        string BaseBranch, string? ForkPointCommit = null, string? CheckoutDescription = null,
+        bool GatesObserved = true, bool DiffIsForeignPullRequest = false);
 
     /// <summary>
     /// The one reviewer a <see cref="ReviewMode.Verify"/> cycle dispatches (task: review cycles
@@ -1349,6 +1365,12 @@ public static class AgentPromptBuilder
     /// false-completeness problem <paramref name="priorCycleMode"/> guards against applies just as
     /// much to a scoped FinalFullPass or a scoped opening Discovery as it does to a Verify pass.
     /// </param>
+    /// <param name="baseCommit">
+    /// This run's own recorded fork point (<c>RunDispatched.BaseCommit</c>), which is the boundary
+    /// the full-diff fallback below names on a stacked child instead of <c>origin/&lt;parent&gt;</c>
+    /// — see <see cref="ReviewMechanicsOverride.ForkPointCommit"/> for the force-pushed-parent
+    /// hazard. Ignored for every ordinary run, whose prompt is unchanged.
+    /// </param>
     public static string BuildReviewVerify(
         TaskDetails task, ProjectDetails project, string branch, int cycle, IReadOnlyList<ReviewLens> tracks,
         string priorFindings, string priorFixPosition, string? sinceSha, ReviewMode priorCycleMode,
@@ -1357,10 +1379,17 @@ public static class AgentPromptBuilder
         IReadOnlyList<BoundaryApprovalRecord>? priorBoundaryApprovals = null,
         string? interactiveSessionAddress = null,
         bool? interactiveModeEnabledOverride = null,
-        string? baseBranch = null)
+        string? baseBranch = null,
+        string? baseCommit = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
+        // The full-diff fallback below only fires when the prior cycle's own tip could not be
+        // pinned down, but when it does it must name the same boundary every other stacked
+        // instruction names: a commit, not the parent's ref, which a force-push moves out from
+        // under the range (WorkPromptBuilder.StackedForkPoint; conformance review, cycle 4).
+        string? fullDiffForkPoint = WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit);
+        string fullDiffBoundary = fullDiffForkPoint ?? $"origin/{effectiveBaseBranch}";
         bool priorCycleReadFullBranch =
             (priorCycleMode != ReviewMode.FinalFullPass && priorCycleMode != ReviewMode.Discovery)
             || priorCycleSinceSha is null;
@@ -1447,11 +1476,17 @@ public static class AgentPromptBuilder
             ? $"  Read the commits added since the prior cycle: `git log {sha}..HEAD` and `git diff {sha}..HEAD`."
               + " That range is the fix — and anything else that landed alongside it — you are verifying."
             : "  The commit the prior cycle's fix landed on could not be pinned down, so read the whole diff "
-              + $"instead: `git diff origin/{effectiveBaseBranch}...HEAD` (commits: "
-              + $"`git log origin/{effectiveBaseBranch}..HEAD`) — the same origin-first range "
-              + "AppendReviewMechanics uses, for the same staleness reason: a local base-branch ref, when this "
-              + "worktree carries one at all, is shared with the project home's `dev/` worktree and is routinely "
-              + "stale relative to this task's actual base.");
+              + $"instead: `git diff {fullDiffBoundary}...HEAD` (commits: "
+              + $"`git log {fullDiffBoundary}..HEAD`) — the same range AppendReviewMechanics uses, for the same "
+              + (fullDiffForkPoint is null
+                  ? "staleness reason: a local base-branch ref, when this worktree carries one at all, is shared "
+                    + "with the project home's `dev/` worktree and is routinely stale relative to this task's "
+                    + "actual base."
+                  : $"reason: this branch is stacked on `{effectiveBaseBranch}`, another task's branch, and a "
+                    + $"force-push there moves `origin/{effectiveBaseBranch}` out from under the range — folding "
+                    + "the parent's own rewritten delta into what would read as this branch's work. The boundary "
+                    + "named above is this branch's recorded fork point; do not substitute the ref back in, and "
+                    + "do not compute it with `git merge-base`, which a force-push collapses too."));
         prompt.AppendLine("- For each finding above, confirm the fix actually resolved it. An incomplete or");
         prompt.AppendLine("  half-applied fix is still needs-fixes — do not credit an attempt for a result.");
         prompt.AppendLine("- Check the blast radius: a regression the fix itself introduced is exactly what this");
@@ -1473,7 +1508,17 @@ public static class AgentPromptBuilder
             AppendOutboundMilestoneRules(prompt, "review", OutboundMilestone.Review, interactiveSessionAddress);
         }
 
-        AppendFindingContract(prompt, project, ReviewMode.Verify);
+        // The scope rule decides in-scope from out-of-scope, so it has to name the same boundary
+        // the range above does rather than the project's own base — this pass is base-aware and its
+        // finding contract was still reading project.BaseBranch, which on a stacked child tags the
+        // parent's already-reviewed lines as this pull request's own work (class sweep, conformance
+        // review cycle 4). The override is used purely as the carrier for that base pair; every
+        // other mechanic it can change stays at its default.
+        AppendFindingContract(
+            prompt, project, ReviewMode.Verify,
+            effectiveBaseBranch == project.BaseBranch
+                ? null
+                : new ReviewMechanicsOverride(effectiveBaseBranch, ForkPointCommit: fullDiffForkPoint));
         AppendVerifyTrackTagContract(prompt, tracks);
         AppendVerdictContract(prompt, cycle, ReviewMode.Verify);
         prompt.AppendLine();
@@ -2143,6 +2188,10 @@ public static class AgentPromptBuilder
         ReviewMechanicsOverride? mechanicsOverride = null)
     {
         string baseBranch = mechanicsOverride?.BaseBranch ?? project.BaseBranch;
+        // The same boundary AppendReviewMechanics names the read range against, for the same
+        // reason: the scope rule below and that range have to agree about what this branch's own
+        // work is, or a stacked child's reviewer tags the parent's rewritten-away delta in-scope.
+        string scopeBoundary = mechanicsOverride?.ForkPointCommit ?? $"origin/{baseBranch}";
         prompt.AppendLine();
         prompt.AppendLine("## How to report each finding (the platform parses this)");
         prompt.AppendLine();
@@ -2231,7 +2280,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- `in-scope` — the defective line lives in code this branch added or changed.");
         prompt.AppendLine($"- `out-of-scope` — the defect is pre-existing on `{baseBranch}`; this diff only");
         prompt.AppendLine("  sits next to it. Check before you tag: the line is out of scope only if it is");
-        prompt.AppendLine($"  absent from `git diff origin/{baseBranch}...HEAD`.");
+        prompt.AppendLine($"  absent from `git diff {scopeBoundary}...HEAD`.");
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
@@ -2289,6 +2338,12 @@ public static class AgentPromptBuilder
         bool includesAcceptanceCriteria, ReviewMechanicsOverride? mechanicsOverride = null)
     {
         string baseBranch = mechanicsOverride?.BaseBranch ?? project.BaseBranch;
+        // What every range below is taken against: a stacked child's own recorded fork point as a
+        // literal commit, and `origin/<base>` for every other pass — see
+        // ReviewMechanicsOverride.ForkPointCommit for the force-pushed-parent hazard that makes the
+        // ref wrong there, and AppendStackedScopeBoundaryReason for the sentence a commit carries.
+        string? forkPoint = mechanicsOverride?.ForkPointCommit;
+        string scopeBoundary = forkPoint ?? $"origin/{baseBranch}";
         prompt.AppendLine(mechanicsOverride?.CheckoutDescription
             ?? $"- You are in the implementation's git worktree on branch `{branch}`.");
         if (mode == ReviewMode.FinalFullPass && sinceSha is { } fullScopeSha)
@@ -2313,12 +2368,19 @@ public static class AgentPromptBuilder
             prompt.AppendLine($"  than inventing scope to fill the pass. If this branch brought `{baseBranch}`");
             prompt.AppendLine("  current via a merge (rather than a rebase) since that earlier pass, this range");
             prompt.AppendLine("  will include those upstream commits too — check a finding there against");
-            prompt.AppendLine($"  `git diff origin/{baseBranch}...HEAD` (the scope rule below) before treating it");
+            prompt.AppendLine($"  `git diff {scopeBoundary}...HEAD` (the scope rule below) before treating it");
             prompt.AppendLine("  as this branch's own work. That same command is also what decides scope for you,");
-            prompt.AppendLine($"  so fall back to the local `{baseBranch}` ref only when this worktree carries no");
-            prompt.AppendLine($"  `origin/{baseBranch}` at all: a task worktree's local base-branch ref, when one");
-            prompt.AppendLine("  exists, is shared with the project home's `dev/` worktree and is routinely stale");
-            prompt.AppendLine("  relative to this task's actual base.");
+            if (forkPoint is not null)
+            {
+                AppendStackedScopeBoundaryReason(prompt, baseBranch, "and it names");
+            }
+            else
+            {
+                prompt.AppendLine($"  so fall back to the local `{baseBranch}` ref only when this worktree carries no");
+                prompt.AppendLine($"  `origin/{baseBranch}` at all: a task worktree's local base-branch ref, when one");
+                prompt.AppendLine("  exists, is shared with the project home's `dev/` worktree and is routinely stale");
+                prompt.AppendLine("  relative to this task's actual base.");
+            }
         }
         else if (mode == ReviewMode.Discovery && sinceSha is { } lapSinceSha)
         {
@@ -2337,16 +2399,30 @@ public static class AgentPromptBuilder
 
             prompt.AppendLine("  A defect you notice outside that range is still worth reporting — decide its scope");
             prompt.AppendLine("  by the same rule as everything else (below): code an earlier lap of this same");
-            prompt.AppendLine($"  branch added is still in-scope, since it sits inside `git diff origin/{baseBranch}...HEAD`");
+            prompt.AppendLine($"  branch added is still in-scope, since it sits inside `git diff {scopeBoundary}...HEAD`");
             prompt.AppendLine("  — report it in-scope even though it falls outside this cycle's own read range. Only");
             prompt.AppendLine($"  a defect that predates this branch entirely, genuinely pre-existing on `{baseBranch}`,");
             prompt.AppendLine("  is out-of-scope.");
             prompt.AppendLine($"  If this branch brought `{baseBranch}` current via a merge (rather than a rebase)");
             prompt.AppendLine("  since the previous lap, this range will include those upstream commits too — check a");
-            prompt.AppendLine($"  finding there against `git diff origin/{baseBranch}...HEAD` (the scope rule below)");
+            prompt.AppendLine($"  finding there against `git diff {scopeBoundary}...HEAD` (the scope rule below)");
             prompt.AppendLine("  before treating it as this lap's own work. That same command also decides scope for");
-            prompt.AppendLine($"  you, so fall back to the local `{baseBranch}` ref only when this worktree carries no");
-            prompt.AppendLine($"  `origin/{baseBranch}` at all.");
+            if (forkPoint is not null)
+            {
+                prompt.AppendLine("  you,");
+                AppendStackedScopeBoundaryReason(prompt, baseBranch, "and it names");
+            }
+            else
+            {
+                prompt.AppendLine($"  you, so fall back to the local `{baseBranch}` ref only when this worktree carries no");
+                prompt.AppendLine($"  `origin/{baseBranch}` at all.");
+            }
+        }
+        else if (forkPoint is not null)
+        {
+            prompt.AppendLine($"  The diff under review: `git diff {scopeBoundary}...HEAD` (commits:");
+            prompt.AppendLine($"  `git log {scopeBoundary}..HEAD`).");
+            AppendStackedScopeBoundaryReason(prompt, baseBranch, "That range names");
         }
         else
         {
@@ -2381,6 +2457,25 @@ public static class AgentPromptBuilder
         }
 
         AppendReviewGateStatus(prompt, project, mechanicsOverride?.GatesObserved ?? true);
+    }
+
+    /// <summary>
+    /// Why a stacked child's ranges name a commit where every other pass names a ref — the same
+    /// explanation the build session's own self-review range carries
+    /// (<c>WorkPromptBuilder.AppendSelfReviewPhaseRules</c>), so a reviewer handed an unfamiliar
+    /// boundary is told what it is rather than left to substitute the ref back in.
+    /// <paramref name="leadIn"/> is the fragment the sentence starts with, because the three
+    /// mechanics arms reach it mid-sentence and at the head of one.
+    /// </summary>
+    private static void AppendStackedScopeBoundaryReason(StringBuilder prompt, string baseBranch, string leadIn)
+    {
+        prompt.AppendLine($"  {leadIn} this branch's recorded fork point off `{baseBranch}` as a literal");
+        prompt.AppendLine($"  commit rather than `origin/{baseBranch}`: this branch is stacked on that one, and a");
+        prompt.AppendLine("  parent branch force-pushed while this review runs — an ordinary review lap folding");
+        prompt.AppendLine("  fixes into its own commits — moves that ref out from under the range, folding the");
+        prompt.AppendLine("  parent's whole rewritten-away delta into what would read as this branch's work.");
+        prompt.AppendLine($"  Do not substitute `origin/{baseBranch}` back in, and do not compute the boundary with");
+        prompt.AppendLine("  `git merge-base`: a force-push collapses that too.");
     }
 
     /// <summary>
@@ -2734,7 +2829,8 @@ public static class AgentPromptBuilder
         TaskDetails task, ProjectDetails project, string branch, string findings, int cycle,
         string? interactiveSessionAddress = null,
         bool? interactiveModeEnabledOverride = null,
-        string? baseBranch = null)
+        string? baseBranch = null,
+        string? baseCommit = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
@@ -2787,7 +2883,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  The severity decides how the review loop converges, so re-grading one yourself");
         prompt.AppendLine("  would be deciding your own way past that. The platform hands disputes to a human");
         prompt.AppendLine("  with both positions on record.");
-        AppendReviewFixSelfCheckPhaseRules(prompt, project, effectiveBaseBranch);
+        AppendReviewFixSelfCheckPhaseRules(
+            prompt, project, effectiveBaseBranch,
+            WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit));
 
         // Last, not immediately after AppendExternalInteractionLoggingRule (independent pre-PR
         // review, cycle 1, both lenses): this method opens its own "##" heading, so calling it
@@ -2931,8 +3029,15 @@ public static class AgentPromptBuilder
     /// </para>
     /// </summary>
     private static void AppendReviewFixSelfCheckPhaseRules(
-        StringBuilder prompt, ProjectDetails project, string effectiveBaseBranch)
+        StringBuilder prompt, ProjectDetails project, string effectiveBaseBranch,
+        string? stackedForkPointCommit = null)
     {
+        // The line the sweep draws its own-changes boundary at. A stacked child names its recorded
+        // fork point as a literal commit for the same reason every other stacked instruction does:
+        // `origin/<parent>` is another task's branch, and a force-push there moves it out from
+        // under the range, so a sweep taken against it reads the parent's rewritten-away delta as
+        // this branch's own changes — and then fixes it here (conformance review, cycle 4).
+        string sweepBoundary = stackedForkPointCommit ?? $"origin/{effectiveBaseBranch}";
         prompt.AppendLine("- **Self-check phase.** Once every finding above is fixed or disputed, and before");
         prompt.AppendLine("  you conclude, run one pass — not a loop — over your own fix: assume you left");
         prompt.AppendLine("  something half-applied, or that your own fix introduced a regression, and go");
@@ -2954,9 +3059,23 @@ public static class AgentPromptBuilder
         prompt.AppendLine("     shape, wherever it lives — inside this branch's own changes or pre-existing on");
         prompt.AppendLine("     the branch's base — not only the ones your own fix reaches; a sweep bounded to");
         prompt.AppendLine("     your own fix cannot catch a sibling site your fix never touched. Draw that line");
-        prompt.AppendLine($"     from `origin/{effectiveBaseBranch}`, not your worktree's local base-branch ref —");
-        prompt.AppendLine("     the same staleness reason the rebase and review-verify mechanics use it too: a");
-        prompt.AppendLine($"     site touched by `git diff origin/{effectiveBaseBranch}...HEAD` is inside this");
+        if (stackedForkPointCommit is not null)
+        {
+            prompt.AppendLine($"     from `{sweepBoundary}` — this branch's own recorded fork point off");
+            prompt.AppendLine($"     `{effectiveBaseBranch}`, named as a literal commit rather than");
+            prompt.AppendLine($"     `origin/{effectiveBaseBranch}` because this branch is stacked on that one and a");
+            prompt.AppendLine("     force-push there moves the ref out from under the range, folding the parent's own");
+            prompt.AppendLine("     rewritten delta into what would read as this branch's changes. Do not substitute");
+            prompt.AppendLine("     the ref back in, and do not compute the boundary with `git merge-base`, which a");
+            prompt.AppendLine("     force-push collapses too: a");
+        }
+        else
+        {
+            prompt.AppendLine($"     from `origin/{effectiveBaseBranch}`, not your worktree's local base-branch ref —");
+            prompt.AppendLine("     the same staleness reason the rebase and review-verify mechanics use it too: a");
+        }
+
+        prompt.AppendLine($"     site touched by `git diff {sweepBoundary}...HEAD` is inside this");
         prompt.AppendLine("     branch's own changes; anything else is pre-existing on the base. Fix or");
         prompt.AppendLine("     explicitly clear each site inside this branch's own changes — a site you looked");
         prompt.AppendLine("     at and judged fine counts as cleared, one you never looked at does not. A");

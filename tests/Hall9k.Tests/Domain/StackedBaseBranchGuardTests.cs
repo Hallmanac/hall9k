@@ -28,6 +28,12 @@ namespace Hall9k.Tests.Domain;
 /// (<c>h9k project show</c>, the project home's own documents, the <c>dev/</c> reading checkout)
 /// never trips it.
 /// </para>
+/// <para>
+/// A fourth scan was added in cycle 4, for the same class in the review prompts: the branch's own
+/// build, recompose, fold and replay mechanics were all keyed to the recorded fork point, and the
+/// review lens, verify and fix prompts were still naming <c>origin/&lt;parent&gt;</c> — which is
+/// what decides a reviewer's read range AND its in-scope/out-of-scope grading.
+/// </para>
 /// </summary>
 public sealed class StackedBaseBranchGuardTests
 {
@@ -42,57 +48,49 @@ public sealed class StackedBaseBranchGuardTests
     ];
 
     /// <summary>
-    /// The reads that are honestly the project's own base and must not be flagged: the long-lived
-    /// <c>dev/</c> reading checkout really is on the project's base branch, and the resolver plus
-    /// the two dispatch sites deliberately compare a resolved base against the project's to decide
-    /// whether to record one at all.
+    /// No file is exempt, and the review round on this pull request is why. This scan once carried
+    /// a whole-file exemption list — the resolver plus the three dispatch sites, on the grounds
+    /// that they deliberately compare a resolved base against the project's to decide whether to
+    /// record one at all. Those comparisons are real, but not one of them sits inside a
+    /// base-relative call's window, so the exemptions caught nothing and cost the scan its cover
+    /// on the three files where writing this wrong is most destructive (the daemon's dispatch arm
+    /// and the CLI's two interactive claims, which is precisely the list this class's own origin
+    /// paragraph above names). The per-line seam below — stripping the
+    /// <c>BaseBranchOr</c>/<c>StackedForkPoint</c> fallback argument before looking for a bare
+    /// project read — is the narrower answer to the same need, and it arrived after the exemptions
+    /// did.
     /// </summary>
-    private static readonly string[] ExemptFiles =
-    [
-        "StackedBaseResolver.cs",
-        "RunLauncher.cs",
-        "TaskWorkCommand.cs",
-        "TaskStartCommand.cs",
-    ];
-
     [Fact]
     public void No_base_relative_git_call_reads_the_projects_base_branch_directly()
     {
         List<string> offenders = [];
 
-        foreach (string file in Directory.EnumerateFiles(
-            TestSourceTree.SourceDirectory(), "*.cs", SearchOption.AllDirectories))
+        foreach ((string file, string[] lines, int i) in ProductionLines())
         {
-            if (TestSourceTree.IsBuildOutput(TestSourceTree.SourceDirectory(), file)
-                || ExemptFiles.Contains(Path.GetFileName(file)))
+            string line = lines[i];
+            if (!BaseRelativeCalls.Any(call => line.Contains(call, StringComparison.Ordinal)))
             {
                 continue;
             }
 
-            string[] lines = File.ReadAllLines(file);
-            for (int i = 0; i < lines.Length; i++)
+            // The call's own argument list can wrap, so the base argument is looked for on the
+            // call line and the two after it — far enough for this repo's wrapping habits,
+            // short enough that an unrelated project.BaseBranch further down is never caught.
+            // BaseBranchOr's own fallback argument IS project.BaseBranch and is the correct
+            // reading — the whole point of the seam — so it is removed before the check,
+            // leaving only a BARE project read to flag. StackedForkPoint is the same seam and
+            // reads its fallback the same way (conformance review, cycle 4: these counts now
+            // pass the run's recorded fork point alongside its base, because the parent's own
+            // ref stops naming the cut point once the parent is force-pushed).
+            string window = string.Join(' ', lines.Skip(i).Take(3))
+                .Replace("BaseBranchOr(project.BaseBranch)", string.Empty, StringComparison.Ordinal)
+                .Replace("BaseBranchOr(Project.BaseBranch)", string.Empty, StringComparison.Ordinal)
+                .Replace("StackedForkPoint(project.BaseBranch)", string.Empty, StringComparison.Ordinal)
+                .Replace("StackedForkPoint(Project.BaseBranch)", string.Empty, StringComparison.Ordinal);
+            if (window.Contains("project.BaseBranch", StringComparison.Ordinal)
+                || window.Contains("Project.BaseBranch", StringComparison.Ordinal))
             {
-                string line = lines[i];
-                if (line.TrimStart().StartsWith("//", StringComparison.Ordinal)
-                    || !BaseRelativeCalls.Any(call => line.Contains(call, StringComparison.Ordinal)))
-                {
-                    continue;
-                }
-
-                // The call's own argument list can wrap, so the base argument is looked for on the
-                // call line and the two after it — far enough for this repo's wrapping habits,
-                // short enough that an unrelated project.BaseBranch further down is never caught.
-                // BaseBranchOr's own fallback argument IS project.BaseBranch and is the correct
-                // reading — the whole point of the seam — so it is removed before the check,
-                // leaving only a BARE project read to flag.
-                string window = string.Join(' ', lines.Skip(i).Take(3))
-                    .Replace("BaseBranchOr(project.BaseBranch)", string.Empty, StringComparison.Ordinal)
-                    .Replace("BaseBranchOr(Project.BaseBranch)", string.Empty, StringComparison.Ordinal);
-                if (window.Contains("project.BaseBranch", StringComparison.Ordinal)
-                    || window.Contains("Project.BaseBranch", StringComparison.Ordinal))
-                {
-                    offenders.Add($"{Path.GetFileName(file)}:{i + 1}: {line.Trim()}");
-                }
+                offenders.Add($"{Path.GetFileName(file)}:{i + 1}: {line.Trim()}");
             }
         }
 
@@ -100,8 +98,9 @@ public sealed class StackedBaseBranchGuardTests
             "a base-relative git call must take the RUN's own base branch (run.BaseBranchOr(project.BaseBranch), "
             + "or a base resolved through StackedBaseResolver for a fresh cut), never the project's directly — "
             + "on a stacked child the two differ, and the project's base counts the parent's commits as this "
-            + "branch's own. If a new site genuinely wants the project's base (a long-lived reading checkout, "
-            + "say), add its file to ExemptFiles here with a recorded why.");
+            + "branch's own. No file is exempt: the two seams above (BaseBranchOr's and StackedForkPoint's own "
+            + "fallback arguments) are the only honest way one of these calls names the project's base, and a "
+            + "site that wants it for some other reason wants a different git verb.");
     }
 
     /// <summary>
@@ -191,8 +190,64 @@ public sealed class StackedBaseBranchGuardTests
     }
 
     /// <summary>
+    /// The fourth face, and the one the three scans above could not see (conformance and
+    /// adversarial review, cycle 4): a review prompt handed the parent's BRANCH but not the commit
+    /// this branch was cut from. Its ranges are three-dot diffs, so naming the parent's ref is not
+    /// merely stale — a parent force-pushed during the child's review window (an ordinary review
+    /// lap folding its own fixes) collapses the merge base below this branch's real fork point, and
+    /// the reviewer then reads AND SCOPES the parent's whole rewritten-away delta as the child's
+    /// own work: parent-owned defects are graded in-scope, and the fix session edits the parent's
+    /// code on the child's branch.
+    /// <para>
+    /// A foreign pull request is the one exemption, and an honest one: a pr-review checkout has no
+    /// run of its own whose fork point could be recorded, so the pull request's own base ref is the
+    /// only boundary there is.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Every_review_prompt_is_handed_the_runs_own_fork_point()
+    {
+        List<string> offenders = [];
+
+        foreach ((string file, string[] lines, int i) in ProductionLines())
+        {
+            string line = lines[i];
+            bool constructsOverride = line.Contains("new ", StringComparison.Ordinal)
+                && line.Contains("ReviewMechanicsOverride(", StringComparison.Ordinal);
+            bool buildsBaseAwarePrompt = line.Contains("BuildReviewVerify(", StringComparison.Ordinal)
+                || line.Contains("BuildReviewFix(", StringComparison.Ordinal);
+            if (!constructsOverride && !buildsBaseAwarePrompt)
+            {
+                continue;
+            }
+
+            // Same generous window as the build-prompt scan, and for the same reason: these
+            // argument lists wrap, and the base pair sits at the end of them.
+            string window = string.Join(' ', lines.Skip(i).Take(10));
+            bool satisfied = constructsOverride
+                ? window.Contains("ForkPointCommit:", StringComparison.Ordinal)
+                  || window.Contains("DiffIsForeignPullRequest: true", StringComparison.Ordinal)
+                // A caller that hands over no base at all is an unstacked-only surface and keeps
+                // the project's own; it is a caller naming the base BRANCH without the commit that
+                // is the defect.
+                : !window.Contains("baseBranch:", StringComparison.Ordinal)
+                  || window.Contains("baseCommit:", StringComparison.Ordinal);
+            if (!satisfied)
+            {
+                offenders.Add($"{Path.GetFileName(file)}:{i + 1}: {line.Trim()}");
+            }
+        }
+
+        offenders.Should().BeEmpty(
+            "a review prompt told which branch this run is a delta against must be told the commit it was cut "
+            + "from too (ForkPointCommit: / baseCommit:, from RunDetails.StackedForkPoint) — a three-dot range "
+            + "against origin/<parent> collapses to the project's base the moment the parent is force-pushed, "
+            + "and the reviewer then reads and scopes the parent's already-reviewed work as this branch's own.");
+    }
+
+    /// <summary>
     /// Every real source line under <c>src/</c>, with its file and index, skipping build output and
-    /// whole-line comments — the shared walk all three scans above run over.
+    /// whole-line comments — the shared walk all four scans above run over.
     /// </summary>
     private static IEnumerable<(string File, string[] Lines, int Index)> ProductionLines()
     {

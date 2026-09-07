@@ -87,9 +87,124 @@ public sealed class StackedPromptTests
             mechanicsOverride: new AgentPromptBuilder.ReviewMechanicsOverride(ParentBranch));
 
         prompt.Should().Contain($"git diff origin/{ParentBranch}...HEAD",
-            "so its reviewers see only the child's own delta");
+            "with no recorded fork point to name, the parent branch is still a better answer than the project's");
         prompt.Should().Contain("You are in the implementation's git worktree",
             "a stacked child really is on its own branch in its own worktree — only its base differs");
+    }
+
+    /// <summary>
+    /// A three-dot range against the parent's REF is the hazard the recorded fork point exists to
+    /// close (conformance and adversarial review, cycle 4): a parent force-pushed while the child's
+    /// review runs — an ordinary review lap folding its own fixes — collapses that range's merge
+    /// base below the child's real fork point, so the reviewer reads and SCOPES the parent's whole
+    /// rewritten-away delta as the child's own work. Both the read range and the scope rule have to
+    /// name the commit, since they are what decide in-scope from out-of-scope.
+    /// </summary>
+    [Fact]
+    public void A_review_pass_on_a_stacked_child_reads_and_scopes_against_its_recorded_fork_point()
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/child-slice-two", cycle: 1, ReviewLens.Adversarial,
+            mechanicsOverride: new AgentPromptBuilder.ReviewMechanicsOverride(ParentBranch, ForkPoint));
+
+        prompt.Should().Contain($"git diff {ForkPoint}...HEAD",
+            "the range the reviewer reads is keyed to a commit a force-pushed parent cannot move");
+        prompt.Should().Contain($"git log {ForkPoint}..HEAD");
+        prompt.Should().Contain($"absent from `git diff {ForkPoint}...HEAD`",
+            "the scope rule decides in-scope from out-of-scope, so it has to name the same boundary");
+        prompt.Should().NotContain($"origin/{ParentBranch}...HEAD",
+            "a merge base against the parent's ref collapses the moment the parent is force-pushed");
+        prompt.Should().Contain("do not compute the boundary with",
+            "the reviewer is told why the boundary is a commit, so it does not substitute the ref back in");
+    }
+
+    /// <summary>
+    /// The conformance lens shares the mechanics, and its own scoped Discovery and FinalFullPass
+    /// arms name the boundary a second time — a range fixed in one arm and left as a ref in another
+    /// is the half-applied shape the class sweep exists to catch.
+    /// </summary>
+    [Fact]
+    public void A_scoped_discovery_pass_on_a_stacked_child_still_scopes_against_its_recorded_fork_point() =>
+        AssertScopedPassNamesTheForkPoint(ReviewMode.Discovery);
+
+    [Fact]
+    public void A_scoped_final_pass_on_a_stacked_child_still_scopes_against_its_recorded_fork_point() =>
+        AssertScopedPassNamesTheForkPoint(ReviewMode.FinalFullPass);
+
+    private static void AssertScopedPassNamesTheForkPoint(ReviewMode mode)
+    {
+        string prompt = AgentPromptBuilder.BuildReview(
+            SomeTask(), SomeProject(), "task/child-slice-two", cycle: 2, ReviewLens.Conformance, mode,
+            mechanicsOverride: new AgentPromptBuilder.ReviewMechanicsOverride(ParentBranch, ForkPoint),
+            sinceSha: "1111111222222233333334444444555555566666");
+
+        prompt.Should().Contain($"git diff {ForkPoint}...HEAD",
+            "the scoped arms point at the same boundary for deciding what is this branch's own work");
+        prompt.Should().NotContain($"origin/{ParentBranch}...HEAD");
+    }
+
+    [Fact]
+    public void An_unstacked_review_pass_is_unchanged_by_a_recorded_fork_point()
+    {
+        // One task instance for both, since the prompt embeds the task's own id.
+        TaskDetails task = SomeTask();
+        string prompt = AgentPromptBuilder.BuildReview(
+            task, SomeProject(), "task/ordinary", cycle: 1, ReviewLens.Adversarial);
+
+        prompt.Should().Contain("git diff origin/main...HEAD",
+            "the project's own base branch does not get rewritten under a run, so the ref is stable");
+        prompt.Should().NotContain(ForkPoint);
+    }
+
+    /// <summary>
+    /// A Verify cycle whose prior tip could not be pinned down falls back to a full diff, and that
+    /// fallback is a three-dot range too — the same hazard, so the same boundary.
+    /// </summary>
+    [Fact]
+    public void A_verify_pass_on_a_stacked_child_falls_back_to_its_recorded_fork_point()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/child-slice-two", cycle: 3, [ReviewLens.Adversarial],
+            priorFindings: "FINDING: severity=high; scope=in-scope; at=x.cs:1", priorFixPosition: "fixed",
+            sinceSha: null, priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null,
+            baseBranch: ParentBranch, baseCommit: ForkPoint);
+
+        prompt.Should().Contain($"git diff {ForkPoint}...HEAD");
+        prompt.Should().Contain($"absent from `git diff {ForkPoint}...HEAD`",
+            "this pass's scope rule decides in-scope from out-of-scope, so it names the same boundary");
+        prompt.Should().NotContain($"origin/{ParentBranch}...HEAD");
+        prompt.Should().NotContain("origin/main...HEAD",
+            "and never the project's own base, which would tag the parent's lines as this branch's work");
+    }
+
+    /// <summary>
+    /// The fix session's own class sweep draws its own-changes boundary from the same range: taken
+    /// against a force-pushed parent's ref it reads the parent's rewritten-away delta as this
+    /// branch's own changes, and then FIXES it here.
+    /// </summary>
+    [Fact]
+    public void A_fix_session_on_a_stacked_child_sweeps_from_its_recorded_fork_point()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/child-slice-two",
+            findings: "FINDING: severity=high; scope=in-scope; at=x.cs:1", cycle: 1,
+            baseBranch: ParentBranch, baseCommit: ForkPoint);
+
+        prompt.Should().Contain($"git diff {ForkPoint}...HEAD",
+            "the sweep's own-changes line is drawn at the recorded fork point, not at the parent's ref");
+        prompt.Should().NotContain($"origin/{ParentBranch}...HEAD");
+    }
+
+    [Fact]
+    public void An_unstacked_fix_session_still_sweeps_from_the_project_base_branch()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/ordinary",
+            findings: "FINDING: severity=high; scope=in-scope; at=x.cs:1", cycle: 1,
+            baseCommit: ForkPoint);
+
+        prompt.Should().Contain("git diff origin/main...HEAD");
+        prompt.Should().NotContain(ForkPoint);
     }
 
     /// <summary>
@@ -105,6 +220,7 @@ public sealed class StackedPromptTests
         stacked.CheckoutDescription.Should().BeNull("the ordinary on-branch wording is right here");
         stacked.GatesObserved.Should().BeTrue("this run's own gates did run");
         stacked.DiffIsForeignPullRequest.Should().BeFalse("the diff is this task's own work");
+        stacked.ForkPointCommit.Should().BeNull("a run with no recorded fork point falls back to the ref");
     }
 
     /// <summary>
