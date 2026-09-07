@@ -252,6 +252,12 @@ public sealed class StackedPromptTests
         prompt.Should().NotContain($"--autosquash {ForkPoint}");
         prompt.Should().Contain("the branch this task is stacked on",
             "the opening line must not claim other work merged into the project's base");
+        prompt.Should().Contain($"git merge-base --is-ancestor {ForkPoint} HEAD",
+            "the boundary is checked for containment, not merely that it resolves: a replay that "
+            + "aborted leaves the record naming a commit the branch never landed on (adversarial "
+            + "review, cycle 6)");
+        prompt.Should().Contain("Take the dispute path below and say the boundary is unobserved",
+            "a branch that never landed on the recorded commit has no boundary left that is not a guess");
     }
 
     [Fact]
