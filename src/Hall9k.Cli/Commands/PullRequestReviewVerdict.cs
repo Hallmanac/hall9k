@@ -224,23 +224,40 @@ internal static class PullRequestReviewVerdict
             return;
         }
 
-        string because = run.State switch
+        // Same reason-carries-its-own-way-out shape as
+        // PullRequestReviewCommand.RefuseUnattachableRunAsync, and for the same finding: a
+        // terminal run parks nothing, ever, so the shared "once it parks" suffix named a route
+        // that does not exist for it (independent pre-PR review, cycle 1, adversarial lens).
+        const string OnceItParks =
+            "deliver the verdict once the automated review parks its findings report, or run h9k pr review "
+            + "to read the pull request with the platform's help first";
+        (string Because, string WayOut) refusal = run.State switch
         {
-            var state when state == RunState.Dispatched || state == RunState.Running =>
-                "the automated review's own adversarial pass is still reading the pull request",
+            // Dispatched and Running are two different facts and shared one sentence: a
+            // dispatched pass has been launched and has recorded nothing since, so telling its
+            // reviewer it "is still reading" asserts a read nobody observed — AGENTS.md's
+            // never-guess rule applied to a refusal's own text (Copilot review, pull request
+            // #271). Same split, same reason, in RefuseUnattachableRunAsync's mirror of this.
+            var state when state == RunState.Dispatched =>
+                ("the automated review's own adversarial pass has been dispatched and has not reported "
+                    + "starting yet", OnceItParks),
+            var state when state == RunState.Running =>
+                ("the automated review's own adversarial pass is still reading the pull request", OnceItParks),
             var state when state == RunState.Verifying =>
-                "the automated review's adversarial pass has finished and the engine has not dispatched its "
-                + "conformance pass yet",
+                ("the automated review's adversarial pass has finished and the engine has not dispatched its "
+                    + "conformance pass yet", OnceItParks),
             var state when state == RunState.UnderReview =>
-                "the automated review's conformance pass is still running",
-            _ => $"its run is {run.State.Value}",
+                ("the automated review's conformance pass is still running", OnceItParks),
+            var state when state.IsTerminal =>
+                ($"its run is {state.Value}, which is terminal — that run will never park a findings report",
+                    $"h9k task retry {taskId} dispatches a fresh review, then h9k pr review opens the lap on it"),
+            _ => ($"its run is {run.State.Value}", OnceItParks),
         };
         throw new DomainConflictException(
-            $"Task {taskId} cannot take a verdict right now: {because}, so a verdict recorded against run "
-            + $"{runId} would be overwritten by the review's own findings park and nothing would finalize the "
-            + "task. NOTHING was posted to the pull request by this command. h9k task show "
-            + $"{taskId} to see where it stands; deliver the verdict once the automated review parks its "
-            + $"findings report, or run h9k pr review to read the pull request with the platform's help first.");
+            $"Task {taskId} cannot take a verdict right now: {refusal.Because}, so a verdict recorded against "
+            + $"run {runId} would be overwritten by the review's own findings park and nothing would finalize "
+            + "the task. NOTHING was posted to the pull request by this command. h9k task show "
+            + $"{taskId} to see where it stands; {refusal.WayOut}.");
     }
 
     /// <summary>
