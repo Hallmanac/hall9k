@@ -310,6 +310,43 @@ public sealed class GateDurationHistoryQueryTests(PostgresFixture postgres) : IC
             TimeSpan.FromMinutes(12), "the newest recorded run's own duration, not an average of the two");
     }
 
+    /// <summary>
+    /// A clean-base comparison always spawns the gate's raw, unscoped command (never a fix
+    /// cycle's own <c>--filter</c>), so a scoped sample's duration says nothing comparable about
+    /// how long that unscoped spawn will actually take (independent pre-PR review, cycle 1, both
+    /// lenses, medium: a scoped 90-second sample budgeting a comparison that then runs the full
+    /// 11-12 minute suite reproduces the origin incident this method exists to fix). The newest
+    /// full-scope sample must be found even when a newer scoped one exists in between.
+    /// </summary>
+    [Fact]
+    public async Task A_scoped_samples_duration_never_counts_toward_the_clean_base_budget()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            SeedRun(
+                session, projectId, ownerId, Now.AddMinutes(-2), "test", TimeSpan.FromMinutes(12),
+                ranFullScope: true, nodeId: nodeId);
+            SeedRun(
+                session, projectId, ownerId, Now.AddMinutes(-1), "test", TimeSpan.FromSeconds(90),
+                ranFullScope: false, nodeId: nodeId);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
+            query, projectId, nodeId, "test", cts.Token);
+
+        recentDuration.Should().Be(
+            TimeSpan.FromMinutes(12),
+            "the newest full-scope sample, not the newer-but-scoped one a comparison's own unscoped spawn cannot be budgeted from");
+    }
+
     [Fact]
     public async Task A_duration_recorded_on_a_different_node_never_counts()
     {
