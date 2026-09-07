@@ -235,6 +235,24 @@ public static class CliCommandTree
                     + "run parked for a genuine dispute or a cap/budget reason, which still take only "
                     + "h9k review resolve.")
                 .WithExample("review", "proceed", "28b19893");
+            review.AddCommand<ReviewFixedCommand>("fixed")
+                .WithDescription(
+                    "You fixed the findings yourself (task: a human at the wheel takes the fix role herself): "
+                    + "at interactive mode's review-verdict-to-fix park, records that your fix is committed on "
+                    + "the branch, pushes it when the pull request is already open, and re-enters the loop at "
+                    + "the fix-to-re-review boundary — so the gates run over your commits and a fresh review "
+                    + "pass reads them as this cycle's fix, scoped exactly as a fix session's would be. No fix "
+                    + "session is dispatched. The fourth choice at that park, alongside review proceed (send "
+                    + "the agent), review resolve --needs-fixes (send it with a redirect) and review resolve "
+                    + "--merge-ready (overrule the finding), none of whose meanings this changes. Refused over "
+                    + "an uncommitted worktree, naming the files, and refused when the branch tip has not "
+                    + "moved since the park unless --no-change \"<why>\" says why — and refused the other way "
+                    + "too, when --no-change is passed over a tip that DID move: your commits are that cycle's "
+                    + "answer, and it cannot also be a deliberate no-change dismissal. Works the same at a "
+                    + "closeout-side fix park on a follow-up reopened by a changes-requested review or by "
+                    + "failing checks.")
+                .WithExample("review", "fixed", "28b19893")
+                .WithExample("review", "fixed", "28b19893", "--no-change", "\"The limiter reset is already handled by the retry sweep - confirmed by reading RetryEngine.cs\"");
         });
 
         config.AddCommand<StatusCommand>("status")

@@ -658,7 +658,14 @@ internal static class AttentionComposer
         // of the refinements below apply — h9k review proceed is the lever, with h9k review resolve
         // named alongside it for whenever the human wants to redirect the boundary instead.
         run.ParkedIsInteractiveGate
-            ? $"h9k review proceed {id} (or h9k review resolve {id} --merge-ready / --needs-fixes \"…\" to redirect it)"
+            // h9k review fixed is named without claiming this particular park is the one it
+            // applies to (task: a human at the wheel takes the fix role herself): only the
+            // review-verdict-to-fix boundary takes it, and which of the four boundaries this park
+            // is is not a fact this projection carries — the park reason printed directly above
+            // this lever is, and it names exactly the choices that apply. Naming the verb here
+            // anyway is what makes it discoverable at all from the attention pane; asserting it
+            // applies would be the guess.
+            ? $"h9k review proceed {id} (or h9k review resolve {id} --merge-ready / --needs-fixes \"…\" to redirect it, or h9k review fixed {id} once your own fix is committed — the reason above names which apply)"
             : task.Type == TaskType.PrReview
                 ? $"h9k review resolve {id} --merge-ready (a pr-review task has no diff of its own for a fix session; direct the findings report by hand first)"
                 : (task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0) || run.ParkedOnRebaseRecoveryDispute
