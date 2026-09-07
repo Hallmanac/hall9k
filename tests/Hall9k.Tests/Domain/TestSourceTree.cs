@@ -21,6 +21,11 @@ namespace Hall9k.Tests.Domain;
 /// keeps this list from being "every tree-walking guard" alone: it uses <see cref="SourceDirectory"/>
 /// only, to resolve the repository root and locate PLAN.md, rather than walking a tree of source
 /// files, so it needs neither <see cref="IsBuildOutput"/> nor
+/// <see cref="StripCommentsAndStrings"/>.
+/// <see cref="Hall9k.Tests.Domain.StackedBaseBranchGuardTests"/> is a sixth: it walks <c>src/</c>
+/// alone and matches on raw lines rather than stripped text, since each of its three scans reads a
+/// call's own argument list within a few lines of it (a whole-line comment is skipped instead) — so
+/// it needs <see cref="SourceDirectory"/> and <see cref="IsBuildOutput"/> but not
 /// <see cref="StripCommentsAndStrings"/>. This is now the full list of consumers and is meant to
 /// be kept current whenever a new one is added.
 /// </para>

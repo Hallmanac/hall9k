@@ -390,9 +390,15 @@ public sealed class RunLauncher(
                 // human's own h9k task work claim has registered against it, can actually address one
                 // (independent pre-PR review, cycle 1, adversarial lens; AGENTS.md and
                 // docs/scope.md say so plainly).
+                // baseCommit is this cut's own observed start point — the same value recorded on
+                // RunDispatched.BaseCommit above, and the only stable fork point a stacked session's
+                // recompose can reset to (independent pre-PR review, cycle 1, adversarial lens:
+                // `git merge-base origin/<parent> HEAD` collapses below it the moment the parent is
+                // force-pushed, and the recompose's mixed reset would then rewrite the parent's
+                // commits as the child's own history).
                 prompt = AgentPromptBuilder.Build(
                     task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
-                    baseBranch: stackedBase.BaseBranch);
+                    baseBranch: stackedBase.BaseBranch, baseCommit: worktree.StartPointCommit);
             }
 
             SpawnedAgent agent = await executor.SpawnAsync(

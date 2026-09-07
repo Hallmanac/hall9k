@@ -23,19 +23,50 @@ namespace Hall9k.Tests.Daemon;
 public sealed class StackedPromptTests
 {
     private const string ParentBranch = "task/parent-slice-one";
+    private const string ForkPoint = "0f1e2d3c4b5a69788796a5b4c3d2e1f009182736";
 
     [Fact]
-    public void A_build_session_on_a_stacked_child_hunts_and_recomposes_against_the_parent_branch()
+    public void A_build_session_on_a_stacked_child_hunts_and_recomposes_from_its_recorded_fork_point()
+    {
+        string prompt = AgentPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/child-slice-two", worktreePath: "/tmp/wt",
+            baseBranch: ParentBranch, baseCommit: ForkPoint);
+
+        prompt.Should().Contain($"git diff {ForkPoint}...HEAD",
+            "the self-review hunt must read this branch's own delta from a commit the parent cannot move");
+        prompt.Should().Contain($"git rev-parse --verify \"{ForkPoint}^{{commit}}\"",
+            "the recompose resets to the recorded fork point, verified rather than computed");
+        prompt.Should().NotContain($"git merge-base origin/{ParentBranch} HEAD",
+            "a merge base against a force-pushed parent collapses below the real fork point, and the "
+            + "mixed reset would then recompose the parent's commits as this branch's own history");
+        prompt.Should().NotContain("origin/main...HEAD");
+    }
+
+    [Fact]
+    public void A_stacked_child_with_no_recorded_fork_point_falls_back_to_the_parent_branch()
     {
         string prompt = AgentPromptBuilder.Build(
             SomeTask(), SomeProject(), "task/child-slice-two", worktreePath: "/tmp/wt",
             baseBranch: ParentBranch);
 
         prompt.Should().Contain($"git diff origin/{ParentBranch}...HEAD",
-            "the self-review hunt must read this branch's own delta, not the parent's work with it");
+            "with no observed commit to name, the parent branch is still a better answer than the project's");
         prompt.Should().Contain($"git merge-base origin/{ParentBranch} HEAD",
-            "the recompose's fork point is the parent's tip — resetting past it would rewrite the parent's commits");
+            "and a merge base against it is the best available fork point rather than a guessed commit");
         prompt.Should().NotContain("origin/main...HEAD");
+    }
+
+    [Fact]
+    public void An_unstacked_build_session_ignores_a_recorded_fork_point()
+    {
+        string prompt = AgentPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/ordinary", worktreePath: "/tmp/wt",
+            baseBranch: "main", baseCommit: ForkPoint);
+
+        prompt.Should().Contain("git diff origin/main...HEAD",
+            "the project's own base branch does not get rewritten under a run, so the ref is stable");
+        prompt.Should().Contain("git merge-base origin/main HEAD");
+        prompt.Should().NotContain(ForkPoint);
     }
 
     [Fact]

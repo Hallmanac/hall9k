@@ -133,7 +133,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // role.
         string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build);
 
-        (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, AgentModel model) =
+        (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork,
+            AgentModel model, string baseBranch, string baseCommit) =
             await ClaimAndCutAsync(
                 store, session, task, fence, context, claudeSessionId, sessionName,
                 acknowledgeUnmetDependencies, interactiveMode, trackerClaimGate, cancellationToken);
@@ -157,9 +158,18 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // h9k task handback, and the caused "a human began this work interactively" block that
         // fact earns is what tells this session plainly, rather than leaving it to infer the same
         // thing from the causeless "a previous attempt worked here first" text a plain retry gets.
+        // baseBranch/baseCommit: the base this claim actually cut from and recorded on its own
+        // RunDispatched, threaded through exactly as RunLauncher threads them for a headless
+        // dispatch (independent pre-PR review, cycle 1, conformance lens). Without them this
+        // door's prompt fell back to the project's base for both the self-review diff range and
+        // the end-of-work recompose, so a stacked child cut from its parent's head reset to
+        // `git merge-base origin/main HEAD` — the parent's own fork point — and recomposed the
+        // parent's entire delta into fresh commits as this branch's authored history, which the
+        // tree-identity check cannot see because a mixed reset never moves the tree.
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
-            isInteractive: false, isDeliberateHeadlessStart: true, isHandback: taskDetails.ResumesFromHandback);
+            isInteractive: false, isDeliberateHeadlessStart: true, isHandback: taskDetails.ResumesFromHandback,
+            baseBranch: baseBranch, baseCommit: baseCommit);
 
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
@@ -270,7 +280,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// work: a deliberate kick-off only ever starts a fresh claim, but a fresh claim on an
     /// already-Blocked task is exactly what Blocked's own branch below is.
     /// </summary>
-    internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, AgentModel Model)> ClaimAndCutAsync(
+    internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, AgentModel Model, string BaseBranch, string BaseCommit)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, bool interactiveMode,
         TrackerClaimGate? trackerClaimGate, CancellationToken cancellationToken)
@@ -456,7 +466,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 // Blank whenever the resolved base IS the project's own, which is every ordinary
                 // task — the invariant RunDetails.StackedOnBranch reads, held identically here and
                 // in RunLauncher.
-                BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch));
+                BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch,
+                // This cut's own observed start point, recorded exactly as RunLauncher records it
+                // for a headless dispatch (independent pre-PR review, cycle 1, both lenses): a
+                // stacked child claimed through the CLI with no recorded fork point left
+                // StackedParentWatch permanently Unobservable, so a parent force-push while the
+                // child was Delivered dispatched no replay and its later merge no retarget. Blank
+                // only when the checkout resumed an existing worktree or the rev-parse could not
+                // be read — the two cases RunDispatched.BaseCommit's own doc already admits.
+                BaseCommit: worktree.StartPointCommit));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -474,7 +492,14 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         }
 
         await Hall9k.Cli.Infrastructure.Doorbell.RingAsync($"task-claimed-deliberately:{task.Id}", cancellationToken);
-        return (runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork, model);
+        // The resolved base branch and this cut's own fork point travel back out with the rest of
+        // the dispatch facts: the prompt this claim's caller builds needs both — the branch for
+        // every base-branch reference it makes, the commit for the recompose's reset target — and
+        // re-deriving either at the prompt site would let the two disagree with what was just
+        // recorded on RunDispatched (independent pre-PR review, cycle 1, conformance lens).
+        return (
+            runId, worktree.Path, worktree.Branch, runDirectory, resumesPreviousWork, model,
+            stackedBase.BaseBranch, worktree.StartPointCommit);
     }
 
     /// <summary>

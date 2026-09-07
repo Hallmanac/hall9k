@@ -458,11 +458,20 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         string sessionFileKey = $"{sessionName}-{DomainId.Short(claudeSessionId)}";
 
         string? blockerContext = await TaskWorkCommand.LoadBlockerContextAsync(session, taskDetails, cancellationToken);
+        // This run's own recorded base, not the project's — the same reason the commit count above
+        // reads it (independent pre-PR review, cycle 1, conformance lens): the contractor's
+        // self-review hunt draws its ownership line from this branch's base, and drawing it from
+        // `origin/main` on a branch cut from a parent's head declares the parent's entire
+        // already-reviewed delta "inside this branch's own changes", sending the contractor's
+        // rounds at — and potentially editing — its parent's code. baseCommit is that base as an
+        // observed commit, which is what keeps the range stable across a parent force-push; blank
+        // on a run claimed before that field was recorded, which falls back to the ref.
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, run.Branch, run.WorktreePath, resumesPreviousWork, blockerContext,
             resumeReason: null, isInteractive: false, isHandback: false, isDeliberateHeadlessStart: true,
             requiresSelfRegistration: false, isDelegatedContractor: true, delegationNote: note,
-            delegationBaseCommit: delegationBaseCommit);
+            delegationBaseCommit: delegationBaseCommit,
+            baseBranch: run.BaseBranchOr(project.BaseBranch), baseCommit: run.BaseCommit);
 
         return new DelegationPlan(
             runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, prompt,

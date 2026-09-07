@@ -23,6 +23,28 @@ namespace Hall9k.Connectors.Prompts;
 /// </summary>
 public static class WorkPromptBuilder
 {
+    /// <summary>
+    /// The commit a stacked session's own fork point is named by literally, or null when naming a
+    /// ref is safe (independent pre-PR review, cycle 1, adversarial lens). A parent branch is not
+    /// like the project's base: it is routinely force-pushed while the child builds — an
+    /// absorb-review-fixes lap folding fixes into its own commits — which rewrites the history the
+    /// child shares with it, so <c>git merge-base origin/&lt;parent&gt; HEAD</c> collapses BELOW
+    /// this branch's real fork point and the recompose's mixed reset would dissolve the parent's
+    /// commits along with this session's own, recomposing the parent's work as this branch's
+    /// authored history. The tree-identity check cannot catch that (a mixed reset never moves the
+    /// tree), which is exactly what PLAN.md §16 #144 names as the reason the fork point has to be
+    /// the recorded commit — <c>RunDispatched.BaseCommit</c>, observed at the cut.
+    /// <para>
+    /// Null for every ordinary run, which keeps every unstacked prompt byte-identical, and null for
+    /// a stacked run whose fork point was never observed (a resumed worktree, an unreadable
+    /// rev-parse, a stream written before the field): there is no recorded commit to name, so the
+    /// merge-base wording stands as the best available answer rather than a guessed commit
+    /// (AGENTS.md's never-guess rule).
+    /// </para>
+    /// </summary>
+    private static string? StackedForkPoint(ProjectDetails project, string effectiveBaseBranch, string? baseCommit) =>
+        effectiveBaseBranch != project.BaseBranch && baseCommit.IsNotBlank() ? baseCommit : null;
+
     public static string Build(
         TaskDetails task,
         ProjectDetails project,
@@ -39,7 +61,8 @@ public static class WorkPromptBuilder
         bool isDelegatedContractor = false,
         string? delegationNote = null,
         string? delegationBaseCommit = null,
-        string? baseBranch = null)
+        string? baseBranch = null,
+        string? baseCommit = null)
     {
         // The branch this session's work sits on top of, resolved by the caller at dispatch
         // (RunDispatched.BaseBranch): the project's own for every ordinary run, a stacked child's
@@ -50,6 +73,7 @@ public static class WorkPromptBuilder
         // its parent's work alongside it. Null defers to the project's, which is what every caller
         // with no run to read one from passes.
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
+        string? stackedForkPointCommit = StackedForkPoint(project, effectiveBaseBranch, baseCommit);
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
         prompt.AppendLine();
@@ -238,7 +262,8 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  session, so do not attempt them yourself — end with your summary once the work");
             prompt.AppendLine("  below is done.");
             AppendDelegatedContractorCommitRules(
-                prompt, project, worktreePath, delegationBaseCommit, effectiveBaseBranch);
+                prompt, project, worktreePath, delegationBaseCommit, effectiveBaseBranch,
+                stackedForkPointCommit);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
         else if (isDeliberateHeadlessStart)
@@ -260,13 +285,15 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  to look before delivering). Both commands refuse when run from inside this very");
             prompt.AppendLine("  session, so do not attempt them yourself — end with your summary once the work");
             prompt.AppendLine("  below is done.");
-            AppendCheckpointCommitRules(prompt, project, worktreePath, effectiveBaseBranch);
+            AppendCheckpointCommitRules(
+                prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
         else
         {
             prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
-            AppendCheckpointCommitRules(prompt, project, worktreePath, effectiveBaseBranch);
+            AppendCheckpointCommitRules(
+                prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
             AppendSessionEndsAtFinalMessageRule(prompt);
         }
 
@@ -595,9 +622,16 @@ public static class WorkPromptBuilder
     /// than reading its parent's already-reviewed work as part of this branch. Null defers to the
     /// project's.
     /// </param>
+    /// <param name="stackedForkPointCommit">
+    /// The recorded fork point the round-one range is taken from for a stacked session — see
+    /// <see cref="StackedForkPoint"/> for why the parent branch cannot be named as a ref here
+    /// either: a parent force-pushed mid-session moves <c>origin/&lt;parent&gt;</c> out from under
+    /// the range, folding the parent's rewritten delta into what the hunt reads as this branch's
+    /// own work. Null (every ordinary run) keeps the range on the base branch exactly as it was.
+    /// </param>
     public static void AppendSelfReviewPhaseRules(
         StringBuilder prompt, ProjectDetails project, string worktreePath, bool recomposeFollows = true,
-        string? baseBranch = null)
+        string? baseBranch = null, string? stackedForkPointCommit = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         // Suffixed with the worktree's own directory name (unique per session, since a node
@@ -659,11 +693,26 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  finding so the round has something to report is the failure this phase is");
         prompt.AppendLine("  guarding against, not the clean round.");
         prompt.AppendLine("  The loop is capped at two rounds, hard.");
-        prompt.AppendLine($"  Round one starts from a fresh `git diff origin/{effectiveBaseBranch}...HEAD`,");
-        prompt.AppendLine("  read in full — not from memory of what you wrote. A worktree's local");
-        prompt.AppendLine("  base-branch ref is routinely stale relative to this task's actual base, so name");
-        prompt.AppendLine("  `origin/` in the range; a diff you already believe you know is not a diff you");
-        prompt.AppendLine("  actually reviewed. Before hunting, record the current tip so a round two, if");
+        if (stackedForkPointCommit is not null)
+        {
+            prompt.AppendLine($"  Round one starts from a fresh `git diff {stackedForkPointCommit}...HEAD`,");
+            prompt.AppendLine("  read in full — not from memory of what you wrote. The range names this branch's");
+            prompt.AppendLine($"  recorded fork point off `{effectiveBaseBranch}` as a literal commit rather than");
+            prompt.AppendLine($"  `origin/{effectiveBaseBranch}`: this branch is stacked on that one, and a parent");
+            prompt.AppendLine("  branch force-pushed while this session runs moves that ref out from under the");
+            prompt.AppendLine("  range, folding the parent's own rewritten delta into what would read as this");
+            prompt.AppendLine("  branch's work. A diff you already believe you know is not a diff you");
+            prompt.AppendLine("  actually reviewed. Before hunting, record the current tip so a round two, if");
+        }
+        else
+        {
+            prompt.AppendLine($"  Round one starts from a fresh `git diff origin/{effectiveBaseBranch}...HEAD`,");
+            prompt.AppendLine("  read in full — not from memory of what you wrote. A worktree's local");
+            prompt.AppendLine("  base-branch ref is routinely stale relative to this task's actual base, so name");
+            prompt.AppendLine("  `origin/` in the range; a diff you already believe you know is not a diff you");
+            prompt.AppendLine("  actually reviewed. Before hunting, record the current tip so a round two, if");
+        }
+
         prompt.AppendLine("  one runs, can diff only its own fixes instead of the whole branch again. A");
         prompt.AppendLine("  shell variable does not survive between separate tool calls, so setting one");
         prompt.AppendLine("  here and reading it back several tool calls into round two gets nothing —");
@@ -806,7 +855,9 @@ public static class WorkPromptBuilder
     /// repo and moves whenever anything else touches it during this session (another worktree's
     /// fetch, a closeout branch cleanup), so resetting straight to its tip would recompose commits
     /// that revert whatever merged into the base after this branch was cut (conformance and
-    /// adversarial review, cycle 1). The merge-base is stable regardless.
+    /// adversarial review, cycle 1). The merge-base is stable regardless — against the project's
+    /// own base branch. It is NOT stable against a stacked child's parent branch, which is why
+    /// <paramref name="stackedForkPointCommit"/> exists; see its own doc.
     /// </para>
     /// <para>
     /// The recompose rewrites this branch's own history over a tip a prior run of the same task may
@@ -825,8 +876,14 @@ public static class WorkPromptBuilder
     /// commit-plan step forgot to stage.
     /// </para>
     /// </summary>
+    /// <param name="stackedForkPointCommit">
+    /// This branch's fork point as a literal commit, for a stacked session only — see
+    /// <see cref="StackedForkPoint"/> for why a merge-base against a parent branch is the wrong
+    /// answer. Null (every ordinary run) keeps the merge-base wording exactly as it was.
+    /// </param>
     public static void AppendCheckpointCommitRules(
-        StringBuilder prompt, ProjectDetails project, string worktreePath, string? baseBranchOverride = null)
+        StringBuilder prompt, ProjectDetails project, string worktreePath, string? baseBranchOverride = null,
+        string? stackedForkPointCommit = null)
     {
         string baseBranch = baseBranchOverride ?? project.BaseBranch;
         prompt.AppendLine("- **Commit as you go, one logical unit at a time.** Each commit here is");
@@ -834,7 +891,9 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  ending (context exhaustion, an early exit) strands at most the increment");
         prompt.AppendLine("  since the last checkpoint instead of the whole session. Message them");
         prompt.AppendLine("  plainly; none of them are what ships.");
-        AppendSelfReviewPhaseRules(prompt, project, worktreePath, baseBranch: baseBranch);
+        AppendSelfReviewPhaseRules(
+            prompt, project, worktreePath, baseBranch: baseBranch,
+            stackedForkPointCommit: stackedForkPointCommit);
         prompt.AppendLine("- **Once all the work is done, the full verification suite is green, and the");
         prompt.AppendLine("  self-review phase above has run its course, recompose the checkpoints into");
         prompt.AppendLine("  real history in one continuous step.**");
@@ -860,23 +919,55 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     predates it, so the diff comes back non-empty for something that was added,");
         prompt.AppendLine("     not omitted. Record the pre-reset tip: `git rev-parse HEAD` — step 3 checks");
         prompt.AppendLine("     against it, so this is not optional bookkeeping.");
-        prompt.AppendLine($"  1. Reset to the branch's own fork point, not the tip of `origin/{baseBranch}`");
-        prompt.AppendLine("     itself: that ref lives in the shared repository and can move during this");
-        prompt.AppendLine("     session (another worktree's fetch, a closeout branch cleanup), and resetting");
-        prompt.AppendLine("     straight to its tip would recompose commits that revert whatever merged into");
-        prompt.AppendLine("     the base after this branch was cut. The fork point does not move. Capture it");
-        prompt.AppendLine("     into a variable and stop if it does not resolve — never inline the");
-        prompt.AppendLine($"     substitution directly into the reset: an unresolved `origin/{baseBranch}`");
-        prompt.AppendLine("     makes `git merge-base` print nothing and exit nonzero, and");
-        prompt.AppendLine("     `git reset --mixed $(...)` on an empty substitution silently becomes a bare");
-        prompt.AppendLine("     `git reset --mixed` — which resets to HEAD, changes nothing, and exits 0 as");
-        prompt.AppendLine("     though the recompose had happened, with step 3's diff unable to catch it");
-        prompt.AppendLine("     (the diff would compare HEAD against itself and read clean):");
-        prompt.AppendLine($"     `FORK_POINT=$(git merge-base origin/{baseBranch} HEAD)`");
-        prompt.AppendLine("     `test -n \"$FORK_POINT\" || { echo \"no fork point resolved — stop here, do not reset\" >&2; exit 1; }`");
-        prompt.AppendLine("     `git reset --mixed \"$FORK_POINT\"`");
-        prompt.AppendLine("     A mixed reset changes which commits exist and");
-        prompt.AppendLine("     leaves the working tree exactly as it is, so the tree itself does not move.");
+        if (stackedForkPointCommit is not null)
+        {
+            // A stacked session never computes its own fork point (independent pre-PR review,
+            // cycle 1, adversarial lens): the platform recorded it at the cut, and no command this
+            // session can run recovers it once the parent has been force-pushed.
+            prompt.AppendLine("  1. Reset to the branch's own fork point — the commit this branch was cut from,");
+            prompt.AppendLine($"     recorded when it was cut: `{stackedForkPointCommit}`. This branch is stacked on");
+            prompt.AppendLine($"     `{baseBranch}` rather than based on the project's own base branch, so the fork");
+            prompt.AppendLine("     point is named here as a literal commit and must NOT be computed as a merge");
+            prompt.AppendLine($"     base against `origin/{baseBranch}`: a parent branch is routinely");
+            prompt.AppendLine("     force-pushed while its child builds (a review lap folding fixes into its own");
+            prompt.AppendLine("     commits), which rewrites the history this branch shares with it and collapses");
+            prompt.AppendLine("     that merge base BELOW this branch's real fork point. A reset there would");
+            prompt.AppendLine("     dissolve the parent's commits along with this session's own, and the");
+            prompt.AppendLine("     commit-plan step would recompose the parent's already-reviewed work as this");
+            prompt.AppendLine("     branch's own authored history — which step 3 cannot catch, because a mixed");
+            prompt.AppendLine("     reset never moves the tree. Verify the commit resolves and stop if it does");
+            prompt.AppendLine("     not — never inline the substitution directly into the reset, since");
+            prompt.AppendLine("     `git reset --mixed $(...)` on an empty substitution silently becomes a bare");
+            prompt.AppendLine("     `git reset --mixed` — which resets to HEAD, changes nothing, and exits 0 as");
+            prompt.AppendLine("     though the recompose had happened, with step 3's diff unable to catch it");
+            prompt.AppendLine("     (the diff would compare HEAD against itself and read clean):");
+            prompt.AppendLine($"     `FORK_POINT=$(git rev-parse --verify \"{stackedForkPointCommit}^{{commit}}\")`");
+            prompt.AppendLine("     `test -n \"$FORK_POINT\" || { echo \"the recorded fork point does not resolve — stop here, do not reset\" >&2; exit 1; }`");
+            prompt.AppendLine("     `git reset --mixed \"$FORK_POINT\"`");
+            prompt.AppendLine("     A mixed reset changes which commits exist and");
+            prompt.AppendLine("     leaves the working tree exactly as it is, so the tree itself does not move.");
+        }
+        else
+        {
+            prompt.AppendLine($"  1. Reset to the branch's own fork point, not the tip of `origin/{baseBranch}`");
+            prompt.AppendLine("     itself: that ref lives in the shared repository and can move during this");
+            prompt.AppendLine("     session (another worktree's fetch, a closeout branch cleanup), and resetting");
+            prompt.AppendLine("     straight to its tip would recompose commits that revert whatever merged into");
+            prompt.AppendLine("     the base after this branch was cut. The fork point does not move. Capture it");
+            prompt.AppendLine("     into a variable and stop if it does not resolve — never inline the");
+            prompt.AppendLine($"     substitution directly into the reset: an unresolved `origin/{baseBranch}`");
+            prompt.AppendLine("     makes `git merge-base` print nothing and exit nonzero, and");
+            prompt.AppendLine("     `git reset --mixed $(...)` on an empty substitution silently becomes a bare");
+            prompt.AppendLine("     `git reset --mixed` — which resets to HEAD, changes nothing, and exits 0 as");
+            prompt.AppendLine("     though the recompose had happened, with step 3's diff unable to catch it");
+            prompt.AppendLine("     (the diff would compare HEAD against itself and read clean):");
+            prompt.AppendLine($"     `FORK_POINT=$(git merge-base origin/{baseBranch} HEAD)`");
+            prompt.AppendLine("     `test -n \"$FORK_POINT\" || { echo \"no fork point resolved — stop here, do not reset\" >&2; exit 1; }`");
+            prompt.AppendLine("     `git reset --mixed \"$FORK_POINT\"`");
+            prompt.AppendLine("     A mixed reset changes which commits exist and");
+            prompt.AppendLine("     leaves the working tree exactly as it is, so the tree itself does not move.");
+        }
+
         prompt.AppendLine("  2. Immediately invoke the commit-plan skill, if this repo ships one, to compose");
         prompt.AppendLine("     that tree into cohesive, buildable commits — the real, reviewable history for");
         prompt.AppendLine("     this PR — or compose them yourself the same way if it does not.");
@@ -936,7 +1027,7 @@ public static class WorkPromptBuilder
     /// </summary>
     private static void AppendDelegatedContractorCommitRules(
         StringBuilder prompt, ProjectDetails project, string worktreePath, string? delegationBaseCommit,
-        string baseBranch)
+        string baseBranch, string? stackedForkPointCommit)
     {
         prompt.AppendLine("- **Commit as you go, one logical unit at a time.** Each commit here is");
         prompt.AppendLine("  crash protection, not authored history: a checkpoint so that an abnormal");
@@ -945,7 +1036,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  plainly; none of them are what ships.");
         AppendSelfReviewPhaseRules(
             prompt, project, worktreePath, recomposeFollows: delegationBaseCommit is not null,
-            baseBranch: baseBranch);
+            baseBranch: baseBranch, stackedForkPointCommit: stackedForkPointCommit);
 
         if (delegationBaseCommit is null)
         {

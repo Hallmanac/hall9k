@@ -451,7 +451,7 @@ public sealed class TaskDelegateClaimRefusalTests(PostgresFixture postgres) : IC
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
         try
         {
-            (Guid runId, _, _, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
+            (Guid runId, _, _, _, _, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
                 store, seed, task, fence, context, DomainId.New(),
                 SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
                 acknowledgeUnmetDependencies: false, interactiveMode: true, trackerClaimGate: null,
