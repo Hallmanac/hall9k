@@ -187,6 +187,31 @@ public sealed class ProjectCapSurfaceTests
             "not one row in this queue carries a limit line, so nothing here may point a reader at one");
     }
 
+    [Fact]
+    public void The_queued_heading_says_a_multi_project_queue_is_served_by_rotation_rather_than_by_this_list()
+    {
+        // The rows are listed in the claim query's order, which is service order within one
+        // project only: across projects the daemon rotates (Decisions Log #141) and its rotation
+        // memory is in-process, so no CLI can see whose turn it is. Saying so is what keeps the
+        // top row from reading as a promise this pane cannot keep.
+        string several = StatusCommand.QueuedHeading(
+            atCeiling: true, atProjectCap: false, atSpendBudget: false, spend: null, queuedProjects: 3);
+
+        several.Should().Contain("oldest first within each project");
+        several.Should().Contain("which of these 3 projects takes the next free slot");
+        several.Should().Contain("longest unserved first, or a --priority tier");
+
+        string one = StatusCommand.QueuedHeading(
+            atCeiling: true, atProjectCap: false, atSpendBudget: false, spend: null, queuedProjects: 1);
+
+        one.Should().NotContain("rotation",
+            "with one project queued the listed order is the order served, and a rotation with one "
+            + "member is noise");
+        one.Should().NotContain("  ",
+            "the quiet case renders exactly the heading it always did, and a stray double space is the tell "
+            + "that the rotation note was interpolated with a space of its own rather than joined in");
+    }
+
     /// <summary>A budget this node is enforcing and has spent — what the queued section gates on.</summary>
     private static SpendPressure Spend() => new(
         SpentTokens: 500_000,

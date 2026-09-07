@@ -137,9 +137,15 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         bool atSpendBudget = spend is { AtBudget: true };
         if (atCeiling || atProjectCap || atSpendBudget)
         {
+            int queuedProjects = rows
+                .Where(row => row.Group == AttentionBucket.Queued)
+                .Select(row => row.ProjectId)
+                .Distinct()
+                .Count();
             listed += Section(
                 rows, AttentionBucket.Queued, "queued",
-                QueuedHeading(atCeiling, atProjectCap, atSpendBudget, spend), now, inServiceOrder: true);
+                QueuedHeading(atCeiling, atProjectCap, atSpendBudget, spend, queuedProjects), now,
+                inServiceOrder: true);
         }
 
         // Blocked work is neither running nor waiting on you, but the wait has a cause worth
@@ -185,9 +191,18 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// project's own stream on every sweep, so it needs none — which is worth saying here, since
     /// the two sit side by side in the same heading.
     /// </para>
+    /// <para>
+    /// <paramref name="queuedProjects"/> is how many projects the section's rows span, and it
+    /// exists to keep one sentence honest (Decisions Log #141). The rows are listed in the claim
+    /// query's own order, which is service order <em>within</em> a project — but across projects
+    /// the daemon rotates, and its rotation memory is in-process, so no CLI can see whose turn it
+    /// is. With more than one project queued the heading says that outright and points at the
+    /// daemon log, where every claim names the project that won and why, rather than letting the
+    /// top row read as a promise the pane cannot keep.
+    /// </para>
     /// </summary>
     internal static string QueuedHeading(
-        bool atCeiling, bool atProjectCap, bool atSpendBudget, SpendPressure? spend)
+        bool atCeiling, bool atProjectCap, bool atSpendBudget, SpendPressure? spend, int queuedProjects = 1)
     {
         List<string> causes = [];
         List<string> levers = [];
@@ -222,7 +237,21 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             _ => "Each row below names which limit holds it, in that limit's own numbers.",
         };
 
-        return $"[blue]Queued[/] [dim]— {string.Join("; ", causes)}. {rowNote} "
+        // Said only when it is true: on a single-project queue the listed order IS the order the
+        // dispatcher serves, and a note about a rotation with one member would be noise. Joined
+        // rather than interpolated with a space of its own, so the quiet case renders exactly the
+        // heading it always did rather than one carrying a stray double space.
+        string[] notes = queuedProjects > 1
+            ?
+            [
+                rowNote,
+                $"Rows are oldest first within each project; which of these {queuedProjects} projects takes the "
+                + "next free slot is the daemon's own rotation (longest unserved first, or a --priority tier), "
+                + "and its log names the winner and why on every claim.",
+            ]
+            : [rowNote];
+
+        return $"[blue]Queued[/] [dim]— {string.Join("; ", causes)}. {string.Join(" ", notes)} "
             + $"Raise one with:[/] {string.Join(" [dim]·[/] ", levers)}";
     }
 
@@ -300,7 +329,11 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// <param name="inServiceOrder">
     /// Marker first, then oldest assignment, ties broken by when the task was added — exactly
     /// the claim query's own ordering (Decisions Log #64, and the queue-first marker, task
-    /// 45136b29, idea fcaded0b's R7 ruling). The queue section tells a human that each of its
+    /// 45136b29, idea fcaded0b's R7 ruling). It is service order within one project, and the
+    /// honest approximation of it across several: which project takes the next free slot is the
+    /// daemon's rotation (Decisions Log #141), whose memory is in-process and so invisible to any
+    /// CLI — <see cref="QueuedHeading"/> says so in the section's own words rather than leaving
+    /// the top row to imply otherwise. The queue section tells a human that each of its
     /// rows starts as a run finishes, so its top row has to be the one that starts next;
     /// listed newest-first, the pane's default everywhere else, it showed the eight tasks that
     /// run last and collapsed the imminent ones into "… and N more" (pre-PR review, 2026-08-22).
