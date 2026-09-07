@@ -1460,14 +1460,21 @@ public sealed partial class VerificationRunner(
             // hiccup in the comparison's own gate run (a dropped Postgres connection, Testcontainers
             // failing to bring a container up, MSB4166) says nothing about whether main itself is
             // broken, and AdHocGateRunner's own doc comment is explicit that it carries no
-            // infrastructure classification or retry of its own — this method is the caller that
-            // has to supply it. Without this check, a single flaky infrastructure failure would be
+            // infrastructure classification of its own — this method is the caller that has to
+            // supply it. Without this check, a single flaky infrastructure failure would be
             // persisted as a conclusive CleanBaseGateVerdict with basePasses: false and replayed
             // verbatim on every later run against this base commit, telling a human "main is broken"
             // on the strength of one bad environment, not one bad commit (independent pre-PR review,
             // cycle 5, adversarial lens, medium). This is the identical classifier
-            // VerificationRunner's own RunGateAsync already applies to the run's own real gate above.
-            if (GateInfrastructureFailureClassifier.IsInfrastructureFailure(result.OutputTail))
+            // VerificationRunner's own RunGateAsync already applies to the run's own real gate above
+            // — classified from result.FullOutput, not result.OutputTail: the latter is capped to
+            // the trailing 400 characters kept for the summary below, so a marker logged early in an
+            // eleven-minute `dotnet test` run (a Testcontainers/Npgsql failure five minutes in, with
+            // megabytes of test output still to come) sat outside that window and went unclassified,
+            // recording the environmental hiccup as a conclusive "main is broken" verdict — exactly
+            // the mistake RunGateAsync's own ReadFullOutput(logFile) above already avoids for the
+            // run's own real gate (independent pre-PR review, cycle 1, both lenses, high/medium).
+            if (GateInfrastructureFailureClassifier.IsInfrastructureFailure(result.FullOutput))
             {
                 logger.LogInformation(
                     "Run {RunId}: the clean-base comparison for gate '{Gate}' hit an infrastructure " +

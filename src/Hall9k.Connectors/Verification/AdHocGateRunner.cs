@@ -22,16 +22,34 @@ public enum GateCheckOutcome
 }
 
 /// <summary>
-/// A single gate command spawned once, with no scoping, no infrastructure classification, and no
-/// retry — the daemon's own <c>VerificationRunner</c> is deliberately not reused for this because
-/// both of <see cref="AdHocGateRunner"/>'s callers ask a narrower question than a real gate pass
-/// answers: does this command exit zero here, once, right now, or could that not even be
-/// determined. <c>OutputTail</c> is trimmed to a bounded length — the same 400 characters
-/// <c>VerificationRunner.TailOf</c> already holds a gate's recorded summary to — so a large
-/// build's own output cannot blow out a one-line refusal or the attention pane's one-line failure
-/// cause (conformance review, cycle 1: this used to cap at 2000, five times that budget).
+/// A single gate command spawned once, with no scoping, no retry, and (with one exception) no
+/// infrastructure classification of its own — the daemon's own <c>VerificationRunner</c> is
+/// deliberately not reused for this because both of <see cref="AdHocGateRunner"/>'s callers ask a
+/// narrower question than a real gate pass answers: does this command exit zero here, once, right
+/// now, or could that not even be determined. <c>OutputTail</c> is trimmed to a bounded length —
+/// the same 400 characters <c>VerificationRunner.TailOf</c> already holds a gate's recorded
+/// summary to — so a large build's own output cannot blow out a one-line refusal or the attention
+/// pane's one-line failure cause (conformance review, cycle 1: this used to cap at 2000, five
+/// times that budget).
 /// </summary>
-public sealed record GateCheckResult(GateCheckOutcome Outcome, string OutputTail);
+/// <param name="FullOutput">
+/// The gate's entire redirected output, empty except on <see cref="GateCheckOutcome.Failed"/>
+/// (independent pre-PR review, cycle 1, both lenses, high: a caller classifying an infrastructure
+/// failure — <c>VerificationRunner.DescribeCleanBaseComparisonAsync</c> — used to read
+/// <see cref="OutputTail"/> for it, so a marker logged early in a long `dotnet test` run sat
+/// outside the last 400 characters and went unclassified, the same mistake
+/// <c>VerificationRunner.RunGateAsync</c>'s own <c>ReadFullOutput</c> already exists to avoid for
+/// the run's own real gate). This class cannot reference
+/// <c>GateInfrastructureFailureClassifier</c> itself (Reference graph: Connectors references only
+/// Domain, never Daemon), so classification stays the caller's job — this field only makes sure
+/// the caller has the text that job actually needs. Read once, from the log file, before it is
+/// deleted below; never held across the process's own run the way an in-process
+/// <c>OutputDataReceived</c> accumulator would, so a chatty gate's own heap cost stays exactly the
+/// one-time file read <c>ReadFullOutput</c> already pays elsewhere, not a second, ongoing one.
+/// Left empty for <see cref="GateCheckOutcome.Passed"/> and
+/// <see cref="GateCheckOutcome.Inconclusive"/>: neither caller classifies those.
+/// </param>
+public sealed record GateCheckResult(GateCheckOutcome Outcome, string OutputTail, string FullOutput = "");
 
 /// <summary>
 /// Runs one gate command against some checkout — a clean base-branch checkout being validated
@@ -177,8 +195,11 @@ public static class AdHocGateRunner
                 return new GateCheckResult(GateCheckOutcome.Inconclusive, $"exceeded its {DescribeTimeout(timeout)} timeout");
             }
 
+            GateCheckOutcome outcome = process.ExitCode == 0 ? GateCheckOutcome.Passed : GateCheckOutcome.Failed;
             return new GateCheckResult(
-                process.ExitCode == 0 ? GateCheckOutcome.Passed : GateCheckOutcome.Failed, Tail(ReadTailOutput(logFile)));
+                outcome,
+                Tail(ReadTailOutput(logFile)),
+                outcome == GateCheckOutcome.Failed ? ReadFullOutput(logFile) : string.Empty);
         }
         finally
         {
@@ -242,6 +263,25 @@ public static class AdHocGateRunner
         catch (IOException)
         {
             return "(unreadable)";
+        }
+    }
+
+    /// <summary>
+    /// The whole log file, read once, for the one case (a failed comparison) whose caller has to
+    /// classify a marker that could be anywhere in it, not just its trailing 400 characters —
+    /// mirrors <c>VerificationRunner.ReadFullOutput</c>'s own identical bounded-by-being-a-single-
+    /// read approach for the run's own real gate, not the tail-only <see cref="ReadTailOutput"/>
+    /// this method's other caller (a plain pass/fail check, never a classification) still uses.
+    /// </summary>
+    private static string ReadFullOutput(string logFile)
+    {
+        try
+        {
+            return File.Exists(logFile) ? File.ReadAllText(logFile).Trim() : string.Empty;
+        }
+        catch (IOException)
+        {
+            return string.Empty;
         }
     }
 
