@@ -2545,7 +2545,7 @@ public sealed class CloseoutEngine(
         CancellationToken cancellationToken)
     {
         StackedParentObservation observation = await stackedParents.ObserveAsync(
-            session, project, task.StackedOnTaskId, run, cancellationToken);
+            session, project, StackedParentDeclaration.From(task), run, cancellationToken);
 
         if (observation.Verdict == StackedParentVerdict.Aligned)
         {
