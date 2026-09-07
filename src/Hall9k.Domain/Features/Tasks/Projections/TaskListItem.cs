@@ -90,6 +90,15 @@ public sealed class TaskListItem
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
     public List<Guid> UnmetDependencies { get; set; } = [];
     /// <summary>
+    /// The one blocker this task is stacked on, or null when it is stacked on nothing — mirrors
+    /// <see cref="TaskAggregate.StackedOnTaskId"/> (task: a stacked pull-request edge exists as an
+    /// explicit opt-in dependency). Kept here as well as on <see cref="TaskDetails"/> because
+    /// closeout queries it: when a parent merges, this is the key that finds the children whose
+    /// pull requests need retargeting, and a document old enough to be missing it simply does not
+    /// match — which is the right answer, since a task that never declared an edge has none.
+    /// </summary>
+    public Guid? StackedOnTaskId { get; set; }
+    /// <summary>
     /// Blockers observed dead: they will never close out on their own. Oldest first, so the
     /// last entry is the newest observation — the one <see cref="DependencyFailureReason"/> carries.
     /// </summary>
@@ -144,6 +153,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // it queued on — the same reading the line above already makes of its owner.
         AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt,
         BlockedBy = [.. @event.Data.BlockedBy ?? []],
+        StackedOnTaskId = @event.Data.StackedOnTaskId,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
         AddedAt = @event.Data.AddedAt,
     };
@@ -166,6 +176,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         if (@event.Data.BlockedBy.HasValue)
         {
             view.BlockedBy = [.. @event.Data.BlockedBy.Value ?? []];
+        }
+
+        if (@event.Data.StackedOnTaskId.HasValue)
+        {
+            view.StackedOnTaskId = @event.Data.StackedOnTaskId.Value;
         }
 
         if (@event.Data.Type.HasValue)

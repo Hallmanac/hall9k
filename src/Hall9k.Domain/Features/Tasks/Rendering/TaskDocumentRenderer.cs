@@ -71,6 +71,14 @@ public static class TaskDocumentRenderer
             }
         }
 
+        // Rendered beside blocked-by rather than folded into it: the two are separate declarations
+        // and the difference is exactly what a reader of this document needs to see (task: a
+        // stacked pull-request edge exists as an explicit opt-in dependency).
+        if (task.StackedOnTaskId is { } stackedOnTaskId)
+        {
+            document.AppendLine($"stacked-on: {DomainId.Short(stackedOnTaskId)}");
+        }
+
         if (task.ExternalReference.IsNotBlank())
         {
             document.AppendLine($"external-reference: {OneLine(task.ExternalReference)}");

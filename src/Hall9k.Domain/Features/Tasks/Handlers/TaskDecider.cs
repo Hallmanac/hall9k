@@ -33,7 +33,8 @@ public static class TaskDecider
         Guid? sourceIdeaId = null,
         Guid? epicId = null,
         string? reviewStageComposition = null,
-        bool reviewStageCompositionAcknowledged = false)
+        bool reviewStageCompositionAcknowledged = false,
+        Guid? stackedOnTaskId = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -54,6 +55,7 @@ public static class TaskDecider
         string? normalizedComposition = VetReviewStageComposition(
             reviewStageComposition, reviewStageCompositionAcknowledged, "--review-stage-composition");
         RefuseCompositionOnPrReview(type, normalizedComposition);
+        Guid? stackedOn = VetStackedEdge(id, stackedOnTaskId, dependencies, type);
 
         return new TaskAdded(
             id, projectId, objective, criteria, type, agentContext, constraints,
@@ -63,7 +65,65 @@ public static class TaskDecider
                 ? Run.ReviewStageComposition.FromInput(normalizedWord)
                 : null,
             ReviewStageCompositionAcknowledged: ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(
-                normalizedComposition, reviewStageCompositionAcknowledged));
+                normalizedComposition, reviewStageCompositionAcknowledged),
+            StackedOnTaskId: stackedOn);
+    }
+
+    /// <summary>
+    /// Vets a declared stacked edge (task: a stacked pull-request edge exists as an explicit opt-in
+    /// dependency). Null passes through untouched — no edge is the default, and this method never
+    /// invents one from <paramref name="dependencies"/>, because inferring a stacked edge from an
+    /// ordinary blocked-by is precisely what Brian's cohesion ruling (2026-08-28) forbids.
+    /// <para>
+    /// Three refusals, each naming the fix. A self-edge is a stack of one.
+    /// <paramref name="dependencies"/> must already contain the parent: a stacked edge is
+    /// <em>also</em> a dependency edge, which is what lets the publish-time cycle walk and the
+    /// unmet-set bookkeeping see it without either knowing stacking exists — the CLI merges the
+    /// option into the blocked-by set for the caller, so reaching this refusal means the two were
+    /// declared apart and disagree. And a pr-review task is refused as the child, since it has no
+    /// branch or pull request of its own to stack (the same reason
+    /// <see cref="Reopen"/> refuses the type): whether the <em>parent</em> is a pr-review task
+    /// needs the dependency graph, so that half is checked at <see cref="Publish"/>, where the
+    /// graph is already loaded.
+    /// </para>
+    /// <para>
+    /// Public for the same reason <see cref="VetModel"/> is: <c>h9k task add</c> prompts a human for
+    /// an objective and acceptance criteria between reading its options and reaching this decider,
+    /// and refusing an unusable edge only at the end would throw away what they typed in between.
+    /// </para>
+    /// </summary>
+    public static Guid? VetStackedEdge(
+        Guid id, Guid? stackedOnTaskId, IReadOnlyList<Guid> dependencies, TaskType type)
+    {
+        if (stackedOnTaskId is not { } parentId || parentId == Guid.Empty)
+        {
+            return null;
+        }
+
+        if (parentId == id)
+        {
+            throw new DomainValidationException(
+                "A task cannot be stacked on itself — a stack of one is not a stack.");
+        }
+
+        if (type == TaskType.PrReview)
+        {
+            throw new DomainValidationException(
+                "A pr-review task reviews someone else's pull request and never opens one of its own, so "
+                + "there is no branch here to stack on anything. Drop --stacked-on; declare a plain "
+                + "--blocked-by if the review really must wait for that task.");
+        }
+
+        if (!dependencies.Contains(parentId))
+        {
+            throw new DomainValidationException(
+                $"A stacked edge is also a dependency edge, and {parentId} is not among this task's "
+                + "blocked-by set — so the publish-time cycle check and the unmet-dependency "
+                + "bookkeeping would never see it. Declare it as both: pass --stacked-on "
+                + $"{parentId} together with --blocked-by {parentId}.");
+        }
+
+        return parentId;
     }
 
     /// <summary>
@@ -203,6 +263,25 @@ public static class TaskDecider
                 $"Task {task.Id} depends on {missing.Count} task(s) the platform does not know: " +
                 $"{string.Join(", ", missing)}. Drop them with h9k task revise {task.Id} --blocked-by <id> " +
                 "(the option replaces the whole set) or --clear-dependencies.");
+        }
+
+        // The half of the stacked-edge contract only the graph can answer (task: a stacked
+        // pull-request edge exists as an explicit opt-in dependency). TaskDecider.Add and Revise
+        // already refused a pr-review CHILD from the task's own fields; whether the PARENT is one
+        // needs the dependency it names to be loaded, and this is the first gate that has it.
+        // A pr-review parent never opens a pull request of its own (AGENTS.md: it "never writes to
+        // the pull request or the remote in any form"), so there would be no branch to cut the
+        // child from and no pull request to target — the child would sit Blocked until the review
+        // task's own Done, then cut from a branch that does not exist.
+        if (task.StackedOnTaskId is { } stackedOnId
+            && graph.Node(stackedOnId) is { } parent
+            && parent.Type == TaskType.PrReview)
+        {
+            throw new DomainBusinessRuleException(
+                $"Task {task.Id} is stacked on {parent.Describe()}, which is a pull-request review — it "
+                + "never opens a pull request or pushes a branch of its own, so there is nothing there to "
+                + $"stack on. Drop the stacked edge with h9k task revise {task.Id} --clear-stacked-on "
+                + "(the blocked-by dependency itself is untouched).");
         }
 
         // Drafts may transiently hold a cycle while a graph is authored; publishing is where
@@ -397,7 +476,8 @@ public static class TaskDecider
         Optional<bool> queuePriority = default,
         Optional<string?> reviewStageComposition = default,
         bool reviewStageCompositionAcknowledged = false,
-        bool clearInteractiveMode = false)
+        bool clearInteractiveMode = false,
+        Optional<Guid?> stackedOnTaskId = default)
     {
         // Both markers are scheduling/mode facts, not part of the readiness contract, so they
         // are the two exceptions Revise's own Draft-only gate carves out (task 45136b29 for
@@ -410,7 +490,7 @@ public static class TaskDecider
         bool onlyMarkerFieldsChanging = (queuePriority.HasValue || clearInteractiveMode)
             && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
-            && !reviewStageComposition.HasValue;
+            && !reviewStageComposition.HasValue && !stackedOnTaskId.HasValue;
 
         if (task.State != TaskState.Draft && !onlyMarkerFieldsChanging)
         {
@@ -513,15 +593,26 @@ public static class TaskDecider
         TaskType effectiveType = type.Value ?? task.Type;
         RefuseCompositionOnPrReview(effectiveType, normalizedComposition.Value);
 
+        // Vetted against the sets this revision LEAVES BEHIND, not the ones it arrived with: a
+        // revision that rewrites the dependency set and declares a stacked edge in one call must
+        // check the edge against the new set, and a revision that only rewrites the dependency set
+        // must not silently strand an edge the task already carries outside it (the invariant
+        // TaskAggregate.StackedOnTaskId promises). The same effectiveType the composition check
+        // above uses, for the same reason — a task revised to pr-review in this call cannot keep an
+        // edge that type can never honor.
+        Optional<Guid?> stackedOn = VetRevisedStackedEdge(
+            task, stackedOnTaskId, dependencies, effectiveType);
+
         if (!objective.HasValue && !criteria.HasValue && !agentContext.HasValue
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue
-            && !queuePriority.HasValue && !normalizedComposition.HasValue && !clearInteractiveMode)
+            && !queuePriority.HasValue && !normalizedComposition.HasValue && !clearInteractiveMode
+            && !stackedOn.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
                 "--type, --model, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
-                "--queue-first, --clear-queue-first, --review-stage-composition, or " +
-                "--clear-interactive-mode.");
+                "--stacked-on, --clear-stacked-on, --queue-first, --clear-queue-first, " +
+                "--review-stage-composition, or --clear-interactive-mode.");
         }
 
         Optional<Run.ReviewStageComposition?> compositionForEvent = normalizedComposition.HasValue
@@ -535,7 +626,68 @@ public static class TaskDecider
             revisedAt, revisedByOwnerId, epicId, queuePriority, compositionForEvent,
             ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(
                 normalizedComposition.Value, reviewStageCompositionAcknowledged),
-            clearInteractiveMode);
+            clearInteractiveMode,
+            stackedOn);
+    }
+
+    /// <summary>
+    /// <see cref="VetStackedEdge"/>'s revise-side twin, which has one thing Add does not: an edge
+    /// the task <em>already</em> carries. Three cases, and the third is why this exists at all.
+    /// <list type="bullet">
+    /// <item>Present with an id: vetted exactly as Add vets a fresh declaration.</item>
+    /// <item>Present with null: the edge is dropped, and nothing else moves — the blocked-by
+    /// dependency it named stays declared, because those were two separate declarations.</item>
+    /// <item>Absent, on a task that already carries an edge: the edge is re-vetted against this
+    /// revision's own outcome anyway, and records nothing — a <c>--blocked-by</c> that no longer
+    /// names the parent would otherwise leave the aggregate holding an edge outside its own
+    /// dependency set, invisible to the publish-time cycle walk and to the unmet-set bookkeeping,
+    /// which is the exact invariant this edge is required to satisfy. Refusing beats silently
+    /// dropping: the human declared the stack, so the platform says which two declarations now
+    /// disagree rather than picking one for them.</item>
+    /// </list>
+    /// </summary>
+    private static Optional<Guid?> VetRevisedStackedEdge(
+        TaskAggregate task,
+        Optional<Guid?> stackedOnTaskId,
+        Optional<IReadOnlyList<Guid>> dependencies,
+        TaskType effectiveType)
+    {
+        // The dependency set this revision leaves behind — the revised one when it rewrote it, the
+        // task's existing one otherwise.
+        IReadOnlyList<Guid> effectiveDependencies = dependencies.HasValue
+            ? dependencies.Value ?? []
+            : task.BlockedBy;
+
+        if (stackedOnTaskId.HasValue)
+        {
+            return Optional<Guid?>.Of(
+                VetStackedEdge(task.Id, stackedOnTaskId.Value, effectiveDependencies, effectiveType));
+        }
+
+        if (task.StackedOnTaskId is not { } existing)
+        {
+            return Optional<Guid?>.None;
+        }
+
+        if (!effectiveDependencies.Contains(existing))
+        {
+            throw new DomainBusinessRuleException(
+                $"Task {task.Id} is stacked on {existing}, and this revision's dependency set no longer "
+                + "names it — a stacked edge is also a dependency edge, so the two would disagree. Keep "
+                + $"the dependency (include --blocked-by {existing}), or drop the stack in the same "
+                + "revision with --clear-stacked-on.");
+        }
+
+        // Re-vetted for the type it would be left with: a revision to pr-review cannot keep an
+        // edge that type can never honor, and refusing here says so before the type lands.
+        VetStackedEdge(task.Id, existing, effectiveDependencies, effectiveType);
+
+        // Absent and still valid records nothing. The aggregate already holds this edge, so
+        // re-stating it would both write a field the revision never touched — the exact claim
+        // Optional exists to avoid making — and count as "something to revise", so a revise call
+        // that passed no options at all would silently succeed on any stacked task instead of
+        // being refused (the guard below this method's call site).
+        return Optional<Guid?>.None;
     }
 
     /// <summary>
@@ -663,10 +815,15 @@ public static class TaskDecider
                 $"{string.Join(", ", unresolved)}.");
         }
 
+        // Per edge, not per dependency: the one this task declared itself stacked on is met at the
+        // parent's Delivered, everything else at true closeout (StackedEdgeRules — the same rule
+        // TaskDependencyResolver re-applies every sweep, which is why it lives in one place).
         return new TaskAssigned(
             task.Id,
             assignedOwnerId,
-            [.. dependencies.Where(dependency => dependency.Blocks).Select(dependency => dependency.Id)],
+            [.. dependencies
+                .Where(dependency => StackedEdgeRules.Blocks(task, dependency))
+                .Select(dependency => dependency.Id)],
             assignedAt,
             assignedByOwnerId);
     }
@@ -1097,7 +1254,9 @@ public static class TaskDecider
         string? obstructionSummary = null,
         IReadOnlyList<string>? knownHumanReviewThreadIds = null,
         IReadOnlyList<string>? knownPendingReviewRequestLogins = null,
-        string? pullRequestHeadSha = null)
+        string? pullRequestHeadSha = null,
+        string? stackReplayUpstreamCommit = null,
+        string? stackReplayOntoCommit = null)
     {
         if (task.State != TaskState.Done)
         {
@@ -1131,10 +1290,27 @@ public static class TaskDecider
             throw new DomainValidationException("A follow-up run needs the existing pull-request branch.");
         }
 
+        // A stacked replay's whole job is one `git rebase --onto <onto> <upstream>`, and it needs
+        // both arguments as observed commits. Without the upstream it cannot drop the parent's
+        // commits and would replay them onto a base that already holds them; without the onto it
+        // would have to name a ref instead, landing wherever that ref had drifted to by the time
+        // the session ran — on the one follow-up no reviewer ever reads. Refused rather than
+        // degraded into a different operation wearing this kind's name.
+        if (kind == FollowUpKind.StackReplay
+            && (stackReplayUpstreamCommit.IsBlank() || stackReplayOntoCommit.IsBlank()))
+        {
+            throw new DomainValidationException(
+                $"A stacked replay of task {task.Id} needs both commits it replays between: the one its "
+                + "branch was last built on (the upstream `git rebase --onto` drops the parent's commits "
+                + "at) and the one it lands on. Without either there is no deterministic replay to "
+                + "dispatch, only a plain rebase wearing its name.");
+        }
+
         return new TaskReopened(
             task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId, kind, automatic,
             obstructionKey, obstructionSummary,
-            knownHumanReviewThreadIds, knownPendingReviewRequestLogins, pullRequestHeadSha);
+            knownHumanReviewThreadIds, knownPendingReviewRequestLogins, pullRequestHeadSha,
+            stackReplayUpstreamCommit, stackReplayOntoCommit);
     }
 
     /// <summary>

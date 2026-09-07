@@ -53,4 +53,13 @@ public sealed record TaskAdded(
     /// </summary>
     ReviewStageComposition? ReviewStageComposition = null,
     /// <summary>Whether removing a load-bearing review guarantee was acknowledged at set time; clamped false when never actually needed.</summary>
-    bool ReviewStageCompositionAcknowledged = false);
+    bool ReviewStageCompositionAcknowledged = false,
+    /// <summary>
+    /// The blocker this task is <em>stacked on</em> rather than merely blocked by (task: a stacked
+    /// pull-request edge exists as an explicit opt-in dependency) — always one of
+    /// <see cref="BlockedBy"/>, never inferred from it. Null is every task's default and the only
+    /// value a stream written before this field existed can replay as, which is exactly right: the
+    /// tool never infers stacking from an ordinary blocked-by (Brian's cohesion ruling, 2026-08-28),
+    /// so a task that never declared one has none.
+    /// </summary>
+    Guid? StackedOnTaskId = null);

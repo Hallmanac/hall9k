@@ -168,6 +168,18 @@ public sealed class TaskAggregate
     /// </summary>
     public string? FollowUpPullRequestHeadSha { get; private set; }
     /// <summary>
+    /// The commit a pending <see cref="FollowUpKind.StackReplay"/> follow-up must replay this
+    /// branch <em>from</em> — see <see cref="TaskReopened.StackReplayUpstreamCommit"/>'s own doc.
+    /// Null for every other follow-up kind and for a task never reopened at all.
+    /// </summary>
+    public string? StackReplayUpstreamCommit { get; private set; }
+    /// <summary>
+    /// The commit a pending <see cref="FollowUpKind.StackReplay"/> follow-up must replay this
+    /// branch <em>onto</em> — see <see cref="TaskReopened.StackReplayOntoCommit"/>'s own doc.
+    /// Null for every other follow-up kind and for a task never reopened at all.
+    /// </summary>
+    public string? StackReplayOntoCommit { get; private set; }
+    /// <summary>
     /// Set while a human-requested retry of a failed task is pending (Decisions Log #25):
     /// the failed run's branch, resumed by the next claim when it still exists — the
     /// launcher starts clean from the base branch when it is gone (or when this is null).
@@ -179,6 +191,21 @@ public sealed class TaskAggregate
     /// reopen resets it: the human asking for another attempt restores the automatic budget.
     /// </summary>
     public int CloseoutAttempts { get; private set; }
+
+    /// <summary>
+    /// Automatic stacked replays dispatched since the last human-initiated reopen — the rebase
+    /// budget for a stacked child (task: a stacked pull-request edge exists as an explicit opt-in
+    /// dependency), bounded by <c>DaemonOptions.MaxStackReplayRuns</c> and reset by a manual reopen
+    /// exactly as <see cref="CloseoutAttempts"/> is.
+    /// <para>
+    /// Counted separately, and deliberately NOT added to <see cref="CloseoutAttempts"/>: a replay
+    /// is not a lap on an obstruction of this task's own — it is the parent's branch moving, which
+    /// this task neither caused nor can prevent. Folding it into the lifetime ceiling would let a
+    /// parent that force-pushes half a dozen times spend the child's whole review budget before a
+    /// single one of the child's own review laps ever ran.
+    /// </para>
+    /// </summary>
+    public int StackReplaysDispatched { get; private set; }
 
     /// <summary>
     /// This task's most recent automatic reopen's obstruction identity — the failing check
@@ -246,6 +273,28 @@ public sealed class TaskAggregate
     /// <summary>The tasks this one waits on; declared at creation or revised in Draft.</summary>
     private readonly List<Guid> _blockedBy = [];
     public IReadOnlyList<Guid> BlockedBy => _blockedBy;
+
+    /// <summary>
+    /// The one blocker this task is <em>stacked on</em>, or null when it is stacked on nothing —
+    /// which is every task's default (task: a stacked pull-request edge exists as an explicit
+    /// opt-in dependency). Always a member of <see cref="BlockedBy"/>, an invariant
+    /// <see cref="Handlers.TaskDecider.Add"/> and <see cref="Handlers.TaskDecider.Revise"/> enforce
+    /// rather than repair, so a stacked edge is always <em>also</em> a dependency edge and the
+    /// cycle detection at publish sees it without knowing it is stacked.
+    /// <para>
+    /// Null is never a stand-in for "probably stacked": the tool never infers a stacked edge from
+    /// an ordinary blocked-by (Brian's cohesion ruling, 2026-08-28 — a stacked edge is reserved for
+    /// tasks cohesive in feature set, and the declaration is always a human's).
+    /// </para>
+    /// </summary>
+    public Guid? StackedOnTaskId { get; private set; }
+
+    /// <summary>
+    /// Whether <paramref name="dependencyId"/> is the blocker this task is stacked on, rather than
+    /// one it is merely blocked by. The single question every stacked-aware rule asks.
+    /// </summary>
+    public bool IsStackedOn(Guid dependencyId) =>
+        StackedOnTaskId is { } parentId && parentId == dependencyId;
 
     /// <summary>
     /// The subset of <see cref="BlockedBy"/> that had not reached true closeout when this task
@@ -352,6 +401,7 @@ public sealed class TaskAggregate
         ReviewStageComposition = @event.ReviewStageComposition;
         _blockedBy.Clear();
         _blockedBy.AddRange(@event.BlockedBy ?? []);
+        StackedOnTaskId = @event.StackedOnTaskId;
 
         if (@event.StartsAsDraft)
         {
@@ -401,6 +451,15 @@ public sealed class TaskAggregate
         {
             _blockedBy.Clear();
             _blockedBy.AddRange(@event.BlockedBy.Value ?? []);
+        }
+
+        // Applied after BlockedBy on purpose: a revision that rewrites both must land the new
+        // dependency set before the edge that has to be a member of it, so the invariant the
+        // decider enforced (StackedOnTaskId is one of BlockedBy) is what this aggregate ends up
+        // holding rather than the edge being checked against the previous set.
+        if (@event.StackedOnTaskId.HasValue)
+        {
+            StackedOnTaskId = @event.StackedOnTaskId.Value;
         }
 
         if (@event.Type.HasValue)
@@ -647,6 +706,8 @@ public sealed class TaskAggregate
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
         FollowUpPullRequestHeadSha = null;
+        StackReplayUpstreamCommit = null;
+        StackReplayOntoCommit = null;
         RetryBranch = null;
         State = TaskState.Done;
         // A marker set while this same claim was live (h9k task revise --queue-first on a
@@ -661,8 +722,20 @@ public sealed class TaskAggregate
         FollowUpBranch = @event.Branch;
         FollowUpKind = @event.Kind ?? FollowUpKind.Unknown;
         FollowUpPullRequestHeadSha = @event.PullRequestHeadSha;
+        StackReplayUpstreamCommit = @event.StackReplayUpstreamCommit;
+        StackReplayOntoCommit = @event.StackReplayOntoCommit;
 
-        if (@event.Automatic)
+        if (@event.Automatic && @event.Kind == FollowUpKind.StackReplay)
+        {
+            // A replay spends its own budget and nothing else's — see StackReplaysDispatched's own
+            // doc for why the lifetime ceiling is deliberately left alone here. The obstruction
+            // bookkeeping is left alone too: this lap cleared no obstruction of this task's own, so
+            // touching LastAutomaticObstructionKey would tell the NEXT decision that whatever it
+            // was working on had changed, restarting a progress count that should have kept
+            // climbing.
+            StackReplaysDispatched++;
+        }
+        else if (@event.Automatic)
         {
             CloseoutAttempts++;
             ConsecutiveObstructionLaps = @event.ObstructionKey is not null
@@ -719,6 +792,7 @@ public sealed class TaskAggregate
     private void ResetAutomaticCloseoutState()
     {
         CloseoutAttempts = 0;
+        StackReplaysDispatched = 0;
         ConsecutiveObstructionLaps = 0;
         LastAutomaticObstructionKey = null;
         _automaticLapHistory.Clear();
@@ -765,6 +839,8 @@ public sealed class TaskAggregate
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
         FollowUpPullRequestHeadSha = null;
+        StackReplayUpstreamCommit = null;
+        StackReplayOntoCommit = null;
         RetryBranch = null;
         State = TaskState.Done;
         // Same reasoning as Apply(TaskCompleted): a resolved task reaches Done without ever
@@ -896,6 +972,8 @@ public sealed class TaskAggregate
         FollowUpBranch = null;
         FollowUpKind = FollowUpKind.Unknown;
         FollowUpPullRequestHeadSha = null;
+        StackReplayUpstreamCommit = null;
+        StackReplayOntoCommit = null;
         RetryBranch = null;
         State = TaskState.Abandoned;
         // Same reasoning as Apply(TaskCompleted): a marker set earlier in this task's life is a

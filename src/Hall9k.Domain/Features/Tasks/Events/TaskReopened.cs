@@ -37,6 +37,30 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// h9k pr resolve reopen (no live pull-request inspection there to observe a head from), and
 /// events recorded before this field existed.
 /// </param>
+/// <param name="StackReplayUpstreamCommit">
+/// For a <see cref="FollowUpKind.StackReplay"/> reopen only (task: a stacked pull-request edge
+/// exists as an explicit opt-in dependency): the commit this stacked child's branch was last built
+/// on top of — the parent branch head it was cut from, or the base a previous replay put it on.
+/// It is the <c>&lt;upstream&gt;</c> argument of the replay's own
+/// <c>git rebase --onto &lt;new base&gt; &lt;upstream&gt;</c>, which is what drops the parent's
+/// commits from the child's branch instead of replaying them a second time. Null on every other
+/// reopen kind and on events recorded before this field existed — a replay is the only follow-up
+/// that has an upstream to name.
+/// </param>
+/// <param name="StackReplayOntoCommit">
+/// The replay's other half, and set on the same reopens: the commit it lands on — the parent's
+/// freshly observed head for a force-push, or the base branch's own tip once the parent merged.
+/// <para>
+/// A commit rather than the ref (<c>origin/&lt;base&gt;</c>) deliberately, for two reasons that
+/// point the same way. It makes the replay deterministic: the session lands exactly where closeout
+/// looked, not on whatever the ref has become minutes later, which is the difference between a
+/// mechanical operation and one whose result nobody observed — and this replay is the one follow-up
+/// no reviewer ever reads. And it is what lets the run record its own new fork point
+/// (<c>RunDispatched.BaseCommit</c>) as a fact rather than a prediction, which the NEXT replay
+/// needs as its upstream. A base branch that moves during the replay is then the ordinary
+/// freshness machinery's business, exactly as it is for every other run.
+/// </para>
+/// </param>
 public sealed record TaskReopened(
     Guid Id,
     Guid PreviousRunId,
@@ -50,4 +74,6 @@ public sealed record TaskReopened(
     string? ObstructionSummary = null,
     IReadOnlyList<string>? KnownHumanReviewThreadIds = null,
     IReadOnlyList<string>? KnownPendingReviewRequestLogins = null,
-    string? PullRequestHeadSha = null);
+    string? PullRequestHeadSha = null,
+    string? StackReplayUpstreamCommit = null,
+    string? StackReplayOntoCommit = null);

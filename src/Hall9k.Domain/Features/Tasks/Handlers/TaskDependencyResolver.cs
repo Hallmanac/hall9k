@@ -139,7 +139,11 @@ public static class TaskDependencyResolver
             // than twice describing the world as it was before the first.
             foreach (TaskDependency dependency in dependencies)
             {
-                if (!dependency.Blocks)
+                // Asked per edge through StackedEdgeRules, the same rule TaskDecider.Assign froze
+                // the unmet set with: the blocker this task declared itself stacked on is met at
+                // the parent's Delivered, every other one at true closeout (Decisions Log #34,
+                // unchanged for a plain edge).
+                if (!StackedEdgeRules.Blocks(task, dependency))
                 {
                     TaskDependencyCompleted completed = TaskDecider.DependencyCompleted(task, dependency.Id, now);
                     session.Events.Append(task.Id, completed);
@@ -151,7 +155,7 @@ public static class TaskDependencyResolver
                 // observed state. A blocker back in the pipeline is not dead, however it got
                 // there, so nothing here has to know that h9k task retry exists.
                 string? recordedFailure = task.RecordedDependencyFailure(dependency.Id);
-                if (dependency.IsDead)
+                if (StackedEdgeRules.IsDead(task, dependency))
                 {
                     string reason = DeathReason(task, dependency);
                     if (recordedFailure == reason)
