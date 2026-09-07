@@ -55,7 +55,7 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
     public async Task<PullRequestFacts> FetchFactsAsync(
         string reference, string workingDirectory, CancellationToken cancellationToken)
     {
-        (string? repository, int number) = ParseReference(reference);
+        (string? repository, int number) = GitHubPullRequestReference.Parse(reference);
 
         List<string> arguments =
             ["pr", "view", number.ToString(CultureInfo.InvariantCulture), "--json", RequestedFields];
@@ -75,87 +75,9 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
 
     public Uri? WebUrl(ExternalReference reference) =>
         reference.Provider == WorkItemProvider.GitHubPullRequest
-        && TryParseCanonical(reference.Reference, out string repository, out int number)
+        && GitHubPullRequestReference.TryParseCanonical(reference.Reference, out string repository, out int number)
             ? new Uri($"https://github.com/{repository}/pull/{number}")
             : null;
-
-    private static bool TryParseCanonical(string reference, out string repository, out int number)
-    {
-        string[] parts = reference.Split('#');
-        if (parts is [{ } candidateRepository, { } candidateNumber]
-            && candidateRepository.Split('/') is [{ Length: > 0 }, { Length: > 0 }]
-            && int.TryParse(candidateNumber, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed))
-        {
-            repository = candidateRepository;
-            number = parsed;
-            return true;
-        }
-
-        repository = string.Empty;
-        number = 0;
-        return false;
-    }
-
-    private static (string? Repository, int Number) ParseReference(string reference)
-    {
-        string trimmed = reference?.Trim() ?? string.Empty;
-        if (trimmed.IsBlank())
-        {
-            throw new DomainValidationException(
-                "--from-pr needs a pull request to import. Pass the number (42), the owner/repo#42 "
-                + "shorthand, or the pull request URL.");
-        }
-
-        return trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-                ? ParseUrl(trimmed)
-                : ParseShorthand(trimmed);
-    }
-
-    private static (string? Repository, int Number) ParseUrl(string reference)
-    {
-        if (!Uri.TryCreate(reference, UriKind.Absolute, out Uri? url))
-        {
-            throw Unreadable(reference);
-        }
-
-        if (!IsGitHubDotCom(url.Host))
-        {
-            throw ForeignHost(reference, url.Host);
-        }
-
-        string[] segments = url.AbsolutePath.Trim('/').Split('/');
-        if (segments is [{ } owner, { } repository, "pull", { } number, ..]
-            && int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed))
-        {
-            return ($"{owner}/{repository}", parsed);
-        }
-
-        throw segments is [_, _, "issues", ..]
-            ? new DomainValidationException(
-                $"{RelayedText.OneLine(reference)} is an issue, not a pull request. --from-pr adopts pull "
-                + "requests; an issue has no diff for a pr-review task to read.")
-            : Unreadable(reference);
-    }
-
-    private static (string? Repository, int Number) ParseShorthand(string reference)
-    {
-        string bare = reference.StartsWith('#') ? reference[1..] : reference;
-        if (int.TryParse(bare, NumberStyles.None, CultureInfo.InvariantCulture, out int number))
-        {
-            return (null, number);
-        }
-
-        return reference.Split('#') is [{ } repository, { } suffix]
-            && repository.Split('/') is [{ Length: > 0 }, { Length: > 0 }]
-            && int.TryParse(suffix, NumberStyles.None, CultureInfo.InvariantCulture, out int qualified)
-                ? (repository, qualified)
-                : throw Unreadable(reference);
-    }
-
-    private static bool IsGitHubDotCom(string host) =>
-        host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
-        || host.Equals("www.github.com", StringComparison.OrdinalIgnoreCase);
 
     private static PullRequestFacts Map(string json, int requestedNumber)
     {
@@ -185,7 +107,7 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
                     : requestedNumber;
 
             return new PullRequestFacts(
-                RepositoryFrom(url),
+                GitHubPullRequestReference.RepositoryFromUrl(url),
                 number,
                 ReadString(root, "title") ?? string.Empty,
                 ReadString(root, "body") is { } body && body.IsNotBlank() ? body : null,
@@ -193,25 +115,6 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
                 ReadString(root, "baseRefName") ?? string.Empty,
                 url is not null && Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed) ? parsed : null);
         }
-    }
-
-    private static string RepositoryFrom(string? url)
-    {
-        if (url is null
-            || !Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
-            || parsed.AbsolutePath.Trim('/').Split('/') is not [{ } owner, { } repository, ..])
-        {
-            throw new DomainValidationException(
-                "gh returned a pull request with no URL, so the repository it belongs to cannot be "
-                + "named. Re-run with the full pull request URL so the reference records a repository.");
-        }
-
-        if (!IsGitHubDotCom(parsed.Host))
-        {
-            throw ForeignHost(url, parsed.Host);
-        }
-
-        return $"{owner}/{repository}";
     }
 
     private static string? ReadString(JsonElement root, string property) =>
@@ -289,13 +192,4 @@ public sealed class GitHubPullRequestProvider(ProcessRunner? runner = null, Time
         "gh exited successfully but did not answer with a pull request in JSON, so there is nothing to "
         + $"adopt: {reported}. gh printed: {RelayedText.OneLine(RelayedText.Truncate(json, 200))}. Check "
         + "that the 'gh' on PATH is the GitHub CLI itself.");
-
-    private static DomainValidationException ForeignHost(string url, string host) => new(
-        $"{RelayedText.OneLine(url)} is on {RelayedText.OneLine(host)}, and Hall9k reviews pull requests "
-        + "from github.com only. Write the task with --objective and --context instead.");
-
-    private static DomainValidationException Unreadable(string reference) => new(
-        $"'{RelayedText.OneLine(reference)}' does not name a GitHub pull request. Use the number (42), "
-        + "the owner/repo#42 shorthand, or the pull request URL "
-        + "(https://github.com/owner/repo/pull/42).");
 }
