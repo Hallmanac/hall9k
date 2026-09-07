@@ -1879,6 +1879,71 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
+    /// The public cap predicates exist for a caller holding a value that came from outside this
+    /// install — a cap read off another install's task record — and they have to answer exactly
+    /// what the setters enforce, or an adoption would degrade a cap the setter would have taken (or
+    /// carry one it refuses, which is the wall this replaced: independent pre-PR review, cycle 1).
+    /// </summary>
+    [Theory]
+    [InlineData(-1, false)]
+    [InlineData(0, false)]
+    [InlineData(1, true)]
+    public void IsUsableSessionCap_answers_exactly_what_OverrideSessionCap_enforces(int cap, bool usable)
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action set = () => TaskDecider.OverrideSessionCap(task, cap, Now, Owner);
+
+        TaskDecider.IsUsableSessionCap(cap).Should().Be(usable);
+        if (usable)
+        {
+            set.Should().NotThrow();
+        }
+        else
+        {
+            set.Should().Throw<DomainValidationException>();
+        }
+    }
+
+    [Theory]
+    [InlineData(-1, false, false)]
+    [InlineData(0, true, false)]
+    [InlineData(1, true, true)]
+    public void The_review_cap_predicates_answer_exactly_what_OverrideReviewCaps_enforces(
+        int cap, bool usablePerRun, bool usableBudget)
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action perRun = () => TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.Of(cap), Optional<int?>.None, Optional<int?>.None, Optional<int?>.None,
+            Now, Owner);
+        Action budget = () => TaskDecider.OverrideReviewCaps(
+            task, Optional<int?>.None, Optional<int?>.None, Optional<int?>.None, Optional<int?>.Of(cap),
+            Now, Owner);
+
+        TaskDecider.IsUsablePerRunReviewCap(cap).Should().Be(usablePerRun);
+        TaskDecider.IsUsableLifetimeReviewCycleBudget(cap).Should().Be(usableBudget,
+            "0 is a takeover lever on the three per-run caps and only an unreachable budget on this one");
+        if (usablePerRun)
+        {
+            perRun.Should().NotThrow();
+        }
+        else
+        {
+            perRun.Should().Throw<DomainValidationException>();
+        }
+
+        if (usableBudget)
+        {
+            budget.Should().NotThrow();
+        }
+        else
+        {
+            budget.Should().Throw<DomainValidationException>();
+        }
+    }
+
+    /// <summary>
     /// The recovery <c>TaskDetails.SessionCap</c>'s own doc already promised ("null means the
     /// node's global default decides") but no command could reach until this fix: once pinned, the
     /// override used to be permanent for the task's whole life (independent pre-PR review, cycle 1,
