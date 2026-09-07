@@ -291,6 +291,30 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "auto-pr-review's signal). The gate itself never writes to the tracker and there is no "
             + "override flag; a tracker that cannot be read holds the claim rather than releasing it")]
         public string? ClaimGate { get; init; }
+
+        [CommandOption("--close-linked-issue <on-closeout|never|when-all-tasks-close|default>")]
+        [Description(
+            "Whether true closeout closes a task's linked GitHub issue, and when (task: a task's linked "
+            + "GitHub issue is closed at true closeout under a configurable rule). Default "
+            + "'when-all-tasks-close': the merge note is posted every time, and the issue closes only "
+            + "once every task linked to it has itself reached true closeout or been abandoned — decided "
+            + "fresh at the last one, across every linked task's own recorded rule, so an explicit "
+            + "override on any single sibling beats an inherited default on the rest. 'on-closeout' "
+            + "closes the issue in the same step that posts the note, every time. 'never' posts the note "
+            + "and never closes it — the right choice for an epic, a PRD, an ADR, or an issue split into "
+            + "several tasks. A task overrides this with h9k task publish --close-linked-issue or h9k "
+            + "task revise --close-linked-issue; --never-close-labels forces never for a labeled issue "
+            + "regardless of this default. Jira is untouched: a card's merge comment behaviour does not "
+            + "change. 'default' restores when-all-tasks-close")]
+        public string? CloseLinkedIssue { get; init; }
+
+        [CommandOption("--never-close-labels <LABEL,LABEL,...>")]
+        [Description(
+            "A comma-separated label list that forces 'never' for an issue carrying any of them at "
+            + "closeout time — an epic, a PRD, an ADR — regardless of --close-linked-issue's own "
+            + "default; a task's explicit --close-linked-issue override still wins over a label. "
+            + "Replaces the whole list. Pass an empty string to clear it")]
+        public string? NeverCloseLabels { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -478,7 +502,21 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 : Optional<ProjectPriority>.None,
             claimGate: settings.ClaimGate is { } claimGate
                 ? Optional<ClaimGate>.Of(ClaimGate.Parse(claimGate))
-                : Optional<ClaimGate>.None);
+                : Optional<ClaimGate>.None,
+            // 'default' is the clearing word and reaches CloseLinkedIssueRule.Parse as the word
+            // rather than as a rule, the --priority idiom: it restores when-all-tasks-close, the
+            // rule a new project starts in, so clearing an override and never setting one read
+            // alike.
+            closeLinkedIssue: settings.CloseLinkedIssue is { } closeLinkedIssue
+                ? Optional<CloseLinkedIssueRule>.Of(CloseLinkedIssueRule.Parse(closeLinkedIssue))
+                : Optional<CloseLinkedIssueRule>.None,
+            // Blank clears the whole list, the ContextLinks/VerifyCommands idiom: an empty
+            // --never-close-labels "" is how a human removes every label without touching the
+            // rule that reads them.
+            neverCloseLabels: settings.NeverCloseLabels is { } neverCloseLabels
+                ? Optional<IReadOnlyList<string>>.Of(
+                    neverCloseLabels.IsBlank() ? [] : neverCloseLabels.Split(',', StringSplitOptions.TrimEntries))
+                : Optional<IReadOnlyList<string>>.None);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 
@@ -549,6 +587,20 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + "satisfying the gate stays one command rather than a second trip to the tracker; that "
                 + "is the one place Hall9k writes to your board, and only ever onto an item nobody "
                 + "holds.[/]");
+        }
+
+        // Said at the moment of consent, the same discipline every standing consequence above
+        // follows: 'on-closeout' is the one value that closes an issue unconditionally, every
+        // time, without waiting to see whether the issue covers more than this one task — worth
+        // naming once here rather than discovered the first time an epic's tracking issue closes
+        // on its first linked task's merge.
+        if (settings.CloseLinkedIssue is not null && CloseLinkedIssueRule.Parse(settings.CloseLinkedIssue) == CloseLinkedIssueRule.OnCloseout)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]From now on, a task in this project linked to a GitHub issue closes that issue "
+                + "the moment its own pull request merges, in the same step as the merge note — even if "
+                + "another task in this project also links it. Use 'never' for an issue that is not one "
+                + "unit of work (an epic, a PRD, an ADR), or --never-close-labels to exempt it by label.[/]");
         }
 
         // The home's AGENTS.md is a render of exactly the facts this command changes (the Jira

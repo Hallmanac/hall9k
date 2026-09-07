@@ -146,6 +146,13 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + "Satisfy it in one command with h9k task assign <id> --take, which takes an item nobody "
               + "holds; the gate itself is read-only, has no override flag, and a tracker that cannot be "
               + "read holds the claim[/]");
+        table.AddRow("Close linked issue", CloseLinkedIssueRow(project));
+        table.AddRow("Never-close labels", project.NeverCloseLabels.Count == 0
+            ? $"[dim]none — an issue's own labels never force never; add one: h9k project set "
+              + $"{project.Name.EscapeMarkup()} --never-close-labels epic,prd,adr[/]"
+            : string.Join(", ", project.NeverCloseLabels.Select(label => label.EscapeMarkup()))
+              + " [dim]— an issue carrying any of these never closes at closeout time, regardless of "
+              + "the close-linked-issue default; a task's own override still wins over the label[/]");
         table.AddRow("Settings changed", project.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
@@ -241,6 +248,32 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             $"[yellow]{tier.Value.EscapeMarkup()} — unrecognized[/] [dim]— recorded by a build that knew a "
             + "tier this one does not, so it is scheduled as normal rather than guessed at. Set one this "
             + $"build knows: h9k project set {project.Name.EscapeMarkup()} --priority normal[/]",
+    };
+
+    /// <summary>
+    /// Whether true closeout closes a task's linked GitHub issue, and when (task: a task's linked
+    /// GitHub issue is closed at true closeout under a configurable rule), stating the one thing a
+    /// reader would otherwise have to work out: the default waits for every linked task, not just
+    /// this one, and an explicit override on any single one of them decides it at the last one.
+    /// </summary>
+    internal static string CloseLinkedIssueRow(ProjectDetails project) => project.CloseLinkedIssue switch
+    {
+        { } rule when rule == CloseLinkedIssueRule.OnCloseout =>
+            "on-closeout [dim]— every task's linked GitHub issue closes in the same step as its own "
+            + "merge note, unconditionally. A never-close label or a task's own --close-linked-issue "
+            + "override still applies[/]",
+        { } rule when rule == CloseLinkedIssueRule.Never =>
+            "[dim]never — the merge note is posted, and the issue is never closed here (the right "
+            + "choice for an epic, a PRD, or an ADR). Close automatically on merge: h9k project set "
+            + $"{project.Name.EscapeMarkup()} --close-linked-issue on-closeout[/]",
+        { } rule when rule == CloseLinkedIssueRule.WhenAllTasksClose =>
+            "[dim]when-all-tasks-close — the default. The merge note is posted every time; the issue "
+            + "closes only once every task linked to it has itself reached true closeout or been "
+            + "abandoned, decided fresh at the last one across every linked task's own recorded rule[/]",
+        var rule =>
+            $"[yellow]{rule.Value.EscapeMarkup()} — unrecognized[/] [dim]— recorded by a build that knew a "
+            + "rule this one does not, so the issue is left open rather than guessed at. Set one this "
+            + $"build knows: h9k project set {project.Name.EscapeMarkup()} --close-linked-issue default[/]",
     };
 
     /// <summary>

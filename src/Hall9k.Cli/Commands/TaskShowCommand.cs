@@ -4,6 +4,8 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Run.Queries;
@@ -35,6 +37,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
         TaskDetails details = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken);
 
         // State, phase, attention — the three surfaces, before the context mountain
         // (Decisions Log #66). Composed by the same composer h9k status reads, so the answer to
@@ -167,6 +170,18 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 header.AddRow(string.Empty,
                     $"[dim]{ExternalText.OneLineMarkup(details.ExternalStatusObserved)} when read at "
                     + $"{observedAt.ToLocalTime():g}[/]");
+            }
+
+            // Effective value AND provenance, always — unlike the task-override rows above (Model,
+            // review caps, review stage composition) that render only when this task set one, the
+            // acceptance criteria for close-linked-issue (task: a task's linked GitHub issue is
+            // closed at true closeout under a configurable rule) call for both states to be
+            // legible without resolving the task > project chain by hand. GitHub only — Jira's
+            // merge comment behaviour is unchanged, so the row would name a rule that can never
+            // apply to a Jira card.
+            if (details.ExternalReference.StartsWith("github:", StringComparison.OrdinalIgnoreCase))
+            {
+                header.AddRow("Close linked issue", CloseLinkedIssueMarkup(details, project));
             }
         }
 
@@ -1540,6 +1555,23 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             ? $" [link]{details.ReviewerVerdictReviewUrl.EscapeMarkup()}[/]"
             : string.Empty;
         return $"[{colour}]{details.ReviewerVerdict.Value.EscapeMarkup()}[/]{head}{findings}{note}{link}";
+    }
+
+    /// <summary>
+    /// Whether true closeout closes this task's linked GitHub issue, and when (task: a task's
+    /// linked GitHub issue is closed at true closeout under a configurable rule) — the effective
+    /// value AND whether it was inherited from the project or set explicitly on this task, so an
+    /// operator does not have to resolve the task-over-project chain by hand.
+    /// </summary>
+    internal static string CloseLinkedIssueMarkup(TaskDetails details, ProjectDetails? project)
+    {
+        if (details.CloseLinkedIssue is { } taskOverride)
+        {
+            return $"{taskOverride.Value.EscapeMarkup()} [dim](task override)[/]";
+        }
+
+        CloseLinkedIssueRule effective = project?.CloseLinkedIssue ?? CloseLinkedIssueRule.WhenAllTasksClose;
+        return $"{effective.Value.EscapeMarkup()} [dim](inherited from the project's close-linked-issue setting)[/]";
     }
 
     /// <summary>

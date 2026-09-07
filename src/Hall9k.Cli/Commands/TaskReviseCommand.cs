@@ -156,6 +156,16 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "neither door reachable. The one other field this command still accepts once a task has "
             + "left Draft (alongside --queue-first), as long as nothing else is revised in the same call")]
         public bool ClearInteractiveMode { get; init; }
+
+        [CommandOption("--close-linked-issue <on-closeout|never|when-all-tasks-close|default>")]
+        [Description(
+            "Override whether true closeout closes THIS task's linked GitHub issue, and when (task: a "
+            + "task's linked GitHub issue is closed at true closeout under a configurable rule). Left "
+            + "unset, the task defers to the project's own close-linked-issue setting (h9k project set), "
+            + "live. 'default' clears the override. The right lever for an issue that covers more than "
+            + "this one task: an epic, a PRD, an ADR, or an issue split into several tasks, where an "
+            + "explicit 'never' or 'on-closeout' here beats an inherited default on every sibling task")]
+        public string? CloseLinkedIssue { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -330,7 +340,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         if (namesCurrentEpic && task.EpicId is { } currentEpic && objective.IsBlank() && criteria.Count == 0
             && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank()
             && !queuePriority.HasValue && settings.ReviewStageComposition is null
-            && !settings.ClearInteractiveMode)
+            && !settings.ClearInteractiveMode && settings.CloseLinkedIssue is null)
         {
             AnsiConsole.MarkupLine(
                 $"[green]Already in epic[/] {TaskListCommand.ShortId(currentEpic)}. [dim]Nothing to do.[/]");
@@ -356,7 +366,10 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             settings.AcceptReducedReview,
             settings.ClearInteractiveMode,
             stackedOnTaskId,
-            stackedOnPullRequestNumber);
+            stackedOnPullRequestNumber,
+            settings.CloseLinkedIssue is { } closeLinkedIssue
+                ? Optional<string?>.Of(closeLinkedIssue)
+                : Optional<string?>.None);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
@@ -597,6 +610,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         if (revised.ClearInteractiveMode)
         {
             yield return "interactive-mode flag cleared";
+        }
+
+        if (revised.CloseLinkedIssue.HasValue)
+        {
+            yield return revised.CloseLinkedIssue.Value is { } closeLinkedIssue
+                ? $"close linked issue {closeLinkedIssue.Value.EscapeMarkup()}"
+                : "close linked issue override cleared";
         }
     }
 
