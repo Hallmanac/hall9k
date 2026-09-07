@@ -22,6 +22,22 @@ public static class OrchestratorLaunchTextResolution
         return existing ?? LaunchTextDefaults.For(normalized, workingDirectory, openingMessage);
     }
 
+    /// <summary>
+    /// The stored entry for <paramref name="cli"/>, or <see langword="null"/> when nothing has
+    /// ever been recorded — never the computed default <see cref="Resolve"/> falls back to.
+    /// <c>h9k orchestrator measure</c> uses this rather than <see cref="Resolve"/>: the computed
+    /// default is documented as "rendered, not stored, until a human or the
+    /// orchestrator-recipe-generator skill records a real setting with launch-text set"
+    /// (<see cref="LaunchTextDefaults"/>), and stamping a measurement onto it would materialize
+    /// that rendering into <c>config.json</c>/the project's own stream, freezing it against a
+    /// later release's own flag changes (independent pre-PR review, cycle 3, both lenses).
+    /// </summary>
+    public static LaunchText? ResolveStored(IReadOnlyList<LaunchText> stored, string cli)
+    {
+        string normalized = LaunchText.NormalizeCli(cli);
+        return stored.FirstOrDefault(entry => LaunchText.NormalizeCli(entry.Cli) == normalized);
+    }
+
     /// <summary>Replaces (or adds) the entry for <paramref name="cli"/> with new text, clearing any stale measurement.</summary>
     public static IReadOnlyList<LaunchText> WithText(IReadOnlyList<LaunchText> stored, string cli, string text)
     {

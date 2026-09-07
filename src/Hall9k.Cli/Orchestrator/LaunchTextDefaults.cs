@@ -49,12 +49,25 @@ public static class LaunchTextDefaults
     public static string Render(string workingDirectory, string openingMessage)
     {
         string separator = OperatingSystem.IsWindows() ? ";" : " &&";
-        return $"cd \"{workingDirectory}\"{separator} claude "
+        return $"cd \"{EscapeForDoubleQuotes(workingDirectory)}\"{separator} claude "
             + "--strict-mcp-config "
             + "--setting-sources project "
             + $"--settings {SettingsRelativePath} "
             + "--dangerously-skip-permissions "
             + $"--append-system-prompt-file {AnchorRelativePath} "
-            + $"\"{openingMessage}\"";
+            + $"\"{EscapeForDoubleQuotes(openingMessage)}\"";
     }
+
+    /// <summary>
+    /// Escapes <paramref name="value"/> for the double-quoted segment it is about to sit inside,
+    /// per the host shell this line is rendered for: a project name (<c>ProjectDecider.Register</c>
+    /// only rejects blank, never shell metacharacters) or a home path can carry a <c>"</c>,
+    /// backtick, or <c>$</c> that would otherwise close the quoted segment early or trigger command
+    /// substitution the moment an operator pastes this line — the non-adversarial shape of the
+    /// same defect is a bare <c>"</c> simply breaking the line (independent pre-PR review, cycle 3,
+    /// adversarial lens). PowerShell's own escape character is the backtick, not backslash.
+    /// </summary>
+    private static string EscapeForDoubleQuotes(string value) => OperatingSystem.IsWindows()
+        ? value.Replace("`", "``").Replace("$", "`$").Replace("\"", "`\"")
+        : value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("$", "\\$").Replace("`", "\\`");
 }

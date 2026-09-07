@@ -31,6 +31,18 @@ public static class OrchestratorMeasureProbe
     public static async Task<int> RunAsync(
         string workingDirectory, string anchorRelativePath, string settingsRelativePath, CancellationToken cancellationToken)
     {
+        if (!Directory.Exists(workingDirectory))
+        {
+            // Checked up front rather than left to surface as a Win32Exception from Process.Start:
+            // that failure looks identical to `claude` missing from PATH, and OrchestratorRecipeContext
+            // hands this exact placeholder string ("<no home recorded yet - run h9k project init …>")
+            // straight through as a working directory, so the honest diagnosis was one keystroke
+            // away in the placeholder's own text and the probe still blamed PATH instead
+            // (independent pre-PR review, cycle 3, adversarial lens).
+            throw new DomainValidationException(
+                $"The measurement probe's working directory does not exist: {workingDirectory}");
+        }
+
         ProcessStartInfo startInfo = new("claude")
         {
             WorkingDirectory = workingDirectory,

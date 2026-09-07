@@ -34,6 +34,31 @@ public sealed class LaunchTextDefaultsTests
     }
 
     [Fact]
+    public void A_double_quote_in_the_working_directory_or_opening_message_does_not_break_the_pasted_line()
+    {
+        // ProjectDecider.Register only rejects a blank project name, and OrchestratorRecipeContext
+        // embeds the name straight into the opening message, so a name (or a --home path) carrying
+        // a bare '"' used to close the quoted segment early — the pasted line was simply malformed
+        // (independent pre-PR review, cycle 3, adversarial lens).
+        string text = LaunchTextDefaults.Render("/some/\"quoted\"/directory", "You are the \"web\" project orchestrator.");
+
+        text.Should().NotContain("\"quoted\"/directory\"", "an unescaped quote would close the cd argument early");
+        (OperatingSystem.IsWindows() ? text.Contains("`\"") : text.Contains("\\\"")).Should().BeTrue(
+            "the embedded quote must be escaped for the host shell rather than passed through raw");
+    }
+
+    [Fact]
+    public void A_dollar_sign_in_the_working_directory_does_not_trigger_substitution()
+    {
+        // A project name like web$(id) (ProjectDecider.Register accepts any non-blank name) ends
+        // up inside a double-quoted segment, where bash/zsh/PowerShell all still interpolate '$'.
+        string text = LaunchTextDefaults.Render("/home/web$(id)", "opening message");
+
+        (OperatingSystem.IsWindows() ? text.Contains("`$") : text.Contains("\\$")).Should().BeTrue(
+            "a bare '$' inside a double-quoted segment would be live to the shell that runs the pasted line");
+    }
+
+    [Fact]
     public void Only_claude_code_has_a_computed_default()
     {
         LaunchText? claudeCode = LaunchTextDefaults.For("claude-code", WorkingDirectory, OpeningMessage);

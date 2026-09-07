@@ -50,6 +50,24 @@ public sealed class OrchestratorLaunchTextResolutionTests
     }
 
     [Fact]
+    public void ResolveStored_returns_null_when_nothing_was_ever_set_even_for_claude_code()
+    {
+        // Unlike Resolve, this must never fall back to the computed default: h9k orchestrator
+        // measure uses it precisely so measuring an unset CLI cannot materialize the rendered
+        // default into storage and freeze it against a later release's own flag changes.
+        OrchestratorLaunchTextResolution.ResolveStored([], "claude-code").Should().BeNull();
+    }
+
+    [Fact]
+    public void ResolveStored_returns_the_stored_entry_case_insensitively()
+    {
+        LaunchText[] stored = [new LaunchText("claude-code", "the stored line")];
+
+        OrchestratorLaunchTextResolution.ResolveStored(stored, "Claude-Code")!.Text
+            .Should().Be("the stored line");
+    }
+
+    [Fact]
     public void Measuring_stamps_the_result_without_touching_other_entries()
     {
         LaunchText[] stored = [new LaunchText("claude-code", "the line"), new LaunchText("codex", "a different line")];

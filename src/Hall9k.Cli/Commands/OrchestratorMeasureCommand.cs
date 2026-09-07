@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.RegularExpressions;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Orchestrator;
@@ -60,18 +61,23 @@ public sealed class OrchestratorMeasureCommand : Hall9kAsyncCommand<Orchestrator
             ProjectAggregate project = (await session.Events.AggregateStreamAsync<ProjectAggregate>(details.Id, token: cancellationToken))!;
             string workingDirectory = OrchestratorRecipeContext.ProjectWorkingDirectory(details);
 
-            LaunchText resolved = OrchestratorLaunchTextResolution.Resolve(
-                project.LaunchTexts, settings.Cli, workingDirectory, OrchestratorRecipeContext.ProjectOpeningMessage(details.Name))
+            LaunchText resolved = OrchestratorLaunchTextResolution.ResolveStored(project.LaunchTexts, settings.Cli)
                 ?? throw new DomainValidationException(
                     $"No launch text for '{settings.Cli}' to measure. Set one first: h9k orchestrator launch-text set --cli {settings.Cli} \"<command>\" --project {details.Name}");
 
             int tokens = await OrchestratorMeasureProbe.RunAsync(
-                workingDirectory, LaunchTextDefaults.AnchorRelativePath, LaunchTextDefaults.SettingsRelativePath, cancellationToken);
+                workingDirectory, AnchorPathIn(resolved.Text), SettingsPathIn(resolved.Text), cancellationToken);
 
-            IReadOnlyList<LaunchText> updated = OrchestratorLaunchTextResolution.WithMeasurement(project.LaunchTexts, resolved, tokens, measuredAt);
+            // Re-loaded fresh rather than reused from the aggregate loaded above: the probe just
+            // blocked for up to OrchestratorMeasureProbe's own timeout, and building the write
+            // from the stale, pre-probe project.LaunchTexts would silently revert any
+            // launch-text set that landed on this project while the probe was running
+            // (independent pre-PR review, cycle 3, adversarial lens).
+            ProjectAggregate current = (await session.Events.AggregateStreamAsync<ProjectAggregate>(details.Id, token: cancellationToken))!;
+            IReadOnlyList<LaunchText> updated = OrchestratorLaunchTextResolution.WithMeasurement(current.LaunchTexts, resolved, tokens, measuredAt);
             BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
             ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
-                project,
+                current,
                 verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
                 skipPermissions: Optional<bool>.None,
                 contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
@@ -89,14 +95,12 @@ public sealed class OrchestratorMeasureCommand : Hall9kAsyncCommand<Orchestrator
         }
 
         OperatingSettings operatingSettings = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
-        string nodeWorkingDirectory = OrchestratorRecipeContext.NodeWorkingDirectory;
-        LaunchText nodeResolved = OrchestratorLaunchTextResolution.Resolve(
-            operatingSettings.LaunchTexts ?? [], settings.Cli, nodeWorkingDirectory, OrchestratorRecipeContext.NodeOpeningMessage)
+        LaunchText nodeResolved = OrchestratorLaunchTextResolution.ResolveStored(operatingSettings.LaunchTexts ?? [], settings.Cli)
             ?? throw new DomainValidationException(
                 $"No launch text for '{settings.Cli}' to measure. Set one first: h9k orchestrator launch-text set --cli {settings.Cli} \"<command>\"");
 
         int nodeTokens = await OrchestratorMeasureProbe.RunAsync(
-            nodeWorkingDirectory, LaunchTextDefaults.AnchorRelativePath, LaunchTextDefaults.SettingsRelativePath, cancellationToken);
+            OrchestratorRecipeContext.NodeWorkingDirectory, AnchorPathIn(nodeResolved.Text), SettingsPathIn(nodeResolved.Text), cancellationToken);
 
         await PlatformConfigFile.WriteOperatingSettingsAsync(
             operating => operating.LaunchTexts =
@@ -106,5 +110,19 @@ public sealed class OrchestratorMeasureCommand : Hall9kAsyncCommand<Orchestrator
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Measured '{settings.Cli}' on this node: {nodeTokens} tokens ({measuredAt:yyyy-MM-dd}).[/]");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>The <c>--append-system-prompt-file</c> path this exact launch text runs with, or the platform default when the text does not carry that flag at all (independent pre-PR review, cycle 3, both lenses: the probe used to always measure the default flag set regardless of what the record it stamped actually said).</summary>
+    internal static string AnchorPathIn(string launchText) =>
+        FlagValue(launchText, "--append-system-prompt-file") ?? LaunchTextDefaults.AnchorRelativePath;
+
+    /// <summary>The <c>--settings</c> path this exact launch text runs with, or the platform default when the text does not carry that flag at all.</summary>
+    internal static string SettingsPathIn(string launchText) =>
+        FlagValue(launchText, "--settings") ?? LaunchTextDefaults.SettingsRelativePath;
+
+    private static string? FlagValue(string launchText, string flagName)
+    {
+        Match match = Regex.Match(launchText, $@"{Regex.Escape(flagName)}\s+(\S+)");
+        return match.Success ? match.Groups[1].Value : null;
     }
 }
