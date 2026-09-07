@@ -1,3 +1,4 @@
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Tasks.Projections;
 
 namespace Hall9k.Cli.Commands;
@@ -42,8 +43,19 @@ internal static class PublishedFacts
     /// see why the dispatcher has not claimed it yet, and a daemon that is simply stopped is the
     /// commonest reason of all.
     /// </param>
+    /// <param name="heldByTracker">
+    /// The measurement that says this row is waiting for its project's claim gate — the tracker
+    /// does not show the linked item assigned to this install, or could not be read at all (idea
+    /// 64c75e43) — or null when nothing is holding it that way. Read off what the dispatcher
+    /// published rather than asked of the tracker here, so a row and the daemon say the same
+    /// sentence; absent means the platform observed no such wait, never that the tracker was
+    /// checked and agreed.
+    /// </param>
     public static IReadOnlyList<string> Compose(
-        TaskListItem task, LifecycleState state, QueueHold? held = null)
+        TaskListItem task,
+        LifecycleState state,
+        QueueHold? held = null,
+        TrackerClaimDecision? heldByTracker = null)
     {
         if (state != LifecycleState.Published)
         {
@@ -90,9 +102,14 @@ internal static class PublishedFacts
             // only a measurement can answer, so the slot line is appended when one exists and
             // omitted when none does, rather than a contention being asserted from the state
             // alone (AGENTS.md, the never-guess rule).
+            // The claim-gate hold is stated ahead of the slot line when both apply: a card the
+            // tracker says somebody else holds is not going to be claimed here whatever the
+            // ceiling does, so it is the more specific answer to "why is this not moving" and the
+            // browse surfaces show only the first line (TaskStatusRow.SummaryMarkup).
             "Queued" =>
             [
                 "assigned and ready; the dispatcher has not claimed it yet",
+                .. heldByTracker is not null ? (string[])[heldByTracker.ReasonLine] : [],
                 .. held is not null ? (string[])[held.ReasonLine] : [],
             ],
             // A blocker recorded dead is answered before the count, in the same words and the

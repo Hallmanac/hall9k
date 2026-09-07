@@ -40,8 +40,13 @@ internal sealed record DispatchPressure(
     /// which can block for minutes on a blocker-synthesis session before it sweeps again, and
     /// short enough that a daemon stopped hours ago cannot have its last count repeated as
     /// current.
+    /// <para>
+    /// Shared with the claim-gate hold a queued row reads (<c>TaskStatusComposer.HeldByTracker</c>,
+    /// idea 64c75e43): both are measurements this machine's own daemon publishes about why a queue
+    /// is not moving, so both go stale at the same moment rather than one pane outliving the other.
+    /// </para>
     /// </summary>
-    private static readonly TimeSpan Freshness = TimeSpan.FromMinutes(10);
+    internal static readonly TimeSpan Freshness = TimeSpan.FromMinutes(10);
 
     /// <summary>Nothing more can start here until something finishes.</summary>
     public bool AtCeiling => LiveRuns >= MaxConcurrentRuns;

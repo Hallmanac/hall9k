@@ -135,7 +135,13 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         bool atProjectCap = rows.Any(row => row.Held is
             { Kind: QueueHoldKind.ProjectCap or QueueHoldKind.ProjectPaused });
         bool atSpendBudget = spend is { AtBudget: true };
-        if (atCeiling || atProjectCap || atSpendBudget)
+        // A fourth cause with the same shape (idea 64c75e43): a project's claim gate is holding a
+        // linked task because the tracker does not show its card assigned to this install. Its own
+        // trigger rather than a fold into the counted limits', because the lever is per task and
+        // lives on the row itself — assign yourself that card — not in one setting for the node or
+        // the project, so the heading says only that the rows explain themselves.
+        bool heldByTracker = rows.Any(row => row.WaitingForTracker);
+        if (atCeiling || atProjectCap || atSpendBudget || heldByTracker)
         {
             int queuedProjects = rows
                 .Where(row => row.Group == AttentionBucket.Queued)
@@ -144,7 +150,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 .Count();
             listed += Section(
                 rows, AttentionBucket.Queued, "queued",
-                QueuedHeading(atCeiling, atProjectCap, atSpendBudget, spend, queuedProjects), now,
+                QueuedHeading(atCeiling, atProjectCap, atSpendBudget, spend, queuedProjects, heldByTracker), now,
                 inServiceOrder: true);
         }
 
@@ -200,9 +206,22 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// daemon log, where every claim names the project that won and why, rather than letting the
     /// top row read as a promise the pane cannot keep.
     /// </para>
+    /// <para>
+    /// <paramref name="heldByTracker"/> is the one cause here that is not a setting (idea
+    /// 64c75e43): a project's claim gate is holding a linked task because the tracker does not
+    /// show its card assigned to this install. It contributes a cause and a note pointing at the
+    /// rows — each names its own card and who holds it — but no lever, because the fix is done in
+    /// the tracker per card, so a queue the gate alone is holding renders no "raise one with"
+    /// clause at all.
+    /// </para>
     /// </summary>
     internal static string QueuedHeading(
-        bool atCeiling, bool atProjectCap, bool atSpendBudget, SpendPressure? spend, int queuedProjects = 1)
+        bool atCeiling,
+        bool atProjectCap,
+        bool atSpendBudget,
+        SpendPressure? spend,
+        int queuedProjects = 1,
+        bool heldByTracker = false)
     {
         List<string> causes = [];
         List<string> levers = [];
@@ -224,35 +243,63 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             levers.Add("h9k config set --spend-budget <n> [dim](restart the daemon after, or wait for the period to roll)[/]");
         }
 
+        // Not a lever like the other three (idea 64c75e43): the claim gate's fix is per task and
+        // lives in the tracker, not in any h9k setting, so it earns a cause and a note about what
+        // the rows say rather than a line in the levers list — which is also why the levers list
+        // can be empty here, on a queue the gate alone is holding.
+        if (heldByTracker)
+        {
+            causes.Add("a project's claim gate is holding a linked task — the tracker does not show its card "
+                + "assigned to this install");
+        }
+
         // What the rows themselves can be relied on to say, which depends on whether the spend
         // budget is one of the causes: the two counted limits render their own numbers on the
-        // held row, and the budget renders nothing there at all.
-        string rowNote = (atSpendBudget, atCeiling || atProjectCap) switch
+        // held row, and the budget renders nothing there at all. Null when neither counted limit
+        // nor the budget is a cause at all — a queue only the claim gate is holding, where a
+        // promise that every row names a limit would send a reader hunting one nothing rendered.
+        string? countedNote = (atSpendBudget, atCeiling || atProjectCap) switch
         {
             (true, true) => "Each row below held by one of the two counted limits names it, in that limit's own "
                 + "numbers; a row naming none is waiting on the budget, which is this node's alone and has no "
                 + "per-task number.",
             (true, false) => "No row below names a limit of its own: the budget is this node's alone and holds "
                 + "the whole queue.",
-            _ => "Each row below names which limit holds it, in that limit's own numbers.",
+            (false, true) => "Each row below names which limit holds it, in that limit's own numbers.",
+            _ => null,
         };
 
         // Said only when it is true: on a single-project queue the listed order IS the order the
         // dispatcher serves, and a note about a rotation with one member would be noise. Joined
         // rather than interpolated with a space of its own, so the quiet case renders exactly the
         // heading it always did rather than one carrying a stray double space.
-        string[] notes = queuedProjects > 1
-            ?
-            [
-                rowNote,
-                $"Rows are oldest first within each project; which of these {queuedProjects} projects takes the "
-                + "next free slot is the daemon's own rotation (longest unserved first, or a --priority tier), "
-                + "and its log names the winner and why on every claim.",
-            ]
-            : [rowNote];
+        string[] notes =
+        [
+            .. countedNote is not null ? (string[])[countedNote] : [],
+            .. heldByTracker
+                ? (string[])
+                [
+                    "Each row the claim gate holds names its own card and who holds it; assign it to yourself "
+                    + "there and the claim proceeds on its own.",
+                ]
+                : [],
+            .. queuedProjects > 1
+                ? (string[])
+                [
+                    $"Rows are oldest first within each project; which of these {queuedProjects} projects takes "
+                    + "the next free slot is the daemon's own rotation (longest unserved first, or a --priority "
+                    + "tier), and its log names the winner and why on every claim.",
+                ]
+                : [],
+        ];
 
-        return $"[blue]Queued[/] [dim]— {string.Join("; ", causes)}. {string.Join(" ", notes)} "
-            + $"Raise one with:[/] {string.Join(" [dim]·[/] ", levers)}";
+        // The levers clause is dropped rather than left empty when the claim gate is the only
+        // cause: "Raise one with:" followed by nothing reads as a rendering fault, and there is
+        // no h9k setting to raise.
+        string leverClause = levers.Count > 0
+            ? $" Raise one with:[/] {string.Join(" [dim]·[/] ", levers)}"
+            : "[/]";
+        return $"[blue]Queued[/] [dim]— {string.Join("; ", causes)}. {string.Join(" ", notes)}{leverClause}";
     }
 
     /// <summary>
