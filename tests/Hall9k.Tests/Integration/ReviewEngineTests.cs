@@ -1305,7 +1305,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// conflicting (or genuinely clean) history is what decides the outcome.
     /// </summary>
     private async Task<(Guid TaskId, Guid RunId, string WorktreePath, string OriginPath)> SeedVerifiedRunWithOriginAsync(
-        DocumentStore store, CancellationToken cancellationToken, string? pullRequestUrl = null)
+        DocumentStore store, CancellationToken cancellationToken, string? pullRequestUrl = null,
+        string baseBranch = "")
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -1352,7 +1353,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         session.Events.StartStream<RunAggregate>(runId,
             new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
-                worktreePath, "task/review-me", ExecutorMode.Subscription, Now),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now,
+                // Blank for every ordinary run, which is what "the project's own base branch"
+                // means; a parent branch name for a stacked child (task: a stacked pull-request
+                // edge exists as an explicit opt-in dependency).
+                BaseBranch: baseBranch),
             new AgentSessionCompleted(runId, Now),
             new VerificationPassed(runId, Now));
         await session.SaveChangesAsync(cancellationToken);
@@ -1369,6 +1374,22 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         Git(otherClone, "add -A");
         Git(otherClone, $"-c user.name=Other -c user.email=other@test commit -q -m \"{message}\"");
         Git(otherClone, "push -q origin main");
+    }
+
+    /// <summary>
+    /// The same, onto a branch of its own cut from <c>main</c> — a stacked child's parent branch,
+    /// carrying a commit the child's branch does not have, so a rebase onto it would visibly land
+    /// that file in the run's worktree if one ever ran.
+    /// </summary>
+    private void PushBranchToOrigin(string originPath, string branch, string fileName, string content)
+    {
+        string otherClone = Path.Combine(_home, $"parent-{Guid.NewGuid():N}");
+        Git(_home, $"clone -q \"{originPath}\" \"{otherClone}\"");
+        Git(otherClone, $"checkout -q -b {branch}");
+        File.WriteAllText(Path.Combine(otherClone, fileName), content);
+        Git(otherClone, "add -A");
+        Git(otherClone, "-c user.name=Parent -c user.email=parent@test commit -q -m \"parent slice\"");
+        Git(otherClone, $"push -q origin {branch}");
     }
 
     /// <summary>
@@ -1448,6 +1469,51 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<RunRebasedOntoBase>().Should().BeEmpty("the mismatch is caught before any git fetch or rebase is attempted");
+    }
+
+    /// <summary>
+    /// Task: a stacked pull-request edge exists as an explicit opt-in dependency (independent
+    /// pre-PR review, cycle 1, adversarial lens). A stacked child's recorded base IS its parent's
+    /// branch, and a plain merge-base <c>git rebase origin/&lt;parent&gt;</c> is the one operation
+    /// this feature's own design proves wrong against it: a parent force-pushed mid-run collapses
+    /// that merge base below the child's fork point, and the rebase then replays the child's copies
+    /// of the parent's commits against the parent's new ones. Closeout's mechanical
+    /// <c>git rebase --onto</c> replay, keyed to the recorded fork point, is what answers a parent
+    /// that moved — so this gate refuses outright, before any git call, exactly as
+    /// <c>CloseoutEngine.TryMechanicalRebaseAsync</c> refuses a non-project base.
+    /// <para>
+    /// Deliberately seeded with no pull request: the retargeted-base guard beside this one is
+    /// skipped entirely when there is nothing to retarget, so a fresh stacked run is the case only
+    /// this refusal can catch.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_pre_final_pass_rebase_skips_when_the_branch_is_stacked_on_a_parent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (Guid taskId, Guid runId, string worktreePath, string originPath) = await SeedVerifiedRunWithOriginAsync(
+            store, cts.Token, baseBranch: "task/parent-slice");
+
+        PushBranchToOrigin(originPath, "task/parent-slice", "parent.txt", "the parent's own work\n");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(
+                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        File.Exists(Path.Combine(worktreePath, "parent.txt")).Should().BeFalse(
+            "a stacked child is never rebased onto its parent's branch here — the mechanical replay closeout "
+            + "dispatches from the recorded fork point is the operation that answers a parent that moved");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().BeEmpty(
+            "the stacked base is caught before any git fetch or rebase is attempted");
     }
 
     /// <summary>

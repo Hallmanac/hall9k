@@ -1840,6 +1840,34 @@ public sealed class ReviewEngine(
         string baseBranch = context.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
+        // A stacked child is refused outright, before any git call, exactly as
+        // CloseoutEngine.TryMechanicalRebaseAsync refuses a base that is not the project's own
+        // (independent pre-PR review, cycle 1, adversarial lens). A plain merge-base
+        // `git rebase origin/<parent>` is the provably wrong operation against a parent branch:
+        // the parent is routinely force-pushed while the child is in flight (a review lap folding
+        // fixes into its own commits), which rewrites the history the child shares with it, so the
+        // merge base collapses below the child's own fork point and the rebase replays the child's
+        // copies of the parent's OLD commits against the parent's new ones — StackedParentWatch's
+        // own doc records that verification. It either conflicts (spending a judgment session on
+        // parent-versus-parent conflicts) or "makes progress" and lands duplicated parent history
+        // on the child's branch, and on a StackReplay follow-up — ReviewStageComposition.None — no
+        // reviewer would ever read the result. The right operation is closeout's own mechanical
+        // `git rebase --onto` replay, keyed to this run's RECORDED fork point rather than to a
+        // merge base, dispatched the moment StackedParentWatch observes the parent move.
+        //
+        // Nothing is owed to mergeable-on-arrival in the meantime: this pull request targets the
+        // parent's branch, so GitHub measures it against that branch, and the parent's own
+        // pre-final-pass gate is what keeps IT current with the project's base. The retargeted-base
+        // check below covers the after-the-retarget case, where BaseBranch is back to the project's
+        // own and this guard no longer fires.
+        if (baseBranch != context.Project.BaseBranch)
+        {
+            logger.LogInformation(
+                "Run {RunId}: this branch is stacked on {ParentBranch} rather than based on {ProjectBase} — skipping the pre-final-pass rebase, since a merge-base rebase onto a parent branch replays this branch's copies of the parent's commits; closeout's own mechanical replay handles a parent that moves",
+                context.RunId, baseBranch, context.Project.BaseBranch);
+            return RebaseGateOutcome.Proceed;
+        }
+
         // Checked before anything else touches the worktree — the same guard
         // CloseoutEngine.TryMechanicalRebaseAsync runs first, for the same reason (independent
         // pre-PR review, cycle 1, both lenses): the worktree cannot be read at all whenever a run
@@ -2174,9 +2202,11 @@ public sealed class ReviewEngine(
     /// confirm the rebase landed at all. Deliberately without a fresh fetch of its own, for the
     /// identical reason <see cref="RebaseActuallyLandedAsync"/> reads without one: the recovery
     /// session's own skill already fetched before it attempted the rebase, so this observes what
-    /// that fetch left behind rather than racing a later one. Falls back to "unknown" — the same
+    /// that fetch left behind rather than racing a later one. Falls back to
+    /// <see cref="RunRebasedOntoBase.UnreadableCommit"/> — the same
     /// sentinel <see cref="DispatchRebaseRecoverySessionAsync"/>'s own best-effort read already
-    /// uses — on any read failure, rather than the dispatch-time value, which is exactly what this
+    /// uses, and the one the event's own <c>OntoCommitObserved</c> refuses to treat as a fork
+    /// point — on any read failure, rather than the dispatch-time value, which is exactly what this
     /// exists to stop being recorded as fact.
     /// </summary>
     private static async Task<string> ResolveObservedOntoCommitAsync(
@@ -2184,7 +2214,7 @@ public sealed class ReviewEngine(
     {
         if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
         {
-            return "unknown";
+            return RunRebasedOntoBase.UnreadableCommit;
         }
 
         try
@@ -2192,11 +2222,11 @@ public sealed class ReviewEngine(
             ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
             ProcessResult mergeBase = await git(
                 "git", ["merge-base", "HEAD", $"origin/{baseBranch}"], worktreePath, cancellationToken);
-            return mergeBase.ExitCode == 0 ? mergeBase.StandardOutput.Trim() : "unknown";
+            return mergeBase.ExitCode == 0 ? mergeBase.StandardOutput.Trim() : RunRebasedOntoBase.UnreadableCommit;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return "unknown";
+            return RunRebasedOntoBase.UnreadableCommit;
         }
     }
 
@@ -2328,8 +2358,8 @@ public sealed class ReviewEngine(
 
         string baseBranch = context.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
-        string rebasedFromCommit = "unknown";
-        string rebasedOntoCommit = "unknown";
+        string rebasedFromCommit = RunRebasedOntoBase.UnreadableCommit;
+        string rebasedOntoCommit = RunRebasedOntoBase.UnreadableCommit;
         try
         {
             // The same repository lock every fetch touching this project's shared bare
@@ -2461,7 +2491,7 @@ public sealed class ReviewEngine(
 
         await RecordRebaseRecoveryResultAsync(
             context, CurrentRunDirectory(run), result, run.ActiveRebaseRecoveryModel,
-            run.ActiveRebaseRecoveryFromCommit ?? "unknown", cancellationToken);
+            run.ActiveRebaseRecoveryFromCommit ?? RunRebasedOntoBase.UnreadableCommit, cancellationToken);
         return true;
     }
 
