@@ -46,11 +46,29 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
     private readonly string _home = SetTempHome();
 
+    // NewSupervisor always hands ReviewEngine (and PrReviewEngine) a real ClaudeExecutor,
+    // regardless of whatever executor a test passes in for the primary/verification path — see
+    // NewSupervisor's own construction below. SeedClaimedTaskWithProjectAsync's worktree is a
+    // real directory (its own doc comment explains why), so on a machine where `claude` resolves
+    // on PATH, any test here whose run actually reaches the review loop would launch a real,
+    // billable agent session. Pinning this off-PATH for the whole class keeps `/bin/sh` starting
+    // (preserving the race-closing timing that real directory exists for) while `exec` always
+    // fails to find the binary, exactly as HeadlessLaunchTests pins it for the same reason.
+    private readonly string? _previousClaudePath = PinClaudeBinaryOffPath();
+    private readonly List<string> _createdWorktreePaths = [];
+
     private static string SetTempHome()
     {
         string home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
         Environment.SetEnvironmentVariable("HALL9K_HOME", home);
         return home;
+    }
+
+    private static string? PinClaudeBinaryOffPath()
+    {
+        string? previous = Environment.GetEnvironmentVariable("HALL9K_CLAUDE_PATH");
+        Environment.SetEnvironmentVariable("HALL9K_CLAUDE_PATH", "hall9k-test-binary-that-does-not-exist-xyz");
+        return previous;
     }
 
     [Fact]
@@ -339,7 +357,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
 
             // "/tmp/wt-test-live" is left non-existent for the same reason
-            // SeedClaimedTaskAsync's own "/tmp/wt-test" is (see that method's doc): this task
+            // SeedClaimedTaskAsync's own "/tmp/wt-test" is (see the inline comment above that
+            // method's own RunDispatched call): this task
             // still carries the unregistered project id SeedClaimedTaskAsync seeded above, so
             // nothing along AdoptOrphansAsync's path here ever loads real ProjectDetails and
             // reaches a spawn into this worktree — the live run stays a still-sleeping fake
@@ -839,17 +858,26 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     /// A registered project also means <c>ReviewEngine.LoadContextAsync</c> can build a real
     /// <c>ReviewContext</c> once the primary session completes clean — where
     /// <see cref="SeedClaimedTaskAsync"/>'s unregistered project makes it bail out first. From
-    /// there the review loop reaches a real agent spawn (<c>ClaudeExecutor</c> via
-    /// <c>UnixProcessManager.Spawn</c>), and unlike every git call this file's own gates make
-    /// (all wrapped in a try/catch that degrades a missing directory to "unobservable"), that
-    /// spawn's own <c>Process.Start</c> throws outright when its working directory does not
-    /// exist. Origin incident (PR #235/#236, 2026-09-05): that throw raced
+    /// there the review loop reaches <c>ClaudeExecutor.SpawnAsync</c> and, through it,
+    /// <c>UnixProcessManager.Spawn</c>, which always sets this process's own working directory
+    /// on the <c>ProcessStartInfo</c> it hands <c>Process.Start</c> — and unlike every git call
+    /// this file's own gates make (all wrapped in a try/catch that degrades a missing directory
+    /// to "unobservable"), that spawn's own <c>Process.Start</c> throws outright when its working
+    /// directory does not exist. Origin incident (PR #235/#236, 2026-09-05): that throw raced
     /// A_primary_sessions_error_result_is_retried_once_and_then_succeeds's own post-retry
     /// assertions on Ubuntu CI, landing "Review loop failed: ... No such file or directory" and
     /// a task Failed under a test that never meant to exercise the review loop at all — confirmed
     /// by timing this worktree existing (safe for 2+ seconds) against it missing (fails within
     /// 100-250ms, well inside this method's callers' own assertion window). The worktree is
     /// therefore a real, task-unique temp directory, not just a plausible-looking path.
+    /// </para>
+    /// <para>
+    /// A real working directory is exactly what makes <c>/bin/sh</c> start rather than throw —
+    /// on a machine where <c>claude</c> resolves on <c>PATH</c>, that is a real agent session,
+    /// not a race-closing no-op. This class's own <c>HALL9K_CLAUDE_PATH</c> pin (see the field
+    /// above) is what keeps it inert: the shell still starts, exactly preserving the timing this
+    /// method exists for, but its own <c>exec</c> can never find the pinned, nonexistent binary,
+    /// so nothing this file's tests do ever launches a real, billable <c>claude</c> process.
     /// </para>
     /// </summary>
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskWithProjectAsync(
@@ -863,6 +891,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-session-error-retry-repo-{taskId:N}");
         string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-session-error-retry-worktree-{taskId:N}");
         Directory.CreateDirectory(worktreePath);
+        _createdWorktreePaths.Add(worktreePath);
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectRegistered registered = ProjectDecider.Register(
@@ -1021,12 +1050,24 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+        Environment.SetEnvironmentVariable("HALL9K_CLAUDE_PATH", _previousClaudePath);
         try
         {
             Directory.Delete(_home, recursive: true);
         }
         catch (IOException)
         {
+        }
+
+        foreach (string worktreePath in _createdWorktreePaths)
+        {
+            try
+            {
+                Directory.Delete(worktreePath, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
         }
     }
 }
