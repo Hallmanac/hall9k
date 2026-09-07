@@ -145,8 +145,18 @@ public static class GateDurationHistoryQuery
     /// entry across the same <see cref="RecentRunWindow"/>, not an aggregate over it. Passed or
     /// failed both count — either one ran the gate command to completion the same way a clean-base
     /// comparison itself does, so either is as honest an estimate of the command's own wall clock
-    /// as the other. Null when nothing has been recorded for this gate on this node yet, never
-    /// guessed at.
+    /// as the other.
+    /// <para>
+    /// Filtered to <see cref="GateDuration.RanFullScope"/> samples only, the same discriminator
+    /// <see cref="GateDurationHistory.Compare"/> already applies (independent pre-PR review, cycle
+    /// 1, both lenses, medium): a clean-base comparison always spawns the gate's raw, unscoped
+    /// command (<c>AdHocGateRunner.RunAsync</c> is never given a fix cycle's own <c>--filter</c>),
+    /// so a scoped sample — this project's own reverify narrowing `dotnet test` to the files a fix
+    /// cycle touched — is not comparable to it. Budgeting off a scoped 90-second sample for a
+    /// comparison that is about to run the full 11-12 minute suite reproduces the exact origin
+    /// incident this method exists to fix, just one level removed. Null when nothing full-scope
+    /// has been recorded for this gate on this node yet, never guessed at.
+    /// </para>
     /// </summary>
     public static async Task<TimeSpan?> MostRecentDurationOnNodeAsync(
         IQuerySession session, Guid projectId, Guid nodeId, string gateName, CancellationToken cancellationToken)
@@ -162,7 +172,7 @@ public static class GateDurationHistoryQuery
 
         return runs
             .SelectMany(run => run.GateDurations ?? [])
-            .Where(gate => gate.Gate == gateName)
+            .Where(gate => gate.Gate == gateName && gate.RanFullScope)
             .Select(gate => (TimeSpan?)gate.Duration)
             .FirstOrDefault();
     }
