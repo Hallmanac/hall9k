@@ -136,6 +136,8 @@ builder.Services.AddSingleton(new DaemonConnection(connectionString));
 builder.Services.AddSingleton<NodeContext>();
 builder.Services.AddSingleton(ProcessManagers.ForCurrentPlatform());
 builder.Services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
+builder.Services.AddSingleton(services => new TrackerClaimGate(
+    services.GetRequiredService<ProcessRunner>(), services.GetRequiredService<JiraRequester>()));
 builder.Services.AddSingleton<DispatchEngine>();
 builder.Services.AddSingleton<IExecutor, ClaudeExecutor>();
 builder.Services.AddSingleton<VerificationRunner>();
