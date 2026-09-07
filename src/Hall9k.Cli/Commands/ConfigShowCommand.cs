@@ -1,4 +1,5 @@
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Marten;
 using Spectre.Console;
@@ -71,6 +72,17 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         table.AddRow(
             "interactive-claim-stale-after-days",
             $"{staleAfterDays} ({staleAfterDaysOrigin})".EscapeMarkup());
+
+        // Not part of the report above either, for the identical reason: OrchestratorModel binds
+        // through no DaemonOptions field (it governs an operator's own pasted launch line, never
+        // agent dispatch), so it carries no environment-variable tier. Before this, the only way
+        // to see the effective value was to cat ~/.hall9k/recipes/settings.json or re-read
+        // config.json by hand (independent pre-PR review, cycle 3, conformance lens).
+        string orchestratorModel = OrchestratorModel.ForNode(configured);
+        string orchestratorModelOrigin = configured.OrchestratorModel is { Length: > 0 }
+            ? "config file"
+            : "default — falls back to default-model, then the platform fallback";
+        table.AddRow("orchestrator-model", $"{orchestratorModel} ({orchestratorModelOrigin})".EscapeMarkup());
 
         AnsiConsole.Write(table);
 
