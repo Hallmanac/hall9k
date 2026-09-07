@@ -29,6 +29,15 @@ public sealed class ProjectDetails
     /// cycle with no daemon restart.
     /// </summary>
     public int? MaxParallelTasks { get; set; }
+    /// <summary>
+    /// Which tier this project's ready work competes in for a free dispatch slot (Decisions Log
+    /// #141). Read by the dispatcher's rotation off this document every sweep, exactly as
+    /// <see cref="MaxParallelTasks"/> is, so a tier change lands on the next dispatch cycle with
+    /// no daemon restart. A document written before this field existed has no key for it and reads
+    /// the initialised default, <see cref="ProjectPriority.Normal"/> — which is also the tier that
+    /// changes nothing, so no backfill is needed to make an old project schedule as it always did.
+    /// </summary>
+    public ProjectPriority Priority { get; set; } = ProjectPriority.Normal;
     public CommitStyle CommitStyle { get; set; } = CommitStyle.Unknown;
     /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
@@ -192,6 +201,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.AutoPrReview.HasValue)
         {
             view.AutoPrReview = @event.Data.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
+        }
+
+        if (@event.Data.Priority.HasValue)
+        {
+            view.Priority = @event.Data.Priority.Value ?? ProjectPriority.Normal;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;

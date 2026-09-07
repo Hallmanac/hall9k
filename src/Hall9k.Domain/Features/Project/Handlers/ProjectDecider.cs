@@ -71,7 +71,8 @@ public static class ProjectDecider
         bool reviewStageCompositionAcknowledged = false,
         Optional<AutoPrReviewSpeed> autoPrReview = default,
         bool acceptedBrokenGate = false,
-        Optional<int?> maxParallelTasks = default)
+        Optional<int?> maxParallelTasks = default,
+        Optional<ProjectPriority> priority = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -209,6 +210,26 @@ public static class ProjectDecider
                 + "assignment to this install's own login starts the pr-review task it mints).");
         }
 
+        // The same closed-set check, for the same reason (Decisions Log #141): a tier is only
+        // ever compared against its own statics by the dispatcher's rotation, so an unrecognized
+        // one would schedule as normal and silently do nothing — and a focus that quietly does
+        // nothing is the one scheduling mistake an operator would not notice. Unknown is refused
+        // along with everything else: it is what a value already on a stream reads as, never
+        // something a caller may write.
+        if (priority.HasValue
+            && priority.Value is { } chosenTier
+            && chosenTier != ProjectPriority.High
+            && chosenTier != ProjectPriority.Normal
+            && chosenTier != ProjectPriority.Low)
+        {
+            throw new DomainValidationException(
+                $"The project priority must be {ProjectPriority.High}, {ProjectPriority.Normal}, or "
+                + $"{ProjectPriority.Low} (which tier this project's ready work competes in for a free "
+                + "dispatch slot, Decisions Log #141). A higher tier is focus and releases itself when "
+                + "the project's queue drains; to stop a project entirely, pause it with "
+                + "--max-parallel-tasks 0.");
+        }
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -243,7 +264,8 @@ public static class ProjectDecider
             // write an unobserved acceptance to the stream by passing true on a change that
             // recorded no gate at all.
             AcceptedBrokenGate: acceptedBrokenGate && verifyCommands.HasValue,
-            MaxParallelTasks: maxParallelTasks);
+            MaxParallelTasks: maxParallelTasks,
+            Priority: priority);
     }
 
     /// <summary>

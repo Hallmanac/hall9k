@@ -126,4 +126,16 @@ public sealed record ProjectSettingsChanged(
     /// this setting existed replays byte-for-byte unchanged.
     /// </para>
     /// </summary>
-    Optional<int?> MaxParallelTasks = default);
+    Optional<int?> MaxParallelTasks = default,
+    /// <summary>
+    /// Which tier this project's ready work competes in for a free dispatch slot (Decisions Log
+    /// #141): <see cref="ProjectPriority.High"/> outranks the rotation while this project has
+    /// eligible work and releases itself the moment its queue drains, and
+    /// <see cref="ProjectPriority.Normal"/> — what present-with-null records, the
+    /// <see cref="JiraProjectKey"/> clearing idiom — is the tier the rotation itself runs in.
+    /// A tier is not a cap: it decides who receives the next free slot, never how many slots a
+    /// project may hold (<see cref="MaxParallelTasks"/>) and never anything about a run already
+    /// live. Trailing and optional so every stream written before this setting existed replays
+    /// byte-for-byte unchanged.
+    /// </summary>
+    Optional<ProjectPriority> Priority = default);
