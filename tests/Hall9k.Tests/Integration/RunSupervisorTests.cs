@@ -22,6 +22,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
 using Marten;
@@ -95,6 +96,96 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await using IQuerySession query = store.QuerySession();
         var activity = await query.LoadAsync<Hall9k.Domain.Features.Run.Documents.RunActivity>(runId, cts.Token);
         activity!.StreamBytesRead.Should().BeGreaterThan(0, "the tail cursor persists progress");
+    }
+
+    /// <summary>
+    /// A reviewer's own review lap (<c>h9k pr review</c>, Decisions Log #149) is a human's, not
+    /// this daemon's. Its run sits Dispatched under the ceiling-exempt <see cref="Guid.Empty"/>
+    /// node sentinel with no agent process ever recorded — there is none; the reviewer pasted the
+    /// briefing into a session they started themselves. It IS in adoption's candidate set, and
+    /// deliberately so (<c>SentinelPrReviewCandidatesAsync</c> widens the sweep for pr-review
+    /// runs so a delivered verdict can be finalized at all), which is exactly why the
+    /// dispatched-but-never-started arm has to be taught to leave this one alone: without that,
+    /// a daemon restart fails a lap a reviewer is in the middle of and deletes the worktree they
+    /// were reading in.
+    /// </summary>
+    [Fact]
+    public async Task Startup_adoption_leaves_an_open_review_lap_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedOpenReviewLapAsync(store, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node, new FakeProcessManager());
+        await supervisor.AdoptOrphansAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.Dispatched,
+            "the lap is still open — a restart must not fail it for having no agent process of its own");
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Claimed, "the reviewer still holds this task");
+    }
+
+    /// <summary>
+    /// The exclusion above is keyed on the RUN, not on the flag alone. A reviewer can leave a lap
+    /// without ever posting a verdict — <c>h9k task release</c>, which a lap's own interactive
+    /// claim accepts — and the verdict that closes <c>ReviewLapOpen</c> is unreachable from there
+    /// (<c>h9k pr approve</c> refuses a task with no current run). The flag is therefore cleared
+    /// wherever a task gives its claim back (<c>TaskAggregate.EndAnyOpenReviewLap</c>), and read
+    /// against the run as a second fence — because a stale flag shielded a LATER, automated
+    /// pr-review run of the same task from adoption entirely: a dead agent never failed, a live
+    /// one never re-monitored, and no <c>TaskLease</c> to expire and rescue it (independent pre-PR
+    /// review, cycle 1, adversarial lens). Both halves are asserted here, in the order they
+    /// happen.
+    /// </summary>
+    [Fact]
+    public async Task Startup_adoption_does_not_let_an_abandoned_laps_flag_shield_a_later_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid lapRunId) = await SeedOpenReviewLapAsync(store, cts.Token);
+
+        // The reviewer walks away: h9k task release requeues the task, which is the only way to
+        // leave a lap without posting a review.
+        Guid automatedRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            TaskRequeued requeued = TaskDecider.ReleaseInteractiveClaim(task, Now);
+            session.Events.Append(taskId, requeued);
+            await session.SaveChangesAsync(cts.Token);
+
+            TaskAggregate requeuedTask = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            requeuedTask.ReviewLapOpen.Should().BeFalse(
+                "the verdict that would close the lap is unreachable once the claim is gone, so the release closes it");
+
+            // ... and the daemon then dispatches the automated pr-review run the requeue freed up,
+            // which dies with the daemon before it ever records a process.
+            TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+                requeuedTask, node.OwnerId, automatedRunId, Now, dependencyOverrideAcknowledged: false);
+            session.Events.Append(taskId, claimed);
+            session.Events.StartStream<RunAggregate>(automatedRunId, new RunDispatched(
+                automatedRunId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+                Path.Combine(Path.GetTempPath(), $"hall9k-lap-later-wt-{automatedRunId:N}"), "pr/7",
+                ExecutorMode.Subscription, Now,
+                RunDirectory: RunPaths.GlobalDirectory(automatedRunId), DispatchingNodeId: node.NodeId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunSupervisor supervisor = NewSupervisor(store, node, new FakeProcessManager());
+        await supervisor.AdoptOrphansAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails automated = (await query.LoadAsync<RunDetails>(automatedRunId, cts.Token))!;
+        automated.State.Should().Be(
+            RunState.Failed,
+            "this run has no process and no lap of its own — adoption must fail it honestly rather than read a dead lap's flag as 'a reviewer owns it'");
+        RunDetails lapRun = (await query.LoadAsync<RunDetails>(lapRunId, cts.Token))!;
+        lapRun.State.Should().Be(
+            RunState.Superseded,
+            "the lap's own run is no longer the task's current one, so adoption retires it as a stale candidate");
     }
 
     [Fact]
@@ -843,6 +934,46 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
             runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
             "/tmp/wt-test", "task/test", ExecutorMode.Subscription, Now, IsFollowUp: asFollowUp));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (node, taskId, runId);
+    }
+
+    /// <summary>
+    /// A pr-review task with a reviewer's own lap open on it: claimed interactively (the
+    /// <see cref="Guid.Empty"/> sentinel node id), a run dispatched with no process of its own,
+    /// and <c>PullRequestReviewLapOpened</c> on the task stream — which is the fact adoption
+    /// reads. <c>DispatchingNodeId</c> is this node's, because that is what puts the run in
+    /// adoption's candidate set in the first place.
+    /// </summary>
+    private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedOpenReviewLapAsync(
+        DocumentStore store, CancellationToken cancellationToken)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-lap-adopt-wt-{runId:N}");
+
+        await using IDocumentSession session = store.LightweightSession();
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, DomainId.New(), "Review pull request acme/web#7", ["the verdict is submitted"],
+                TaskType.PrReview, null, null,
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#7"), Now, node.OwnerId),
+            node.OwnerId, Now);
+        TaskClaimed claimed = TaskDecider.ClaimInteractively(task, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(
+            taskId,
+            [
+                .. lifecycle,
+                claimed,
+                new PullRequestReviewLapOpened(
+                    taskId, runId, worktreePath, "https://github.com/acme/web/pull/7", Now, node.OwnerId),
+            ]);
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+            worktreePath, "pr/7", ExecutorMode.Subscription, Now,
+            RunDirectory: RunPaths.GlobalDirectory(runId), DispatchingNodeId: node.NodeId));
         await session.SaveChangesAsync(cancellationToken);
 
         return (node, taskId, runId);
