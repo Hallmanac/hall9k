@@ -185,7 +185,16 @@ What the edge changes, and nothing else does:
 - **It dispatches at the parent's `Delivered`, not its merge.** Pull request open, internal review
   done, branch settled — that is everything a stacked child needs.
 - **Its branch is cut from the parent's branch head**, not from the base branch, and **its pull
-  request opens against the parent's branch**, which is what forms the stack on GitHub.
+  request opens against the parent's branch**, which is what forms the stack on GitHub. One
+  exception, and it is the mainline race rather than an edge case: the child dispatches at the
+  parent's `Delivered`, so the parent can merge — and its closeout deletes its branch — while the
+  child is still building. A pull request cannot open against a branch that is gone, so the child's
+  opens against the project's base instead, which is exactly where the retarget below would have
+  put it. The run still records the parent's branch as its base, because the branch still physically
+  carries the parent's commits and the replay that drops them is still owed; closeout observes the
+  merged parent on its next sweep and dispatches it. An origin that could not be *read* is not a
+  branch that is gone: the base stands as recorded, and the run fails honestly rather than moving a
+  pull request off a live parent on a guess.
 - **Its diff, review packet, self-review hunt and end-of-work recompose are all computed against
   the parent's branch**, so its reviewers read the child's own delta rather than the parent's
   already-reviewed work alongside it. Every one of those ranges names the recorded fork point as a
@@ -220,7 +229,10 @@ What the edge changes, and nothing else does:
   then gives the wrong answer. The recorded fork point is trusted only once git confirms the branch
   actually contains it: a replay that was dispatched but never landed leaves a record naming a
   commit the branch never reached, and replaying from there would carry the parent's own work as
-  this task's. That reads as unobserved — the next sweep asks again — rather than as a boundary. Nothing moves the pull request's base unless the replay is actually
+  this task's. That reads as unobserved — the next sweep asks again — rather than as a boundary. The
+  same check runs wherever else that record is re-asserted: a later run that resumes the branch
+  carries the fork point forward only while the branch still contains it, and records none at all
+  when it does not, so no follow-up prompt is handed a boundary nothing observed. Nothing moves the pull request's base unless the replay is actually
   going to be dispatched: if the child is out of budget or otherwise owed a park, it parks with the
   stack left intact rather than aimed at the base with the replay undone. The
   replay runs the gates and triggers **no review cycle** — nothing new entered the branch, so there
