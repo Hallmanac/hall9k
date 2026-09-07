@@ -17,9 +17,8 @@ namespace Hall9k.Cli.Commands;
 /// Sets a task's standing pre-approval after publish (task: a task can be published
 /// pre-approved) — settable on any live task whose pull request has not yet merged, without the
 /// unassign/draft/revise/publish ceremony a readiness-contract change would otherwise need. A
-/// Draft refuses too: <see cref="TaskDecider.SetPreApproved"/>'s own doc explains why (pre-approval
-/// is part of the readiness contract set at publish, and an ordinary publish that omits
-/// --pre-approved would silently clobber a value set here first).
+/// Draft takes it too, now that publish carries a standing grant forward instead of overwriting
+/// it — <see cref="TaskDecider.SetPreApproved"/>'s own doc carries the history of why it did not.
 /// <para>
 /// Three-valued since the mode that waits for human review landed (task: the people a pull request
 /// is waiting on are named, and pre-approval gains a mode that waits for human review), which also

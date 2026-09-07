@@ -68,12 +68,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Session cap", $"{sessionCap} [dim](task override — h9k task set-session-cap)[/]");
         }
 
-        // A Draft carrying a stale true (TaskAggregate.Apply(TaskReturnedToDraft) leaves the flag
-        // untouched) is excluded the same way PublishedFacts.Compose excludes it on h9k status:
-        // TaskDecider.Publish unconditionally re-records the flag (defaulting false) the moment
-        // this draft is republished, so stating it here would claim a promise one plain
-        // `h9k task publish` away from being silently cleared (independent pre-PR review, cycle
-        // 1, conformance lens). A task at TRUE closeout (row.State == LifecycleState.Done — the
+        // A Draft is included now, and used not to be. The exclusion existed because
+        // TaskDecider.Publish re-recorded the flag unconditionally (defaulting false), so stating
+        // pre-approval on a draft claimed a promise one plain `h9k task publish` away from being
+        // silently cleared (independent pre-PR review, cycle 1, conformance lens). Publish carries
+        // a standing grant forward now (task: a published task's GitHub issue carries the whole
+        // task record — an adopted task needs its own answer settable while still a Draft), so the
+        // promise survives the republish and a draft that genuinely holds it must say so: the flag
+        // removes the owner as a gate at the merge, and a surface that hides it is where somebody
+        // finds out afterwards. A task at TRUE closeout (row.State == LifecycleState.Done — the
         // merge observed) is excluded the identical way: raw TaskState.Done alone does not say
         // so, since it is recorded the moment the pull request opens and never changes at the
         // later merge, so gating on it alone would claim a future merge for a pull request that
@@ -83,11 +86,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // no future pull request left for pre-approval to govern"), so a stale true surviving
         // abandonment must not go on claiming a merge the platform will never attempt (independent
         // pre-PR review, cycle 1, adversarial lens). A row that could not be composed carries no
-        // closeout answer to gate on, so it falls back to the raw state's own Draft/Abandoned
-        // checks rather than guessing.
+        // closeout answer to gate on, so it falls back to the raw state's own Abandoned check
+        // rather than guessing.
         bool trueCloseout = row is not null && row.State == LifecycleState.Done;
         if (details.EffectivePreApproval.MergesAutomatically
-            && details.State != TaskState.Draft
             && details.State != TaskState.Abandoned
             && !trueCloseout)
         {
@@ -166,6 +168,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     $"[dim]{ExternalText.OneLineMarkup(details.ExternalStatusObserved)} when read at "
                     + $"{observedAt.ToLocalTime():g}[/]");
             }
+        }
+
+        if (details.Origin is { } origin)
+        {
+            // A mirror told apart from local work without anybody keeping a ledger (task: a
+            // published task's GitHub issue carries the whole task record). Every value here is the
+            // other install's, copied from the record once at adoption and never re-read, which the
+            // row says outright — the ids mean nothing in this store and looking them up here would
+            // find the wrong thing or nothing at all.
+            header.AddRow("Origin", OriginMarkup(origin));
         }
 
         if (details.UntrackedAttested)
@@ -1180,6 +1192,35 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // Same reason as the handoff section above, one remove further out: this document is
         // assembled from other tasks' handoffs, so it relays what they relayed.
         AnsiConsole.WriteLine(ExternalText.ForTerminal(context));
+    }
+
+    /// <summary>
+    /// Which install published the work this task mirrors, and under what id there. Written as the
+    /// other install's facts and nothing more: the ids are that store's, the branch is the one the
+    /// origin cuts, and the stamp is when the record was published — none of it is re-read, so none
+    /// of it is presented as current.
+    /// </summary>
+    internal static string OriginMarkup(TaskOrigin origin)
+    {
+        string who = origin.NodeName.IsNotBlank()
+            ? ExternalText.OneLineMarkup(origin.NodeName)
+            : "[dim]an install that did not name itself[/]";
+        string node = origin.NodeId == Guid.Empty
+            ? string.Empty
+            : $" [dim]({TaskListCommand.ShortId(origin.NodeId)})[/]";
+        string branch = origin.BranchName.IsNotBlank()
+            ? $", branch {ExternalText.OneLineMarkup(origin.BranchName)}"
+            : string.Empty;
+        // The stamp is the record's publish time, and the row has to say which event it belongs to:
+        // printed straight after "read once at adoption" it read as the adoption's own moment,
+        // which is the one judgment this stamp exists to inform — how old the copy that was read is
+        // (TaskOrigin.PublishedAt's own doc; independent pre-PR review, cycle 1, adversarial lens).
+        string when = origin.PublishedAt == DateTimeOffset.MinValue
+            ? "at a time the record did not state"
+            : $"{origin.PublishedAt.ToLocalTime():g}";
+        return $"published by {who}{node} as task {TaskListCommand.ShortId(origin.TaskId)}{branch} "
+            + $"[dim]— record published {when} and read once at adoption; adopt again to pick up its "
+            + "later revisions[/]";
     }
 
     /// <summary>

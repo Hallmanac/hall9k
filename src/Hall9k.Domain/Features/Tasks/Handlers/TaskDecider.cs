@@ -34,7 +34,9 @@ public static class TaskDecider
         Guid? epicId = null,
         string? reviewStageComposition = null,
         bool reviewStageCompositionAcknowledged = false,
-        Guid? stackedOnTaskId = null)
+        Guid? stackedOnTaskId = null,
+        PreApprovalMode? preApproval = null,
+        TaskOrigin? origin = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -56,6 +58,10 @@ public static class TaskDecider
             reviewStageComposition, reviewStageCompositionAcknowledged, "--review-stage-composition");
         RefuseCompositionOnPrReview(type, normalizedComposition);
         Guid? stackedOn = VetStackedEdge(id, stackedOnTaskId, dependencies, type);
+        // Same closed vocabulary Publish and SetPreApproved are held to, refused the same way: a
+        // creation is the third door onto the same fact, and an unrecognized mode read as off here
+        // would create the task without the pre-approval whoever asked for it believes it has.
+        PreApprovalMode preApprovalGranted = VetPreApprovalMode(preApproval, id);
 
         return new TaskAdded(
             id, projectId, objective, criteria, type, agentContext, constraints,
@@ -66,7 +72,10 @@ public static class TaskDecider
                 : null,
             ReviewStageCompositionAcknowledged: ReviewStageCompositionValidation.AcknowledgmentActuallyNeeded(
                 normalizedComposition, reviewStageCompositionAcknowledged),
-            StackedOnTaskId: stackedOn);
+            StackedOnTaskId: stackedOn,
+            PreApproved: preApprovalGranted.LegacyPreApproved,
+            Origin: origin,
+            PreApproval: preApprovalGranted);
     }
 
     /// <summary>
@@ -409,8 +418,19 @@ public static class TaskDecider
 
         // An unrecognized mode is refused rather than read as off: the publisher typed something,
         // and silently publishing without the pre-approval they asked for would be the worst of
-        // the three answers. Null (nothing passed at all) is the ordinary Off default.
-        PreApprovalMode preApprovalRecorded = VetPreApprovalMode(preApproval, task.Id);
+        // the three answers. Null is not that — it is nothing passed at all, and pre-approval
+        // already standing on the task is carried forward through it rather than overwritten, so a
+        // publish that says nothing about pre-approval can only leave what was granted alone.
+        // Without that, a task created pre-approved — which is how an adopted task carries the
+        // adopting install's own answer across from Draft (task: a published task's GitHub issue
+        // carries the whole task record) — would silently lose the grant to any publish that did
+        // not repeat the flag. An explicit mode still wins, off included: the three-valued
+        // vocabulary can say "off" out loud, which the boolean this replaced could not tell apart
+        // from saying nothing, and honouring it here beats making `--pre-approved off` a silent
+        // no-op. On a task nobody granted anything to, task.PreApproval is Off and this is exactly
+        // the ordinary default publish.
+        PreApprovalMode preApprovalRecorded =
+            preApproval is null ? task.PreApproval : VetPreApprovalMode(preApproval, task.Id);
         return new TaskPublished(
             task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded,
             preApprovalRecorded.LegacyPreApproved, preApprovalRecorded);
@@ -457,15 +477,17 @@ public static class TaskDecider
     /// caller tells this decider whether Done means "still live" or "merge observed" — a
     /// distinction the aggregate alone cannot answer, since closeout is recorded on the run, not
     /// the task (independent pre-PR review, cycle 1, both lenses: the previous guard refused Done
-    /// unconditionally and made the flag unreachable for the one window it matters). And a Draft
-    /// refuses too — not for the same reason, but because <see cref="Publish"/> unconditionally
-    /// records <see cref="TaskPublished.PreApproval"/> (defaulting off, passed straight through
-    /// with no clamp of its own — unlike <see cref="TaskPublished.UntrackedAttested"/>, which is
-    /// gated on the backlog-policy check) the moment the draft is published: a value
-    /// set here on a still-Draft task would otherwise be silently clobbered back to off by an
-    /// ordinary <c>h9k task publish</c> that forgot to repeat <c>--pre-approved</c>. Pre-approval is
-    /// part of the readiness contract at the moment of publish (the acceptance criteria's own
-    /// framing); this command is only for changing it afterward.
+    /// unconditionally and made the flag unreachable for the one window it matters). A Draft, by
+    /// contrast, is accepted — and used to be the third refusal, which is history worth keeping
+    /// because the reason it is gone is a change in <see cref="Publish"/> rather than a relaxed
+    /// rule here. Publish once recorded <see cref="TaskPublished.PreApproval"/> from its own
+    /// argument alone, so a value set here on a still-Draft task was silently clobbered back to
+    /// off by an ordinary <c>h9k task publish</c> that forgot to repeat <c>--pre-approved</c>.
+    /// Publish now carries a standing grant forward when it is passed no mode at all, so the value
+    /// survives the publish that follows and the refusal has nothing left to protect (Decisions
+    /// Log #151). The case that needed it gone is a task adopted from another install's record —
+    /// it arrives as a Draft, and the adopting install's own answer to pre-approval has to be
+    /// settable there.
     /// <para>
     /// Three-valued since the mode that waits for human review landed (task: the people a pull
     /// request is waiting on are named, and pre-approval gains a mode that waits for human review),
@@ -498,14 +520,13 @@ public static class TaskDecider
                 + "there is no future pull request left for pre-approval to govern.");
         }
 
-        if (task.State == TaskState.Draft)
-        {
-            throw new DomainConflictException(
-                $"Task {task.Id} is a draft — pre-approval is part of the readiness contract set at "
-                + $"publish: h9k task publish {task.Id} --pre-approved. Setting it here first would be "
-                + "silently overwritten by an ordinary publish that omits the flag.");
-        }
-
+        // A draft is fair game now. It was refused until pre-approval could survive the publish that
+        // followed it — the mode was recorded unconditionally on TaskPublished, so a value set on a
+        // Draft was silently clobbered back to off by any publish that forgot to repeat
+        // --pre-approved. Publish carries a standing grant forward (see Publish's own comment), so
+        // the reason for the refusal is gone, and the case that needed it gone is a task adopted
+        // from another install's record: it arrives as a Draft, and the adopting install's own
+        // answer to pre-approval has to be settable there.
         PreApprovalMode chosen = VetPreApprovalMode(preApproval, task.Id);
         return new TaskPreApprovedSet(task.Id, chosen.LegacyPreApproved, setAt, setByOwnerId, chosen);
     }

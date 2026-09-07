@@ -180,6 +180,8 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         StackedOnTaskId = @event.Data.StackedOnTaskId,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
         AddedAt = @event.Data.AddedAt,
+        PreApproval = @event.Data.EffectivePreApproval,
+        PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved,
     };
 
     public void Apply(IEvent<TaskPublished> @event, TaskListItem view)
