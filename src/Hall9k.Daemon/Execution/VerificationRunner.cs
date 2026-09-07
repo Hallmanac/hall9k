@@ -8,8 +8,10 @@ using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Run.Queries;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -195,7 +197,7 @@ public sealed partial class VerificationRunner(
                     $"after already spending its one retry before an earlier daemon restart. {summary}";
                 gateDurations.Add(new GateDuration(
                     gate.Name, gateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
-                await RecordGateFailureAsync(runId, taskId, project, gate, adoptedReason, isInfrastructureFailure: true, gateDurations, cancellationToken);
+                await RecordGateFailureAsync(runId, taskId, run.NodeId, project, gate, adoptedReason, isInfrastructureFailure: true, gateDurations, cancellationToken);
                 logger.LogWarning(
                     "Run {RunId} verification failed at gate '{Gate}': its one retry was already spent before adoption",
                     runId, gate.Name);
@@ -206,7 +208,7 @@ public sealed partial class VerificationRunner(
             {
                 gateDurations.Add(new GateDuration(
                     gate.Name, gateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
-                await RecordGateFailureAsync(runId, taskId, project, gate, summary, isInfrastructureFailure: false, gateDurations, cancellationToken);
+                await RecordGateFailureAsync(runId, taskId, run.NodeId, project, gate, summary, isInfrastructureFailure: false, gateDurations, cancellationToken);
                 logger.LogWarning("Run {RunId} verification failed at gate '{Gate}': {Summary}", runId, gate.Name, summary);
                 return false;
             }
@@ -259,7 +261,7 @@ public sealed partial class VerificationRunner(
             gateDurations.Add(new GateDuration(
                 gate.Name, totalGateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
             await RecordGateFailureAsync(
-                runId, taskId, project, gate, reason, isInfrastructureFailure: retryIsInfrastructureFailure, gateDurations, cancellationToken);
+                runId, taskId, run.NodeId, project, gate, reason, isInfrastructureFailure: retryIsInfrastructureFailure, gateDurations, cancellationToken);
             logger.LogWarning("Run {RunId} verification failed at gate '{Gate}' after retry: {Summary}", runId, gate.Name, reason);
             return false;
         }
@@ -1236,7 +1238,7 @@ public sealed partial class VerificationRunner(
     /// this same method's caller just did (independent pre-PR review, cycle 1, conformance lens).
     /// </summary>
     private async Task RecordGateFailureAsync(
-        Guid runId, Guid taskId, ProjectDetails? project, VerifyCommand gate, string reason,
+        Guid runId, Guid taskId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
         bool isInfrastructureFailure, IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
     {
         string reportedReason = reason;
@@ -1244,7 +1246,7 @@ public sealed partial class VerificationRunner(
         {
             try
             {
-                if (await DescribeCleanBaseComparisonAsync(runId, project, gate, cancellationToken) is { } note)
+                if (await DescribeCleanBaseComparisonAsync(runId, nodeId, project, gate, cancellationToken) is { } note)
                 {
                     reportedReason = $"{reason} {note}";
                 }
@@ -1277,9 +1279,19 @@ public sealed partial class VerificationRunner(
     /// whether the note is made at all, since the gate command genuinely did run and exit with a
     /// real code either way (independent pre-PR review, cycle 1, both lenses: an ordinary clone got
     /// no confirmation at all, and a repo/dev confirmed only "up to date", never "clean").
+    /// <para>
+    /// A conclusive verdict (base passes or base fails) observed against a checkout confirmed clean
+    /// at a given commit is remembered per <paramref name="nodeId"/>/gate/commit
+    /// (<see cref="CleanBaseGateVerdict"/>) and reused by a later run against that same base commit
+    /// without re-running the gate at all — the origin incident this whole method exists to fix
+    /// was never the comparison failing to answer, it was every one of five failed runs against
+    /// the same red main paying for its own fresh answer to the same already-answered question.
+    /// An <see cref="GateCheckOutcome.Inconclusive"/> attempt is never remembered, so it is retried
+    /// honestly on the next call rather than silently treated as a permanent unknown.
+    /// </para>
     /// </summary>
     private async Task<string?> DescribeCleanBaseComparisonAsync(
-        Guid runId, ProjectDetails project, VerifyCommand gate, CancellationToken cancellationToken)
+        Guid runId, Guid nodeId, ProjectDetails project, VerifyCommand gate, CancellationToken cancellationToken)
     {
         string checkout = ProjectCheckout.ForReading(project);
         if (!Directory.Exists(checkout) || ProjectCheckout.IsBare(checkout))
@@ -1303,6 +1315,27 @@ public sealed partial class VerificationRunner(
         }
 
         string? uncleanNote = await CheckoutCleanliness.DescribeNotConfirmedCleanAsync(checkout, project.BaseBranch, cancellationToken);
+        string? baseCommitSha = await GetHeadShaAsync(checkout, cancellationToken);
+
+        // Only a checkout confirmed clean at a known commit is safe to remember and reuse: an
+        // unconfirmed checkout's own local state can differ next time even at the identical
+        // commit sha, so nothing here is looked up or written for one (CleanBaseGateVerdict's own
+        // doc comment).
+        bool cacheable = baseCommitSha is not null && uncleanNote is null;
+
+        await using IQuerySession query = store.QuerySession();
+        if (cacheable)
+        {
+            CleanBaseGateVerdict? cached = await query.LoadAsync<CleanBaseGateVerdict>(
+                CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, baseCommitSha!), cancellationToken);
+            if (cached is not null)
+            {
+                logger.LogInformation(
+                    "Run {RunId}: reusing the clean-base comparison already recorded for gate '{Gate}' at base commit {Sha}",
+                    runId, gate.Name, baseCommitSha);
+                return cached.BasePasses ? null : cached.FailureNote;
+            }
+        }
 
         // Serializes this checkout's gate spawn against every other caller that can run a command
         // in it at the same time (h9k task verify, h9k project set --verify, and this same method
@@ -1321,7 +1354,9 @@ public sealed partial class VerificationRunner(
         // release, and its node slot, for as long as that other holder runs. A lock that cannot be
         // acquired within budget means the comparison is skipped, honestly, exactly like every
         // other unobservable case in this method — never a reason to block the real failure this
-        // method exists to record.
+        // method exists to record. Deliberately still the fixed cap, not the gate's own recorded-
+        // duration budget below: this bounds contention for the lock itself, a different question
+        // from how long the gate command run under it is allowed to take.
         using CancellationTokenSource lockBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lockBudget.CancelAfter(AdHocGateRunner.CleanBaseCheckTimeoutCap);
         IAsyncDisposable gateLock;
@@ -1340,9 +1375,34 @@ public sealed partial class VerificationRunner(
 
         await using (gateLock)
         {
-            TimeSpan comparisonTimeout = options.Value.VerifyGateTimeout < AdHocGateRunner.CleanBaseCheckTimeoutCap
-                ? options.Value.VerifyGateTimeout
-                : AdHocGateRunner.CleanBaseCheckTimeoutCap;
+            // Re-checked now that the lock is actually held: two runs failing the same gate
+            // against the same red commit within the same short window can both miss the cache
+            // above and both queue up for this same lock — without this second look, the loser of
+            // that race would still spawn a second, entirely redundant gate run the instant the
+            // winner releases the lock, rather than reusing the verdict its sibling just recorded
+            // (self-review finding: the exact shape of the origin incident this method exists to
+            // fix, just narrowed from five runs to two).
+            if (cacheable)
+            {
+                CleanBaseGateVerdict? wonRace = await query.LoadAsync<CleanBaseGateVerdict>(
+                    CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, baseCommitSha!), cancellationToken);
+                if (wonRace is not null)
+                {
+                    logger.LogInformation(
+                        "Run {RunId}: reusing the clean-base comparison a concurrent run just recorded for gate '{Gate}' at base commit {Sha}",
+                        runId, gate.Name, baseCommitSha);
+                    return wonRace.BasePasses ? null : wonRace.FailureNote;
+                }
+            }
+
+            // Budgeted off the gate's own most recently recorded wall-clock duration on this node,
+            // not a fixed cap alone (task: the clean-base comparison can actually finish — origin
+            // incident 2026-09-05/06, a 5-minute cap this project's own 11-12 minute test gate
+            // could never meet, so every comparison reported "inconclusive" instead of ever
+            // actually diagnosing the red main it was run for).
+            TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
+                query, project.Id, nodeId, gate.Name, cancellationToken);
+            TimeSpan comparisonTimeout = AdHocGateRunner.ComputeComparisonBudget(recentDuration, options.Value.VerifyGateTimeout);
             GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, comparisonTimeout, cancellationToken);
             if (result.Outcome != GateCheckOutcome.Failed)
             {
@@ -1351,14 +1411,51 @@ public sealed partial class VerificationRunner(
                     logger.LogInformation(
                         "Run {RunId}: the clean-base comparison for gate '{Gate}' was inconclusive — {Detail}",
                         runId, gate.Name, result.OutputTail);
+                    return null;
+                }
+
+                if (cacheable)
+                {
+                    await RecordCleanBaseVerdictAsync(
+                        nodeId, project.Id, gate.Name, baseCommitSha!, basePasses: true, failureNote: null, cancellationToken);
                 }
 
                 return null;
             }
 
             string checkoutDescription = CheckoutCleanliness.DescribeCheckoutForComparison(checkout, project.BaseBranch, uncleanNote);
-            return $"Gate '{gate.Name}' also fails when run against {checkoutDescription}: {result.OutputTail}";
+            string note = baseCommitSha is null
+                ? $"Gate '{gate.Name}' also fails when run against {checkoutDescription}: {result.OutputTail}"
+                : $"Gate '{gate.Name}' also fails when run against {checkoutDescription} at commit {baseCommitSha}: {result.OutputTail}";
+
+            if (cacheable)
+            {
+                await RecordCleanBaseVerdictAsync(
+                    nodeId, project.Id, gate.Name, baseCommitSha!, basePasses: false, failureNote: note, cancellationToken);
+            }
+
+            return note;
         }
+    }
+
+    /// <summary>Overwrites, never appends — this is a cache of an observation (CleanBaseGateVerdict's own doc comment), not a fact worth a history of its own.</summary>
+    private async Task RecordCleanBaseVerdictAsync(
+        Guid nodeId, Guid projectId, string gate, string baseCommitSha, bool basePasses, string? failureNote,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new CleanBaseGateVerdict
+        {
+            Id = CleanBaseGateVerdict.ComputeId(nodeId, projectId, gate, baseCommitSha),
+            NodeId = nodeId,
+            ProjectId = projectId,
+            Gate = gate,
+            BaseCommitSha = baseCommitSha,
+            BasePasses = basePasses,
+            FailureNote = failureNote,
+            RecordedAt = DateTimeOffset.UtcNow,
+        });
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private async Task RecordFailureAsync(

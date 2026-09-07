@@ -60,6 +60,33 @@ public static class AdHocGateRunner
     /// </summary>
     public static readonly TimeSpan CleanBaseCheckTimeoutCap = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// How far above a gate's own most recently recorded wall-clock duration
+    /// <see cref="ComputeComparisonBudget"/> budgets a comparison for — headroom for the ordinary
+    /// run-to-run variance a single sample carries, not a promise the comparison will always fit.
+    /// </summary>
+    private const double DurationMargin = 2.0;
+
+    /// <summary>
+    /// The budget a clean-base comparison actually gets for one gate: the larger of
+    /// <see cref="CleanBaseCheckTimeoutCap"/> and <paramref name="recentDuration"/> (when known)
+    /// times <see cref="DurationMargin"/>, but never more than <paramref name="verifyGateTimeout"/>
+    /// — a comparison is a diagnostic on top of a failure already being recorded, never a claim on
+    /// more time than a real gate pass itself gets. Origin incident 2026-09-05/06: this project's
+    /// own full test gate takes 11-12 minutes, so every comparison against the fixed 5-minute cap
+    /// alone timed out as "inconclusive" on all five of the run's own failed gates, and the
+    /// thirteen-hour red main it was diagnosing was never actually diagnosed. Null
+    /// <paramref name="recentDuration"/> — nothing recorded for this gate on this node yet — keeps
+    /// the fixed cap rather than guessing at a number nobody has actually observed.
+    /// </summary>
+    public static TimeSpan ComputeComparisonBudget(TimeSpan? recentDuration, TimeSpan verifyGateTimeout)
+    {
+        TimeSpan budget = recentDuration is { } duration && duration * DurationMargin > CleanBaseCheckTimeoutCap
+            ? duration * DurationMargin
+            : CleanBaseCheckTimeoutCap;
+        return budget < verifyGateTimeout ? budget : verifyGateTimeout;
+    }
+
     private const int MaxOutputTailLength = 400;
 
     public static async Task<GateCheckResult> RunAsync(

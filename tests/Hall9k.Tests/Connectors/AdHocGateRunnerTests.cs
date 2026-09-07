@@ -114,4 +114,46 @@ public sealed class AdHocGateRunnerTests
         result.Outcome.Should().Be(GateCheckOutcome.Passed);
         result.OutputTail.Should().Contain("found");
     }
+
+    /// <summary>
+    /// The origin incident's own headline number: this project's own full test gate takes 11-12
+    /// minutes, so a 12-minute recorded duration is exactly the shape that used to time out
+    /// against the fixed 5-minute cap alone (task: the clean-base comparison can actually finish
+    /// — origin incident 2026-09-05/06).
+    /// </summary>
+    [Fact]
+    public void A_recorded_12_minute_gate_gets_a_24_minute_comparison_budget()
+    {
+        TimeSpan budget = AdHocGateRunner.ComputeComparisonBudget(
+            TimeSpan.FromMinutes(12), TimeSpan.FromMinutes(30));
+
+        budget.Should().Be(TimeSpan.FromMinutes(24));
+    }
+
+    [Fact]
+    public void A_gate_with_no_recorded_duration_keeps_the_fixed_cap()
+    {
+        TimeSpan budget = AdHocGateRunner.ComputeComparisonBudget(
+            recentDuration: null, TimeSpan.FromMinutes(30));
+
+        budget.Should().Be(AdHocGateRunner.CleanBaseCheckTimeoutCap);
+    }
+
+    [Fact]
+    public void A_recorded_duration_whose_margin_is_smaller_than_the_fixed_cap_still_gets_the_fixed_cap()
+    {
+        TimeSpan budget = AdHocGateRunner.ComputeComparisonBudget(
+            TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(30));
+
+        budget.Should().Be(AdHocGateRunner.CleanBaseCheckTimeoutCap);
+    }
+
+    [Fact]
+    public void The_budget_never_exceeds_VerifyGateTimeout_even_when_the_recorded_duration_would_ask_for_more()
+    {
+        TimeSpan budget = AdHocGateRunner.ComputeComparisonBudget(
+            TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(30));
+
+        budget.Should().Be(TimeSpan.FromMinutes(30), "20 minutes * 2x margin (40 minutes) would exceed VerifyGateTimeout");
+    }
 }
