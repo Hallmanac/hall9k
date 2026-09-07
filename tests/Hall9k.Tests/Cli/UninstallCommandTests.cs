@@ -223,6 +223,51 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void An_empty_recipe_directory_left_behind_by_the_skill_removal_is_swept_too()
+    {
+        // RecipeSkillPublisher.RemovePublished/RemoveNodeAdapter only ever remove the
+        // orchestrator-recipe-generator skill and its adapter symlink — before this, the now-empty
+        // recipes/ and .claude/skills/ directories this feature creates survived uninstall and
+        // still reported a clean removal (independent pre-PR review, cycle 3, adversarial lens).
+        string directory = Path.Combine(this.directory, "empty-recipes");
+        Directory.CreateDirectory(directory);
+
+        List<string> stillPresent = [];
+        UninstallCommand.TryRemoveEmptyDirectory(directory, stillPresent);
+
+        stillPresent.Should().BeEmpty();
+        Directory.Exists(directory).Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_non_empty_recipe_directory_is_left_alone()
+    {
+        // recipes/ can hold real, generator-written content (orchestrator.md, journal.md) even
+        // after the platform-owned files and the published skill are removed — this must never be
+        // swept out from under it.
+        string directory = Path.Combine(this.directory, "recipes-with-content");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "orchestrator.md"), "the generator's own recipe\n");
+
+        List<string> stillPresent = [];
+        UninstallCommand.TryRemoveEmptyDirectory(directory, stillPresent);
+
+        stillPresent.Should().BeEmpty();
+        Directory.Exists(directory).Should().BeTrue();
+    }
+
+    [Fact]
+    public void An_absent_directory_has_nothing_to_sweep()
+    {
+        string directory = Path.Combine(this.directory, "never-existed-either");
+
+        List<string> stillPresent = [];
+        UninstallCommand.TryRemoveEmptyDirectory(directory, stillPresent);
+
+        stillPresent.Should().BeEmpty();
+    }
+
+    [Fact]
     public void An_absent_home_has_nothing_to_remove()
     {
         string home = Path.Combine(directory, "never-existed");

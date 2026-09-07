@@ -154,6 +154,18 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         List<string> allSkillsRemoved = [.. skillsRemoved, .. recipeSkillRemoved];
         bool allSkillManifestsConfirmed = skillManifestConfirmed && recipeSkillManifestConfirmed;
         stillPresent.AddRange(RemoveInstallOwnedEntries(InstallOwnedEntries(home, stillPresent)));
+        // Swept only now, never earlier: RecipeSkillPublisher.RemovePublished/RemoveNodeAdapter
+        // only ever remove the orchestrator-recipe-generator skill and its adapter symlink, so
+        // recipes/ and .claude/skills/ can still be holding launch-anchor.md, settings.json, or
+        // the adapter itself at the point those two run — the identical reason
+        // SkillSeeder.RemovePublished's own canonical-directory sweep does not apply here
+        // directly: that directory holds only skill subdirectories, never a platform-owned loose
+        // file a later step still has to delete. Left unswept, a machine that only ever ran
+        // install and uninstall kept two directories this branch newly creates (independent
+        // pre-PR review, cycle 3, adversarial lens) while this run still reported a full removal.
+        TryRemoveEmptyDirectory(RecipeLibraryPaths.ClaudeSkillsDirectory, stillPresent);
+        TryRemoveEmptyDirectory(RecipeLibraryPaths.ClaudeDirectory, stillPresent);
+        TryRemoveEmptyDirectory(RecipeLibraryPaths.CanonicalDirectory, stillPresent);
         TryRemoveIfEmpty(home, stillPresent);
         bool homeFullyRemoved = stillPresent.Count == 0 && pathLinkRemoved;
 
@@ -1017,7 +1029,23 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
             return;
         }
 
-        if (!Directory.Exists(home))
+        TryRemoveEmptyDirectory(home, stillPresent);
+    }
+
+    /// <summary>
+    /// Deletes <paramref name="directory"/>, but only when it is completely empty — the shared
+    /// half of <see cref="TryRemoveIfEmpty"/>'s own "a removed home is a removed home" case,
+    /// reused for the recipes/ and .claude/ directories this feature (task: an operator starts a
+    /// lean node or project orchestrator window) newly creates under <c>~/.hall9k</c>: neither is
+    /// safe to delete outright the way <see cref="InstallOwnedEntries"/>'s loose files are, since
+    /// an operator or the <c>orchestrator-recipe-generator</c> skill can and does write real
+    /// content into <c>recipes/</c> beside the platform-owned files this command already removed
+    /// by the time this runs — but an empty one left behind after those removals is genuinely
+    /// install's own creation with nothing else in it, exactly like an empty home itself.
+    /// </summary>
+    internal static void TryRemoveEmptyDirectory(string directory, List<string> stillPresent)
+    {
+        if (!Directory.Exists(directory))
         {
             return;
         }
@@ -1025,15 +1053,15 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         bool empty;
         try
         {
-            empty = !Directory.EnumerateFileSystemEntries(home).Any();
+            empty = !Directory.EnumerateFileSystemEntries(directory).Any();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // An unreadable home is not the same fact as an empty one — this is the same
+            // An unreadable directory is not the same fact as an empty one — this is the same
             // point-of-no-return call site (bin/ and the PATH link are already gone by here) that
             // made SkillSeeder.ReadManifest's identical read fail this safely rather than throw.
             // Left in place rather than guessed at and deleted.
-            stillPresent.Add(home);
+            stillPresent.Add(directory);
             return;
         }
 
@@ -1044,13 +1072,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
         try
         {
-            Directory.Delete(home);
+            Directory.Delete(directory);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             // Confirmed empty but the unlink itself was denied — left as an empty directory,
             // and recorded rather than swallowed so this run's exit code says so.
-            stillPresent.Add(home);
+            stillPresent.Add(directory);
         }
     }
 
