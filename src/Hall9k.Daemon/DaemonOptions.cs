@@ -143,9 +143,16 @@ public sealed class DaemonOptions
     /// <summary>
     /// The rebase budget for a stacked child (task: a stacked pull-request edge exists as an
     /// explicit opt-in dependency): how many mechanical replays onto a moved parent head — or onto
-    /// the project's base branch once the parent merged — one child may be dispatched before it
-    /// parks for a human. Counted on <c>TaskAggregate.StackReplaysDispatched</c> and reset by a
+    /// the project's base branch once the parent merged — one child gets before it parks for a
+    /// human. Counted on <c>TaskAggregate.StackReplaysDispatched</c> and reset by a
     /// manual h9k pr resolve, exactly like <see cref="MaxAutomaticCloseoutRuns"/>.
+    /// <para>
+    /// One budget for both halves of the same answer (task: a stacked child absorbs its parent's
+    /// post-delivery churn safely): the replay follow-up runs closeout dispatches once the child's
+    /// pull request is open, and the checkpoint rebases the review loop performs inside a run that
+    /// has not opened one yet. Splitting the count would let a parent that will not stop moving
+    /// spend two caps before anybody is told.
+    /// </para>
     /// <para>
     /// Its own budget rather than a share of the lifetime ceiling, for the reason
     /// <c>StackReplaysDispatched</c> states: a replay answers the parent moving, not an obstruction

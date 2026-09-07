@@ -5,6 +5,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
+using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Run;
@@ -1477,18 +1478,22 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// branch, and a plain merge-base <c>git rebase origin/&lt;parent&gt;</c> is the one operation
     /// this feature's own design proves wrong against it: a parent force-pushed mid-run collapses
     /// that merge base below the child's fork point, and the rebase then replays the child's copies
-    /// of the parent's commits against the parent's new ones. Closeout's mechanical
-    /// <c>git rebase --onto</c> replay, keyed to the recorded fork point, is what answers a parent
-    /// that moved — so this gate refuses outright, before any git call, exactly as
-    /// <c>CloseoutEngine.TryMechanicalRebaseAsync</c> refuses a non-project base.
+    /// of the parent's commits against the parent's new ones.
+    /// <para>
+    /// This run records such a base while its task declares no stacked edge at all — a pull request
+    /// a human retargeted by hand, for reasons this platform knows nothing about — so there is no
+    /// parent to watch, and the honest answer is to leave the branch alone rather than rebase it
+    /// onto a branch nobody declared. The checkpoint replay that answers a real declared parent is
+    /// covered by the stacked-checkpoint tests below.
+    /// </para>
     /// <para>
     /// Deliberately seeded with no pull request: the retargeted-base guard beside this one is
-    /// skipped entirely when there is nothing to retarget, so a fresh stacked run is the case only
-    /// this refusal can catch.
+    /// skipped entirely when there is nothing to retarget, so a fresh run recording a foreign base
+    /// is the case only this arm can catch.
     /// </para>
     /// </summary>
     [Fact]
-    public async Task A_pre_final_pass_rebase_skips_when_the_branch_is_stacked_on_a_parent()
+    public async Task A_pre_final_pass_rebase_leaves_a_foreign_base_alone_when_no_stacked_edge_is_declared()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
@@ -1507,13 +1512,469 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
 
         mergeReady.Should().BeTrue();
         File.Exists(Path.Combine(worktreePath, "parent.txt")).Should().BeFalse(
-            "a stacked child is never rebased onto its parent's branch here — the mechanical replay closeout "
-            + "dispatches from the recorded fork point is the operation that answers a parent that moved");
+            "no rebase of any kind belongs here: a plain merge-base rebase onto a parent branch replays this "
+            + "branch's copies of the parent's commits, and the checkpoint replay that would be right needs a "
+            + "declared parent this task does not have");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<RunRebasedOntoBase>().Should().BeEmpty(
-            "the stacked base is caught before any git fetch or rebase is attempted");
+            "nothing moved, and an audit record naming no commits is worse than none at all");
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely — the first
+    /// checkpoint, and the one the reviewers depend on. The parent takes an ordinary
+    /// post-delivery lap while this child is building (its own closeout reopening it for a
+    /// failing check, say), so by the time the child's first review cycle is ready to dispatch its
+    /// recorded base is stale. The checkpoint replays this branch's own commit from its recorded
+    /// fork point onto the parent's new head <em>before</em> the first review pass spawns, which is
+    /// what makes the delta those reviewers read this child's own work rather than the parent's
+    /// already-reviewed work.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_child_is_replayed_onto_its_parents_head_before_its_first_review_cycle()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        PushToOriginBranch(
+            fixture.OriginPath, fixture.ParentBranch, "parent-lap.txt", "the parent's own review lap\n");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+        bool parentsLapPresentWhenTheFirstReviewerSpawned = false;
+        executor.OnSpawnByIndex[0] = () => parentsLapPresentWhenTheFirstReviewerSpawned =
+            File.Exists(Path.Combine(fixture.WorktreePath, "parent-lap.txt"));
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        parentsLapPresentWhenTheFirstReviewerSpawned.Should().BeTrue(
+            "the checkpoint runs before the first review pass dispatches — a reviewer that read the branch "
+            + "against a stale parent head would grade the parent's own delta as this child's work");
+        File.Exists(Path.Combine(fixture.WorktreePath, "Widget.cs")).Should().BeTrue(
+            "the replay carries this branch's own commits forward, it does not drop them");
+        executor.Spawns.Should().HaveCount(2,
+            "the replay is mechanical: both lenses of cycle 1 and nothing else — no recovery session, no extra "
+            + "cycle, no lens earned by the rebase itself");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        runEvents.OfType<RunRebasedOntoBase>().Should().ContainSingle(
+            e => !e.WasNoOp && !e.RecoveredByAgentSession,
+            "one replay, mechanical — and the second checkpoint before the final pass then finds nothing left "
+            + "to do, which records nothing at all");
+        runEvents.OfType<VerificationPassed>().Should().HaveCount(2,
+            "a checkpoint rebase is replay plus gates: the moved tip is gated before cycle 1's reviewers read it");
+
+        List<object> taskEvents = [.. (await query.Events.FetchStreamAsync(fixture.TaskId, token: cts.Token)).Select(e => e.Data)];
+        taskEvents.OfType<StackedCheckpointRebased>().Should().ContainSingle()
+            .Which.Checkpoint.Should().Be(StackedCheckpoint.BeforeFirstReviewCycle);
+        TaskAggregate? child = await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.TaskId, token: cts.Token);
+        child!.StackReplaysDispatched.Should().Be(1,
+            "the checkpoint spends the same rebase budget closeout's own replay follow-ups spend");
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely — the half of the
+    /// first checkpoint that only the dispatched prompt can prove (independent pre-PR review,
+    /// cycle 1, adversarial lens). Landing the replay is not enough: the fork point every reviewer
+    /// is told to read and scope against comes from the run's own record, which the replay moves,
+    /// and the review loop's context snapshot is loaded once at entry. A pass dispatched from that
+    /// stale snapshot names a commit the branch no longer contains — and a three-dot range from
+    /// there collapses to the project's base, handing the reviewer the parent's whole
+    /// already-reviewed delta as this child's work, which is the exact duplication this checkpoint
+    /// exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task Cycle_1_reviewers_are_told_the_fork_point_the_checkpoint_replay_landed_on()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        string parentsNewHead = PushToOriginBranch(
+            fixture.OriginPath, fixture.ParentBranch, "parent-lap.txt", "the parent's own review lap\n");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(2, "both of cycle 1's lenses, dispatched after the replay landed");
+        foreach (AgentSpawnRequest pass in executor.Spawns)
+        {
+            pass.Prompt.Should().Contain(parentsNewHead,
+                "the boundary of every range this pass reads is the commit the replay actually landed on");
+            pass.Prompt.Should().NotContain(fixture.ParentHeadCommit,
+                "and never the fork point recorded at dispatch, which this branch no longer contains");
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails? run = await query.LoadAsync<RunDetails>(fixture.RunId, cts.Token);
+        run!.BaseCommit.Should().Be(parentsNewHead,
+            "the prompts read this record, so it is the record the replay has to have moved");
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely — the second
+    /// checkpoint, and the one that keeps the promise nothing merges on a stale base. The parent
+    /// moves <em>during</em> the child's first review cycle, so the first checkpoint saw nothing:
+    /// the mandatory pre-final-pass checkpoint is what catches it, and the branch is on the
+    /// parent's current head before this run may settle.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_child_whose_parent_moves_mid_review_is_replayed_before_the_final_pass()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[0] = () => PushToOriginBranch(
+            fixture.OriginPath, fixture.ParentBranch, "parent-lap.txt", "the parent's own review lap\n");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        File.Exists(Path.Combine(fixture.WorktreePath, "parent-lap.txt")).Should().BeTrue(
+            "the run does not settle on a branch built on a parent head that has moved");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> taskEvents = [.. (await query.Events.FetchStreamAsync(fixture.TaskId, token: cts.Token)).Select(e => e.Data)];
+        taskEvents.OfType<StackedCheckpointRebased>().Should().ContainSingle()
+            .Which.Checkpoint.Should().Be(StackedCheckpoint.BeforeFinalPass,
+                "the parent moved after the first checkpoint had already looked, so this is the second one's work");
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely. A parent that has not
+    /// moved costs the child nothing at all — no rebase, no budget, and no audit record claiming
+    /// commits nothing observed. This is the other half of "at defined checkpoints": the
+    /// checkpoints ask, and they only ever act on an answer that says the parent moved.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_child_whose_parent_stood_still_spends_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        runEvents.OfType<RunRebasedOntoBase>().Should().BeEmpty("the parent's head is what this branch is already on");
+        List<object> taskEvents = [.. (await query.Events.FetchStreamAsync(fixture.TaskId, token: cts.Token)).Select(e => e.Data)];
+        taskEvents.OfType<StackedCheckpointRebased>().Should().BeEmpty("nothing was rebased, so nothing was spent");
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely — a parent that dies
+    /// terminally. The parent's own pull request was closed without merging, which leaves it Done
+    /// forever, carrying the pull-request URL it always had, and unable to reach even Delivered.
+    /// The child parks with the situation named rather than replaying onto a base nothing further
+    /// arrives on.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_child_parks_for_a_human_when_its_parent_can_no_longer_deliver()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(
+            store, cts.Token, parentPullRequestClosedUnmerged: true);
+
+        PushToOriginBranch(
+            fixture.OriginPath, fixture.ParentBranch, "parent-lap.txt", "a lap nobody will ever merge\n");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a dead base is not something to review your way past");
+        executor.Spawns.Should().BeEmpty("the park lands before this run's first review cycle ever dispatches");
+        File.Exists(Path.Combine(fixture.WorktreePath, "parent-lap.txt")).Should().BeFalse(
+            "nothing is replayed onto a parent that can no longer deliver");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        ReviewParked parked = runEvents.OfType<ReviewParked>().Should().ContainSingle().Subject;
+        parked.Reason.Should().Contain(fixture.ParentBranch, "the park names the base this branch is stuck on");
+        parked.Reason.Should().Contain("never delivered a pull request that can merge");
+        RunDetails? run = await query.LoadAsync<RunDetails>(fixture.RunId, cts.Token);
+        run!.State.Should().Be(RunState.ReviewParked);
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely. The parent's branch
+    /// is gone from origin and its run recorded no pull request either, so there is no head for
+    /// this branch to be brought onto and nothing that changes that on its own. Closeout can shrug
+    /// at an unobservable sweep and ask again next time; a checkpoint is the last look before the
+    /// thing it precedes runs, so it parks instead.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_child_parks_when_its_parents_head_cannot_be_resolved_at_all()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(
+            store, cts.Token, parentPullRequestOpened: false);
+
+        // The parent's closeout deleting its branch, with no pull-request head ref to fall back to.
+        Git(fixture.WorktreePath, $"push -q origin --delete {fixture.ParentBranch}");
+
+        ScriptedExecutor executor = new("Nothing to fix.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        await using IQuerySession query = store.QuerySession();
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        ReviewParked parked = runEvents.OfType<ReviewParked>().Should().ContainSingle().Subject;
+        parked.Reason.Should().Contain("no parent head for this branch to be brought onto");
+        parked.Reason.Should().Contain("h9k review resolve");
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely — the guardrail past
+    /// the cap. The rebase budget is the child's own and is shared with closeout's replay
+    /// follow-ups, so a checkpoint past it parks with the branch untouched, leaving a coherent
+    /// stack rather than a half-followed parent.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_child_past_its_rebase_budget_parks_rather_than_following_its_parent_again()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token, priorCheckpointRebases: 1);
+
+        PushToOriginBranch(
+            fixture.OriginPath, fixture.ParentBranch, "parent-lap.txt", "the parent moving one more time\n");
+
+        ScriptedExecutor executor = new("Nothing to fix.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(
+                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3, MaxStackReplayRuns = 1 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        File.Exists(Path.Combine(fixture.WorktreePath, "parent-lap.txt")).Should().BeFalse(
+            "past the cap the branch is left exactly as it was");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        ReviewParked parked = runEvents.OfType<ReviewParked>().Should().ContainSingle().Subject;
+        parked.Reason.Should().Contain("1/1 rebase(s)",
+            "the prior checkpoint's own recorded spend is what this cap counted");
+    }
+
+    /// <summary>
+    /// Task: a stacked child absorbs its parent's post-delivery churn safely. A checkpoint rebase
+    /// is mechanical by contract — replay plus gates, no review cycle — so a conflict is not
+    /// something it resolves: it restores the branch and parks. The recovery session the unstacked
+    /// path dispatches would also land this run on <c>ReviewPhase.Settling</c>, carrying it straight
+    /// past the review cycles this checkpoint exists to precede.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_checkpoint_replay_that_conflicts_parks_with_the_branch_restored()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        // The parent's lap touches the very file this child added, differently: the replay of the
+        // child's own commit onto that head cannot apply.
+        PushToOriginBranch(fixture.OriginPath, fixture.ParentBranch, "Widget.cs", "class Widget { int parent; }\n");
+
+        ScriptedExecutor executor = new("Nothing to fix.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        executor.Spawns.Should().BeEmpty("no session of any kind is dispatched for a checkpoint conflict");
+        GitOutput(fixture.WorktreePath, "rev-parse HEAD").Should().Be(fixture.ChildHeadCommit,
+            "the worktree is restored to this branch's own tip, so the human inherits it unchanged");
+        File.ReadAllText(Path.Combine(fixture.WorktreePath, "Widget.cs")).Should().NotContain("int parent",
+            "and with its own content, not half of the parent's lap");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        runEvents.OfType<RunRebasedOntoBase>().Should().BeEmpty("nothing landed, so nothing is recorded as landed");
+        List<object> taskEvents = [.. (await query.Events.FetchStreamAsync(fixture.TaskId, token: cts.Token)).Select(e => e.Data)];
+        taskEvents.OfType<StackedCheckpointRebased>().Should().BeEmpty("a conflict spends no budget");
+        ReviewParked parked = runEvents.OfType<ReviewParked>().Should().ContainSingle().Subject;
+        parked.Reason.Should().Contain("conflicted");
+        parked.Reason.Should().Contain("git rebase --onto", "the park hands over the exact command it tried");
+    }
+
+    /// <summary>
+    /// A stacked child mid-run: a real origin, a parent branch pushed and Delivered, this child's
+    /// branch cut from the parent's head with that head recorded as its fork point, and the run
+    /// sitting exactly where the review loop is entered (gates passed, no pull request yet). One
+    /// clone serves as both the project's repository and the run's worktree, the same shape
+    /// <see cref="SeedVerifiedRunWithOriginAsync"/> uses — the watch reads refs and the replay
+    /// reads objects, and both are in there.
+    /// </summary>
+    private async Task<StackedChildFixture> SeedStackedChildRunAsync(
+        DocumentStore store, CancellationToken cancellationToken, bool parentPullRequestOpened = true,
+        bool parentPullRequestClosedUnmerged = false, int priorCheckpointRebases = 0)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid parentTaskId = DomainId.New();
+        Guid parentRunId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string parentBranch = $"task/{parentTaskId:N}"[..20];
+        string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
+        string originPath = Path.Combine(_home, $"origin-{runId:N}.git");
+        Directory.CreateDirectory(_home);
+        Git(_home, $"init -q --bare -b main \"{originPath}\"");
+        Git(_home, $"clone -q \"{originPath}\" \"{worktreePath}\"");
+        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
+        Git(worktreePath, "push -q origin main");
+
+        // The parent's branch, cut from main and pushed — Delivered.
+        Git(worktreePath, $"checkout -q -b {parentBranch}");
+        File.WriteAllText(Path.Combine(worktreePath, "parent.txt"), "the parent's slice\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"parent slice\"");
+        Git(worktreePath, $"push -q origin {parentBranch}");
+        string parentHeadCommit = GitOutput(worktreePath, "rev-parse HEAD");
+
+        // The child's branch, cut from the PARENT's head rather than main — which is the whole
+        // point: its own commit sits on top of the parent's.
+        Git(worktreePath, "checkout -q -b task/review-me");
+        File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+        string childHeadCommit = GitOutput(worktreePath, "rev-parse HEAD");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"stacked-{taskId:N}", worktreePath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        const string parentPullRequestUrl = "https://github.com/acme/widgets/pull/41";
+        TaskAggregate parentTask = new();
+        (parentTask, object[] parentLifecycle) = TaskSeed.Start(
+            TaskDecider.Add(parentTaskId, projectId, "Parent slice", ["it works"],
+                TaskType.Feature, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        TaskClaimed parentClaimed = TaskDecider.Claim(parentTask, node.NodeId, node.OwnerId, parentRunId, Now);
+        parentTask.Apply(parentClaimed);
+        TaskCompleted parentCompleted = TaskDecider.Complete(parentTask, parentRunId, parentPullRequestUrl, Now);
+        session.Events.StartStream<TaskAggregate>(
+            parentTaskId, [.. parentLifecycle, parentClaimed, parentCompleted]);
+
+        List<object> parentRunEvents =
+        [
+            new RunDispatched(parentRunId, parentTaskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                worktreePath, parentBranch, ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(parentRunId, Now),
+            new VerificationPassed(parentRunId, Now),
+        ];
+        if (parentPullRequestOpened)
+        {
+            parentRunEvents.Add(new PullRequestOpened(parentRunId, parentPullRequestUrl, 41, Now));
+        }
+
+        if (parentPullRequestClosedUnmerged)
+        {
+            parentRunEvents.Add(new PullRequestClosed(parentRunId, Now, Now));
+        }
+
+        session.Events.StartStream<RunAggregate>(parentRunId, [.. parentRunEvents]);
+
+        // The graph the child's own assignment saw: a Delivered parent, which is the bar a stacked
+        // edge starts at. A parent that dies does so after this point, which is the real sequence.
+        TaskDependencyGraph graph = new([
+            new TaskDependency(
+                parentTaskId, "Parent slice", TaskState.Done, IsClosedOut: false, RunState.AwaitingReview,
+                parentPullRequestUrl, TaskType.Feature, [], ProjectId: projectId),
+        ]);
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Child slice, stacked on its parent", ["reviewed"],
+                TaskType.Feature, null, null, null, Now, node.OwnerId,
+                blockedBy: [parentTaskId], stackedOnTaskId: parentTaskId),
+            node.OwnerId, Now, graph);
+        TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        task.Apply(claimed);
+        List<object> taskEvents = [.. lifecycle, claimed];
+
+        // Rebase budget already spent, as real recorded checkpoint rebases rather than a doctored
+        // counter — the cap has to count the same events the checkpoint appends.
+        for (int i = 0; i < priorCheckpointRebases; i++)
+        {
+            taskEvents.Add(new StackedCheckpointRebased(
+                taskId, runId, StackedCheckpoint.BeforeFirstReviewCycle, parentBranch,
+                $"deadbee{i}", $"cafe111{i}", Now));
+        }
+
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now,
+                BaseBranch: parentBranch, BaseCommit: parentHeadCommit),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return new StackedChildFixture(
+            taskId, runId, parentTaskId, worktreePath, originPath, parentBranch, parentHeadCommit,
+            childHeadCommit);
+    }
+
+    /// <summary>What a stacked-checkpoint test needs in hand: the child's run, its worktree, and the parent's branch.</summary>
+    private sealed record StackedChildFixture(
+        Guid TaskId, Guid RunId, Guid ParentTaskId, string WorktreePath, string OriginPath, string ParentBranch,
+        string ParentHeadCommit, string ChildHeadCommit);
+
+    /// <summary>
+    /// One more commit on a branch origin already has — the parent taking a post-delivery lap while
+    /// its child is in flight. Unlike <see cref="PushBranchToOrigin"/>, which creates the branch,
+    /// this checks the existing one out so the push is a fast-forward rather than a rejection.
+    /// Returns the commit the branch now points at, which is the head a checkpoint replay lands on.
+    /// </summary>
+    private string PushToOriginBranch(string originPath, string branch, string fileName, string content)
+    {
+        string otherClone = Path.Combine(_home, $"lap-{Guid.NewGuid():N}");
+        Git(_home, $"clone -q \"{originPath}\" \"{otherClone}\"");
+        Git(otherClone, $"checkout -q {branch}");
+        File.WriteAllText(Path.Combine(otherClone, fileName), content);
+        Git(otherClone, "add -A");
+        Git(otherClone, "-c user.name=Parent -c user.email=parent@test commit -q -m \"parent lap\"");
+        Git(otherClone, $"push -q origin {branch}");
+        return GitOutput(otherClone, "rev-parse HEAD");
     }
 
     /// <summary>
@@ -3714,7 +4175,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            NewStackedParentWatch());
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -3780,7 +4242,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            NewStackedParentWatch());
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -6390,7 +6853,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            NewStackedParentWatch());
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -6461,7 +6925,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            NewStackedParentWatch());
 
         await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
 
@@ -6511,7 +6976,19 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             Options.Create(options),
             NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-            ghRunner);
+            ghRunner,
+            NewStackedParentWatch());
+
+    /// <summary>
+    /// The real watch, never a fake: a stacked child's rebase checkpoints read it (task: a stacked
+    /// child absorbs its parent's post-delivery churn safely), and it answers from git and the
+    /// store — the same two things every other real-repository test here already seeds. An
+    /// unstacked run never reaches it at all, which is what keeps every test in this file that
+    /// records no base branch byte-for-byte unaffected by its presence.
+    /// </summary>
+    private static StackedParentWatch NewStackedParentWatch() => new(
+        new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+        NullLogger<StackedParentWatch>.Instance);
 
     /// <summary>Writes a terminal result for a session this test seeded rather than spawned.</summary>
     private static async Task WriteScriptedResultAsync(

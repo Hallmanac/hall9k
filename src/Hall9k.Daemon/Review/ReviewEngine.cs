@@ -5,6 +5,7 @@ using System.Text;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Project;
@@ -97,7 +98,8 @@ public sealed class ReviewEngine(
     IOptions<DaemonOptions> options,
     ILogger<ReviewEngine> logger,
     IWorktreeManager worktrees,
-    ProcessRunner processRunner)
+    ProcessRunner processRunner,
+    StackedParentWatch stackedParents)
 {
     /// <summary>
     /// How long a single git call in the pre-final-pass rebase check gets (task: a run rebases
@@ -279,6 +281,50 @@ public sealed class ReviewEngine(
 
                         await SettleWithNoReviewAsync(run, cancellationToken);
                         break;
+                    }
+
+                    // The stacked child's first checkpoint (task: a stacked child absorbs its
+                    // parent's post-delivery churn safely): before this run's own first review
+                    // cycle dispatches, and before the interactive gate below holds for a human,
+                    // the branch is brought onto its parent's current head. A review pass reads
+                    // this run's delta against its recorded base, so a parent that has taken a
+                    // review lap or a closeout follow-up since this branch was cut — which a
+                    // Delivered parent routinely has — would otherwise have its own
+                    // already-reviewed commits read, and graded in-scope, as this child's work.
+                    // Deliberately not run again on later cycles: this phase is only entered
+                    // before cycle 1, and the second checkpoint, before the mandatory final full
+                    // pass, is the other end of the pair — a child does not chase every parent
+                    // push in between.
+                    //
+                    // A replay that lands raises PreFinalPassRebaseAwaitingGate, and the gate
+                    // below is what clears it: reviewers must never read a tree the suite has not
+                    // run over (task: a checkpoint rebase is replay plus gates).
+                    if (StackedParentWatch.IsStackedChild(context.Run, context.Project))
+                    {
+                        // Proceed or Stop, never LoopAgain: a checkpoint conflict parks rather
+                        // than dispatching the recovery session whose completion is what asks a
+                        // caller to re-enter the loop (see the method's own doc). Nothing else
+                        // this arm could do with a LoopAgain is right either — the phase it would
+                        // re-enter at is this same one.
+                        if (await RebaseOntoStackedParentAsync(
+                                context, StackedCheckpoint.BeforeFirstReviewCycle, cancellationToken)
+                            is not RebaseGateOutcome.Proceed)
+                        {
+                            return false;
+                        }
+
+                        // Reloaded so the gate check below sees a replay this same call just
+                        // performed — the identical staleness gap the composition-none branch
+                        // above and the Settling branch below both reload for.
+                        run = await LoadRunAsync(context.RunId, cancellationToken);
+                        if (!await EnsureGateCoversHeadAsync(
+                            context, run,
+                            "the stacked checkpoint replay moved HEAD onto the parent's current head, past the "
+                            + "last tip this run actually gated — cycle 1's reviewers read what the gates ran over",
+                            cancellationToken))
+                        {
+                            return false;
+                        }
                     }
 
                     // Interactive mode's own "build done to review" boundary (task: interactive
@@ -1389,6 +1435,10 @@ public sealed class ReviewEngine(
             return false;
         }
 
+        // Re-read before anything below builds a prompt out of it — see
+        // WithFreshRunSnapshotAsync's own doc for the fork point a stacked child's checkpoint
+        // replay moves out from under the snapshot this method was handed.
+        context = await WithFreshRunSnapshotAsync(context, cancellationToken);
         Guid sessionId = DomainId.New();
         // An ordinary Discovery cycle always wants the full-diff, fresh-context read (task: review
         // cycles after the first). FinalFullPass is discovery-grade rigor at a later cycle number,
@@ -1471,6 +1521,10 @@ public sealed class ReviewEngine(
             return false;
         }
 
+        // Re-read for the reason DispatchReviewPassAsync's own identical refresh documents: this
+        // pass's full-diff fallback range is keyed to the run's recorded fork point, which a
+        // stacked child's checkpoint replay moves mid-loop.
+        context = await WithFreshRunSnapshotAsync(context, cancellationToken);
         string runDirectory = CurrentRunDirectory(context.Run);
         int previousCycle = cycle - 1;
         string priorFindings = await ReadIfExistsAsync(
@@ -1641,6 +1695,10 @@ public sealed class ReviewEngine(
     private async Task<bool> DispatchFixSessionAsync(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
     {
+        // Re-read for the reason DispatchReviewPassAsync's own identical refresh documents: a fix
+        // session's own class sweep draws its own-changes boundary from the run's recorded fork
+        // point, which a stacked child's checkpoint replay moves mid-loop.
+        context = await WithFreshRunSnapshotAsync(context, cancellationToken);
         int cycle = run.ReviewCycle;
         string? humanFindings = run.PendingHumanFindings;
         string runDirectory = CurrentRunDirectory(context.Run);
@@ -1796,7 +1854,23 @@ public sealed class ReviewEngine(
     /// rebase, or one this run's own opening gate already covers, costs nothing extra here.
     /// </summary>
     private async Task<bool> EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync(
-        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken) =>
+        await EnsureGateCoversHeadAsync(
+            context, run,
+            "composition none waives the review guarantee, not the mandatory build/test gate: " +
+            "the pre-final-pass rebase moved HEAD past the last tip this run actually gated",
+            cancellationToken);
+
+    /// <summary>
+    /// Runs the build/test gate at full scope when — and only when —
+    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> says a real rebase has landed
+    /// since this run's own tip was last gated, with <paramref name="reason"/> as the account the
+    /// gate records. Event-sourced rather than a live git HEAD comparison, for the reason
+    /// <see cref="EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync"/>'s own doc gives: a no-op
+    /// rebase, or one this run's own opening gate already covers, costs nothing extra here.
+    /// </summary>
+    private async Task<bool> EnsureGateCoversHeadAsync(
+        ReviewContext context, RunAggregate run, string reason, CancellationToken cancellationToken)
     {
         if (!run.PreFinalPassRebaseAwaitingGate)
         {
@@ -1804,21 +1878,27 @@ public sealed class ReviewEngine(
         }
 
         return await verification.VerifyAsync(
-            context.RunId, context.TaskId, scopeSinceSha: null,
-            "composition none waives the review guarantee, not the mandatory build/test gate: " +
-            "the pre-final-pass rebase moved HEAD past the last tip this run actually gated",
-            cancellationToken);
+            context.RunId, context.TaskId, scopeSinceSha: null, reason, cancellationToken);
     }
 
     /// <summary>
     /// Immediately before the mandatory final full pass (task: a run rebases its branch onto the
     /// current base branch — the "nothing merges on scoped green alone" point both call sites
-    /// share): fetches the project's base branch and, if it moved past what this branch already
+    /// share): fetches the run's own base branch and, if it moved past what this branch already
     /// contains, rebases onto it right here, in the run's own worktree, so the mandatory gate and
     /// pass that are about to run read the rebased tree rather than a tip that will conflict the
     /// moment it is pushed. The 2026-08-22 origin incident — a clean-looking rebase that broke the
     /// build — is why this lands before the gate and not between the gate and the push: whatever
     /// runs next has to see what this step actually produced.
+    /// <para>
+    /// The run's OWN base, which for a stacked child is its parent's branch rather than the
+    /// project's: that case is handed to <see cref="RebaseOntoStackedParentAsync"/>, whose replay
+    /// from the recorded fork point is the operation a parent branch needs (this method's own
+    /// <c>git rebase origin/&lt;base&gt;</c> is provably wrong against one — see the comment at
+    /// that hand-off). This is the second of the child's two checkpoints
+    /// (<see cref="StackedCheckpoint.BeforeFinalPass"/>); the first runs before its own first
+    /// review cycle, in <see cref="DriveAsync"/>'s <see cref="ReviewPhase.None"/> arm.
+    /// </para>
     /// <para>
     /// A no-op (origin's base had not moved past this branch's own merge base) and a clean git
     /// apply are recorded and returned as <see cref="RebaseGateOutcome.Proceed"/> — the caller
@@ -1850,116 +1930,38 @@ public sealed class ReviewEngine(
         string baseBranch = context.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
-        // A stacked child is refused outright, before any git call, exactly as
-        // CloseoutEngine.TryMechanicalRebaseAsync refuses a base that is not the project's own
-        // (independent pre-PR review, cycle 1, adversarial lens). A plain merge-base
-        // `git rebase origin/<parent>` is the provably wrong operation against a parent branch:
-        // the parent is routinely force-pushed while the child is in flight (a review lap folding
-        // fixes into its own commits), which rewrites the history the child shares with it, so the
-        // merge base collapses below the child's own fork point and the rebase replays the child's
-        // copies of the parent's OLD commits against the parent's new ones — StackedParentWatch's
-        // own doc records that verification. It either conflicts (spending a judgment session on
-        // parent-versus-parent conflicts) or "makes progress" and lands duplicated parent history
-        // on the child's branch, and on a StackReplay follow-up — ReviewStageComposition.None — no
-        // reviewer would ever read the result. The right operation is closeout's own mechanical
-        // `git rebase --onto` replay, keyed to this run's RECORDED fork point rather than to a
-        // merge base, dispatched the moment StackedParentWatch observes the parent move.
+        // A stacked child's base is its PARENT's branch, and the operation it needs is not this
+        // method's own `git rebase origin/<base>` — that plain merge-base rebase is the one thing
+        // this feature's design proves wrong against a parent branch (task: a stacked pull-request
+        // edge exists as an explicit opt-in dependency; independent pre-PR review, cycle 1,
+        // adversarial lens). The parent is routinely force-pushed while the child is in flight (a
+        // review lap folding fixes into its own commits), which rewrites the history the child
+        // shares with it, so the merge base collapses below the child's own fork point and the
+        // rebase replays the child's copies of the parent's OLD commits against the parent's new
+        // ones — StackedParentWatch's own doc records that verification.
         //
-        // Nothing is owed to mergeable-on-arrival in the meantime: this pull request targets the
-        // parent's branch, so GitHub measures it against that branch, and the parent's own
-        // pre-final-pass gate is what keeps IT current with the project's base. The retargeted-base
-        // check below covers the after-the-retarget case, where BaseBranch is back to the project's
-        // own and this guard no longer fires.
-        if (baseBranch != context.Project.BaseBranch)
+        // This once returned here, skipping the step entirely and leaving the whole answer to
+        // closeout's own post-push replay. That left the mandatory final full pass — and the pull
+        // request opened right after it — reading a branch built on whatever the parent's head was
+        // hours earlier, which a Delivered parent's own review laps and closeout follow-ups
+        // routinely move (task: a stacked child absorbs its parent's post-delivery churn safely).
+        // The replay itself is the same `git rebase --onto <observed head> <recorded fork point>`
+        // closeout dispatches, run right here instead of waiting for a sweep.
+        //
+        // Handed over before this method's own pre-flight, not after: the checkpoint runs the
+        // identical pre-flight itself (it is reached from the pre-first-cycle checkpoint too, which
+        // has no caller to run it), and running it twice on this path would pay for a second
+        // `gh pr view` and a second pair of worktree reads to answer a question already answered.
+        if (StackedParentWatch.IsStackedChild(context.Run, context.Project))
         {
-            logger.LogInformation(
-                "Run {RunId}: this branch is stacked on {ParentBranch} rather than based on {ProjectBase} — skipping the pre-final-pass rebase, since a merge-base rebase onto a parent branch replays this branch's copies of the parent's commits; closeout's own mechanical replay handles a parent that moves",
-                context.RunId, baseBranch, context.Project.BaseBranch);
-            return RebaseGateOutcome.Proceed;
+            return await RebaseOntoStackedParentAsync(
+                context, StackedCheckpoint.BeforeFinalPass, cancellationToken);
         }
 
-        // Checked before anything else touches the worktree — the same guard
-        // CloseoutEngine.TryMechanicalRebaseAsync runs first, for the same reason (independent
-        // pre-PR review, cycle 1, both lenses): the worktree cannot be read at all whenever a run
-        // is adopted onto a node that never checked it out, or the worktree is simply gone, and
-        // spawning `git` with a WorkingDirectory that does not exist throws rather than exiting
-        // non-zero — the ordinary "fetch/read failure" handling below never gets a chance to run.
-        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        if (await RebasePreflightAsync(context, baseBranch, "the mandatory final pass", cancellationToken)
+            is { } refused)
         {
-            logger.LogWarning(
-                "Run {RunId}: the run's retained worktree is missing before the mandatory final pass — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
-                context.RunId);
-            return RebaseGateOutcome.Proceed;
-        }
-
-        // A follow-up run reuses whatever pull request the task already has open, and that pull
-        // request's base can have been retargeted away from the project's own base branch on
-        // GitHub itself, and this platform now retargets one itself when a stacked child's parent
-        // merges (Decisions Log #144) — the same fact CloseoutEngine's own mechanical rebase
-        // checks before ever touching git, for the same reason (independent pre-PR review,
-        // cycle 1, both lenses): rebasing onto
-        // baseBranch in that case would silently rewrite the branch onto a base it was never
-        // meant to be on. A fresh run has no pull request yet, so there is nothing to retarget and
-        // this is skipped entirely; a read failure is treated the same as "no mismatch observed" —
-        // the identical fetch/read-failure stance every other git call in this method already
-        // takes.
-        if (context.Task.PullRequestUrl.IsNotBlank())
-        {
-            string? retargetedBase = await TryReadRetargetedPullRequestBaseAsync(context, baseBranch, cancellationToken);
-            if (retargetedBase is not null)
-            {
-                logger.LogWarning(
-                    "Run {RunId}: the pull request's actual base is {ActualBase}, not this project's own base branch {ProjectBase} — skipping the pre-final-pass rebase so it does not silently rewrite the branch onto a base it was never meant to be on; closeout's own mechanical rebase already refuses the identical mismatch",
-                    context.RunId, retargetedBase, baseBranch);
-                return RebaseGateOutcome.Proceed;
-            }
-        }
-
-        // Checked next, the same order and the same two checks CloseoutEngine.TryMechanicalRebaseAsync
-        // already runs in front of its own `git rebase` call (independent pre-PR review, cycle 1,
-        // conformance lens): a `git rebase` that exits non-zero without ever starting one — the
-        // worktree not on this run's own branch, or a tracked file left modified or
-        // untracked-but-staged in the working tree (the failure mode AppendRebaseVerificationRule
-        // warns fix sessions about) — is not a conflict, and treating it as one records an
-        // unobserved fact (nothing actually conflicted) and spends a whole recovery session on a
-        // false premise. Neither check needs the repository lock below: both read only this run's
-        // own worktree, never the shared bare repository.
-        ProcessResult branchCheck;
-        ProcessResult statusCheck;
-        try
-        {
-            branchCheck = await git(
-                "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
-            statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
-        }
-        // These two reads sit ahead of the repository lock and touch only this run's own
-        // worktree, so a stuck output pipe or an expired deadline here is exactly the "fetch or
-        // read failure" this method's own doc comment already promises is logged and treated as
-        // Proceed rather than left to escape and fail the run (independent pre-PR review, cycle 1,
-        // adversarial lens).
-        catch (TimeoutException exception)
-        {
-            logger.LogWarning(
-                exception,
-                "Run {RunId}: a git call exceeded its deadline checking the worktree's own branch or status before the mandatory final pass — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
-                context.RunId);
-            return RebaseGateOutcome.Proceed;
-        }
-
-        if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != context.Run.Branch)
-        {
-            logger.LogWarning(
-                "Run {RunId}: the worktree is not checked out on its own branch before the mandatory final pass — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
-                context.RunId);
-            return RebaseGateOutcome.Proceed;
-        }
-
-        if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
-        {
-            logger.LogWarning(
-                "Run {RunId}: the worktree has uncommitted changes before the mandatory final pass — proceeding unrebased rather than risking a false rebase conflict; closeout's own mechanical rebase still covers a stale push",
-                context.RunId);
-            return RebaseGateOutcome.Proceed;
+            return refused;
         }
 
         // The fetch, merge-base read and rebase are taken under the same repository lock every
@@ -2032,7 +2034,7 @@ public sealed class ReviewEngine(
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: true, recoveredByAgentSession: false,
                         $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
-                        cancellationToken);
+                        checkpointSpend: null, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2042,7 +2044,7 @@ public sealed class ReviewEngine(
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased cleanly onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}).",
-                        cancellationToken);
+                        checkpointSpend: null, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2065,14 +2067,15 @@ public sealed class ReviewEngine(
             catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
             {
                 if (mergeBaseForStuckRebase is { } mergeBase
-                    && await RebaseActuallyLandedAsync(worktreePath, context.Run.Branch, baseBranch, cancellationToken))
+                    && await RebaseActuallyLandedAsync(
+                        worktreePath, context.Run.Branch, $"origin/{baseBranch}", cancellationToken))
                 {
                     string observedOntoCommit = await ResolveObservedOntoCommitAsync(worktreePath, baseBranch, cancellationToken);
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, observedOntoCommit, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(observedOntoCommit)}) — "
                         + "the rebase itself exited 0 before a background process's stuck output pipe timed the call out.",
-                        cancellationToken);
+                        checkpointSpend: null, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2099,6 +2102,372 @@ public sealed class ReviewEngine(
             ? RebaseGateOutcome.LoopAgain
             : RebaseGateOutcome.Stop;
     }
+
+    /// <summary>
+    /// The checks every rebase this engine performs runs before it touches the worktree — shared
+    /// by the unstacked merge-base rebase onto the project's base and by a stacked child's
+    /// checkpoint replay onto its parent's head, so neither can quietly acquire a guard the other
+    /// lacks (the two-arm shape AGENTS.md warns about by name). Returns null when the caller may
+    /// proceed with its rebase, and the outcome to return when it may not — always
+    /// <see cref="RebaseGateOutcome.Proceed"/> today: none of these is this run's fault, and each
+    /// one's own comment says what still covers the staleness left behind.
+    /// </summary>
+    private async Task<RebaseGateOutcome?> RebasePreflightAsync(
+        ReviewContext context, string baseBranch, string step, CancellationToken cancellationToken)
+    {
+        string worktreePath = context.Run.WorktreePath;
+        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+
+        // Checked before anything else touches the worktree — the same guard
+        // CloseoutEngine.TryMechanicalRebaseAsync runs first, for the same reason (independent
+        // pre-PR review, cycle 1, both lenses): the worktree cannot be read at all whenever a run
+        // is adopted onto a node that never checked it out, or the worktree is simply gone, and
+        // spawning `git` with a WorkingDirectory that does not exist throws rather than exiting
+        // non-zero — the ordinary "fetch/read failure" handling never gets a chance to run.
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            logger.LogWarning(
+                "Run {RunId}: the run's retained worktree is missing before {Step} — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
+                context.RunId, step);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        // A follow-up run reuses whatever pull request the task already has open, and that pull
+        // request's base can have been retargeted away from the base this run recorded on GitHub
+        // itself, and this platform now retargets one itself when a stacked child's parent merges
+        // (Decisions Log #144) — the same fact CloseoutEngine's own mechanical rebase checks
+        // before ever touching git, for the same reason (independent pre-PR review, cycle 1, both
+        // lenses): rebasing onto baseBranch in that case would silently rewrite the branch onto a
+        // base it was never meant to be on. Compared against the RUN's recorded base rather than
+        // the project's, which is what makes this one check cover both arms: for an ordinary run
+        // the two are the same branch, and for a stacked child a mismatch means the pull request
+        // has been moved off the parent branch this replay would otherwise aim at. A fresh run has
+        // no pull request yet, so there is nothing to retarget and this is skipped entirely; a
+        // read failure is treated the same as "no mismatch observed" — the identical
+        // fetch/read-failure stance every other git call on this path takes.
+        if (context.Task.PullRequestUrl.IsNotBlank())
+        {
+            string? retargetedBase = await TryReadRetargetedPullRequestBaseAsync(context, baseBranch, cancellationToken);
+            if (retargetedBase is not null)
+            {
+                logger.LogWarning(
+                    "Run {RunId}: the pull request's actual base is {ActualBase}, not the base this run recorded ({RecordedBase}) — skipping the rebase before {Step} so it does not silently rewrite the branch onto a base it was never meant to be on; closeout's own mechanical rebase already refuses the identical mismatch",
+                    context.RunId, retargetedBase, baseBranch, step);
+                return RebaseGateOutcome.Proceed;
+            }
+        }
+
+        // Checked next, the same order and the same two checks CloseoutEngine.TryMechanicalRebaseAsync
+        // already runs in front of its own `git rebase` call (independent pre-PR review, cycle 1,
+        // conformance lens): a `git rebase` that exits non-zero without ever starting one — the
+        // worktree not on this run's own branch, or a tracked file left modified or
+        // untracked-but-staged in the working tree (the failure mode AppendRebaseVerificationRule
+        // warns fix sessions about) — is not a conflict, and treating it as one records an
+        // unobserved fact (nothing actually conflicted) and spends a whole recovery session, or a
+        // park, on a false premise. Neither check needs the repository lock the callers take:
+        // both read only this run's own worktree, never the shared bare repository.
+        ProcessResult branchCheck;
+        ProcessResult statusCheck;
+        try
+        {
+            branchCheck = await git(
+                "git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
+            statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
+        }
+        // These two reads sit ahead of the repository lock and touch only this run's own
+        // worktree, so a stuck output pipe or an expired deadline here is exactly the "fetch or
+        // read failure" the caller's own doc comment already promises is logged and treated as
+        // Proceed rather than left to escape and fail the run (independent pre-PR review, cycle 1,
+        // adversarial lens).
+        catch (TimeoutException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: a git call exceeded its deadline checking the worktree's own branch or status before {Step} — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
+                context.RunId, step);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != context.Run.Branch)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the worktree is not checked out on its own branch before {Step} — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
+                context.RunId, step);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the worktree has uncommitted changes before {Step} — proceeding unrebased rather than risking a false rebase conflict; closeout's own mechanical rebase still covers a stale push",
+                context.RunId, step);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// One of a stacked child's two rebase checkpoints (task: a stacked child absorbs its parent's
+    /// post-delivery churn safely): observes the parent through the same
+    /// <see cref="StackedParentWatch"/> closeout reads, and — if the parent's branch has moved —
+    /// replays this branch's own commits from its recorded fork point onto the observed head, right
+    /// here in the run's own worktree.
+    /// <para>
+    /// <b>Two checkpoints, not every push.</b> A parent that has reached Delivered keeps moving: its
+    /// own closeout reopens it for unresolved threads and failing checks, and each follow-up pushes
+    /// again (PR #72 took three post-delivery pushes in one evening). A child that rebased on every
+    /// one of those would spend its run chasing a branch instead of building on it, so it catches up
+    /// at <see cref="StackedCheckpoint.BeforeFirstReviewCycle"/> and
+    /// <see cref="StackedCheckpoint.BeforeFinalPass"/> and nowhere else. Both are chosen for what
+    /// reads the tree next rather than for a clock: the first is what makes a reviewer's delta the
+    /// child's own work rather than the parent's already-reviewed work, and the second is what makes
+    /// the pull request mergeable on arrival.
+    /// </para>
+    /// <para>
+    /// <b>Mechanical, and the gates still run.</b> The replay carries no new intent — the same
+    /// commits onto a new base — so it earns no review cycle of its own, exactly as closeout's own
+    /// replay follow-up earns none (Brian's 2026-09-04 ruling: git applying every commit without a
+    /// conflict is itself the evidence that no judgment was exercised). What it does earn is a full
+    /// gate over the moved tip, which <c>RunAggregate.PreFinalPassRebaseAwaitingGate</c> is raised
+    /// for by the <see cref="RunRebasedOntoBase"/> this appends; the caller runs it.
+    /// </para>
+    /// <para>
+    /// <b>A conflict parks rather than dispatching the recovery session</b> the unstacked path
+    /// dispatches. Two reasons, and the second is decisive. The parent's own commits are already
+    /// reviewed and merged-in-waiting, so a conflict here is the child's work disagreeing with a
+    /// change its parent made after delivering — a judgment call about two branches rather than a
+    /// mechanical replay, which is the whole shape of the thing this checkpoint promises not to be.
+    /// And <c>PreFinalPassRebaseRecoveryCompleted</c> always lands the loop on
+    /// <see cref="ReviewPhase.Settling"/>: dispatched from the pre-first-cycle checkpoint, that
+    /// would carry the run straight past the review cycles this checkpoint exists to precede.
+    /// </para>
+    /// </summary>
+    private async Task<RebaseGateOutcome> RebaseOntoStackedParentAsync(
+        ReviewContext context, StackedCheckpoint checkpoint, CancellationToken cancellationToken)
+    {
+        if (await RebasePreflightAsync(context, context.BaseBranch, checkpoint.Describe(), cancellationToken)
+            is { } refused)
+        {
+            return refused;
+        }
+
+        string parentBranch;
+        StackedParentObservation observation;
+        int rebasesSpent;
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+
+            // Read fresh, not off ReviewContext.Run, and the fork point is why (this branch's own
+            // self-review, round one): that snapshot is loaded once when the review loop is entered
+            // and held for the whole review phase, while a checkpoint that lands moves the run's
+            // recorded fork point to the commit it landed on (RunRebasedOntoBase's own apply). A
+            // run whose first checkpoint replayed and whose parent then moves again would hand the
+            // second checkpoint the fork point from dispatch — a boundary below the parent commits
+            // this branch now holds, so the replay would carry the parent's own work as this
+            // task's, which is the exact duplication the recorded boundary exists to prevent.
+            RunDetails? current = await query.LoadAsync<RunDetails>(context.RunId, cancellationToken);
+            if (current is null || !StackedParentWatch.IsStackedChild(current, context.Project))
+            {
+                // No longer a stacked child, or no run document to read at all: closeout retargets
+                // a child's pull request onto the project's base the moment its parent merges, and
+                // that clears the recorded base — which can land while this very loop is running.
+                // Nothing is owed to a base that is now the project's own; the unstacked rebase
+                // covers that branch from the next entry onward, and the pre-flight above has
+                // already refused this pass if the pull request itself moved.
+                logger.LogInformation(
+                    "Run {RunId}: nothing owed at the stacked checkpoint {Checkpoint} — this run no longer records a parent branch of its own",
+                    context.RunId, checkpoint.Value);
+                return RebaseGateOutcome.Proceed;
+            }
+
+            parentBranch = current.BaseBranch;
+
+            // The declared edge is read off the run's own task snapshot rather than fresh: a
+            // stacked edge cannot change under a claimed task at all (TaskDecider.Revise is
+            // Draft-only, and stackedOnTaskId is not one of the two marker fields that gate
+            // carves out), so there is nothing here for a re-read to learn.
+            observation = await stackedParents.ObserveAsync(
+                query, context.Project, context.Task.StackedOnTaskId, current, cancellationToken);
+            TaskAggregate? task = await query.Events.AggregateStreamAsync<TaskAggregate>(
+                context.TaskId, token: cancellationToken);
+
+            // The budget lives on the task, so it is read from the task's own stream rather than
+            // from a projection: no view carries it (see TaskAggregate.StackReplaysDispatched),
+            // and closeout's own budget check reads the identical aggregate field. A task stream
+            // that cannot be aggregated at all reads as nothing spent, which is the same
+            // direction every other missing-read on this path takes — it can only ever allow a
+            // rebase the cap would have refused, never refuse one it would have allowed.
+            rebasesSpent = task?.StackReplaysDispatched ?? 0;
+        }
+        // The watch's own git calls are bounded and it swallows its deadlines, but a repository
+        // path that does not exist at all makes spawning `git` throw rather than exit non-zero,
+        // and this method is the one caller with a live worktree to protect. Treated as the same
+        // "read failed, and that is not this run's fault" the preflight above treats its own
+        // failures as: proceed, and let closeout's post-push replay be the second reader.
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: could not observe this branch's stacked parent at the checkpoint {Checkpoint} — proceeding without a rebase; closeout's own replay still covers a moved parent once this branch is pushed",
+                context.RunId, checkpoint.Value);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        StackedCheckpointVerdict verdict = StackedCheckpointPolicy.Decide(
+            observation, checkpoint, rebasesSpent, _options.MaxStackReplayRuns);
+
+        // Logged and not recorded, unlike the unstacked path's own no-op RunRebasedOntoBase: an
+        // Aligned or Unobservable observation names no commits at all (see
+        // StackedParentObservation's own doc on which verdicts carry a boundary), so the event
+        // could only be appended with blank or sentinel commits in the two audit fields whose
+        // whole purpose is to name real ones. A log line that says nothing happened beats an audit
+        // record that says it in placeholders (AGENTS.md's never-guess rule), and it sidesteps the
+        // trailing-no-op-clobbers-the-real-rebase hazard that guard in
+        // RunDetailsProjection.Apply(RunRebasedOntoBase) exists for.
+        if (verdict.Action == StackedCheckpointAction.Proceed)
+        {
+            logger.LogInformation(
+                "Run {RunId}: stacked checkpoint {Checkpoint} owes no rebase onto {ParentBranch} — {Detail}",
+                context.RunId, checkpoint.Value, parentBranch, verdict.Reason);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        if (verdict.Action == StackedCheckpointAction.Park)
+        {
+            await ParkAsync(
+                context.RunId, context.TaskId, verdict.Reason, cancellationToken: cancellationToken);
+            return RebaseGateOutcome.Stop;
+        }
+
+        // Everything past here is Replay. Written as early returns rather than a switch precisely
+        // so that reading is explicit — a switch statement's silent fall-through would route an
+        // action added later into the replay path by default (the identical argument
+        // CloseoutEngine.TryReplayStackedChildAsync's own early returns over its verdicts make).
+        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        string worktreePath = context.Run.WorktreePath;
+        string? preRebaseHead = null;
+        await using (IAsyncDisposable repositoryLock =
+            await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
+        {
+            // The lock's own wait is unbounded, so the generation this attempt was handed can go
+            // stale while it merely waits its turn — re-checked after the lock is acquired and
+            // before anything in the worktree is touched, the same shape
+            // EnsureRebasedBeforeFinalPassAsync's own fence re-check documents.
+            if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+            {
+                return RebaseGateOutcome.Stop;
+            }
+
+            try
+            {
+                ProcessResult headResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+                preRebaseHead = headResult.ExitCode == 0 ? headResult.StandardOutput.Trim() : null;
+
+                // No fetch of its own: the watch above already fetched the parent's head into this
+                // project's repository — origin's branch, or the pull request's own head ref when
+                // the branch is gone — and a worktree shares that repository's object store, so the
+                // commit is already here. Confirmed rather than assumed all the same, because the
+                // one thing that must never happen is `git rebase --onto <a commit git cannot
+                // resolve>`: that fails in a way indistinguishable from a conflict, which would
+                // park a run over a missing object.
+                ProcessResult ontoPresent = await git(
+                    "git", ["rev-parse", "--verify", "--quiet", $"{verdict.OntoCommit}^{{commit}}"],
+                    worktreePath, cancellationToken);
+                if (ontoPresent.ExitCode != 0)
+                {
+                    logger.LogWarning(
+                        "Run {RunId}: the stacked parent's observed head {OntoCommit} is not in this repository's object store, so the checkpoint {Checkpoint} replay cannot run — proceeding unrebased; closeout's own replay still covers a moved parent once this branch is pushed",
+                        context.RunId, ShortSha(verdict.OntoCommit), checkpoint.Value);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                // The replay, and both of its arguments are exact commits for the reason
+                // TaskReopened.StackReplayOntoCommit gives: the upstream is this run's own recorded
+                // fork point, which is what drops the parent's commits instead of replaying this
+                // branch's copies of them, and the onto is the head the watch freshly observed
+                // rather than a ref that can move between the look and the rebase.
+                ProcessResult replay = await git(
+                    "git", ["rebase", "--onto", verdict.OntoCommit, verdict.UpstreamCommit],
+                    worktreePath, cancellationToken);
+                if (replay.ExitCode == 0)
+                {
+                    await RecordStackedCheckpointAsync(context, parentBranch, checkpoint, verdict, cancellationToken);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+            }
+            // git itself can have exited 0 for the call in flight — most importantly the rebase,
+            // which actually mutates the worktree — while something it started (a post-rewrite
+            // hook, an fsmonitor daemon) still held the output pipe open past
+            // ExternalProcess.DrainGrace. Exit 0 alone does not say the replay is the call that
+            // finished, so the worktree is read back rather than assumed, exactly as
+            // EnsureRebasedBeforeFinalPassAsync's own identical catch does for its own rebase.
+            catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
+            {
+                if (await RebaseActuallyLandedAsync(
+                    worktreePath, context.Run.Branch, verdict.OntoCommit, cancellationToken))
+                {
+                    await RecordStackedCheckpointAsync(context, parentBranch, checkpoint, verdict, cancellationToken);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: the stacked checkpoint {Checkpoint} replay exited 0 but its output pipe stuck past the drain grace, and the worktree does not confirm it landed — proceeding unrebased",
+                    context.RunId, checkpoint.Value);
+                return RebaseGateOutcome.Proceed;
+            }
+            catch (TimeoutException exception)
+            {
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: a git call exceeded its deadline replaying onto the stacked parent {ParentBranch} at the checkpoint {Checkpoint} — proceeding unrebased",
+                    context.RunId, parentBranch, checkpoint.Value);
+                return RebaseGateOutcome.Proceed;
+            }
+        }
+
+        // Reached only on a conflict: every other path above returns from inside the lock scope.
+        // Parked rather than handed to the recovery session, for the two reasons this method's own
+        // doc gives — and parked with the worktree already restored to this branch's own tip, so
+        // the human inherits the branch as it was rather than a half-applied replay.
+        await ParkAsync(
+            context.RunId, context.TaskId,
+            $"This branch is stacked on {parentBranch} and {observation.Detail} — but replaying this branch's "
+            + $"own commits from {ShortSha(verdict.UpstreamCommit)} onto {ShortSha(verdict.OntoCommit)} "
+            + $"conflicted, so the rebase owed before {checkpoint.Describe()} needs a judgment this run will "
+            + "not make mechanically. The worktree is back at this branch's own tip, unchanged. Rebase it by "
+            + $"hand (`git rebase --onto {verdict.OntoCommit} {verdict.UpstreamCommit}`), then resolve with "
+            + "h9k review resolve — or hand the conflict to a fix session with "
+            + "h9k review resolve --needs-fixes \"<guidance>\".",
+            cancellationToken: cancellationToken);
+        return RebaseGateOutcome.Stop;
+    }
+
+    /// <summary>
+    /// Records one landed checkpoint replay: the mechanical outcome on the run's stream — the same
+    /// <see cref="RunRebasedOntoBase"/> the unstacked rebase appends, which is what advances this
+    /// run's recorded fork point and raises the flag that earns the moved tip a full gate — and the
+    /// budget it spent on the task's stream, in one transaction, so a reader can never find a
+    /// rebase that cost nothing or a cost with no rebase behind it.
+    /// </summary>
+    private async Task RecordStackedCheckpointAsync(
+        ReviewContext context, string parentBranch, StackedCheckpoint checkpoint,
+        StackedCheckpointVerdict verdict, CancellationToken cancellationToken) =>
+        await RecordRebaseOutcomeAsync(
+            context.RunId, verdict.UpstreamCommit, verdict.OntoCommit, wasNoOp: false,
+            recoveredByAgentSession: false,
+            $"Replayed onto the stacked parent {parentBranch} before {checkpoint.Describe()} "
+            + $"(from {ShortSha(verdict.UpstreamCommit)} onto {ShortSha(verdict.OntoCommit)}): {verdict.Reason}",
+            new StackedCheckpointRebased(
+                context.TaskId, context.RunId, checkpoint, parentBranch, verdict.UpstreamCommit,
+                verdict.OntoCommit, DateTimeOffset.UtcNow),
+            cancellationToken);
 
     /// <summary>
     /// A live <c>gh pr view</c> read of the task's own pull request's actual base — never the
@@ -2135,22 +2504,30 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// Whether the worktree itself, read fresh, shows a completed pre-final-pass rebase onto
-    /// <paramref name="baseBranch"/>'s already-fetched tip — checked before trusting an
+    /// Whether the worktree itself, read fresh, shows a completed rebase onto
+    /// <paramref name="landedOn"/> — checked before trusting an
     /// <see cref="ReviewFixOutcome.Unknown"/> recovery-session outcome as a resolution (independent
     /// pre-PR review, cycle 1, conformance lens): the session's own silence says nothing about
     /// whether the conflict actually resolved (AGENTS.md, "never guess at unobserved facts"), so
     /// this reads the worktree instead of assuming the best. True only when the worktree is
     /// checked out on this run's own <paramref name="branch"/>, has no uncommitted changes (either
     /// check failing means a rebase is still in progress or was left half-applied), and
-    /// <paramref name="baseBranch"/>'s tip is an ancestor of HEAD — the same shape
-    /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own pre-flight checks already use,
+    /// <paramref name="landedOn"/> is an ancestor of HEAD — the same shape
+    /// <see cref="RebasePreflightAsync"/>'s own checks already use,
     /// deliberately without a fresh fetch: the recovery session's own skill already fetched before
     /// it ever attempted the rebase, so re-fetching here would only race whatever landed on the
     /// base a moment later and misattribute it to this recovery.
     /// </summary>
+    /// <param name="landedOn">
+    /// Anything git can resolve to a commit that HEAD must now contain: <c>origin/&lt;base&gt;</c>
+    /// for the merge-base rebase onto a base branch, and the exact head a stacked child's
+    /// checkpoint replay was told to land on. A ref for the first because the caller has just
+    /// fetched it and wants its tip; a literal commit for the second because a parent's ref can
+    /// move between the observation and this read, and confirming against the moved ref would
+    /// answer a question nobody asked (see <see cref="RebaseOntoStackedParentAsync"/>).
+    /// </param>
     private static async Task<bool> RebaseActuallyLandedAsync(
-        string worktreePath, string branch, string baseBranch, CancellationToken cancellationToken)
+        string worktreePath, string branch, string landedOn, CancellationToken cancellationToken)
     {
         // The identical guard EnsureRebasedBeforeFinalPassAsync itself checks first, for the
         // identical reason (independent pre-PR review, cycle 1, both lenses): spawning `git` with
@@ -2181,7 +2558,7 @@ public sealed class ReviewEngine(
             }
 
             ProcessResult isAncestor = await git(
-                "git", ["merge-base", "--is-ancestor", $"origin/{baseBranch}", "HEAD"], worktreePath, cancellationToken);
+                "git", ["merge-base", "--is-ancestor", landedOn, "HEAD"], worktreePath, cancellationToken);
             return isAncestor.ExitCode == 0;
         }
         // "Not confirmed" reads as false here, never as a thrown exception that fails the whole
@@ -2240,16 +2617,36 @@ public sealed class ReviewEngine(
         }
     }
 
+    /// <param name="checkpointSpend">
+    /// The task-stream budget event a stacked child's checkpoint replay spends, appended in this
+    /// same transaction as the run-stream outcome it belongs to (see
+    /// <see cref="RecordStackedCheckpointAsync"/>). Null for every unstacked rebase, which spends
+    /// no budget at all — passed explicitly rather than defaulted, so the cancellation token stays
+    /// this method's last parameter (AGENTS.md; conformance review, cycle 1).
+    /// </param>
     private async Task RecordRebaseOutcomeAsync(
         Guid runId, string rebasedFromCommit, string rebasedOntoCommit, bool wasNoOp, bool recoveredByAgentSession,
-        string detail, CancellationToken cancellationToken)
+        string detail, StackedCheckpointRebased? checkpointSpend, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunRebasedOntoBase(
             runId, rebasedFromCommit, rebasedOntoCommit, wasNoOp, recoveredByAgentSession, detail,
             DateTimeOffset.UtcNow));
+        if (checkpointSpend is not null)
+        {
+            // No expectedVersion fence: this is a counter, not a state change (the shape
+            // TaskMechanicalResolutionAttempted already has), and asserting a version here would
+            // fail the append — losing the recorded cost of a rebase that really did land —
+            // whenever anything else touched the task's stream while this run was rebasing.
+            session.Events.Append(checkpointSpend.Id, checkpointSpend);
+        }
+
         await session.SaveChangesAsync(cancellationToken);
-        logger.LogInformation("Run {RunId}: pre-final-pass rebase — {Detail}", runId, detail);
+
+        // "Pre-push", not "pre-final-pass", for the reason TaskShowCommand's own line carries the
+        // same word: a stacked child's first checkpoint rebase lands before its own first review
+        // cycle, hours from any final pass.
+        logger.LogInformation("Run {RunId}: pre-push rebase — {Detail}", runId, detail);
     }
 
     /// <summary>
@@ -2535,7 +2932,7 @@ public sealed class ReviewEngine(
         bool recordAsResolved = outcome == ReviewFixOutcome.Fixed
             || (outcome == ReviewFixOutcome.Unknown
                 && await RebaseActuallyLandedAsync(
-                    context.Run.WorktreePath, context.Run.Branch, context.BaseBranch, cancellationToken));
+                    context.Run.WorktreePath, context.Run.Branch, $"origin/{context.BaseBranch}", cancellationToken));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
@@ -4339,6 +4736,37 @@ public sealed class ReviewEngine(
             await LoadPriorRulingsAndInteractionsAsync(query, taskId, cancellationToken);
         return new ReviewContext(
             runId, taskId, run, task, project, priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals);
+    }
+
+    /// <summary>
+    /// <paramref name="context"/> with its run snapshot re-read from the store — one small document
+    /// load, paid at every session dispatch, for the same reason
+    /// <see cref="IsInteractiveModeEnabledAsync"/> is read fresh at each of them: the snapshot
+    /// <see cref="LoadContextAsync"/> produced is loaded once and then held for as long as the
+    /// review phase lasts, which is hours.
+    /// <para>
+    /// The fork point is what makes this load-bearing rather than tidy (independent pre-PR review,
+    /// cycle 1, adversarial lens). A stacked child's rebase checkpoint moves this run's recorded
+    /// fork point to the commit it replayed onto (<see cref="RunRebasedOntoBase"/>'s own apply), and
+    /// that commit is what every prompt dispatched afterwards names as the boundary of the range it
+    /// reads and scopes against (<see cref="ReviewContext.StackedMechanics"/>,
+    /// <c>AgentPromptBuilder</c>'s <c>baseCommit</c>). Dispatching from the pre-replay snapshot
+    /// hands a reviewer a boundary its branch no longer contains, and a three-dot range from there
+    /// collapses to the project's base — so the parent's whole already-reviewed delta reads as this
+    /// child's own work, the exact duplication the checkpoint exists to prevent. Closeout's own
+    /// retarget of a child whose parent merged moves the recorded base the same way, mid-loop, and
+    /// is covered by the same re-read.
+    /// </para>
+    /// </summary>
+    private async Task<ReviewContext> WithFreshRunSnapshotAsync(
+        ReviewContext context, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        RunDetails? current = await query.LoadAsync<RunDetails>(context.RunId, cancellationToken);
+        // A run document that cannot be read at all keeps the snapshot in hand rather than failing
+        // the dispatch: the held one is a real observation of this run, just an older one, and
+        // every other missing-read on the dispatch path takes the same direction.
+        return current is null ? context : context with { Run = current };
     }
 
     /// <summary>

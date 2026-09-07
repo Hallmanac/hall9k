@@ -1036,7 +1036,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager, verification,
             resolvedOptions, NullLogger<ReviewEngine>.Instance,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked());
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            new Hall9k.Daemon.Closeout.StackedParentWatch(
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance));
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
