@@ -130,6 +130,19 @@ public sealed class StackedBaseBranchGuardTests
                 continue;
             }
 
+            // A reviewer's own review lap (ReviewLapPromptBuilder, Decisions Log #149) is exempt
+            // for the identical reason the interactive arm below is, and one more besides: it
+            // appends neither the checkpoint/recompose protocol nor the self-review phase — the
+            // only two rules that read a base branch to reset or diff against — because a lap
+            // has no diff of its own to recompose. The one range it does name is the REVIEWED
+            // pull request's own base (`origin/<PullRequest.BaseRefName>`, read live from GitHub
+            // and recorded as RunDispatched.PrReviewBaseRefName), which is that run's own base by
+            // construction and can never be the project's base standing in for a parent's.
+            if (lines[i].Contains("ReviewLapPromptBuilder.Build(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             // Long argument lists here, so a wider window than the git-call scan's three lines —
             // baseBranch sits last by convention (CancellationToken aside, prompts take none).
             string window = string.Join(' ', lines.Skip(i).Take(10));
