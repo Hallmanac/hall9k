@@ -307,6 +307,17 @@ public static class SkillSeeder
             }
 
             string name = Path.GetFileName(skill);
+
+            // The one skill that ships into recipes/ beside the launch anchor instead of the
+            // general skill set (Orchestrator.RecipeSkillPublisher, task: an operator starts a
+            // lean node or project orchestrator window) — every build or review agent reading
+            // the ordinary skills/ tier has no use for a skill about writing orchestrator recipes,
+            // so it is published there and only there, never duplicated into this canonical set.
+            if (name == Hall9k.Cli.Orchestrator.RecipeSkillPublisher.GeneratorSkillName)
+            {
+                continue;
+            }
+
             string destination = Path.Combine(canonical, name);
             if (Directory.Exists(destination))
             {

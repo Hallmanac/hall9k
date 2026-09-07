@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Project;
@@ -144,7 +145,10 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         ProjectDetails project = (await session.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
         IReadOnlyList<ProjectHomeStep> steps = await ProjectHomeRecipe.BuildAsync(
             home.Value, project, cancellationToken, materialiseRepository: settings.RepositoryPath.IsBlank());
+        bool ok = ProjectHomeRecipe.Report(steps);
 
-        return ProjectHomeRecipe.Report(steps) ? ExitCodes.Ok : ExitCodes.Error;
+        AnsiConsole.MarkupLine(OrchestratorPointer.ForProject(name));
+
+        return ok ? ExitCodes.Ok : ExitCodes.Error;
     }
 }
