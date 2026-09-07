@@ -82,4 +82,61 @@ public sealed class TaskFileParserTests
 
         TaskFileParser.Parse(withoutModel).Model.Should().BeNull("an unstated model is not a guessed one");
     }
+
+    /// <summary>
+    /// Origin incident (2026-09-06): the Windows node adopted issues #81 and #82 from record blocks
+    /// hand-written with double-quoted YAML scalars, and this parser — line-oriented, taking
+    /// everything after the first colon verbatim — stored the quote characters inside the objective
+    /// and inside every criterion. It reads real YAML scalars now, so this is also the repair path:
+    /// one <c>h9k task revise &lt;id&gt; --file &lt;task.md&gt;</c> over a task whose values carry
+    /// stray quotes re-parses them and stores them clean.
+    /// </summary>
+    [Fact]
+    public void A_double_quoted_objective_or_criterion_is_stored_without_the_quote_characters()
+    {
+        const string file = """
+            ---
+            project: hall9k
+            type: feature
+            objective: "Free run slots are allocated across projects by round-robin"
+            criteria:
+            - "Under contention, free slots rotate: longest-unserved wins"
+            - Eligibility means ready work under every applicable limit
+            ---
+
+            Body.
+            """;
+
+        TaskFileContent parsed = TaskFileParser.Parse(file);
+
+        parsed.Objective.Should().Be("Free run slots are allocated across projects by round-robin");
+        parsed.Criteria.Should().Equal(
+            "Under contention, free slots rotate: longest-unserved wins",
+            "Eligibility means ready work under every applicable limit");
+    }
+
+    /// <summary>
+    /// The record block a published issue carries is the same shape this parser reads, agent context
+    /// included — which it holds as a <c>context</c> block scalar, since a fenced YAML block has
+    /// nowhere to put a markdown body. Saved to a file and fed to <c>--file</c>, it has to produce
+    /// the same draft.
+    /// </summary>
+    [Fact]
+    public void The_context_key_is_read_as_agent_context_when_there_is_no_markdown_body()
+    {
+        const string file = """
+            ---
+            project: hall9k
+            objective: Carry the whole task record on the issue
+            criteria:
+            - Adoption reads it once
+            context: |-
+              Origin: Brian.
+
+              Second paragraph.
+            ---
+            """;
+
+        TaskFileParser.Parse(file).AgentContext.Should().Be("Origin: Brian.\n\nSecond paragraph.");
+    }
 }

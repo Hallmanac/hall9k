@@ -100,7 +100,11 @@ public sealed class TaskDocumentRendererTests
         TaskFileContent parsed = TaskFileParser.Parse(rendered);
 
         rendered.ReplaceLineEndings("\n").Split('\n').Should().Contain("type: ");
-        parsed.Type.Should().BeEmpty();
+        // A key written with no value carries no scalar, which is what the parser answers: null
+        // rather than the empty string it used to hand back. Both read as "this file states no
+        // type" everywhere the value is consumed (every caller asks IsBlank), and neither is the
+        // guessed default this test exists to rule out.
+        parsed.Type.Should().BeNull();
     }
 
     [Fact]
