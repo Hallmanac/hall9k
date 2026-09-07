@@ -196,7 +196,13 @@ What the edge changes, and nothing else does:
   ordinary branch mergeable-on-arrival is skipped for a stacked child, for the same reason the
   boundary below is a recorded commit — a plain merge-base rebase onto a force-pushed parent
   replays the child's copies of the parent's commits against the parent's new ones. A parent that
-  moves is answered by the mechanical replay below, not by a rebase.
+  moves is answered by the mechanical replay below, not by a rebase. Where a sweep cannot observe
+  the parent at all and GitHub reports the child conflicting anyway, the judgment session that
+  follow-up dispatches is told the same rule: replay from the recorded fork point with
+  `git rebase --onto`, and dispute rather than guess when no fork point was ever recorded. For the
+  same reason, every fixup-and-autosquash instruction a stacked child's follow-up carries names an
+  observed commit too, never `origin/<parent>` — a fold against a force-pushed parent would rewrite
+  its already-reviewed commits as the child's own authored history.
 - **It is not at the merge bar until it is retargeted.** The board never tells you "the merge is
   yours" about a pull request aimed at its parent's branch, and a pre-approved one is not
   auto-merged either.

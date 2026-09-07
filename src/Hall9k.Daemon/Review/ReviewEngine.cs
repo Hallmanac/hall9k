@@ -1683,10 +1683,14 @@ public sealed class ReviewEngine(
         // has already made untrue.
         bool interactiveModeEnabled = await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken);
         string prompt = resumesRebaseDispute
+            // baseCommit is this run's own recorded fork point: on a stacked child the rebase
+            // mechanics key off that commit rather than origin/<parent>, which a force-pushed
+            // parent moves out from under them (independent pre-PR review, cycle 2, adversarial
+            // lens). Ignored for every ordinary run, whose prompt is unchanged.
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
-                baseBranch: context.BaseBranch)
+                baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit)
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,

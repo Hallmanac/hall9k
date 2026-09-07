@@ -84,9 +84,14 @@ public static class AgentPromptBuilder
     /// at all.
     /// </para>
     /// </summary>
+    /// <param name="baseCommit">
+    /// This run's own recorded fork point, read for the narrative style's fixup-fold exactly as
+    /// <see cref="BuildRebase"/> reads it — see <see cref="AppendCommitStyleRules"/>'s own
+    /// parameter for why <c>origin/&lt;parent&gt;</c> cannot be named there on a stacked child.
+    /// </param>
     public static string BuildFollowUp(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? interactiveMilestoneAddress = null, string? baseBranch = null)
+        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
@@ -136,7 +141,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Use the resolve-review-threads skill to triage every unresolved thread on");
         prompt.AppendLine($"  {pullRequestUrl}: apply valid fixes, reply in-thread, resolve them.");
         AppendThreadTextBoundaryRule(prompt);
-        AppendCommitStyleRules(prompt, commitStyle, effectiveBaseBranch);
+        AppendCommitStyleRules(
+            prompt, commitStyle, effectiveBaseBranch,
+            ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: which threads you addressed, which you answered");
@@ -169,9 +176,13 @@ public static class AgentPromptBuilder
     /// Fixes land per the commit style, like any follow-up (Decisions Log #26).
     /// The platform re-verifies and pushes; the PR updates in place.
     /// </summary>
+    /// <param name="baseCommit">
+    /// This run's own recorded fork point, read for the narrative style's fixup-fold on the same
+    /// terms <see cref="BuildFollowUp"/>'s own parameter states.
+    /// </param>
     public static string BuildFixChecks(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? interactiveMilestoneAddress = null, string? baseBranch = null)
+        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
@@ -219,7 +230,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"- Inspect the failures yourself: `gh pr checks {pullRequestUrl}` lists the checks,");
         prompt.AppendLine("  and `gh run view <run-id> --log-failed` shows a failing workflow's log.");
         prompt.AppendLine("- Fix the causes and re-run the failing commands locally until they pass.");
-        AppendCommitStyleRules(prompt, commitStyle, effectiveBaseBranch);
+        AppendCommitStyleRules(
+            prompt, commitStyle, effectiveBaseBranch,
+            ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what was failing, what you changed, and any open");
@@ -272,22 +285,45 @@ public static class AgentPromptBuilder
     /// its run's own <c>RegisteredInteractiveSessionName</c> here, the identical value
     /// <c>BuildReviewFix</c>'s own ordinary review-fix dispatch forwards.
     /// </param>
+    /// <param name="baseCommit">
+    /// This run's own recorded fork point (<c>RunDispatched.BaseCommit</c>), which is what the
+    /// mechanics below name in place of <c>origin/&lt;base&gt;</c> when this branch is stacked on a
+    /// parent branch rather than based on the project's own — see
+    /// <see cref="AppendStackedRebaseRules"/> for why a plain merge-base rebase is the provably
+    /// wrong operation there. Ignored for every ordinary run, whose prompt stays byte-identical.
+    /// </param>
     public static string BuildRebase(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? humanResolution = null, string? interactiveMilestoneAddress = null,
-        bool? interactiveModeEnabledOverride = null, string? baseBranch = null)
+        bool? interactiveModeEnabledOverride = null, string? baseBranch = null, string? baseCommit = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
+        bool isStacked = effectiveBaseBranch != project.BaseBranch;
+        string? stackedForkPoint = WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit);
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: rebase an existing pull request onto its base branch");
         prompt.AppendLine();
         prompt.AppendLine($"Pull request: {pullRequestUrl}");
         prompt.AppendLine();
         prompt.AppendLine("The original task below already shipped in the pull request above, but its branch");
-        prompt.AppendLine($"now conflicts with `{effectiveBaseBranch}` — other work merged into the base since");
-        prompt.AppendLine("this branch was cut. Your job is to bring it current, preserving the branch's own");
-        prompt.AppendLine("authored history — not to redo the original work.");
+        if (isStacked)
+        {
+            // The ordinary sentence below is untrue of a stacked child, and the difference is not
+            // cosmetic: what moved is the branch this one is stacked ON, not the project's base, and
+            // the mechanics further down turn on exactly that (independent pre-PR review, cycle 2,
+            // adversarial lens).
+            prompt.AppendLine($"now conflicts with `{effectiveBaseBranch}` — the branch this task is stacked on,");
+            prompt.AppendLine("which has moved since this branch was cut. Your job is to bring it current,");
+            prompt.AppendLine("preserving the branch's own authored history — not to redo the original work.");
+        }
+        else
+        {
+            prompt.AppendLine($"now conflicts with `{effectiveBaseBranch}` — other work merged into the base since");
+            prompt.AppendLine("this branch was cut. Your job is to bring it current, preserving the branch's own");
+            prompt.AppendLine("authored history — not to redo the original work.");
+        }
+
         prompt.AppendLine();
 
         if (task.FollowUpReason.IsNotBlank())
@@ -341,11 +377,19 @@ public static class AgentPromptBuilder
         prompt.AppendLine("    worktree, so this session cannot assume anything already fetched for it, and");
         prompt.AppendLine($"    rebasing onto a stale `origin/{effectiveBaseBranch}` can leave the pull request");
         prompt.AppendLine("    still conflicting after the rebase reports success.");
-        prompt.AppendLine($"  - `git rebase origin/{effectiveBaseBranch}`, resolving each conflict by reading");
-        prompt.AppendLine("    both sides' intent, not by mechanically picking one. Keep both changes when both");
-        prompt.AppendLine("    are still wanted, take the side that is still correct when one supersedes the");
-        prompt.AppendLine("    other, and never guess when you cannot honestly tell which — see the dispute");
-        prompt.AppendLine("    path below.");
+        if (isStacked)
+        {
+            AppendStackedRebaseRules(prompt, branch, effectiveBaseBranch, stackedForkPoint);
+        }
+        else
+        {
+            prompt.AppendLine($"  - `git rebase origin/{effectiveBaseBranch}`, resolving each conflict by reading");
+            prompt.AppendLine("    both sides' intent, not by mechanically picking one. Keep both changes when both");
+            prompt.AppendLine("    are still wanted, take the side that is still correct when one supersedes the");
+            prompt.AppendLine("    other, and never guess when you cannot honestly tell which — see the dispute");
+            prompt.AppendLine("    path below.");
+        }
+
         prompt.AppendLine("  - The rebase replays this branch's own commits onto the new base; it must keep");
         prompt.AppendLine("    doing exactly that. Do not squash it into one commit and do not invent new");
         prompt.AppendLine("    \"merge conflict\" or \"resolve rebase\" commits — a resolved conflict's content");
@@ -354,7 +398,23 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  - **Never leave a conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) in a commit.**");
         prompt.AppendLine("    Before continuing past any conflicted commit, grep the resolved files for those");
         prompt.AppendLine("    markers and confirm none remain.");
-        AppendRebaseVerificationRule(prompt, project, commitStyle, effectiveBaseBranch);
+        // A gate fix's fold cannot name `origin/<parent>` — and cannot name the recorded fork point
+        // either, once the replay above has moved this branch off it: the boundary afterwards is the
+        // commit the session replayed onto, which the replay's own first bullet had it record
+        // (independent pre-PR review, cycle 2, adversarial lens).
+        AppendRebaseVerificationRule(
+            prompt, project, commitStyle, effectiveBaseBranch,
+            fold: stackedForkPoint is null
+                ? null
+                : new FoldBoundary(
+                    "<the commit you recorded before the replay>",
+                    [
+                        $"    — the `origin/{effectiveBaseBranch}` head you rebased onto, named as the literal",
+                        "    commit you wrote down, and NOT the fork point above: the replay has moved this",
+                        $"    branch off that fork point, and `origin/{effectiveBaseBranch}` is another task's",
+                        "    branch that can move again while you work. Folding from either one would rebase",
+                        "    the parent's own commits into this branch's authored history",
+                    ]));
         prompt.AppendLine("  - Do NOT push (the platform pushes the rebased branch with");
         prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
         prompt.AppendLine("    request — the existing PR updates in place.");
@@ -390,6 +450,135 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// The one operation a stacked child's rebase follow-up may run, in place of the plain
+    /// <c>git rebase origin/&lt;base&gt;</c> every ordinary run gets (independent pre-PR review,
+    /// cycle 2, adversarial lens). A merge-base rebase against a parent branch is the provably
+    /// wrong operation, for the reason <c>StackedParentWatch</c>'s own doc records and
+    /// <c>ReviewEngine</c>'s pre-final-pass gate refuses outright over: the parent is routinely
+    /// force-pushed while the child is in flight, which rewrites the history the child shares with
+    /// it, so the merge base collapses below the child's own fork point and the rebase replays the
+    /// child's copies of the parent's OLD commits against the parent's new ones. This prompt is
+    /// reached when closeout could not observe the parent at all that sweep
+    /// (<c>StackedParentVerdict.Unobservable</c>) and GitHub's own conflict read dispatched a
+    /// judgment session instead of the mechanical replay — the parent may well have moved anyway,
+    /// so the operation has to be the replay either way, keyed to the recorded fork point.
+    /// <para>
+    /// <paramref name="forkPointCommit"/> null is the honest dead end rather than a fallback: no
+    /// commit names where the parent's work ends and this branch's begins, and
+    /// <c>git merge-base</c> cannot recover it once the parent has been force-pushed, so there is
+    /// nothing left to replay from that is not a guess (AGENTS.md's never-guess rule). That case
+    /// goes to the dispute path, which is exactly where a human decides it.
+    /// </para>
+    /// </summary>
+    private static void AppendStackedRebaseRules(
+        StringBuilder prompt, string branch, string baseBranch, string? forkPointCommit)
+    {
+        // The skill the bullet above points at walks a plain `git rebase origin/<base>`, which is
+        // exactly the operation this branch may not run — so the pointer is qualified here rather
+        // than left to contradict the mechanics that follow it.
+        prompt.AppendLine("  - That skill's own rebase step assumes a branch cut off the project's base branch.");
+        prompt.AppendLine("    This one is not, so its plain-rebase step is the one part of it that does NOT");
+        prompt.AppendLine("    apply — use the operation below in its place. Everything else it teaches");
+        prompt.AppendLine("    (conflict judgment, no markers, the gates) applies unchanged.");
+        if (forkPointCommit is null)
+        {
+            prompt.AppendLine($"  - **Do NOT run `git rebase origin/{baseBranch}`, and do not rebase this branch");
+            prompt.AppendLine($"    at all.** This branch is stacked on `{baseBranch}` — another task's branch,");
+            prompt.AppendLine("    not the project's own base — and a parent branch is routinely force-pushed");
+            prompt.AppendLine("    while its child is in flight (a review lap folding fixes into its own");
+            prompt.AppendLine("    commits), which rewrites the history this branch shares with it and collapses");
+            prompt.AppendLine("    the merge base BELOW this branch's real fork point. A plain rebase from there");
+            prompt.AppendLine("    replays this branch's own copies of the parent's OLD commits against the");
+            prompt.AppendLine("    parent's new ones: it either conflicts on the parent's own content or lands");
+            prompt.AppendLine("    the parent's history on this branch twice. The correct operation is a replay");
+            prompt.AppendLine("    from this branch's fork point, and that fork point was never recorded for");
+            prompt.AppendLine("    this run — `git merge-base` cannot recover it, so there is no boundary left");
+            prompt.AppendLine("    that is not a guess. Take the dispute path below instead: say plainly that");
+            prompt.AppendLine("    the replay boundary is unobserved and that this branch is stacked, and let a");
+            prompt.AppendLine("    human decide it (they can rebase and retarget by hand, or name the boundary");
+            prompt.AppendLine("    commit in their resolution, which a resumed attempt is handed above). The");
+            prompt.AppendLine("    rebase mechanics below apply only if their decision names one; with no");
+            prompt.AppendLine("    boundary, the dispute is the whole job. If it does name one, use that commit");
+            prompt.AppendLine($"    everywhere the mechanics below name `origin/{baseBranch}` as a rebase or fold");
+            prompt.AppendLine("    target — that ref is this stack's parent branch, and it is not safe as either.");
+            return;
+        }
+
+        prompt.AppendLine("  - Record the commit you are about to land on, before you rebase:");
+        prompt.AppendLine($"    `git rev-parse origin/{baseBranch}`. It is this branch's own boundary");
+        prompt.AppendLine("    afterwards, and the fold instruction further down needs it. A shell variable does");
+        prompt.AppendLine("    not survive between separate tool calls, so write the value down rather than");
+        prompt.AppendLine("    exporting it.");
+        prompt.AppendLine($"  - `git rebase --onto origin/{baseBranch} {forkPointCommit} {branch}` — a replay from");
+        prompt.AppendLine($"    this branch's own recorded fork point, NOT `git rebase origin/{baseBranch}`. This");
+        prompt.AppendLine($"    branch is stacked on `{baseBranch}` — another task's branch, not the project's own");
+        prompt.AppendLine("    base — and a parent branch is routinely force-pushed while its child is in");
+        prompt.AppendLine("    flight (a review lap folding fixes into its own commits), which rewrites the");
+        prompt.AppendLine("    history this branch shares with it and collapses the merge base BELOW this");
+        prompt.AppendLine("    branch's real fork point. A plain rebase from there replays this branch's own");
+        prompt.AppendLine("    copies of the parent's OLD commits against the parent's new ones: it either");
+        prompt.AppendLine("    conflicts on the parent's own content or lands the parent's history on this");
+        prompt.AppendLine($"    branch twice. `{forkPointCommit}` is the commit this branch was cut from,");
+        prompt.AppendLine("    recorded when it was cut: everything at or before it is the parent's work, which");
+        prompt.AppendLine($"    `origin/{baseBranch}` already holds. Verify it resolves before you rebase and");
+        prompt.AppendLine("    stop if it does not — never substitute a computed merge base for it:");
+        prompt.AppendLine($"    `git rev-parse --verify \"{forkPointCommit}^{{commit}}\"`.");
+        prompt.AppendLine($"  - If `origin/{baseBranch}` does not resolve after the fetch, the parent's branch is");
+        prompt.AppendLine("    gone from origin — ordinarily because its pull request merged and closeout");
+        prompt.AppendLine("    deleted it. Do NOT retarget this pull request yourself (the platform does that,");
+        prompt.AppendLine("    mechanically, when it next observes the parent) and do not replay onto a branch");
+        prompt.AppendLine("    you cannot read. Take the dispute path below and say what you found.");
+        prompt.AppendLine("  - Resolve each conflict by reading both sides' intent, not by mechanically picking");
+        prompt.AppendLine("    one. Keep both changes when both are still wanted, take the side that is still");
+        prompt.AppendLine("    correct when one supersedes the other, and never guess when you cannot honestly");
+        prompt.AppendLine("    tell which — see the dispute path below.");
+        prompt.AppendLine("  - Check the replay afterwards: `git log --oneline` must show this branch's own");
+        prompt.AppendLine("    commits and nothing of the parent's, and the same count you started with.");
+    }
+
+    /// <summary>
+    /// Where the narrative commit style's fixup-fold rebases from, for a branch whose
+    /// <c>origin/&lt;base&gt;</c> is not safe to name there: a stacked child's parent branch, which
+    /// a force-push moves out from under the fold, collapsing its merge base below this branch's
+    /// own commits so the fold rewrites the parent's already-reviewed work as this branch's
+    /// authored history — and the tree-identity check cannot always catch that, since replaying
+    /// the parent's own commits can leave the tree where it was (independent pre-PR review,
+    /// cycle 2, adversarial lens).
+    /// <para>
+    /// <paramref name="Argument"/> is what follows <c>--autosquash</c>: a literal commit wherever
+    /// the platform observed one, or a described placeholder where only the session can know it —
+    /// a rebase that has just moved this branch onto a new base leaves the recorded fork point off
+    /// this branch's line entirely, so the fold's boundary is the commit the session replayed onto,
+    /// which it records for itself. <paramref name="Reason"/> is the caller's own explanation,
+    /// appended verbatim (indentation included) under the command, because which boundary is right
+    /// and why differs per prompt.
+    /// </para>
+    /// </summary>
+    private sealed record FoldBoundary(string Argument, IReadOnlyList<string> Reason);
+
+    /// <summary>
+    /// The fold boundary for a follow-up that resumes a stacked child's branch without moving it —
+    /// a review-feedback or failing-checks lap. The run's own recorded fork point is still this
+    /// branch's boundary there, precisely because nothing in those prompts rebases the branch onto
+    /// anything (a rebase prompt's own fold is a different commit; see <see cref="BuildRebase"/>).
+    /// Null for every ordinary run and for a stacked run with no recorded fork point, both of which
+    /// keep the <c>origin/&lt;base&gt;</c> wording exactly as it was.
+    /// </summary>
+    private static FoldBoundary? ResumedStackedFold(
+        ProjectDetails project, string effectiveBaseBranch, string? baseCommit) =>
+        WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit) is { } forkPoint
+            ? new FoldBoundary(
+                forkPoint,
+                [
+                    "    That is a literal commit — this branch's own fork point off the branch it is",
+                    $"    stacked on. Do NOT name `origin/{effectiveBaseBranch}` here: it is another task's",
+                    "    branch, routinely force-pushed while this branch is in flight, and the fold's merge",
+                    "    base against it collapses below this branch's own commits the moment it is — which",
+                    "    would fold the parent's already-reviewed work into this branch's authored history.",
+                ])
+            : null;
+
+    /// <summary>
     /// The explicit re-verify instruction a rebase needs and a plain checks-fix does not
     /// (origin incident, 2026-08-22, cited on <see cref="BuildRebase"/>): a rebase that resolves
     /// every textual conflict can still combine two branches' changes into a behavior neither one
@@ -397,8 +586,14 @@ public static class AgentPromptBuilder
     /// agent has to see the failure itself to fix its actual cause instead of a resubmitted
     /// flake theory.
     /// </summary>
+    /// <param name="fold">
+    /// Where a gate fix's fixup folds back to, when <c>origin/{baseBranch}</c> is not that place —
+    /// see <see cref="FoldBoundary"/>. Null for every ordinary run, whose instruction stays
+    /// byte-identical.
+    /// </param>
     private static void AppendRebaseVerificationRule(
-        StringBuilder prompt, ProjectDetails project, CommitStyle commitStyle, string baseBranch)
+        StringBuilder prompt, ProjectDetails project, CommitStyle commitStyle, string baseBranch,
+        FoldBoundary? fold = null)
     {
         if (project.VerifyCommands.Count == 0)
         {
@@ -430,7 +625,13 @@ public static class AgentPromptBuilder
             prompt.AppendLine("    you are still mid-rebase, `git add` it and continue; if the rebase already");
             prompt.AppendLine("    finished, commit the fix with `git commit --fixup=<owning-commit>` against");
             prompt.AppendLine("    the commit whose replay produced the failure, then fold it in with");
-            prompt.AppendLine($"    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/{baseBranch}`");
+            prompt.AppendLine(
+                $"    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash {fold?.Argument ?? $"origin/{baseBranch}"}`");
+            foreach (string line in fold?.Reason ?? [])
+            {
+                prompt.AppendLine(line);
+            }
+
             prompt.AppendLine("    (there is no terminal in this session, so a bare `git rebase -i` cannot open");
             prompt.AppendLine("    an editor).");
         }
@@ -480,6 +681,16 @@ public static class AgentPromptBuilder
     /// (<c>h9k pr resolve</c>) reaches this same mandatory-rebase step with one already live, so
     /// <paramref name="pullRequestUrl"/> is read from <c>TaskDetails.PullRequestUrl</c> rather than
     /// assumed either way (independent pre-PR review, cycle 1, adversarial lens).
+    /// <para>
+    /// The plain <c>git rebase origin/&lt;base&gt;</c> below is deliberately NOT given
+    /// <see cref="BuildRebase"/>'s stacked replay variant, and that is a reachability argument
+    /// rather than an omission (class sweep, independent pre-PR review, cycle 2): the only path
+    /// here is <c>ReviewEngine.DispatchRebaseRecoverySessionAsync</c>, downstream of a
+    /// pre-final-pass gate that refuses outright — before any git call, and before any phase that
+    /// could re-dispatch this session — whenever the run's base is not the project's own. A
+    /// stacked run therefore never reaches this prompt at all, and giving it a stacked branch here
+    /// would describe an operation nothing dispatches.
+    /// </para>
     /// </summary>
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
@@ -698,7 +909,23 @@ public static class AgentPromptBuilder
         prompt.AppendLine("    commits and nothing of the parent's, and the count must match what you");
         prompt.AppendLine("    recorded above (a commit git drops as already-present upstream is the one");
         prompt.AppendLine("    legitimate exception — say which, and why, in your summary).");
-        AppendRebaseVerificationRule(prompt, project, CommitStyle.Narrative, baseBranch);
+        // The fold's own boundary is where this replay just landed, not `origin/<base>`: after the
+        // replay this branch's own commits are exactly the ones after `ontoCommit`, and on the
+        // force-pushed-parent trigger that ref is the parent's branch, which can move again while
+        // this session runs — the same reason the replay itself is keyed to a commit rather than a
+        // ref (independent pre-PR review, cycle 2, adversarial lens).
+        AppendRebaseVerificationRule(
+            prompt, project, CommitStyle.Narrative, baseBranch,
+            fold: WorkPromptBuilder.StackedForkPoint(project, baseBranch, ontoCommit) is null
+                ? null
+                : new FoldBoundary(
+                    ontoCommit,
+                    [
+                        "    — the commit this replay landed on, which is this branch's boundary afterwards.",
+                        $"    Do NOT name `origin/{baseBranch}`: it is the parent's own branch, and a force-push",
+                        "    moves it out from under the fold, which would rebase the parent's commits into",
+                        "    this branch's authored history",
+                    ]));
         prompt.AppendLine("  - Do NOT push (the platform pushes the replayed branch with");
         prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
         prompt.AppendLine("    request — the existing one updates in place, already retargeted.");
@@ -869,7 +1096,14 @@ public static class AgentPromptBuilder
     /// keeps the historic stack-on-top behavior. Both end the same way: the agent never
     /// pushes; the platform does, with --force-with-lease for follow-up runs.
     /// </summary>
-    private static void AppendCommitStyleRules(StringBuilder prompt, CommitStyle commitStyle, string baseBranch)
+    /// <param name="fold">
+    /// Where the fold rebases from when <paramref name="baseBranch"/> is a branch this one is
+    /// stacked on rather than the project's own — see <see cref="FoldBoundary"/>. Nothing in this
+    /// prompt moves the branch, so the recorded fork point is still this branch's own boundary
+    /// here, unlike in a rebase prompt. Null for every ordinary run.
+    /// </param>
+    private static void AppendCommitStyleRules(
+        StringBuilder prompt, CommitStyle commitStyle, string baseBranch, FoldBoundary? fold = null)
     {
         if (commitStyle == CommitStyle.Append)
         {
@@ -885,6 +1119,16 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  so fold each fix into the commit that owns it instead of appending");
         prompt.AppendLine("  review-feedback commits. If the repo ships an absorb-review-fixes skill, invoke");
         prompt.AppendLine("  it — it walks these exact mechanics. Either way:");
+        if (fold is not null)
+        {
+            // That skill folds against `origin/<base>`, which is the one thing a stacked child may
+            // not do — the pointer is qualified rather than left to contradict the boundary named
+            // below (independent pre-PR review, cycle 2, adversarial lens).
+            prompt.AppendLine("  - That skill assumes a branch cut off the project's own base branch, and this one");
+            prompt.AppendLine($"    is not: wherever it names `origin/{baseBranch}` as the fold's upstream, use the");
+            prompt.AppendLine("    commit named below instead. The rest of it applies unchanged.");
+        }
+
         prompt.AppendLine("  - Map each fix to the most recent branch commit that touches the same file and");
         prompt.AppendLine("    land it with `git commit --fixup=<owning-commit>`. A fix spanning files owned");
         prompt.AppendLine("    by different commits splits into one fixup per owning commit. Genuinely new");
@@ -892,7 +1136,13 @@ public static class AgentPromptBuilder
         prompt.AppendLine("    never \"review fixes\" or \"address feedback\".");
         prompt.AppendLine("  - With every fix committed, record the pre-rebase tip (`git rev-parse HEAD`),");
         prompt.AppendLine("    then fold the fixups into their owning commits:");
-        prompt.AppendLine($"    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/{baseBranch}`.");
+        prompt.AppendLine(
+            $"    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash {fold?.Argument ?? $"origin/{baseBranch}"}`.");
+        foreach (string line in fold?.Reason ?? [])
+        {
+            prompt.AppendLine(line);
+        }
+
         prompt.AppendLine("  - REQUIRED before you finish: verify tree identity — `git diff <old-tip> HEAD`");
         prompt.AppendLine("    must print nothing. A non-empty diff means the rebase changed the content and");
         prompt.AppendLine("    the verification results no longer describe this tree; reconcile until the");

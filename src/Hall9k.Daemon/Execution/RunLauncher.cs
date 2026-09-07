@@ -296,6 +296,21 @@ public sealed class RunLauncher(
                     : SessionRoleName.Build;
             string sessionName = SessionRoleName.For(DomainId.Short(taskId), sessionRole);
 
+            // This branch's fork point, observed at the moment it was true (RunDispatched.BaseCommit's
+            // own doc): the start point a fresh cut resolved, the commit a replay is dispatched to
+            // land on, or — for any other follow-up, which resumes the branch without moving it —
+            // whatever the run before this one recorded. Blank when none of the three could be
+            // observed, which is what stops a later replay from inventing a boundary. Resolved once
+            // here rather than inline on the event, because every prompt this method builds below
+            // needs the identical value: a stacked session's recompose, self-review range, rebase
+            // replay and fixup-fold all key off the recorded commit rather than origin/<parent>
+            // (independent pre-PR review, cycles 1 and 2, adversarial lens).
+            string baseCommit = isStackReplay
+                ? task.StackReplayOntoCommit ?? string.Empty
+                : followUp is not null
+                    ? await PreviousRunBaseCommitAsync(session, task, runId, cancellationToken)
+                    : worktree.StartPointCommit;
+
             // The follow-up's own opening Discovery cycle scope seed (task: a lap reviews only what
             // it changed): task.FollowUpPullRequestHeadSha already carries the kind-aware gate —
             // CloseoutEngine only ever records one for an automatic ReviewFeedback or FailingChecks
@@ -316,16 +331,8 @@ public sealed class RunLauncher(
                 // already retargeted the pull request onto the project's base by the time it
                 // reopens, so the resolver's answer for it is the project's base too.
                 BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch,
-                // This branch's fork point, observed at the moment it was true (the field's own
-                // doc): the start point a fresh cut resolved, the commit a replay is dispatched to
-                // land on, or — for any other follow-up, which resumes the branch without moving
-                // it — whatever the run before this one recorded. Blank when none of the three
-                // could be observed, which is what stops a later replay from inventing a boundary.
-                BaseCommit: isStackReplay
-                    ? task.StackReplayOntoCommit ?? string.Empty
-                    : followUp is not null
-                        ? await PreviousRunBaseCommitAsync(session, task, runId, cancellationToken)
-                        : worktree.StartPointCommit));
+                // Resolved above, once, so the record and every prompt below name the same commit.
+                BaseCommit: baseCommit));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
@@ -354,14 +361,23 @@ public sealed class RunLauncher(
                 // agents on an interactive-mode task report outbound) — a follow-up's own build-role
                 // milestones (OutboundMilestone.Build) log a skip on every production path today,
                 // exactly like a fresh build's (independent pre-PR review, cycle 1, conformance lens).
+                //
+                // baseCommit is this run's own recorded fork point, resolved above: on a stacked
+                // child every instruction that rewrites this branch's history — the rebase replay,
+                // the narrative style's fixup-fold — has to key off that commit rather than
+                // origin/<parent>, which a force-pushed parent moves out from under it
+                // (independent pre-PR review, cycle 2, adversarial lens). A replay is the one
+                // follow-up that names its own boundary and onto-commit explicitly instead.
                 prompt = task.FollowUpKind == FollowUpKind.FailingChecks
                     ? AgentPromptBuilder.BuildFixChecks(
                         task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
-                        interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch)
+                        interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch,
+                        baseCommit: baseCommit)
                     : task.FollowUpKind == FollowUpKind.Rebase
                         ? AgentPromptBuilder.BuildRebase(
                             task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
-                            interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch)
+                            interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch,
+                            baseCommit: baseCommit)
                         : isStackReplay
                             ? AgentPromptBuilder.BuildStackReplay(
                                 task, project, worktree.Branch, review.PullRequestUrl,
@@ -370,7 +386,8 @@ public sealed class RunLauncher(
                                 task.StackReplayOntoCommit ?? string.Empty)
                             : AgentPromptBuilder.BuildFollowUp(
                                 task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
-                                interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch);
+                                interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch,
+                                baseCommit: baseCommit);
             }
             else
             {
@@ -390,15 +407,15 @@ public sealed class RunLauncher(
                 // human's own h9k task work claim has registered against it, can actually address one
                 // (independent pre-PR review, cycle 1, adversarial lens; AGENTS.md and
                 // docs/scope.md say so plainly).
-                // baseCommit is this cut's own observed start point — the same value recorded on
-                // RunDispatched.BaseCommit above, and the only stable fork point a stacked session's
-                // recompose can reset to (independent pre-PR review, cycle 1, adversarial lens:
-                // `git merge-base origin/<parent> HEAD` collapses below it the moment the parent is
-                // force-pushed, and the recompose's mixed reset would then rewrite the parent's
-                // commits as the child's own history).
+                // baseCommit is this cut's own observed start point — the identical value recorded on
+                // RunDispatched.BaseCommit above, read from the same local, and the only stable fork
+                // point a stacked session's recompose can reset to (independent pre-PR review,
+                // cycle 1, adversarial lens: `git merge-base origin/<parent> HEAD` collapses below it
+                // the moment the parent is force-pushed, and the recompose's mixed reset would then
+                // rewrite the parent's commits as the child's own history).
                 prompt = AgentPromptBuilder.Build(
                     task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
-                    baseBranch: stackedBase.BaseBranch, baseCommit: worktree.StartPointCommit);
+                    baseBranch: stackedBase.BaseBranch, baseCommit: baseCommit);
             }
 
             SpawnedAgent agent = await executor.SpawnAsync(

@@ -41,8 +41,15 @@ public static class WorkPromptBuilder
     /// merge-base wording stands as the best available answer rather than a guessed commit
     /// (AGENTS.md's never-guess rule).
     /// </para>
+    /// <para>
+    /// Public because the same discriminator answers the same question for every prompt that tells
+    /// a session to rewrite this branch's history, not just a build session's own recompose:
+    /// <c>AgentPromptBuilder</c>'s follow-up prompts read it for their rebase and
+    /// fixup-autosquash instructions, which are wrong against a force-pushed parent branch for the
+    /// identical reason (independent pre-PR review, cycle 2, adversarial lens).
+    /// </para>
     /// </summary>
-    private static string? StackedForkPoint(ProjectDetails project, string effectiveBaseBranch, string? baseCommit) =>
+    public static string? StackedForkPoint(ProjectDetails project, string effectiveBaseBranch, string? baseCommit) =>
         effectiveBaseBranch != project.BaseBranch && baseCommit.IsNotBlank() ? baseCommit : null;
 
     public static string Build(
