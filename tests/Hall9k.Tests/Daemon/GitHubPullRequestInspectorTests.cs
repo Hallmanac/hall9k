@@ -70,18 +70,23 @@ public sealed class GitHubPullRequestInspectorTests
 
     private static string Review(
         string author, string oid, string body = "", string id = "review-1",
-        string? state = null, string? submittedAt = null, string url = "https://x/y/pull/7#r1") =>
+        string url = "https://x/y/pull/7#r1") =>
         $"{{'id':'{id}','author':{author},'body':'{body}','url':'{url}'"
-            + (state is null ? "" : $",'state':'{state}'")
-            + (submittedAt is null ? "" : $",'submittedAt':'{submittedAt}'")
             + $",'commit':{{'oid':'{oid}'}}}}";
 
     // One node of the standingReviews alias — the reviews connection filtered to the three verdict
     // states, which is a DIFFERENT read from latestReviews above and the only one a verdict may be
-    // taken from: latestReviews is per-author latest of ANY type, so a comment left after an
-    // approval supersedes it there while GitHub keeps the approval standing.
-    private static string Verdict(string author, string oid, string state) =>
-        $"{{'author':{author},'state':'{state}','commit':{{'oid':'{oid}'}}}}";
+    // taken from, whichever way that verdict points: latestReviews is per-author latest of ANY
+    // type, so a comment left after a verdict supersedes it there while GitHub keeps the verdict
+    // standing. Carries the WHOLE review — id, body, url, submittedAt — because the
+    // changes-requested fix lap's own read takes its review from here too, findings and all, and
+    // not just the verdict word.
+    private static string Verdict(
+        string author, string oid, string state, string id = "review-1", string body = "",
+        string? submittedAt = null, string url = "https://x/y/pull/7#r1") =>
+        $"{{'id':'{id}','author':{author},'body':'{body}','url':'{url}','state':'{state}'"
+            + (submittedAt is null ? "" : $",'submittedAt':'{submittedAt}'")
+            + $",'commit':{{'oid':'{oid}'}}}}";
 
     private static string ReviewWithoutCommit(string author, string body = "", string id = "review-1") =>
         $"{{'id':'{id}','author':{author},'body':'{body}','url':'https://x/y/pull/7#r1'}}";
@@ -1011,9 +1016,10 @@ public sealed class GitHubPullRequestInspectorTests
                 Thread(
                     resolved: false, Actor("teammate", "User"), "thread-b", reviewId: "review-other",
                     body: "unrelated older thread", path: "src/Other.cs", line: 9)),
-            Review(
-                Actor("teammate", "User"), "cafe1", body: "Two things before this ships.",
-                id: "review-cr", state: "CHANGES_REQUESTED", submittedAt: "2026-09-06T12:15:00Z"));
+            Review(Actor("teammate", "User"), "cafe1", body: "Two things before this ships.", id: "review-cr"),
+            standingReviews: Verdict(
+                Actor("teammate", "User"), "cafe1", "CHANGES_REQUESTED", id: "review-cr",
+                body: "Two things before this ships.", submittedAt: "2026-09-06T12:15:00Z"));
 
         GitHubPullRequestInspector.ReviewObservation observation =
             GitHubPullRequestInspector.ParseReviews(json);
@@ -1058,8 +1064,9 @@ public sealed class GitHubPullRequestInspectorTests
                 Comment(
                     Actor("teammate", "User"), "review-second", "Still not reset on the error path.",
                     "src/Limiter.cs", line: 51)),
-            Review(
-                Actor("teammate", "User"), "cafe2", id: "review-second", state: "CHANGES_REQUESTED"));
+            Review(Actor("teammate", "User"), "cafe2", id: "review-second"),
+            standingReviews: Verdict(
+                Actor("teammate", "User"), "cafe2", "CHANGES_REQUESTED", id: "review-second"));
 
         ChangesRequestedReview review = GitHubPullRequestInspector.ParseReviews(json)
             .ChangesRequestedReviews.Should().ContainSingle().Subject;
@@ -1074,7 +1081,9 @@ public sealed class GitHubPullRequestInspectorTests
 
     /// <summary>
     /// A comment-only review is not a verdict, so it stays on the thread-based path the platform
-    /// has always had — the boundary that keeps this feature from swallowing every review.
+    /// has always had — the boundary that keeps this feature from swallowing every review. GitHub
+    /// itself draws it: <c>standingReviews</c> selects the three verdict states, so a reviewer
+    /// whose only review is a comment is absent from it entirely.
     /// </summary>
     [Fact]
     public void A_comment_only_review_is_never_read_as_changes_requested()
@@ -1083,13 +1092,73 @@ public sealed class GitHubPullRequestInspectorTests
             Actor("hallmanac", "User"),
             "cafe1",
             Thread(resolved: false, Actor("teammate", "User"), "thread-a", reviewId: "review-c", body: "nit"),
-            Review(Actor("teammate", "User"), "cafe1", body: "Looks fine.", id: "review-c", state: "COMMENTED"));
+            Review(Actor("teammate", "User"), "cafe1", body: "Looks fine.", id: "review-c"));
 
         GitHubPullRequestInspector.ReviewObservation observation =
             GitHubPullRequestInspector.ParseReviews(json);
 
         observation.ChangesRequestedReviews.Should().BeEmpty();
         observation.UnresolvedThreads.Should().Be(1, "the thread-based path still sees it, unchanged");
+    }
+
+    /// <summary>
+    /// The mirror image of the approval side's own masking defect, and the reason this read takes
+    /// its verdict from <c>standingReviews</c>: a reviewer requests changes and then adds one more
+    /// thought, which GitHub wraps in an implicit COMMENTED review and reports as that author's
+    /// LATEST. Read there, the verdict vanished and the pull request fell through to the automated
+    /// thread path — the one that argues its own case in the person's thread and resolves it, which
+    /// is precisely what this lap exists to prevent (independent pre-PR review, cycle 1,
+    /// adversarial finding). Not the ratified comment-only boundary above: that covers a reviewer
+    /// whose ONLY review is a comment, not a comment superseding a verdict that still stands.
+    /// </summary>
+    [Fact]
+    public void A_comment_left_after_a_changes_requested_verdict_never_masks_it()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            Thread(
+                resolved: false, Actor("teammate", "User"), "thread-a", reviewId: "review-cr",
+                body: "This limiter never resets.", path: "src/Limiter.cs", line: 42),
+            // latestReviews reports the COMMENTED review, because it is the more recent of the two.
+            Review(Actor("teammate", "User"), "cafe1", body: "one more thought", id: "review-comment"),
+            standingReviews: Verdict(
+                Actor("teammate", "User"), "cafe1", "CHANGES_REQUESTED", id: "review-cr",
+                body: "Two things before this ships."));
+
+        ChangesRequestedReview review = GitHubPullRequestInspector.ParseReviews(json)
+            .ChangesRequestedReviews.Should().ContainSingle(
+                "their verdict stands; the comment that followed is not a withdrawal of it").Subject;
+
+        review.Reviewer.Should().Be("teammate");
+        review.Findings.Should().HaveCount(
+            2, "the standing review's own body and its inline comment, not the later comment's");
+        review.Findings[0].Body.Should().Be("Two things before this ships.");
+        review.Findings[1].ThreadId.Should().Be("thread-a");
+    }
+
+    /// <summary>
+    /// The other direction of the same read: a reviewer who requested changes and has since
+    /// APPROVED the head has no standing changes-requested verdict left, so no fix lap is claimed
+    /// for one — and a DISMISSED verdict reads the same way, since a dismissal retires what it
+    /// dismissed.
+    /// </summary>
+    [Theory]
+    [InlineData("APPROVED")]
+    [InlineData("DISMISSED")]
+    public void A_changes_requested_verdict_the_reviewer_has_since_superseded_is_not_read_as_one(string later)
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            Thread(
+                resolved: false, Actor("teammate", "User"), "thread-a", reviewId: "review-cr", body: "was a finding"),
+            Review(Actor("teammate", "User"), "cafe1", id: "review-later"),
+            standingReviews: string.Join(",",
+                Verdict(Actor("teammate", "User"), "cafe1", "CHANGES_REQUESTED", id: "review-cr"),
+                Verdict(Actor("teammate", "User"), "cafe1", later, id: "review-later")));
+
+        GitHubPullRequestInspector.ParseReviews(json).ChangesRequestedReviews.Should().BeEmpty();
     }
 
     /// <summary>
@@ -1106,7 +1175,10 @@ public sealed class GitHubPullRequestInspectorTests
             "",
             Review(
                 Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", body: "Change this.",
-                id: "review-bot", state: "CHANGES_REQUESTED"));
+                id: "review-bot"),
+            standingReviews: Verdict(
+                Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "CHANGES_REQUESTED",
+                id: "review-bot", body: "Change this."));
 
         GitHubPullRequestInspector.ParseReviews(json).ChangesRequestedReviews.Should().BeEmpty();
     }
@@ -1120,13 +1192,14 @@ public sealed class GitHubPullRequestInspectorTests
     public void A_changes_requested_review_off_the_head_or_with_no_commit_is_not_read_as_one()
     {
         string stale = Payload(
-            Actor("hallmanac", "User"), "cafe1", "",
-            Review(Actor("teammate", "User"), "older", body: "Change this.", state: "CHANGES_REQUESTED"));
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            standingReviews: Verdict(
+                Actor("teammate", "User"), "older", "CHANGES_REQUESTED", body: "Change this."));
         GitHubPullRequestInspector.ParseReviews(stale).ChangesRequestedReviews.Should().BeEmpty();
 
         string unreported = Payload(
-            Actor("hallmanac", "User"), "cafe1", "",
-            ("{'id':'review-cr','author':" + Actor("teammate", "User")
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            standingReviews: ("{'id':'review-cr','author':" + Actor("teammate", "User")
                 + ",'body':'Change this.','url':'https://x/y/pull/7#r1','state':'CHANGES_REQUESTED'}")
                 .Replace('\'', '"'));
         GitHubPullRequestInspector.ParseReviews(unreported).ChangesRequestedReviews.Should().BeEmpty();
@@ -1149,7 +1222,9 @@ public sealed class GitHubPullRequestInspectorTests
                 Thread(
                     resolved: false, Actor("teammate", "User"), "thread-lineless", reviewId: "review-cr",
                     body: "file-level", path: "src/Whole.cs")),
-            Review(Actor("teammate", "User"), "cafe1", id: "review-cr", state: "CHANGES_REQUESTED"));
+            Review(Actor("teammate", "User"), "cafe1", id: "review-cr"),
+            standingReviews: Verdict(
+                Actor("teammate", "User"), "cafe1", "CHANGES_REQUESTED", id: "review-cr"));
 
         ChangesRequestedReview review = GitHubPullRequestInspector.ParseReviews(json)
             .ChangesRequestedReviews.Should().ContainSingle().Subject;
@@ -1173,7 +1248,9 @@ public sealed class GitHubPullRequestInspectorTests
             Thread(
                 resolved: true, Actor("teammate", "User"), "thread-resolved", reviewId: "review-cr",
                 body: "already answered once", path: "src/A.cs", line: 3),
-            Review(Actor("teammate", "User"), "cafe1", id: "review-cr", state: "CHANGES_REQUESTED"));
+            Review(Actor("teammate", "User"), "cafe1", id: "review-cr"),
+            standingReviews: Verdict(
+                Actor("teammate", "User"), "cafe1", "CHANGES_REQUESTED", id: "review-cr"));
 
         GitHubPullRequestInspector.ParseReviews(json)
             .ChangesRequestedReviews.Should().ContainSingle()

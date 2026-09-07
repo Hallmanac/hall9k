@@ -549,8 +549,10 @@ Per poll, in priority order:
 - **Unresolved review threads, from any reviewer.** A follow-up run is dispatched with the
   resolve-review-threads prompt. Copilot is one reviewer among many: a teammate's thread and the
   author's own self-review note count and dispatch identically. This is the path for every review
-  that carries no changes-requested verdict — a comment-only review, a bot's, or threads left
-  behind with no review state at all.
+  that carries no changes-requested verdict — a reviewer whose only review is a comment, a bot's,
+  or threads left behind with no review state at all. A comment a reviewer leaves *after* asking
+  for changes is not one of those: their verdict is read as the one that stands until they
+  themselves approve or dismiss it, so it stays on the lap above.
 - **An errored Copilot review.** Re-requested exactly once through the provider's API, because an
   errored review produces zero threads and thread count alone would read as a clean pass.
 

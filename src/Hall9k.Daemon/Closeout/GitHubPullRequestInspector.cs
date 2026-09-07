@@ -77,6 +77,18 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     // same terms as every other read here, and its truncation direction is safe: an approval old
     // enough to fall out of it reads as absent, which holds the merge rather than granting it.
     //
+    // It carries id/body/url/submittedAt — everything a whole review is read from — because the
+    // changes-requested fix lap's own read takes its verdict here for the identical reason the
+    // approval side does, in the mirror-image shape: a reviewer who requests changes and then adds
+    // one more thought as a plain thread reply (GitHub wraps a single reply in an implicit
+    // COMMENTED review) has that comment as their latest, so reading the verdict off latestReviews
+    // masked the standing CHANGES_REQUESTED and dropped the pull request back onto the automated
+    // thread path — which argues its own case in a person's thread and resolves it, the one thing
+    // this lap exists to prevent (independent pre-PR review, cycle 1, adversarial finding). The
+    // truncation direction is safe here on the same terms: a verdict old enough to fall out of
+    // last: 50 reads as absent, which leaves the review on the thread path it was always on rather
+    // than inventing a lap.
+    //
     // comments(first: 50) reads a thread WHOLE rather than only its opening comment, because a
     // re-reviewing human's second changes-requested review is most often written as replies
     // inside the threads their first one opened ("still not fixed here"). Such a reply belongs to
@@ -119,10 +131,10 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 }
               }
               latestReviews(first: 100) {
-                nodes { id author { login __typename } body url state submittedAt commit { oid } }
+                nodes { id author { login __typename } body url commit { oid } }
               }
               standingReviews: reviews(last: 50, states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) {
-                nodes { author { login __typename } state commit { oid } }
+                nodes { id author { login __typename } body url state submittedAt commit { oid } }
               }
             }
           }
@@ -384,7 +396,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     }
 
     /// <summary>
-    /// Every human reviewer whose LATEST review requested changes on the head this snapshot just
+    /// Every human reviewer whose STANDING verdict requests changes on the head this snapshot just
     /// read (task: a changes-requested pull-request review from a human becomes a fix lap), with
     /// the review's own body and each of its inline comments as findings.
     /// <para>
@@ -401,22 +413,28 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// alone costs nothing, since its unresolved threads are still on the thread path.
     /// </para>
     /// <para>
-    /// <c>latestReviews</c> is per-reviewer latest, so a reviewer who requested changes and later
-    /// approved is structurally gone from here without needing a rule of its own — the same
-    /// property the errored-review match already relies on.
+    /// The verdict comes from <see cref="ReadStandingVerdictReviews"/> and never from
+    /// <c>latestReviews</c>, which is per-author latest of ANY type: a reviewer who requests
+    /// changes and then adds one more thought as a plain thread reply has that implicit COMMENTED
+    /// review as their latest, so reading the state there masked the standing verdict and dropped
+    /// the pull request back onto the automated thread path — the one that argues its own case in a
+    /// person's thread and resolves it (independent pre-PR review, cycle 1, adversarial finding).
+    /// A reviewer who requested changes and has since approved, or whose verdict was dismissed, is
+    /// still structurally gone from here without needing a rule of its own: their standing verdict
+    /// is the later APPROVED or DISMISSED, which this drops.
     /// </para>
     /// </summary>
     private static IReadOnlyList<ChangesRequestedReview> ReadChangesRequestedReviews(
         JsonElement pullRequest, string? headCommit)
     {
-        if (headCommit is null || !pullRequest.TryGetProperty("latestReviews", out JsonElement latest))
+        if (headCommit is null)
         {
             return [];
         }
 
         string? author = ReadActor(pullRequest)?.Login;
         List<ChangesRequestedReview> reviews = [];
-        foreach (JsonElement review in latest.GetProperty("nodes").EnumerateArray())
+        foreach ((string _, JsonElement review) in ReadStandingVerdictReviews(pullRequest))
         {
             if (ReadActor(review) is not { IsHuman: true } reviewer
                 || string.Equals(reviewer.Login, author, StringComparison.OrdinalIgnoreCase)
@@ -1020,39 +1038,77 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// approval behind the commenting review that followed it (independent pre-PR review, cycle 1,
     /// adversarial finding).
     /// <para>
-    /// The connection returns oldest-first, so walking in order and letting each verdict overwrite
-    /// the previous one for that account leaves the standing verdict — including a DISMISSED that
-    /// retires an earlier approval, which is why that state is selected alongside the other two.
-    /// An account with no verdict at all is simply absent, which reads downstream as "did not
-    /// approve" and never as approval.
-    /// </para>
-    /// <para>
-    /// Absent entirely (a payload written before this alias existed, or a fixture that never sets
-    /// it) yields an empty map on the same terms: no verdict observed, so nobody has approved.
+    /// Which verdict stands per account, and the fact that an account with none is simply absent
+    /// (read downstream as "did not approve" and never as approval), are
+    /// <see cref="ReadStandingVerdictReviews"/>'s doing; this only projects each standing review
+    /// down to the two fields the reviewer list carries.
     /// </para>
     /// </summary>
     private static Dictionary<string, StandingVerdict> ReadStandingVerdicts(JsonElement pullRequest)
     {
         Dictionary<string, StandingVerdict> verdictByLogin = new(StringComparer.OrdinalIgnoreCase);
+        foreach ((string login, JsonElement review) in ReadStandingVerdictReviews(pullRequest))
+        {
+            if (ReadReviewState(review) is { } state)
+            {
+                verdictByLogin[login] = new StandingVerdict(state, ReadReviewedCommit(review));
+            }
+        }
+
+        return verdictByLogin;
+    }
+
+    /// <summary>
+    /// Each account's standing VERDICT review — the whole provider node, not just its state — in
+    /// the provider's own order, at the position that account's first verdict held. The one place
+    /// "which verdict stands" is decided, because two reads now rest on it: the approval side's
+    /// merge gate (<see cref="ReadStandingVerdicts"/>) and the changes-requested fix lap
+    /// (<see cref="ReadChangesRequestedReviews"/>), and the two must never disagree about whether a
+    /// person's verdict is still standing.
+    /// <para>
+    /// The connection returns oldest-first, so walking in order and letting each verdict replace
+    /// the previous one for that account leaves the standing verdict — including a DISMISSED that
+    /// retires an earlier approval, which is why that state is selected alongside the other two.
+    /// Replaced in place rather than appended so the order this returns is stable whatever a
+    /// reviewer's later verdicts do; an account with no verdict at all is simply absent.
+    /// </para>
+    /// <para>
+    /// Absent entirely (a payload written before this alias existed, or a fixture that never sets
+    /// it) yields nothing on the same terms: no verdict observed, so nobody has approved and
+    /// nobody has requested changes.
+    /// </para>
+    /// </summary>
+    private static List<(string Login, JsonElement Review)> ReadStandingVerdictReviews(JsonElement pullRequest)
+    {
+        List<(string Login, JsonElement Review)> standingByLogin = [];
         if (!pullRequest.TryGetProperty("standingReviews", out JsonElement standing)
             || standing.ValueKind != JsonValueKind.Object
             || !standing.TryGetProperty("nodes", out JsonElement nodes)
             || nodes.ValueKind != JsonValueKind.Array)
         {
-            return verdictByLogin;
+            return standingByLogin;
         }
 
         foreach (JsonElement review in nodes.EnumerateArray())
         {
-            if (ReadActor(review) is not { } reviewer || ReadReviewState(review) is not { } state)
+            if (ReadActor(review) is not { } reviewer || ReadReviewState(review) is null)
             {
                 continue;
             }
 
-            verdictByLogin[reviewer.Login] = new StandingVerdict(state, ReadReviewedCommit(review));
+            int seen = standingByLogin.FindIndex(
+                entry => string.Equals(entry.Login, reviewer.Login, StringComparison.OrdinalIgnoreCase));
+            if (seen >= 0)
+            {
+                standingByLogin[seen] = (reviewer.Login, review);
+            }
+            else
+            {
+                standingByLogin.Add((reviewer.Login, review));
+            }
         }
 
-        return verdictByLogin;
+        return standingByLogin;
     }
 
     /// <summary>
