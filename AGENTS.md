@@ -159,11 +159,11 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
   (task/idea/epic lifecycle, Jira/GitHub backlog integration, branch templates, auto-pr-review);
   load on demand rather than assuming a session was pre-briefed on the whole CLI surface
 - **orchestrator-recipe-generator** — write or regenerate a node's or project's orchestrator
-  recipe (the files behind `h9k orchestrator node`/`project`: `recipes/orchestrator.md`,
-  `recipes/settings.json`, and the scoped-session recipes) against the platform's own contract;
-  nothing but the tiny `recipes/launch-anchor.md` handoff is ever platform-rendered (task:
-  an operator starts a lean node or project orchestrator window). Ships as a first draft; a
-  follow-on task completes its content.
+  recipe (the files behind `h9k orchestrator node`/`project`: `recipes/orchestrator.md` and the
+  scoped-session recipes) against the platform's own contract; the platform renders
+  `recipes/launch-anchor.md` and `recipes/settings.json` itself, always overwritten, and the skill
+  never writes either one (task: an operator starts a lean node or project orchestrator window).
+  Ships as a first draft; a follow-on task completes its content.
 
 There is deliberately no create-pr skill: PRs are opened by the daemon (`PullRequestOpener`),
 never by agents.

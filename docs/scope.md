@@ -490,8 +490,9 @@ A node or project orchestrator window is a lean, disposable terminal session tha
 the platform (the machine, or one project's work) without implementing anything itself; the seam
 is one sentence, the node owns the resource and the project owns the work. `h9k install`,
 `h9k project add`, `h9k project init`, and a project-home render each write a tiny, always-
-overwritten `recipes/launch-anchor.md`; its own body is the only thing the platform ever renders,
-and it hands off to `recipes/orchestrator.md`, which the `orchestrator-recipe-generator` skill
+overwritten `recipes/launch-anchor.md` and its companion `recipes/settings.json`; those two files
+are the only thing the platform ever renders, and the anchor hands off to `recipes/orchestrator.md`,
+which the `orchestrator-recipe-generator` skill
 writes once per node or project and never has the platform overwrite (a re-run writes a `.new`
 file beside it instead). This task ships that skill as a first draft; a follow-on task, blocked by
 this one, completes its content. Launch text (the exact command an operator pastes to start a

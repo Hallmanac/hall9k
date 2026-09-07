@@ -440,9 +440,10 @@ Neither window is rendered by the platform beyond one tiny file. `h9k install`, 
 platform-owned, always-overwritten handoff, small enough to cost almost nothing on every turn one.
 Its whole job is to look for a `.new` file beside each recipe file (written whenever the
 `orchestrator-recipe-generator` skill regenerates one, never as a silent overwrite), then read
-`recipes/orchestrator.md` and follow it. Everything past the anchor, the recipe itself, the
-generated settings file, the scoped session recipes, is written once by that skill and left alone
-by the platform from then on.
+`recipes/orchestrator.md` and follow it. The recipe itself and the scoped session recipes are
+written once by that skill and left alone by the platform from then on. `recipes/settings.json` is
+the exception: it is platform-owned the same way the anchor is, always overwritten on every
+install and update, so the skill never writes it.
 
 `h9k orchestrator node` and `h9k orchestrator project [PROJECT]` print that window's daemon
 liveness, its launch text, its recipe and journal paths, and its last measured turn-one cost.
