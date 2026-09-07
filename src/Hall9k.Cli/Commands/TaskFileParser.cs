@@ -17,7 +17,13 @@ public sealed record TaskFileContent(
     /// stacked pull-request edge exists as an explicit opt-in dependency). Single-valued: a branch
     /// sits on top of exactly one other branch.
     /// </summary>
-    string? StackedOn = null);
+    string? StackedOn = null,
+    /// <summary>
+    /// The pull request on GitHub this task declares itself stacked on, or null (task: a stacked
+    /// child can stand on a pull request another install owns). The other form of the same
+    /// declaration, never both — the decider refuses two parents.
+    /// </summary>
+    string? StackedOnPullRequest = null);
 
 /// <summary>
 /// Parses the h9k task file format: a <c>---</c> frontmatter block (project, type, objective,
@@ -59,6 +65,7 @@ public static class TaskFileParser
             parsed.Scalar("model"),
             [.. parsed.ListOrInline("blocked-by").Concat(parsed.ListOrInline("blockedby"))],
             parsed.Scalar("epic"),
-            parsed.Scalar("stacked-on") ?? parsed.Scalar("stackedon"));
+            parsed.Scalar("stacked-on") ?? parsed.Scalar("stackedon"),
+            parsed.Scalar("stacked-on-pull-request") ?? parsed.Scalar("stackedonpullrequest"));
     }
 }

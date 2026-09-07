@@ -64,6 +64,20 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "--blocked-by for the same task")]
         public string? StackedOn { get; init; }
 
+        [CommandOption("--stacked-on-pull-request <NUMBER>")]
+        [Description(
+            "Declare this task STACKED ON a pull request on this project's repository that another "
+            + "install owns — a teammate's, on their own node — rather than on a task in this "
+            + "install's records: the number as GitHub shows it (264 or #264). Everything --stacked-on "
+            + "does, driven by the pull request instead of a local task: the pull request being OPEN is "
+            + "the parent's Delivered, so the child dispatches then, cuts its branch from origin's copy "
+            + "of the pull request's head branch, opens its own pull request against that branch, and is "
+            + "retargeted onto the base branch automatically when the parent merges. The state is read "
+            + "on the closeout watcher's cadence, so a hold can lag a few minutes behind GitHub. No "
+            + "--blocked-by goes with it — there is no local task to name — and no task needs to exist "
+            + "for that pull request. Mutually exclusive with --stacked-on: a child stands on one parent")]
+        public string? StackedOnPullRequest { get; init; }
+
         [CommandOption("--type <TYPE>")]
         [Description(
             "feature | bugfix | refactor | chore | research | pr-review. pr-review is set for you by "
@@ -76,7 +90,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         [CommandOption("--file <PATH>")]
         [Description(
-            "Task file: frontmatter (project/type/objective/criteria/model/blocked-by/stacked-on/epic) + markdown "
+            "Task file: frontmatter (project/type/objective/criteria/model/blocked-by/stacked-on/"
+            + "stacked-on-pull-request/epic) + markdown "
             + "body as agent context")]
         public string? File { get; init; }
 
@@ -199,6 +214,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         IReadOnlyList<string> criteria = settings.Criteria;
         IReadOnlyList<string> blockedBy = settings.BlockedBy;
         string? stackedOn = settings.StackedOn;
+        string? stackedOnPullRequest = settings.StackedOnPullRequest;
 
         AdoptionSource? adoption = ChooseSource(settings);
         if (settings.File.IsNotBlank() && adoption is { } seeded)
@@ -227,6 +243,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             criteria = criteria.Count > 0 ? criteria : file.Criteria;
             blockedBy = blockedBy.Count > 0 ? blockedBy : file.BlockedBy;
             stackedOn ??= file.StackedOn;
+            stackedOnPullRequest ??= file.StackedOnPullRequest;
         }
 
         if (project.IsBlank())
@@ -262,6 +279,11 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         {
             dependencies = [.. dependencies, parentId];
         }
+
+        // The remote form implies no blocked-by, and cannot: there is no local task to name, which
+        // is the whole point of it. Parsed here, on the near side of the prompts, for the same
+        // reason everything else on this path is.
+        int? stackedOnPullRequestNumber = StackedPullRequestOption.Parse(stackedOnPullRequest);
         bool adoptingPullRequest = adoption?.Provider == WorkItemProvider.GitHubPullRequest;
         if (adoptingPullRequest && type.IsBlank())
         {
@@ -301,7 +323,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // arguments the decider itself will re-vet with below: a stacked edge on a pr-review task,
         // or one naming this task itself, is refused before AdoptAsync's own gh call and the
         // criteria prompt are paid for.
-        TaskDecider.VetStackedEdge(taskId, stackedOnId, dependencies, taskType);
+        TaskDecider.VetStackedEdge(taskId, stackedOnId, stackedOnPullRequestNumber, dependencies, taskType);
         Guid? epicId = epic.IsNotBlank()
             ? await EpicIdResolver.ResolveForMembershipAsync(session, epic, projectDetails.Id, cancellationToken)
             : null;
@@ -353,7 +375,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             // must stay.
             dependencies = [.. dependencies, .. reconstructed.Dependencies.Where(id => !dependencies.Contains(id))];
 
-            TaskDecider.VetStackedEdge(taskId, stackedOnId, dependencies, taskType);
+            TaskDecider.VetStackedEdge(taskId, stackedOnId, stackedOnPullRequestNumber, dependencies, taskType);
         }
         else if (imported is not null && adoption is not null)
         {
@@ -385,6 +407,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             reviewStageComposition: reviewStageComposition,
             reviewStageCompositionAcknowledged: settings.AcceptReducedReview,
             stackedOnTaskId: stackedOnId,
+            stackedOnPullRequestNumber: stackedOnPullRequestNumber,
             preApproval: PreApprovalInput.FromFlag(settings.PreApproved),
             // Recorded only when the record actually named the origin's own task. A hand-written
             // block that says nothing about where it came from leaves this null rather than an
@@ -454,6 +477,23 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             AnsiConsole.MarkupLine(
                 $"[dim]  blocked by {dependencies.Length} task(s): " +
                 $"{string.Join(", ", dependencies.Select(TaskListCommand.ShortId))}[/]");
+        }
+
+        // Said out loud because it is the one edge with no blocked-by line above to give it away,
+        // and because the release is not immediate: the pull request's state is read on the
+        // closeout watcher's cadence, so a human who assigns this straight away needs to know why
+        // it sits Blocked for a few minutes rather than dispatching (task: a stacked child can
+        // stand on a pull request another install owns). The assignment is named as the thing that
+        // starts the watch, not just as the next lifecycle step: the sweep reads a remote parent
+        // only for an assigned task (RemoteStackedParentSweep.SweepOnceAsync), so a task left
+        // Published is watched by nothing at all (independent pre-PR review, cycle 1, adversarial
+        // lens — the class sweep off the same defect in the claim refusal).
+        if (stackedOnPullRequestNumber is { } remoteParent)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]  stacked on pull request #{remoteParent} — assign it and it dispatches once that pull "
+                + "request is observed open, which the closeout watcher's own sweep looks for on its cadence. "
+                + "Nothing looks at that pull request until the task is assigned[/]");
         }
 
         string shortId = TaskListCommand.ShortId(taskId);

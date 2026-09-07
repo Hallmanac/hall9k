@@ -30,10 +30,16 @@ namespace Hall9k.Domain.Features.Tasks.Queries;
 /// for the ordinary case, so a stacked task that ended up on the project's base has a recorded
 /// account of why rather than looking like an unstacked one.
 /// </param>
-public sealed record StackedBase(string BaseBranch, Guid? ParentTaskId, string Reason)
+/// <param name="ParentPullRequestNumber">
+/// The stacked parent pull request on GitHub this base came from, or null when the parent is local
+/// or there is none (task: a stacked child can stand on a pull request another install owns).
+/// Exclusive with <paramref name="ParentTaskId"/>, because a child stands on one parent.
+/// </param>
+public sealed record StackedBase(
+    string BaseBranch, Guid? ParentTaskId, string Reason, int? ParentPullRequestNumber = null)
 {
-    /// <summary>Whether this run is actually stacked on a live parent branch.</summary>
-    public bool IsStacked => ParentTaskId is not null;
+    /// <summary>Whether this run is actually stacked on a live parent branch, in either form.</summary>
+    public bool IsStacked => ParentTaskId is not null || ParentPullRequestNumber is not null;
 }
 
 /// <summary>
@@ -54,6 +60,17 @@ public static class StackedBaseResolver
     public static async Task<StackedBase> ResolveAsync(
         IQuerySession query, TaskDetails task, ProjectDetails project, CancellationToken cancellationToken)
     {
+        // The remote form is answered first and entirely from the record, without a provider call
+        // of its own (task: a stacked child can stand on a pull request another install owns). The
+        // closeout watcher's sweep is the one reader of that pull request, and it is also what
+        // released this task from Blocked, so by the time a dispatch reaches here the observation
+        // it needs is on the stream by construction. Resolving it live instead would put a gh call
+        // on the dispatch path and let a transient failure cut a branch from the wrong base.
+        if (task.StackedOnPullRequestNumber is { } parentNumber)
+        {
+            return ResolveRemote(task, project, parentNumber);
+        }
+
         if (task.StackedOnTaskId is not { } parentId)
         {
             return new StackedBase(project.BaseBranch, null, $"not a stacked task — based on {project.BaseBranch}");
@@ -110,6 +127,52 @@ public static class StackedBaseResolver
         return new StackedBase(
             parentRun.Branch, parentId,
             $"stacked on {DomainId.Short(parentId)} — based on its branch {parentRun.Branch}");
+    }
+
+    /// <summary>
+    /// The base for a child stacked on a pull request another install owns, read entirely off what
+    /// the closeout watcher's sweep last observed about it. Forgiving in the same one direction
+    /// <see cref="ResolveAsync"/> is: every state but a live open pull request with a head branch
+    /// falls back to the project's base with the reason recorded, because a stacked child that
+    /// lands on main is an ordinary pull request a human can still merge.
+    /// <para>
+    /// Public, and synchronous, because it takes no session at all — that is the whole shape of the
+    /// remote arm, and hiding it behind <see cref="ResolveAsync"/> would suggest a query it never
+    /// makes. A caller that already knows its parent is remote can ask directly.
+    /// </para>
+    /// </summary>
+    public static StackedBase ResolveRemote(TaskDetails task, ProjectDetails project, int parentNumber)
+    {
+        // Merged is the remote twin of a local parent that has closed out: the head branch is going
+        // away, so cutting from it would fail and targeting a pull request at it would be refused.
+        // A child that dispatches for the first time AFTER its parent merged is an ordinary task on
+        // the project's base — which is also exactly where a retarget would have put it, so it
+        // needs no retarget and no replay.
+        if (task.RemoteStackedParentState == RemoteParentState.Merged)
+        {
+            return new StackedBase(
+                project.BaseBranch, null,
+                $"stacked on pull request #{parentNumber}, which has merged — its head branch is gone, so this "
+                + $"is based on {project.BaseBranch}",
+                ParentPullRequestNumber: null);
+        }
+
+        if (task.RemoteStackedParentState != RemoteParentState.Open
+            || task.RemoteStackedParentHeadBranch.IsBlank())
+        {
+            return new StackedBase(
+                project.BaseBranch, null,
+                $"stacked on pull request #{parentNumber}, last observed "
+                + $"{task.RemoteStackedParentState.Describe()} with no head branch to build on — based on "
+                + $"{project.BaseBranch} instead",
+                ParentPullRequestNumber: null);
+        }
+
+        return new StackedBase(
+            task.RemoteStackedParentHeadBranch, null,
+            $"stacked on pull request #{parentNumber} — based on its head branch "
+            + task.RemoteStackedParentHeadBranch,
+            ParentPullRequestNumber: parentNumber);
     }
 
     /// <summary>

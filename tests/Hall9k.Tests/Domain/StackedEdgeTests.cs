@@ -95,7 +95,7 @@ public sealed class StackedEdgeTests
         Guid parentId = DomainId.New();
 
         Action declare = () => TaskDecider.VetStackedEdge(
-            DomainId.New(), parentId, [parentId], TaskType.PrReview);
+            DomainId.New(), parentId, null, [parentId], TaskType.PrReview);
 
         declare.Should().Throw<DomainValidationException>()
             .WithMessage("*never opens one of its own*")

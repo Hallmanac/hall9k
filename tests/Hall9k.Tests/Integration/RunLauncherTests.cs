@@ -915,6 +915,86 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// The same dispatch for a child stacked on a pull request another install owns (task: a
+    /// stacked child can stand on a pull request another install owns). Everything downstream is
+    /// the same machinery — the cut, the recorded base the pull request's own <c>--base</c> reads,
+    /// the diff range the review packet scopes to — reached from a recorded observation instead of
+    /// from a parent run this install does not have. Two things make it worth its own test rather
+    /// than trusting the local one: there is no parent task in the store at all here, and the base
+    /// comes off <c>RemoteStackedParentHeadBranch</c>, which nothing in the local path reads.
+    /// </summary>
+    [Fact]
+    public async Task A_child_stacked_on_a_remote_pull_request_is_cut_from_its_head_branch_and_records_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid childTaskId = DomainId.New();
+        Guid childRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const int parentNumber = 264;
+        const string parentHeadBranch = "feature/teammate-slice";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"remote-stacked-launch-{childTaskId:N}",
+                "/tmp/remote-stacked-launch-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            // No parent task, no parent run — a reviewer's node holds neither. The child's whole
+            // knowledge of its parent is the observation the closeout watcher's sweep recorded.
+            (TaskAggregate child, object[] childLifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    childTaskId, projectId, "Playwright coverage for the teammate's slice", ["it works"],
+                    TaskType.Feature, null, null, null, Now, node.OwnerId,
+                    stackedOnPullRequestNumber: parentNumber),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.RemoteStackedParentObserved observed = new(
+                childTaskId, parentNumber, RemoteParentState.Open, parentHeadBranch, "abc1234", "main",
+                $"https://github.com/x/y/pull/{parentNumber}", null, "open", Now);
+            child.Apply(observed);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed childClaimed =
+                TaskDecider.Claim(child, node.NodeId, node.OwnerId, childRunId, Now);
+            session.Events.StartStream<TaskAggregate>(
+                childTaskId, [.. childLifecycle, observed, childClaimed]);
+            session.Store(new TaskLease
+            {
+                Id = childTaskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(childTaskId, childRunId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        worktrees.CreateRequests.Should().ContainSingle().Which.BaseBranch.Should().Be(
+            parentHeadBranch,
+            "the cut starts from origin's copy of the pull request's head branch, not from main");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(childRunId, cts.Token))!;
+        run.BaseBranch.Should().Be(parentHeadBranch);
+        run.StackedOnBranch.Should().Be(parentHeadBranch);
+        run.BaseBranchOr("main").Should().Be(parentHeadBranch,
+            "the child's own pull request opens against the parent's head branch");
+
+        executor.Request!.Prompt.Should().Contain($"git diff origin/{parentHeadBranch}...HEAD",
+            "the review packet and the session's own hunt read this branch's delta against the parent");
+    }
+
+    /// <summary>
     /// The unstacked half of the same fact: an ordinary task records a BLANK base branch, which is
     /// what <c>RunDetails.BaseBranch</c> means by "the project's own" — the invariant that lets the
     /// CLI's composers tell a stacked run from an ordinary one with no project in hand.

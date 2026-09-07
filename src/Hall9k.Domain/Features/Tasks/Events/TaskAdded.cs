@@ -89,7 +89,19 @@ public sealed record TaskAdded(
     /// the vocabulary existed, which is exactly the case <see cref="PreApprovalMode.Resolve"/>
     /// maps back onto <paramref name="PreApproved"/>.
     /// </summary>
-    PreApprovalMode? PreApproval = null)
+    PreApprovalMode? PreApproval = null,
+    /// <summary>
+    /// The pull request this task is stacked on when its parent lives on GitHub rather than in this
+    /// install's own records (task: a stacked child can stand on a pull request another install
+    /// owns) — the other form of the same declaration, and never both at once, which
+    /// <see cref="Handlers.TaskDecider.VetStackedEdge"/> refuses. Unlike
+    /// <see cref="StackedOnTaskId"/> this implies no <see cref="BlockedBy"/> edge, because there is
+    /// no local task to name: what holds the child is the pull request's own observed state
+    /// (<see cref="RemoteStackedParentObserved"/>) rather than the unmet-dependency set. Null is
+    /// every task's default and the only value a stream written before this field existed can
+    /// replay as.
+    /// </summary>
+    int? StackedOnPullRequestNumber = null)
 {
     /// <summary>
     /// What this event granted, whichever build wrote it — the same one home for the

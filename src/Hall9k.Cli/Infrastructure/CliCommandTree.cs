@@ -625,6 +625,11 @@ public static class CliCommandTree
                     "--blocked-by", "28b19893")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Wire the new pane in\"",
                     "--epic", "28b19893")
+                .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Wire the new pane in\"",
+                    "--blocked-by", "28b19893", "--stacked-on", "28b19893")
+                .WithExample("task", "add", "--project", "hall9k",
+                    "--objective", "\"Playwright coverage for the new checkout flow\"",
+                    "--stacked-on-pull-request", "264")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Prototype the new endpoint\"",
                     "--review-stage-composition", "none", "--accept-reduced-review");
             task.AddCommand<TaskReviseCommand>("revise")
@@ -648,6 +653,8 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--queue-first")
                 .WithExample("task", "revise", "28b19893", "--clear-queue-first")
                 .WithExample("task", "revise", "28b19893", "--review-stage-composition", "default")
+                .WithExample("task", "revise", "28b19893", "--stacked-on-pull-request", "264")
+                .WithExample("task", "revise", "28b19893", "--clear-stacked-on")
                 .WithExample("task", "revise", "28b19893", "--clear-interactive-mode");
             task.AddCommand<TaskSetReviewCapsCommand>("set-review-caps")
                 .WithDescription(
