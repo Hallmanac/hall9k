@@ -426,6 +426,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             details.FailureReason.Should().Be("Push rejected: branch was rebased.", "retry does not erase why it failed");
             details.RetryReason.Should().Be("Push bug fixed; the work is intact.");
             details.RetryBranch.Should().Be("task/abc12345-retry-walk", "the launcher resumes it when it survives");
+            details.RetryPending.Should().BeTrue("the retry has not yet been superseded by a completion");
         }
     }
 }

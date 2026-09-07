@@ -44,6 +44,7 @@ public sealed class TaskRetriedProjectionTests
         view.RetryBranch.Should().Be(Branch, "the launcher resumes the failed run's branch when it survives");
         view.RetryReason.Should().Be(RetryReason, "h9k task show renders it");
         view.RetryReasonIsHandback.Should().BeFalse("a real failure earned this reason, not a handback");
+        view.RetryPending.Should().BeTrue("the retry has not yet been superseded by a completion");
         view.FailureReason.Should().Be(FailureReason, "retry does not erase why the task failed");
         view.ClaimedByNodeId.Should().BeNull();
         view.CurrentRunId.Should().BeNull();
@@ -57,6 +58,7 @@ public sealed class TaskRetriedProjectionTests
 
         view.State.Should().Be(TaskState.Done);
         view.RetryBranch.Should().BeNull("completion consumes the retry marker");
+        view.RetryPending.Should().BeFalse("completion consumes the retry marker");
         view.RunIds.Should().Equal(failedRunId, retryRunId);
     }
 
@@ -106,12 +108,14 @@ public sealed class TaskRetriedProjectionTests
 
         view.RetryReason.Should().Be(handbackReason);
         view.RetryReasonIsHandback.Should().BeTrue("this task never failed; nothing was retried");
+        view.RetryPending.Should().BeTrue("the handback's own resume is still pending");
         view.ResumesFromHandback.Should().BeTrue("the very next claim resumes directly from this handback");
 
         projection.Apply(new FakeEvent<TaskRetried>(new TaskRetried(
             id, runId, Branch, RetryReason, Now.AddHours(2), DomainId.New())), view);
 
         view.RetryReasonIsHandback.Should().BeFalse("a later real retry replaces the handback marker");
+        view.RetryPending.Should().BeTrue("the retry it replaced the handback marker with is itself still pending");
         view.ResumesFromHandback.Should().BeFalse("a real retry, not a handback, is what resumes now");
     }
 
@@ -155,5 +159,7 @@ public sealed class TaskRetriedProjectionTests
             "the requeue's cause is the lease expiry, not the earlier handback");
         view.RetryReasonIsHandback.Should().BeTrue(
             "the resume text was still last written by the handback, not a retry that never happened");
+        view.RetryPending.Should().BeTrue(
+            "the handback's own resume is still pending — a requeue does not consume it");
     }
 }

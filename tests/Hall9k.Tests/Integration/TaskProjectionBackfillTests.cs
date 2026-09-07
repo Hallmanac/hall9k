@@ -312,6 +312,61 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     }
 
     /// <summary>
+    /// <see cref="TaskDetails.RetryPending"/> (task: a headless retry's reason reaches the
+    /// resumed session) is a non-nullable bool, always serialized, so an absent key is the
+    /// marker for a document written before the field landed — the same class of defect the
+    /// untrackedAttested marker above covers, but with a live-feature failure mode instead of a
+    /// dormant one: a stale document reads the absent key as "false", which is indistinguishable
+    /// from a retry already consumed, so <c>WorkPromptBuilder.AppendOperatorGuidanceSection</c>
+    /// silently drops the operator's retry reason for exactly the tasks this feature exists to
+    /// carry it for (independent pre-PR review, cycle 3, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_retry_projected_before_the_pending_marker_landed_is_restored_after_the_backfill_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            TaskAdded added = Add(taskId, "Retried, projected before the pending marker landed");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+            TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+            task.Apply(claimed);
+            TaskFailed failed = TaskDecider.Fail(task, runId, "the run failed", Now.AddMinutes(1));
+            task.Apply(failed);
+            TaskRetried retried = TaskDecider.Retry(
+                task, runId, null, "rebase onto origin/main first", Now.AddMinutes(2), ownerId);
+            seed.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, failed, retried]);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StripKeyAsync(taskId, "retryPending", ["mt_doc_taskdetails"], cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails stale = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            stale.RetryPending.Should().BeFalse(
+                "the pre-marker document never wrote this key at all");
+        }
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Equal(
+            [taskId], "the missing key is a staleness marker, so the window closes at the next daemon start");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            details.RetryPending.Should().BeTrue(
+                "the stream always recorded the retry; the rebuild restores it");
+            details.RetryReason.Should().Be(
+                "rebase onto origin/main first", "so the operator guidance section can render it again");
+        }
+    }
+
+    /// <summary>
     /// <see cref="TaskListItem.QueuePriorityMarked"/> (task 45136b29) exists only on the list
     /// item, and a document written before the field landed carries no key at all — the same
     /// class of defect the markers above cover, but with the worst failure mode of any of them:

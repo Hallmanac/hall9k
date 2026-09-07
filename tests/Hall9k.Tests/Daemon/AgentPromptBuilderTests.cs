@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -2138,6 +2139,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         TaskDetails task = SomeTask();
         task.RetryReason = "the migration script is drafted but untested";
+        task.RetryPending = true;
 
         string prompt = AgentPromptBuilder.Build(
             task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
@@ -2196,6 +2198,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         TaskDetails task = SomeTask();
         task.RetryReason = "rebase onto origin/main first — main's own gate went red under PR #239";
+        task.RetryPending = true;
 
         string followUp = AgentPromptBuilder.BuildFollowUp(
             task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
@@ -2217,6 +2220,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         TaskDetails task = SomeTask();
         task.RetryReason = "the migration script is drafted but untested";
+        task.RetryPending = true;
 
         string prompt = AgentPromptBuilder.Build(
             task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
@@ -2284,6 +2288,133 @@ public sealed class AgentPromptBuilderTests : IDisposable
             task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
 
         followUp.Should().NotContain("## Operator guidance");
+    }
+
+    /// <summary>
+    /// A bare <c>h9k task retry</c> with no <c>--reason</c> still records a reason — TaskDecider.Retry
+    /// requires one, so TaskRetryCommand defaults it honestly (PLAN.md §16 #25) — but that default is
+    /// a fact about how the retry was invoked, not a human's own priority instruction. Rendering it
+    /// under "a human gave this instruction ... treat it as what to prioritize" would assert exactly
+    /// the unobserved fact AGENTS.md forbids (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public void Operator_guidance_never_renders_the_cli_s_own_unreasoned_retry_default()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReason = TaskDecider.DefaultRetryReason;
+        task.RetryPending = true;
+
+        string resumedBuild = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+        string followUp = AgentPromptBuilder.BuildFollowUp(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        foreach (string prompt in new[] { resumedBuild, followUp })
+        {
+            prompt.Should().NotContain(
+                "## Operator guidance", "a bare retry with no --reason names no actual priority");
+        }
+    }
+
+    /// <summary>
+    /// TaskDetails.RetryReason is never cleared once a task is retried, so once the retried run
+    /// completes and a later, unrelated follow-up reopens the task (review feedback, a rebase), the
+    /// standing text belongs to an attempt that already finished — presenting it as "what to
+    /// prioritize for THIS run" would hand a settled attempt's own reason to a run working on
+    /// something else entirely (independent pre-PR review, cycle 1, both lenses).
+    /// RetryPending is the discriminator: false once a completion (or resolve, or abandon)
+    /// supersedes the retry with no new retry since.
+    /// </summary>
+    [Fact]
+    public void Operator_guidance_never_renders_a_retry_reason_already_superseded_by_a_completion()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReason = "just get the gate green, skip the docs update — I'll do it";
+        task.RetryReasonIsHandback = false;
+        task.RetryPending = false;
+
+        string followUp = AgentPromptBuilder.BuildFollowUp(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string fixChecks = AgentPromptBuilder.BuildFixChecks(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string rebase = AgentPromptBuilder.BuildRebase(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        foreach (string prompt in new[] { followUp, fixChecks, rebase })
+        {
+            prompt.Should().NotContain(
+                "## Operator guidance", "a completion already superseded this retry's own reason");
+        }
+    }
+
+    /// <summary>
+    /// <c>h9k task work</c> never passes <c>isHandback</c> (it always resumes through the causeless
+    /// branch), and a headless run claimed after a handback that itself requeues severs
+    /// <see cref="TaskDetails.ResumesFromHandback"/> while <see cref="TaskDetails.RetryReasonIsHandback"/>
+    /// survives — so both reachable paths dispatch with <c>isHandback: false</c> even though the
+    /// standing reason is still a handback's own words. The pre-existing causeless wording
+    /// ("Why this run resumes here, in the requester's own words") must still carry it rather than
+    /// silently dropping it (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void A_handback_reason_still_reaches_the_causeless_resume_branch_when_isHandback_is_false()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReasonIsHandback = true;
+        task.RetryReason = "ran out of time before a meeting";
+        task.ResumesFromHandback = false;
+        task.RetryPending = true;
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true, isHandback: false);
+
+        prompt.Should().Contain(
+            "Why this run resumes here, in the requester's own words: ran out of time before a meeting");
+        prompt.Should().NotContain("## Operator guidance", "a handback's reason is not retry guidance");
+    }
+
+    /// <summary>
+    /// The identical branch, but the handback's own attempt already ended (a completion, a
+    /// resolve, or an abandon) with no new retry or handback since — <see cref="TaskDetails.RetryPending"/>
+    /// is false. Presenting the old note as "why this run resumes here" would hand a long-settled
+    /// attempt's reason to a run that resumes nothing of the sort (independent pre-PR review,
+    /// cycle 3, both lenses) — the same staleness guard <see cref="WorkPromptBuilder.AppendOperatorGuidanceSection"/>
+    /// already applies on the retry side of this same field.
+    /// </summary>
+    [Fact]
+    public void A_stale_handback_reason_does_not_reach_the_causeless_resume_branch()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReasonIsHandback = true;
+        task.RetryReason = "ran out of time before a meeting";
+        task.ResumesFromHandback = false;
+        task.RetryPending = false;
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true, isHandback: false);
+
+        prompt.Should().NotContain("Why this run resumes here");
+        prompt.Should().NotContain("## Operator guidance", "a handback's reason is not retry guidance either way");
+    }
+
+    /// <summary>
+    /// A retry recorded a null branch (the failure predated any run record, or the branch could not
+    /// be checked out) starts the next run clean rather than resuming — but the operator's own reason
+    /// is about the attempt, not about whether an old branch happened to survive, so it must still
+    /// reach the prompt (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void A_retry_reason_reaches_a_fresh_checkout_that_does_not_resume_previous_work()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReason = "the repository path in the project record was wrong; it is fixed now";
+        task.RetryPending = true;
+
+        string prompt = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: false);
+
+        prompt.Should().Contain("## Operator guidance");
+        prompt.Should().Contain(task.RetryReason);
     }
 
     [Fact]
