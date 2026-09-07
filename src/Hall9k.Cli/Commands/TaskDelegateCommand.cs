@@ -412,10 +412,14 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // This run's own recorded base, not the project's: a stacked child's branch sits on top of
         // its parent's, so counting against the project's base would count the PARENT's commits as
         // this claim's own and read a genuinely empty branch as holding work (task: a stacked
-        // pull-request edge exists as an explicit opt-in dependency).
+        // pull-request edge exists as an explicit opt-in dependency). The recorded fork point rides
+        // along as a second candidate boundary, and the count is the smaller of the two: the
+        // parent's own ref stops naming the cut point once the parent is force-pushed, and leaves
+        // this branch's copies of the parent's rewritten-away commits counted here (class sweep,
+        // conformance review cycle 4).
         int commitsAheadOfBase = await InteractiveWorktreeGit.CountBranchCommitsAsync(
             run.WorktreePath, run.BaseBranchOr(project.BaseBranch), cancellationToken,
-            headReference: run.Branch);
+            headReference: run.Branch, forkPointCommit: run.StackedForkPoint(project.BaseBranch));
         (IReadOnlyList<string>? modifiedFiles, IReadOnlyList<string> untrackedFiles) =
             await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
         bool resumesPreviousWork = commitsAheadOfBase != 0

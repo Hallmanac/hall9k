@@ -105,21 +105,41 @@ internal static class InteractiveWorktreeGit
     /// with the branch name instead — worktrees share refs with the repository they were cut
     /// from, so the branch's commits are still readable there even once the working directory
     /// that held it is gone (adversarial review, cycle 1, TaskReleaseCommand.cs:129).
+    /// <para>
+    /// The count is the SMALLEST any boundary the base is known by reports — the remote-tracking
+    /// ref, the local base branch, and, for a stacked child,
+    /// <paramref name="forkPointCommit"/> (<c>RunDetails.StackedForkPoint</c>, null for every
+    /// ordinary run) — rather than the first that resolves. Each boundary is wrong in the same
+    /// direction and only sometimes: a two-dot count is inflated by every commit its boundary does
+    /// not reach, so a boundary that is not on this branch counts this branch's copies of the
+    /// parent's commits as this claim's own. Both stacked candidates go stale that way and neither
+    /// always — <c>origin/&lt;parent&gt;</c> when the parent was force-pushed since the cut, the
+    /// recorded fork point when the branch was later brought onto a newer parent head — and neither
+    /// can ever UNDERcount, since a commit this claim authored is reachable from no boundary but
+    /// this branch (class sweep, conformance review cycle 4). For an unstacked claim this still
+    /// resolves to the remote-tracking ref's own count, since a stale local base branch can only be
+    /// behind it and so can only count higher.
+    /// </para>
     /// </summary>
     public static async Task<int> CountBranchCommitsAsync(
-        string workingDirectory, string baseBranch, CancellationToken cancellationToken, string headReference = "HEAD")
+        string workingDirectory, string baseBranch, CancellationToken cancellationToken, string headReference = "HEAD",
+        string? forkPointCommit = null)
     {
-        foreach (string baseRef in new[] { $"origin/{baseBranch}", baseBranch })
+        string[] boundaries = forkPointCommit is null
+            ? [$"origin/{baseBranch}", baseBranch]
+            : [forkPointCommit, $"origin/{baseBranch}", baseBranch];
+        int smallest = -1;
+        foreach (string baseRef in boundaries)
         {
             (int exitCode, string output, _) = await RunGitAsync(
                 workingDirectory, ["rev-list", "--count", $"{baseRef}..{headReference}"], cancellationToken);
-            if (exitCode == 0 && int.TryParse(output.Trim(), out int count))
+            if (exitCode == 0 && int.TryParse(output.Trim(), out int count) && (smallest < 0 || count < smallest))
             {
-                return count;
+                smallest = count;
             }
         }
 
-        return -1;
+        return smallest;
     }
 
     private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitAsync(
