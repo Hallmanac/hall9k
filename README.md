@@ -412,6 +412,55 @@ here" rather than "is a daemon serving this database".
 
 ---
 
+## Orchestrator windows
+
+An orchestrator window is a terminal session that owns a piece of the platform on your behalf: it
+reads state, relays between you and running work, and reports what needs you. It is a window, not
+an alarm, and it never implements a feature itself. All new work still enters through
+`h9k task add`; a build happens in a dispatched, detached agent session, never in the orchestrator
+window itself.
+
+There are two kinds, and the seam between them is one sentence: **the node owns the resource, the
+project owns the work.**
+
+- A **node orchestrator** owns this machine: the concurrency ceiling, the spend budget, the
+  daemon's lifecycle, the installed binaries, `config.json`, and registering or deregistering
+  projects.
+- A **project orchestrator** owns one project's work: its board, drafting, criteria walks, park
+  rulings, and merges at the repository's own bar.
+
+A project window reaches a live node window, and the reverse, the same way any two agent sessions
+on this machine do: `ListAgents` to see what is up, `SendMessage` to reach it. A node-scope
+command typed into a project window (an install, a daemon restart, a ceiling change) forwards to a
+live node orchestrator when one is up; with none running, the project window runs it in place and
+says so, rather than blocking on a window that does not exist yet.
+
+Neither window is rendered by the platform beyond one tiny file. `h9k install`, `h9k project add`,
+`h9k project init`, and a project-home render each write a `recipes/launch-anchor.md`: a
+platform-owned, always-overwritten handoff, small enough to cost almost nothing on every turn one.
+Its whole job is to look for a `.new` file beside each recipe file (written whenever the
+`orchestrator-recipe-generator` skill regenerates one, never as a silent overwrite), then read
+`recipes/orchestrator.md` and follow it. Everything past the anchor, the recipe itself, the
+generated settings file, the scoped session recipes, is written once by that skill and left alone
+by the platform from then on.
+
+`h9k orchestrator node` and `h9k orchestrator project [PROJECT]` print that window's daemon
+liveness, its launch text, its recipe and journal paths, and its last measured turn-one cost.
+Neither one launches anything; you copy the printed line into a fresh terminal yourself.
+`h9k orchestrator launch-text show`/`set` reads and replaces that launch line, one setting per
+agent CLI, and `h9k orchestrator measure` runs a fixed one-turn probe against it so "lean" is a
+number you can watch rather than a promise.
+
+### Installing on someone else's behalf
+
+If you are an agent running `h9k install` or `h9k project add` for a human, run the
+`orchestrator-recipe-generator` skill once for the node and once for every project you just
+registered, then tell the human to open a new terminal in that directory with the launch line
+`h9k orchestrator` prints. This session, the one doing the installing, is not the lean window:
+handing over the line is the last thing to do, not something to keep working from.
+
+---
+
 ## Where the deeper docs live
 
 Start here, in this order:
