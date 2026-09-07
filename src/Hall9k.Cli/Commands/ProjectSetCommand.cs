@@ -255,6 +255,24 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "exists: a human re-speeds any auto-created task afterward with the same general levers "
             + "(h9k task revise --queue-first, h9k task start).")]
         public string? AutoPrReview { get; init; }
+
+        [CommandOption("--claim-gate <off|tracker-assignee>")]
+        [Description(
+            "What has to be true on this install before a task linked to a Jira card or a GitHub issue "
+            + "may be claimed here (idea 64c75e43). Default 'off', the platform's original behaviour "
+            + "byte-for-byte: assignment inside Hall9k is the only claim rule. 'tracker-assignee' makes "
+            + "the tracker's own assignment field the single act that hands out work — a linked task is "
+            + "claimed on this install only while the tracker shows that item assigned to this install's "
+            + "own tracker identity (the Jira accountId recorded on the registered connection, or the "
+            + "login gh is authenticated as; never an email, never a display name, never typed), so two "
+            + "teammates' installs cannot both run the same card. Every claim door re-reads the assignee "
+            + "field fresh: the dispatcher, h9k task work, and h9k task start. h9k task assign warns and "
+            + "assigns anyway, since the tracker stays the go signal and the task simply waits in the "
+            + "queue. A task with no linked item, an untracked one, and a pr-review task are untouched "
+            + "(a pull request's own assignment is already auto-pr-review's signal). The gate never "
+            + "writes to the tracker and there is no override flag; a tracker that cannot be read holds "
+            + "the claim rather than releasing it")]
+        public string? ClaimGate { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -436,7 +454,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // the rotation itself runs in, so clearing a focus and never setting one read alike.
             priority: settings.Priority is { } priority
                 ? Optional<ProjectPriority>.Of(ProjectPriority.Parse(priority))
-                : Optional<ProjectPriority>.None);
+                : Optional<ProjectPriority>.None,
+            claimGate: settings.ClaimGate is { } claimGate
+                ? Optional<ClaimGate>.Of(ClaimGate.Parse(claimGate))
+                : Optional<ClaimGate>.None);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 
@@ -487,6 +508,22 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         if (settings.Priority is not null)
         {
             AnsiConsole.MarkupLine(PriorityConsequence(ProjectPriority.Parse(settings.Priority), details.Name));
+        }
+
+        // Same reasoning, applied to the other setting that moves a go signal outside this CLI:
+        // turning the gate on is a standing consent that the tracker's assignment field, not an
+        // h9k command, is what starts linked work here — and that a tracker nobody can reach
+        // stops it. Said at the moment of consent rather than discovered on a quiet board.
+        if (settings.ClaimGate is not null && ClaimGate.Parse(settings.ClaimGate) == ClaimGate.TrackerAssignee)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]From now on, a task in this project linked to a Jira card or a GitHub issue is "
+                + "claimed on this install only while the tracker shows that item assigned to this "
+                + "install's own tracker identity — the tracker's assignment becomes the one act that "
+                + "hands out work, so two teammates' installs cannot both run the same card. h9k task "
+                + "assign still assigns and warns; the dispatcher, h9k task work and h9k task start "
+                + "refuse. There is no override flag, and a tracker this install cannot read holds the "
+                + "claim rather than releasing it.[/]");
         }
 
         // The home's AGENTS.md is a render of exactly the facts this command changes (the Jira

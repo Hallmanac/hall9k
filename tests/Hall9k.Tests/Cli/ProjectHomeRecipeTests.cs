@@ -402,6 +402,31 @@ public sealed class ProjectHomeRecipeTests : IDisposable
         rendered.Should().NotContain("Atlassian CLI", "no Jira board is bound");
     }
 
+    /// <summary>
+    /// The claim gate is a fact a session working in this home has to know, not a preference (idea
+    /// 64c75e43): with it on, a task linked to a card does not dispatch on this install until the
+    /// tracker says this install holds the card, and a session that does not know that reads a
+    /// quiet queue as a broken one. Off says so too, plainly, rather than going silent — the
+    /// render's whole contract is that every project fact it carries is current by construction.
+    /// </summary>
+    [Fact]
+    public void The_render_names_the_claim_gate_either_way()
+    {
+        string home = ProjectHomePaths.DefaultFor("hall9k");
+        Directory.CreateDirectory(ProjectHomePaths.DevWorktree(home));
+
+        ProjectAgentsDocument.Render(home, GitHubProject()).Should().Contain(
+            "- Claim gate: off — assignment inside Hall9k is the only claim rule");
+
+        ProjectDetails gated = GitHubProject();
+        gated.ClaimGate = ClaimGate.TrackerAssignee;
+
+        ProjectAgentsDocument.Render(home, gated).Should()
+            .Contain("- Claim gate: `tracker-assignee`")
+            .And.Contain("assigned to this install's own tracker identity")
+            .And.Contain("there is no override");
+    }
+
     [Fact]
     public void Binding_a_jira_board_adds_the_atlassian_cli_and_nothing_else()
     {

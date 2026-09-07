@@ -131,6 +131,14 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : $"{project.AutoPrReview.Value.ToLowerInvariant().EscapeMarkup()} [dim]— a pull request GitHub "
               + "assigns to this install's own login here mints, publishes, and starts a pr-review task "
               + "automatically (idea e5e98a33)[/]");
+        table.AddRow("Claim gate", project.ClaimGate == ClaimGate.Off
+            ? $"[dim]off — assignment inside Hall9k is the only claim rule; make the tracker's own "
+              + $"assignment the go signal: h9k project set {project.Name.EscapeMarkup()} --claim-gate "
+              + "tracker-assignee[/]"
+            : "tracker-assignee [dim]— a task linked to a Jira card or a GitHub issue is claimed on this "
+              + "install only while the tracker shows that item assigned to this install's own tracker "
+              + "identity, so two teammates' installs cannot both run the same card (idea 64c75e43). "
+              + "Read-only, no override flag, and a tracker that cannot be read holds the claim[/]");
         table.AddRow("Settings changed", project.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
