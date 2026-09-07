@@ -138,7 +138,9 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : "tracker-assignee [dim]— a task linked to a Jira card or a GitHub issue is claimed on this "
               + "install only while the tracker shows that item assigned to this install's own tracker "
               + "identity, so two teammates' installs cannot both run the same card (idea 64c75e43). "
-              + "Read-only, no override flag, and a tracker that cannot be read holds the claim[/]");
+              + "Satisfy it in one command with h9k task assign <id> --take, which takes an item nobody "
+              + "holds; the gate itself is read-only, has no override flag, and a tracker that cannot be "
+              + "read holds the claim[/]");
         table.AddRow("Settings changed", project.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");

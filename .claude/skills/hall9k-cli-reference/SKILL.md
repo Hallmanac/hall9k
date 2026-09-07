@@ -127,7 +127,7 @@ h9k task publish <id> [--assign]                  # the readiness gate; --assign
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
 h9k task publish <id> --pre-approved              # the owner stops being a synchronous gate at the pull request: the daemon rebase-merges once every real gate (CI, review decision, requested reviewers, threads) reads satisfied (Decisions Log #135)
-h9k task assign <id> [<owner>]                    # the dispatch trigger — Queued, or Blocked on dependencies
+h9k task assign <id> [<owner>] [--take]           # the dispatch trigger — Queued, or Blocked on dependencies; --take also takes the linked card/issue for this install when nobody holds it, in a project whose claim gate is on (Decisions Log #143)
 h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
 h9k task set-pre-approved <id> on|off             # flip standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (the flag is part of the readiness contract set at publish) (Decisions Log #135)
 h9k task unassign <id>                            # back to Published (refused while leased)
@@ -441,9 +441,36 @@ and `h9k task assign` warns on stderr naming the holder and the link but assigns
 tracker is the go signal and the queue is where the task waits. A queued task's line on
 `h9k status`, `h9k task show` and `h9k project show` names the item and its holder. Untouched: a
 task with no linked item, an untracked one, and a `pr-review` task, whose pull request's own
-assignment is already auto-pr-review's signal. Read-only, no override flag; a tracker that cannot
-be read holds the claim rather than releasing it, quotes the tracker's error, tells a credential
-refusal apart from an outage, and is re-read no more often than every three minutes.
+assignment is already auto-pr-review's signal. The gate itself never writes to the tracker and has
+no override flag; a tracker that cannot be read holds the claim rather than releasing it, quotes
+the tracker's error, tells a credential refusal apart from an outage, and is re-read no more often
+than every three minutes. The one write this feature makes lives outside the gate, in the command
+below.
+
+**One command can move the tracker and the board together** (Decisions Log #143).
+`h9k task assign <id> [owner] --take` is the one write this feature makes, and it lives outside the
+gate rather than in it (`TrackerAssignmentTake`, which calls `TrackerClaimGate` for its read — the
+gate every door and every sweep calls stays read-only, because the dispatcher calls it on a cadence
+with nobody watching). In a gated project it reads the linked item fresh and, when the tracker
+shows **nobody** holds it, writes this install's own tracker identity into the assignee field (Jira
+as an `assignee`-only update through `JiraWriteExecutor`, GitHub as
+`gh issue edit --add-assignee` with the login read live), reads the
+item back, records `TrackerAssignmentWritten` from that read-back, and assigns — so the gate then
+passes on its own instead of the task sitting in the queue waiting for a second act. It only ever
+moves an item from unassigned to this install: one somebody else holds is refused with exit 70
+naming the holder, nothing is written, the task is left exactly as it was, and **there is no flag
+that takes an item from another person**. Already yours records the observation and proceeds; an
+unreadable tracker refuses rather than writing blind. A read-back that comes back naming somebody
+else *beside* this install is refused too, and it is the one outcome only GitHub can produce
+(`--add-assignee` adds where Jira's `PUT` replaces): two installs took the same issue in the same
+moment, so neither may claim it, and the refusal names who else is on it and says to settle it with
+them rather than to run the command again. The write is a **field update, never a
+transition** — the item's status, labels and milestone are untouched — but a team's own board
+automation may react to an assignment, which is why the flag is explicit. Without it, an
+interactive assign offers the same take on an unassigned item (defaulting to no) and a
+non-interactive one warns and proceeds without writing anything. `--take` where there is no gate
+to satisfy (gate off, or no linked card or issue) is refused rather than quietly honoured.
+Releasing a task leaves the tracker assignment where it is.
 
 **A team's branch convention is a project setting, not a fork of the platform** (Decisions Log
 #121). `h9k project set <project> --branch-template "<TEXT>"` names a task's branch out of three

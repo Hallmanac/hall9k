@@ -268,10 +268,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "teammates' installs cannot both run the same card. Every claim door re-reads the assignee "
             + "field fresh: the dispatcher, h9k task work, and h9k task start. h9k task assign warns and "
             + "assigns anyway, since the tracker stays the go signal and the task simply waits in the "
-            + "queue. A task with no linked item, an untracked one, and a pr-review task are untouched "
-            + "(a pull request's own assignment is already auto-pr-review's signal). The gate never "
-            + "writes to the tracker and there is no override flag; a tracker that cannot be read holds "
-            + "the claim rather than releasing it")]
+            + "queue — or takes the item outright with h9k task assign --take, which writes this "
+            + "install's own identity into an item NOBODY holds so the gate then passes on its own, one "
+            + "command moving the tracker and the board together (an item somebody else holds is refused; "
+            + "no flag takes one from another person). A task with no linked item, an untracked one, and "
+            + "a pr-review task are untouched (a pull request's own assignment is already "
+            + "auto-pr-review's signal). The gate itself never writes to the tracker and there is no "
+            + "override flag; a tracker that cannot be read holds the claim rather than releasing it")]
         public string? ClaimGate { get; init; }
     }
 
@@ -523,7 +526,11 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + "hands out work, so two teammates' installs cannot both run the same card. h9k task "
                 + "assign still assigns and warns; the dispatcher, h9k task work and h9k task start "
                 + "refuse. There is no override flag, and a tracker this install cannot read holds the "
-                + "claim rather than releasing it.[/]");
+                + "claim rather than releasing it. From an interactive terminal, h9k task assign offers "
+                + "to take an item nobody holds — h9k task assign --take does it without asking — so "
+                + "satisfying the gate stays one command rather than a second trip to the tracker; that "
+                + "is the one place Hall9k writes to your board, and only ever onto an item nobody "
+                + "holds.[/]");
         }
 
         // The home's AGENTS.md is a render of exactly the facts this command changes (the Jira

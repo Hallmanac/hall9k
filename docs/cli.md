@@ -139,12 +139,49 @@ the current holder when there is one. A task with no linked item, an untracked o
 `pr-review` task are all untouched: a pull request's own assignment is already auto-pr-review's
 signal.
 
-The gate never writes to the tracker and has no override flag. A tracker this install cannot read
-holds the claim rather than releasing it — a gate that exists to stop two installs running the
-same card must not let both through when the shared record goes dark — and the hold quotes the
-tracker's own error and says what ends it: renew the connection's token with the command printed,
-restore the connection, or wait out the outage, told apart so the remedy is never a guess. A held
-task is re-read no more often than every three minutes rather than on every five-second sweep.
+The gate itself never writes to the tracker and has no override flag. A tracker this install
+cannot read holds the claim rather than releasing it — a gate that exists to stop two installs
+running the same card must not let both through when the shared record goes dark — and the hold
+quotes the tracker's own error and says what ends it: renew the connection's token with the
+command printed, restore the connection, or wait out the outage, told apart so the remedy is never
+a guess. A held task is re-read no more often than every three minutes rather than on every
+five-second sweep.
+
+**One command can move the tracker and the board together.**
+`h9k task assign <id> [owner] --take` (Decisions Log #143) is the one write this feature makes, so
+claiming stops being a two-place act: in a gated project it reads the linked card or issue fresh
+and, when the tracker shows **no** assignee, writes this install's own tracker identity into the
+assignee field, reads the item back, records what the read-back showed, and assigns — so the gate
+passes on its own and stops being what keeps the task in the queue. (It is the gate that stops
+holding the task, not a promise the task runs now: a task with unmet dependencies still waits on
+those, and the assign line above the take's own says so.)
+
+It only ever moves an item from unassigned to you. An item somebody else holds is refused (exit
+70) naming the holder, nothing is written, the task is left exactly as it was, and there is
+deliberately no flag that takes an item from another person — ask them to unassign themselves, or
+take a different task. An item already assigned to you writes nothing and simply records what it
+saw. A tracker that cannot be read refuses too: a take that cannot see who holds an item cannot
+know it is taking it from nobody. And an item that was unassigned a moment ago but comes back from
+the read-back naming somebody else *beside* you is refused as well — two installs took it in the
+same moment, so neither may claim it. That one is GitHub-only, because `--add-assignee` adds where
+Jira's write replaces, and the refusal names who else is on the issue and says to settle it with
+them: your login is on the issue too, Hall9k never takes an assignment off one, and re-running
+would simply find it assigned to you both.
+
+The write is a **field update and never a transition**: Jira gets an ordinary update carrying
+`assignee` and nothing else, GitHub gets `gh issue edit --add-assignee`, and neither touches the
+item's status, labels or milestone — which state an item belongs in is your team's workflow. Be
+aware, though, that your own board automation may react to an assignment; that is the one
+consequence Hall9k cannot see. On GitHub, only a login that can be assigned on that repository — a
+collaborator, or an organisation team member with access — is accepted, and GitHub's own refusal is
+quoted verbatim when it is not.
+
+Without the flag, an interactive `h9k task assign` in a gated project **offers** the same take on
+an unassigned item (defaulting to no), and a non-interactive one warns and proceeds without
+writing anything: Hall9k never writes to your tracker unless it was told to, and an unattended
+process cannot tell it. `--take` on a project whose gate is off, or on a task with no linked card
+or issue, is refused rather than quietly honoured — there is nothing for a take to unlock, and the
+refusal says which of the two it was.
 
 ### Epics: naming a family of tasks
 

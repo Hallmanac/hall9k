@@ -275,11 +275,29 @@ Every claim door re-checks: the dispatcher leaves a refused task Queued and logs
 episode, and `h9k task work`/`h9k task start` refuse with the same wording and exit 70.
 `h9k task assign` warns and assigns anyway, because the tracker is the go signal and the queue is
 where the task is meant to wait. A queued task's own line on `h9k status`, `h9k task show` and
-`h9k project show` names the item and its current holder. Read-only, no override flag, and a
-`pr-review` task is untouched — a pull request's own assignment is already auto-pr-review's
-signal. A tracker that cannot be read holds the claim rather than releasing it, quoting the
-tracker's own error and naming what ends the hold (renew the token, restore the connection, or
-wait out the outage), and a held task is re-read no more often than every three minutes.
+`h9k project show` names the item and its current holder. The gate itself is read-only with no
+override flag, and a `pr-review` task is untouched — a pull request's own assignment is already
+auto-pr-review's signal. A tracker that cannot be read holds the claim rather than releasing it,
+quoting the tracker's own error and naming what ends the hold (renew the token, restore the
+connection, or wait out the outage), and a held task is re-read no more often than every three
+minutes.
+
+`h9k task assign <id> --take` is the one write the feature makes, so claiming stops being a
+two-place act (Decisions Log #143): in a gated project it reads the linked item fresh and, when
+the tracker shows nobody holds it, writes this install's own tracker identity into the assignee
+field, reads the item back, records `TrackerAssignmentWritten` from that read-back, and assigns —
+so the gate then passes on its own. It only ever moves an item from unassigned to you: one
+somebody else holds is refused (exit 70) naming the holder with nothing written and the task
+untouched, and there is deliberately no flag that takes an item from another person. Already yours
+records the observation and proceeds. A read-back that names somebody else beside this install is
+refused too — two installs took the item in the same moment, which only GitHub can produce, since
+`--add-assignee` adds where Jira's write replaces. The write is a field update and never a
+transition — Jira gets an `assignee`-only update through the same executor every other Jira write
+uses, GitHub gets
+`gh issue edit --add-assignee` — so the item's status is untouched, though a team's own board
+automation may react to the assignment. Without the flag an interactive assign offers the same
+take (defaulting to no) and a non-interactive one warns and proceeds, never writing silently.
+Releasing a task leaves the tracker assignment where it is; the reverse write is not built.
 
 ### Outside-interaction logging
 
@@ -622,7 +640,10 @@ card's content is always an agent's or an operator's judgment — but hall9k is 
 of every Jira write (create, update, comment): composition and execution are split, and the
 executor refuses a transition or a close regardless of what was composed, because which status a
 merge means is a team's workflow rather than a fact about software. The one write the platform
-initiates entirely on its own is a comment on the card when the task's pull request merges.
+initiates entirely on its own is a comment on the card when the task's pull request merges. The
+claim gate's own `h9k task assign --take` (#143) writes one field — the assignee, on an item nobody
+holds, on a human's explicit say-so — and no status, which is exactly why it does not breach this:
+who is holding a card is not which state it is in.
 
 **Never guess at an unobserved fact.** Audit fields, history, and identifiers record what was
 actually observed, and the unobserved is represented as explicitly unknown. A quiet pull request
