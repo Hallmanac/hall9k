@@ -866,6 +866,7 @@ public sealed class CloseoutEngine(
                 // triage ruling governs that path unchanged): the follow-up's own job is resolving
                 // the conflict, not a diff a reviewer would read against a prior push.
                 now, pullRequestHeadSha: null, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
+                predecided: null,
                 cancellationToken);
             return InspectionOutcome.Inspected;
         }
@@ -890,6 +891,7 @@ public sealed class CloseoutEngine(
                 // Discovery cycle seeds its diff instruction from it (task: a lap reviews only what
                 // it changed), so the reviewer reads the fix rather than the whole branch again.
                 now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
+                predecided: null,
                 cancellationToken);
             return InspectionOutcome.Inspected;
         }
@@ -907,6 +909,7 @@ public sealed class CloseoutEngine(
                 // Same reasoning as the FailingChecks branch above: seed the follow-up's own
                 // opening Discovery cycle from the pull request head this sweep just observed.
                 now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
+                predecided: null,
                 cancellationToken);
             return InspectionOutcome.Inspected;
         }
@@ -2142,7 +2145,10 @@ public sealed class CloseoutEngine(
     /// replay rebases between (<c>TaskReopened.StackReplayUpstreamCommit</c> and its own doc's
     /// twin); every other kind passes null for both, explicitly rather than by default, because
     /// <c>CancellationToken</c> comes last (AGENTS.md) and an optional parameter cannot sit in
-    /// front of it.
+    /// front of it. <paramref name="predecided"/> is the same for the same reason: null asks this
+    /// method to decide, and only <see cref="TryReplayStackedChildAsync"/> passes one, because it
+    /// has to know whether this call would park BEFORE it makes an external write it cannot roll
+    /// back (see <see cref="DecideFollowUpAsync"/>).
     /// </summary>
     private async Task DispatchFollowUpOrParkAsync(
         IDocumentSession session,
@@ -2157,85 +2163,28 @@ public sealed class CloseoutEngine(
         string? pullRequestHeadSha,
         string? stackReplayUpstreamCommit,
         string? stackReplayOntoCommit,
+        FollowUpDecision? predecided,
         CancellationToken cancellationToken)
     {
-        // TaskAggregate.Apply(TaskReopened) never clears _unmetDependencies (only Assign does),
-        // so a task claimed with h9k task start --acknowledge-unmet-dependencies that reached
-        // Done while a dependency was still open would land back on Blocked, not Queued, on the
-        // very same TaskReopened this method is about to append — the same fact
-        // PullRequestResolveCommand already reconciles for the human lever (its own comment at
-        // TaskDecider.Reopen's call site). Appending it anyway would supersede this run —
-        // retiring the only thing watching the pull request — while nothing ever claims the
-        // now-Blocked task to dispatch a follow-up: DispatchEngine.ClaimEligibleAsync filters on
-        // state = 'Queued', so the PR goes unwatched until the dependency closes out, and a merge
-        // inside that window is never observed (independent pre-PR review, cycle 1, conformance
-        // lens). Park instead: CloseoutParked stays in the watched query above, so merge/close
-        // detection keeps running every sweep (InspectAndActAsync's own "gets merge/close
-        // detection only" branch). Nothing else resumes the park — InspectAndActAsync returns
-        // early for a CloseoutParked run before it ever re-reads task.UnmetDependencies, so
-        // clearing the dependency alone does not dispatch a follow-up; only a human running
-        // h9k pr resolve does, which already tolerates the same Blocked landing.
-        if (task.UnmetDependencies.Count > 0)
+        // Every park verdict is decided before anything is appended or written — including by a
+        // caller that already asked (predecided), which is how the stacked retarget knows not to
+        // move a pull request's base it would then park with the replay undone.
+        FollowUpDecision decision = predecided ?? await DecideFollowUpAsync(
+            session, task, run, kind, obstructionIdentity, snapshot, reason, cancellationToken);
+        if (decision.ParkReason is { } parkReason)
         {
-            string dependencyNoun = task.UnmetDependencies.Count == 1 ? "dependency" : "dependencies";
-            string dependencyParkReason =
-                $"{reason} Task {task.Id} still has {task.UnmetDependencies.Count} unmet {dependencyNoun} — " +
-                "an automatic follow-up would land it Blocked rather than dispatch, so the pull request stays " +
-                "parked here, watched, instead. Nothing resumes this park on its own — clearing the dependency " +
-                "alone will not; h9k pr resolve is what forces a follow-up.";
-            await ParkAsync(session, run, dependencyParkReason, now, cancellationToken);
-            return;
-        }
-
-        // The lifetime ceiling is checked next, ahead of everything below it: it is the true
-        // runaway backstop (Decisions Log #80, backlog 45), and no human engagement bypasses
-        // it — only h9k pr resolve does. (The unmet-dependency short-circuit above it runs
-        // first, since a task with a dependency this run cannot clear needs to park before the
-        // ceiling is ever consulted.)
-        int automaticActionsSpent = await AutomaticActionsSpentAsync(session, task, cancellationToken);
-        if (automaticActionsSpent >= _options.MaxAutomaticCloseoutRuns)
-        {
-            string ceilingParkReason =
-                $"{reason} The lifetime automatic closeout budget spent ({automaticActionsSpent}/{_options.MaxAutomaticCloseoutRuns} action(s)) — " +
-                $"{DescribeAutomaticLapHistory(task, automaticActionsSpent)}. " +
-                "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
-            await ParkAsync(session, run, ceilingParkReason, now, cancellationToken);
-            return;
-        }
-
-        string obstructionKey = ObstructionKey(kind, obstructionIdentity);
-        string obstructionSummary = DescribeObstruction(kind, obstructionIdentity);
-        bool sameObstruction = obstructionKey == task.LastAutomaticObstructionKey;
-        int lapsIfDispatched = sameObstruction ? task.ConsecutiveObstructionLaps + 1 : 1;
-        bool exceedsProgressCap = lapsIfDispatched > _options.MaxCloseoutLapsPerObstruction;
-
-        bool humanGranted = false;
-        if (exceedsProgressCap && HasHumanEngagement(task, run, snapshot, out string engagement))
-        {
-            humanGranted = true;
-            reason =
-                $"{reason} A human engaged with the pull request since the last automatic decision " +
-                $"({engagement}) — granting one more automatic lap despite the per-obstruction cap.";
-        }
-
-        if (exceedsProgressCap && !humanGranted)
-        {
-            // sameObstruction is false only when the cap itself is below 1: lapsIfDispatched
-            // is always at least 1, so a brand-new obstruction only ever exceeds the cap when
-            // there is no room for even a first lap. task.ConsecutiveObstructionLaps counts a
-            // DIFFERENT, earlier obstruction in that case, so asserting it "survived" that many
-            // laps would report an unobserved fact about an obstruction this park never saw
-            // (AGENTS.md: never guess at unobserved facts).
-            string parkReason = sameObstruction
-                ? $"{reason} The same obstruction — {obstructionSummary} — survived {task.ConsecutiveObstructionLaps} " +
-                  $"automatic lap(s) without clearing (cap {_options.MaxCloseoutLapsPerObstruction} per obstruction). " +
-                  "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve."
-                : $"{reason} This is a new obstruction — {obstructionSummary} — but the cap " +
-                  $"{_options.MaxCloseoutLapsPerObstruction} per obstruction leaves no room for even one automatic lap on it. " +
-                  "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.";
             await ParkAsync(session, run, parkReason, now, cancellationToken);
             return;
         }
+
+        // The decision's own reason, not the caller's: a human-granted extra lap appends its
+        // grant to the sentence the reopen records (DecideFollowUpAsync).
+        reason = decision.Reason;
+        string obstructionKey = decision.ObstructionKey;
+        string obstructionSummary = decision.ObstructionSummary;
+        int automaticActionsSpent = decision.AutomaticActionsSpent;
+        int lapsIfDispatched = decision.LapsIfDispatched;
+        bool humanGranted = decision.HumanGranted;
 
         // The reopen races the CLI's h9k pr resolve on the fence version captured before
         // the aggregate was read; losing just means someone else already dispatched.
@@ -2273,6 +2222,136 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
+    /// What one automatic follow-up decision came to, decided over nothing but reads — no append,
+    /// no provider write — so a caller can ask before it does something it cannot undo.
+    /// <see cref="ParkReason"/> non-null means this decision parks; every other field describes the
+    /// dispatch it would otherwise make.
+    /// </summary>
+    /// <param name="Reason">
+    /// The sentence the reopen records — the caller's own, plus the human-grant clause when one was
+    /// granted, which is why the dispatch reads this rather than what it passed in.
+    /// </param>
+    private readonly record struct FollowUpDecision(
+        string? ParkReason,
+        string Reason,
+        string ObstructionKey,
+        string ObstructionSummary,
+        int AutomaticActionsSpent,
+        int LapsIfDispatched,
+        bool HumanGranted);
+
+    /// <summary>
+    /// The three park verdicts every automatic follow-up is subject to — an unmet dependency, the
+    /// lifetime automatic-closeout ceiling, the per-obstruction progress cap — asked without
+    /// changing anything, in the order they are asked in.
+    /// <para>
+    /// Split out of <see cref="DispatchFollowUpOrParkAsync"/> so
+    /// <see cref="TryReplayStackedChildAsync"/> can ask the question BEFORE it retargets a pull
+    /// request on GitHub (independent pre-PR review, cycle 1, adversarial lens). That retarget is
+    /// an external write with no rollback, and a park landing after it leaves exactly the
+    /// incoherent state the rebase-budget check ahead of it already refuses to create: a pull
+    /// request aimed at the project's base still carrying the parent's duplicated commits, with no
+    /// dispatch coming. Sharing the decision rather than duplicating it is what keeps the answer
+    /// asked before the write identical to the one enforced after it.
+    /// </para>
+    /// </summary>
+    private async Task<FollowUpDecision> DecideFollowUpAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        RunDetails run,
+        FollowUpKind kind,
+        IReadOnlyList<string> obstructionIdentity,
+        PullRequestSnapshot snapshot,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        string obstructionKey = ObstructionKey(kind, obstructionIdentity);
+        string obstructionSummary = DescribeObstruction(kind, obstructionIdentity);
+
+        // TaskAggregate.Apply(TaskReopened) never clears _unmetDependencies (only Assign does),
+        // so a task claimed with h9k task start --acknowledge-unmet-dependencies that reached
+        // Done while a dependency was still open would land back on Blocked, not Queued, on the
+        // very same TaskReopened the dispatch is about to append — the same fact
+        // PullRequestResolveCommand already reconciles for the human lever (its own comment at
+        // TaskDecider.Reopen's call site). Appending it anyway would supersede this run —
+        // retiring the only thing watching the pull request — while nothing ever claims the
+        // now-Blocked task to dispatch a follow-up: DispatchEngine.ClaimEligibleAsync filters on
+        // state = 'Queued', so the PR goes unwatched until the dependency closes out, and a merge
+        // inside that window is never observed (independent pre-PR review, cycle 1, conformance
+        // lens). Park instead: CloseoutParked stays in the watched query above, so merge/close
+        // detection keeps running every sweep (InspectAndActAsync's own "gets merge/close
+        // detection only" branch). Nothing else resumes the park — InspectAndActAsync returns
+        // early for a CloseoutParked run before it ever re-reads task.UnmetDependencies, so
+        // clearing the dependency alone does not dispatch a follow-up; only a human running
+        // h9k pr resolve does, which already tolerates the same Blocked landing.
+        if (task.UnmetDependencies.Count > 0)
+        {
+            string dependencyNoun = task.UnmetDependencies.Count == 1 ? "dependency" : "dependencies";
+            return Park(
+                $"{reason} Task {task.Id} still has {task.UnmetDependencies.Count} unmet {dependencyNoun} — " +
+                "an automatic follow-up would land it Blocked rather than dispatch, so the pull request stays " +
+                "parked here, watched, instead. Nothing resumes this park on its own — clearing the dependency " +
+                "alone will not; h9k pr resolve is what forces a follow-up.");
+        }
+
+        // The lifetime ceiling is checked next, ahead of everything below it: it is the true
+        // runaway backstop (Decisions Log #80, backlog 45), and no human engagement bypasses
+        // it — only h9k pr resolve does. (The unmet-dependency short-circuit above it runs
+        // first, since a task with a dependency this run cannot clear needs to park before the
+        // ceiling is ever consulted.)
+        int automaticActionsSpent = await AutomaticActionsSpentAsync(session, task, cancellationToken);
+        if (automaticActionsSpent >= _options.MaxAutomaticCloseoutRuns)
+        {
+            return Park(
+                $"{reason} The lifetime automatic closeout budget spent ({automaticActionsSpent}/{_options.MaxAutomaticCloseoutRuns} action(s)) — " +
+                $"{DescribeAutomaticLapHistory(task, automaticActionsSpent)}. " +
+                "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.");
+        }
+
+        bool sameObstruction = obstructionKey == task.LastAutomaticObstructionKey;
+        int lapsIfDispatched = sameObstruction ? task.ConsecutiveObstructionLaps + 1 : 1;
+        bool exceedsProgressCap = lapsIfDispatched > _options.MaxCloseoutLapsPerObstruction;
+
+        bool humanGranted = false;
+        if (exceedsProgressCap && HasHumanEngagement(task, run, snapshot, out string engagement))
+        {
+            humanGranted = true;
+            reason =
+                $"{reason} A human engaged with the pull request since the last automatic decision " +
+                $"({engagement}) — granting one more automatic lap despite the per-obstruction cap.";
+        }
+
+        if (exceedsProgressCap && !humanGranted)
+        {
+            // sameObstruction is false only when the cap itself is below 1: lapsIfDispatched
+            // is always at least 1, so a brand-new obstruction only ever exceeds the cap when
+            // there is no room for even a first lap. task.ConsecutiveObstructionLaps counts a
+            // DIFFERENT, earlier obstruction in that case, so asserting it "survived" that many
+            // laps would report an unobserved fact about an obstruction this park never saw
+            // (AGENTS.md: never guess at unobserved facts).
+            return Park(sameObstruction
+                ? $"{reason} The same obstruction — {obstructionSummary} — survived {task.ConsecutiveObstructionLaps} " +
+                  $"automatic lap(s) without clearing (cap {_options.MaxCloseoutLapsPerObstruction} per obstruction). " +
+                  "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve."
+                : $"{reason} This is a new obstruction — {obstructionSummary} — but the cap " +
+                  $"{_options.MaxCloseoutLapsPerObstruction} per obstruction leaves no room for even one automatic lap on it. " +
+                  "Fix or merge the pull request by hand, close it, or grant another attempt with h9k pr resolve.");
+        }
+
+        return new FollowUpDecision(
+            ParkReason: null, reason, obstructionKey, obstructionSummary, automaticActionsSpent,
+            lapsIfDispatched, humanGranted);
+
+        // A park carries the obstruction's identity too: nothing dispatches, but a caller that
+        // asked ahead of a write still has the obstruction this decision was about in hand. The
+        // two counters are zero rather than half-read — a parked decision never dispatched a lap,
+        // and reporting one it did not take would state an unobserved fact.
+        FollowUpDecision Park(string parkReason) => new(
+            parkReason, reason, obstructionKey, obstructionSummary,
+            AutomaticActionsSpent: 0, LapsIfDispatched: 0, HumanGranted: false);
+    }
+
+    /// <summary>
     /// One sweep's decision about a stacked child whose pull request still targets its parent's
     /// branch (task: a stacked pull-request edge exists as an explicit opt-in dependency). Returns
     /// true when this sweep acted — retargeted, dispatched a replay, or parked — which ends the
@@ -2297,7 +2376,10 @@ public sealed class CloseoutEngine(
     /// runaway backstop that only <c>h9k pr resolve</c> lifts (Decisions Log #80), and a child that
     /// has already spent six automatic laps of its own AND whose parent will not stop moving is
     /// exactly the case that wants a human, whichever counter names it. Free to spend, still
-    /// subject to the backstop.
+    /// subject to the backstop — and subject to it BEFORE the retarget, not after: every park
+    /// verdict the dispatch is capable of reaching is asked through
+    /// <see cref="DecideFollowUpAsync"/> ahead of the provider write, so no park can land on a
+    /// pull request whose base has already been moved with the replay undone.
     /// </para>
     /// <para>
     /// A retarget that fails dispatches nothing. The record says so (<see cref="StackedPullRequestRetargeted"/>
@@ -2361,6 +2443,28 @@ public sealed class CloseoutEngine(
             return true;
         }
 
+        string replayReason =
+            $"This is a stacked pull request and {observation.Detail}. The replay is mechanical — the "
+            + "same commits onto a new base, no new intent — so it runs the gates and no review cycle.";
+
+        // Asked here, ahead of the retarget, for the same reason the rebase budget above is: the
+        // dispatch below is subject to three more park verdicts — an unmet dependency, the lifetime
+        // automatic-closeout ceiling, the per-obstruction cap — and every one of them would
+        // otherwise land AFTER `gh pr edit --base` has already moved this pull request, leaving a
+        // human a pull request aimed at the project's base still carrying the parent's duplicated
+        // commits with no dispatch coming (independent pre-PR review, cycle 1, adversarial lens).
+        // Parking with the base untouched leaves a coherent stack to finish by hand instead. The
+        // same decision is handed to the dispatch below rather than re-asked, so the verdict that
+        // permitted the retarget is exactly the one enforced after it.
+        FollowUpDecision decision = await DecideFollowUpAsync(
+            session, task, run, FollowUpKind.StackReplay,
+            [observation.BoundaryCommit], snapshot, replayReason, cancellationToken);
+        if (decision.ParkReason is { } parkReason)
+        {
+            await ParkAsync(session, run, parkReason, now, cancellationToken);
+            return true;
+        }
+
         if (observation.Verdict == StackedParentVerdict.ParentMerged)
         {
             StackedRetargetOutcome retarget = await TryRetargetStackedChildAsync(
@@ -2395,14 +2499,14 @@ public sealed class CloseoutEngine(
             // repeated.
             [observation.BoundaryCommit],
             snapshot,
-            $"This is a stacked pull request and {observation.Detail}. The replay is mechanical — the "
-            + "same commits onto a new base, no new intent — so it runs the gates and no review cycle.",
+            replayReason,
             // No opening-review scope seed: a replay dispatches with ReviewStageComposition.None, so
             // there is no Discovery cycle for a since-sha to scope (RunLauncher forces that
             // composition for this kind).
             now, pullRequestHeadSha: null,
             stackReplayUpstreamCommit: observation.BoundaryCommit,
             stackReplayOntoCommit: observation.OntoCommit,
+            predecided: decision,
             cancellationToken);
         return true;
     }
