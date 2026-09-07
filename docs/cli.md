@@ -373,7 +373,11 @@ for a routine phase-boundary park, alongside `review resolve`'s redirect verbs, 
 is the newest — you did the fix yourself, in your own worktree, and the review agents check it the
 way they would check a fix session's. It applies at the review-verdict-to-fix boundary only (on
 either side of the pull request), refuses over an uncommitted worktree, and refuses an unmoved
-branch tip unless `--no-change "<why>"` says why.
+branch tip unless `--no-change "<why>"` says why. `review resolve` also carries the one lever whose
+effect another person sees: on a park where a fix lap disagreed with a human reviewer's
+changes-requested finding, it takes `--post-reply-as-written`, `--post-reply "<text>"`, or
+`--post-nothing` alongside your verdict, and that choice is the only way a disagreement ever
+reaches the reviewer.
 
 ### Projects, owners, connections
 

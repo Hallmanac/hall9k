@@ -23,8 +23,15 @@ runs narrowed to the tests reachable from that cycle's touched commits when they
 with confidence, never on the run's first pass or the mandatory full pass immediately before the
 pull request, so nothing merges on scoped green alone (PLAN.md Decisions Log #98). Then it
 watches that pull request until the merge is observed, dispatching bounded follow-up runs for
-failing checks, unresolved review threads, and a branch that has fallen behind and now conflicts
-with its base along the way, and removing the worktree and the branch at true closeout. A branch
+failing checks, unresolved review threads, a human reviewer's changes-requested review, and a
+branch that has fallen behind and now conflicts
+with its base along the way, and removing the worktree and the branch at true closeout. A
+changes-requested review from a *person* is its own lap, carrying that review's body and every
+inline comment as findings: the lap fixes what it agrees with and replies in those threads, and
+where it disagrees it posts nothing and parks with a proposed reply the implementer sends, edits,
+or drops through `h9k review resolve` — no agent ever posts a disagreement to a human reviewer
+(PLAN.md Decisions Log #151). Copilot's own changes-requested review stays on the automated thread
+path, disputing and resolving without a human in the loop. A branch
 obstructed only by a conflict with its own base gets a mechanical fix tried first: a plain fetch +
 rebase + force-push in the run's retained worktree, no agent session and no local gates, since
 GitHub's own CI on the push is treated as the authoritative gate here — the follow-up run only
