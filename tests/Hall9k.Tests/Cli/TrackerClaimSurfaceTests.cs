@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Marten;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -83,6 +84,84 @@ public sealed class TrackerClaimSurfaceTests
 
         outage.AuthenticationRefusal.Should().BeFalse();
         outage.ReasonLine.Should().Contain("wait out the outage").And.NotContain("renew the token");
+    }
+
+    /// <summary>
+    /// The invariant every after-the-commit half of this gate rests on, pinned here because it
+    /// broke once: <c>h9k task assign</c> reports the gate once the assignment has already
+    /// committed and already been announced, so a failure recording what was observed says so on
+    /// stderr and returns — a command whose change succeeded must not exit non-zero for the
+    /// bookkeeping after it (independent pre-PR review, cycle 1; the same rule
+    /// <c>Doorbell.RingAsync</c>'s own catch keeps for the notify that follows a commit).
+    /// <para>
+    /// A disposed store is simply the cheapest real failure to arrange without a database — what is
+    /// under test is that <em>any</em> failure is contained, not which one, so this deliberately
+    /// does not assert an exception type it would then be pinning Marten's internals to.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_failed_observation_append_after_the_commit_is_said_out_loud_rather_than_thrown()
+    {
+        DocumentStore store = DocumentStore.For(options =>
+            options.Connection("Host=localhost;Port=1;Database=hall9k;Username=nobody"));
+        store.Dispose();
+
+        Func<Task> record = () => TrackerClaimCheck.WarnAndRecordAsync(
+            store, DomainId.New(), "jira:PROJ-14", Assigned(), CancellationToken.None);
+
+        await record.Should().NotThrowAsync(
+            "the assignment has already landed and been announced by the time this runs");
+    }
+
+    /// <summary>
+    /// The same invariant on the other side of the commit, where it costs more (Copilot review,
+    /// PR #262): <c>h9k task assign --take</c> records the take <em>before</em> the assignment
+    /// commits, so a database hiccup on that append would have thrown out of
+    /// <c>TakeOrRefuseAsync</c> and ended the command with the Jira card or GitHub issue assigned
+    /// to this install and the Hall9k task still unassigned — the tracker and the board pulled
+    /// apart, which is exactly what one command moving both exists to prevent. Losing the audit
+    /// event is the lesser harm, so the append is best-effort and says so.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_take_record_never_aborts_the_assignment_the_tracker_was_taken_for()
+    {
+        DocumentStore store = DocumentStore.For(options =>
+            options.Connection("Host=localhost;Port=1;Database=hall9k;Username=nobody"));
+        store.Dispose();
+
+        TrackerTake taken = TrackerTake.Taken(
+            Unassigned(), new TrackerAssignee("Hallmanac", null), Observed);
+
+        Func<Task> record = () => TrackerClaimCheck.RecordAsync(
+            store, DomainId.New(), "github:Hallmanac/hall9k#251", taken, CancellationToken.None);
+
+        await record.Should().NotThrowAsync(
+            "the tracker has already been written to by the time this runs, and the assignment it "
+            + "was taken for has not committed yet");
+    }
+
+    /// <summary>
+    /// The one refusal in this feature that deliberately does <em>not</em> end in "run it again":
+    /// a take whose read-back named somebody else beside this install (two installs taking the same
+    /// GitHub issue in the same moment) leaves the item carrying both logins, and an item assigned
+    /// to several people passes the gate for every one of them (Decisions Log #142) — so a second
+    /// run would read AlreadyMine and claim, which is the outcome the verdict exists to stop. The
+    /// lever is the other person (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void A_contested_take_names_the_other_holder_and_never_tells_the_human_to_retry()
+    {
+        TrackerTake contested = TrackerTake.Contested(Unassigned(), "teammate", Observed);
+
+        contested.Passes.Should().BeFalse();
+        contested.Wrote.Should().BeFalse("nothing about a contested read-back is recorded");
+        contested.Assignee.Should().BeNull("there is no observation here an event may be composed from");
+        contested.TookLine.Should().BeEmpty();
+        contested.RefusalLine.Should()
+            .Contain("teammate")
+            .And.Contain("taking the same item in the same moment")
+            .And.Contain("Do not simply run this again")
+            .And.NotContain("run the same command again");
     }
 
     [Fact]
@@ -233,6 +312,20 @@ public sealed class TrackerClaimSurfaceTests
         here.Id.Should().NotBe(elsewhere.Id);
         here.TaskId.Should().Be(taskId).And.Be(elsewhere.TaskId, "both are about the same task");
     }
+
+    /// <summary>A passing read, which is the only shape that has evidence to append at all.</summary>
+    private static TrackerClaimDecision Assigned() => new(
+        TrackerClaimVerdict.Assigned,
+        "jira",
+        "PROJ-14",
+        new Uri("https://hall9k.atlassian.net/browse/PROJ-14"),
+        "5b10",
+        "Brian Hall",
+        null,
+        false,
+        null,
+        Observed,
+        new TrackerAssignee("5b10", "Brian Hall"));
 
     private static TrackerClaimDecision HeldByOther() => new(
         TrackerClaimVerdict.HeldByOther,
