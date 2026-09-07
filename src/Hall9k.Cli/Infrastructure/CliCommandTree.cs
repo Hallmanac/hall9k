@@ -261,10 +261,17 @@ public static class CliCommandTree
                     + "real, so a later pass checks whether the fix actually landed and reports it again if it "
                     + "did not — except on a thread-dispute park, which settles a disputed thread rather than a "
                     + "review finding and is not carried forward this way. The park reason and findings files "
-                    + "name what needs judging.")
+                    + "name what needs judging. One park asks a second question first: where a fix lap "
+                    + "disagreed with a HUMAN reviewer's changes-requested finding, it posted nothing and "
+                    + "drafted a reply instead, so your verdict must come with one of --post-reply-as-written, "
+                    + "--post-reply \"<your text>\", or --post-nothing — the platform never sends a "
+                    + "disagreement to a person without you choosing it (task: a changes-requested "
+                    + "pull-request review from a human becomes a fix lap).")
                 .WithExample("review", "resolve", "28b19893", "--merge-ready")
                 .WithExample("review", "resolve", "28b19893", "--merge-ready", "--reason", "\"False positive - confirmed via git log\"")
-                .WithExample("review", "resolve", "28b19893", "--needs-fixes", "\"The limiter reset finding is real; fix it as the reviewer described\"");
+                .WithExample("review", "resolve", "28b19893", "--needs-fixes", "\"The limiter reset finding is real; fix it as the reviewer described\"")
+                .WithExample("review", "resolve", "28b19893", "--merge-ready", "--post-reply-as-written")
+                .WithExample("review", "resolve", "28b19893", "--needs-fixes", "\"Do it their way after all\"", "--post-nothing");
             review.AddCommand<ReviewProceedCommand>("proceed")
                 .WithDescription(
                     "Interactive mode's bare-proceed lever (task: interactive mode becomes a recorded property "
