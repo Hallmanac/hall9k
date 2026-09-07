@@ -77,8 +77,14 @@ public sealed record TrackerClaimDecision(
     /// <summary>Whether this check produced a hold worth publishing and explaining at all.</summary>
     public bool Holds => !Passes;
 
-    /// <summary>The tracker as a human names it in a sentence.</summary>
-    private string Tracker => Provider == "jira" ? "Jira" : "GitHub";
+    /// <summary>
+    /// The tracker as a human names it in a sentence. Public rather than private so
+    /// <see cref="TrackerTake"/> composes its own refusals out of the same two words, and so the
+    /// CLI's own take prompt asks about the same tracker the sentence above it just named — two
+    /// spellings of "Jira" across the doors of a single feature is exactly the drift this class
+    /// exists to prevent.
+    /// </summary>
+    public string Tracker => Provider == "jira" ? "Jira" : "GitHub";
 
     /// <summary>
     /// The item as it is spoken in a sentence bound for a terminal. <see cref="ItemKey"/> itself
@@ -89,7 +95,7 @@ public sealed record TrackerClaimDecision(
     /// would let a reference read as a card it does not name (independent pre-PR review, cycle 1,
     /// adversarial lens).
     /// </summary>
-    private string Item => TrackerAssignee.Rendered(ItemKey);
+    public string Item => TrackerAssignee.Rendered(ItemKey);
 
     /// <summary>
     /// The one sentence every door says: what the tracker showed, that this project's claim gate
@@ -136,9 +142,12 @@ public sealed record TrackerClaimDecision(
 
     /// <summary>
     /// Who this install is, named only when the tracker actually said — the never-guess rule
-    /// applied to the one field a failed identity read leaves empty (AGENTS.md).
+    /// applied to the one field a failed identity read leaves empty (AGENTS.md). Internal rather
+    /// than private for <see cref="Tracker"/>'s reason: <see cref="TrackerTake"/> says the same
+    /// clause about the same field in its own refusals, and a second copy of this rule is a second
+    /// place for it to drift (self-review, this session).
     /// </summary>
-    private string IdentityClause =>
+    internal string IdentityClause =>
         Identity is { Length: > 0 } identity ? $" ({TrackerAssignee.Rendered(identity)})" : string.Empty;
 
     /// <summary>This check as the measurement the daemon publishes for the CLI surfaces to read.</summary>

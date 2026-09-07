@@ -43,11 +43,23 @@ public sealed class JiraWriteSubmissionException(Exception innerException)
 
 /// <summary>
 /// The one place that turns a composed <see cref="JiraWritePayload"/> into a recorded, audited,
-/// verified write against Jira (Brian's design, 2026-08-28). Every caller — an operator or an
+/// verified write against Jira (Brian's design, 2026-08-28). Every caller that writes a card as
+/// part of a task's own work — an operator or an
 /// agent invoking <c>h9k task write-jira</c>, the daemon's own retry sweep once a rejected
 /// credential is fixed, closeout commenting a merged pull request onto the linked card — goes through here,
-/// so there is exactly one path by which hall9k ever writes to Jira and exactly one place the
-/// intent/execute/verify/record sequence is written down.
+/// so there is exactly one place the intent/execute/verify/record sequence is written down.
+/// <para>
+/// One write deliberately does not, and this doc claimed otherwise until it was caught
+/// (independent pre-PR review, cycle 1, adversarial lens): <c>h9k task assign --take</c>'s
+/// assignee-field update (<see cref="TrackerAssignmentTake"/>, Decisions Log #143) calls
+/// <see cref="JiraWriteExecutor"/> directly, so it carries no
+/// <see cref="JiraWriteRequested"/>/<see cref="JiraWriteSucceeded"/>/<see cref="JiraWriteFailed"/>
+/// trail at all. The shape below is an intent recorded up front and a failure left for the daemon
+/// to finish later; a take is a one-shot act in front of the human who typed the command, which
+/// must refuse rather than go pending, and it records what its own read-back saw
+/// (<c>TrackerAssignmentWritten</c>) on the task's stream instead. Anyone auditing every Jira write
+/// this platform makes therefore reads both, not only this one.
+/// </para>
 /// <para>
 /// The shape is Requested, then zero or more auth failures, then a success or a terminal failure
 /// (the events' own doc comments have the reasoning): <see cref="SubmitAsync"/> is the first of
