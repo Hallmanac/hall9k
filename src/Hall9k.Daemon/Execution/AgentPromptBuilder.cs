@@ -92,6 +92,8 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
+        AppendOperatorGuidanceSection(prompt, task);
+
         prompt.AppendLine("## Original objective (context, already implemented)");
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
@@ -173,6 +175,8 @@ public static class AgentPromptBuilder
             prompt.AppendLine($"Why this follow-up was dispatched: {task.FollowUpReason}");
             prompt.AppendLine();
         }
+
+        AppendOperatorGuidanceSection(prompt, task);
 
         prompt.AppendLine("## Original objective (context, already implemented)");
         prompt.AppendLine();
@@ -276,6 +280,8 @@ public static class AgentPromptBuilder
             prompt.AppendLine($"Why this follow-up was dispatched: {task.FollowUpReason}");
             prompt.AppendLine();
         }
+
+        AppendOperatorGuidanceSection(prompt, task);
 
         if (humanResolution.IsNotBlank())
         {
@@ -850,8 +856,26 @@ public static class AgentPromptBuilder
     /// </para>
     /// </summary>
     public static string BuildPrReviewLens(
-        TaskDetails task, ProjectDetails project, string branch, ReviewLens lens, string baseBranch) =>
-        BuildReview(
+        TaskDetails task, ProjectDetails project, string branch, ReviewLens lens, string baseBranch)
+    {
+        // A pr-review task retries through the same TaskDecider.Retry every other task type
+        // does — nothing gates it to TaskType.PrReview — so an operator's `h9k task retry
+        // --reason` on a stalled or unclear pr-review dispatch is just as live an instruction
+        // here as it is on a build follow-up. Appended after the pr-review framing paragraph
+        // rather than woven into it: unlike WorkPromptBuilder.Build and the follow-up builders
+        // above, this prompt's own "# Independent review" heading and every section under it
+        // come from the shared BuildReview/BuildConformanceReview/BuildAdversarialReview
+        // internals, so there is no earlier point in this method's own text to insert a "##"
+        // heading without either duplicating those internals or reordering headings the shared
+        // review prompt does not expect (independent pre-PR review, cycle 3, conformance lens).
+        // Given to both lenses, not gated to Conformance alone: the adversarial lens's own
+        // blindness to the task's objective and acceptance criteria (BuildReview's own doc)
+        // does not cover an operator's retry-time instruction about the review itself — the
+        // same reasoning a settled park ruling already gets handed to both lenses for.
+        StringBuilder guidance = new();
+        AppendOperatorGuidanceSection(guidance, task);
+
+        return BuildReview(
             task, project, branch, cycle: 1, lens, priorRulings: null,
             mechanicsOverride: new ReviewMechanicsOverride(
                 baseBranch,
@@ -859,17 +883,19 @@ public static class AgentPromptBuilder
                 + "is no branch to be \"on\"; do not attempt to commit.",
                 GatesObserved: false,
                 DiffIsForeignPullRequest: true))
-        + "\n\nThis review is of another contributor's already-open pull request, not this task's own "
-        + "implementation. There is nothing here to fix, commit, or push — you are reading, never "
-        + "writing, and that includes the pull request itself: no comments, no review, no reactions, "
-        + "regardless of what you find. Findings are collected into a report a human directs by hand."
-        + (lens == ReviewLens.Conformance
-            ? " The conformance basis is the pull request's own title and description, plus whatever "
-              + "issue or Jira card it references and was imported alongside it — often thinner than a "
-              + "task's own acceptance criteria. Where it is thin, frame conformance findings as context "
-              + "notes for the human reviewer rather than as blocking defects; reserve a blocking severity "
-              + "for what the basis actually supports."
-            : string.Empty);
+            + "\n\nThis review is of another contributor's already-open pull request, not this task's own "
+            + "implementation. There is nothing here to fix, commit, or push — you are reading, never "
+            + "writing, and that includes the pull request itself: no comments, no review, no reactions, "
+            + "regardless of what you find. Findings are collected into a report a human directs by hand."
+            + (lens == ReviewLens.Conformance
+                ? " The conformance basis is the pull request's own title and description, plus whatever "
+                  + "issue or Jira card it references and was imported alongside it — often thinner than a "
+                  + "task's own acceptance criteria. Where it is thin, frame conformance findings as context "
+                  + "notes for the human reviewer rather than as blocking defects; reserve a blocking severity "
+                  + "for what the basis actually supports."
+                : string.Empty)
+            + (guidance.Length > 0 ? "\n\n" + guidance : string.Empty);
+    }
 
     /// <summary>
     /// What <see cref="AppendReviewMechanics"/> needs overridden when the diff under review is not

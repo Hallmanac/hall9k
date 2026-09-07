@@ -2184,6 +2184,108 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().NotContain("previous attempt", "a fresh worktree has no history to review");
     }
 
+    /// <summary>
+    /// Origin incident, 2026-09-06: TaskDetails.RetryReason reached h9k task show and the
+    /// interactive CLI's own prompt calls, but nothing under src/Hall9k.Daemon read it — a retry's
+    /// "rebase onto origin/main first" never reached any of five dispatched sessions. Every follow-up
+    /// prompt kind now reads it under one clearly-labeled section (task: a headless retry's reason
+    /// reaches the resumed session).
+    /// </summary>
+    [Fact]
+    public void Every_follow_up_prompt_kind_carries_the_operators_retry_reason()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReason = "rebase onto origin/main first — main's own gate went red under PR #239";
+
+        string followUp = AgentPromptBuilder.BuildFollowUp(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string fixChecks = AgentPromptBuilder.BuildFixChecks(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string rebase = AgentPromptBuilder.BuildRebase(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        foreach (string prompt in new[] { followUp, fixChecks, rebase })
+        {
+            prompt.Should().Contain("## Operator guidance");
+            prompt.Should().Contain(task.RetryReason);
+            prompt.Should().Contain("h9k task retry --reason");
+        }
+    }
+
+    [Fact]
+    public void Resumed_build_prompt_carries_the_retry_reason_under_the_operator_guidance_section()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReason = "the migration script is drafted but untested";
+
+        string prompt = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+
+        prompt.Should().Contain("## Operator guidance");
+        prompt.Should().Contain(task.RetryReason);
+    }
+
+    /// <summary>Nothing to retry, nothing to say — the section only ever appears with a reason behind it.</summary>
+    [Fact]
+    public void No_operator_guidance_section_appears_when_no_retry_reason_is_recorded()
+    {
+        TaskDetails task = SomeTask();
+
+        string resumedBuild = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+        string followUp = AgentPromptBuilder.BuildFollowUp(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string fixChecks = AgentPromptBuilder.BuildFixChecks(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+        string rebase = AgentPromptBuilder.BuildRebase(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        foreach (string prompt in new[] { resumedBuild, followUp, fixChecks, rebase })
+        {
+            prompt.Should().NotContain("## Operator guidance");
+        }
+    }
+
+    /// <summary>
+    /// A handback's own reason is not a retry instruction — <see cref="TaskDetails.RetryReasonIsHandback"/>
+    /// says so — so it keeps its existing, more specific treatment ("Why they handed it back...")
+    /// rather than also being rendered a second time under the generic "Operator guidance" heading.
+    /// </summary>
+    [Fact]
+    public void Handback_reason_is_not_duplicated_under_the_operator_guidance_heading()
+    {
+        TaskDetails task = SomeTask();
+        task.ResumesFromHandback = true;
+        task.RetryReasonIsHandback = true;
+        task.RetryReason = "ran out of time before a meeting";
+
+        string prompt = AgentPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, resumesPreviousWork: true);
+
+        prompt.Should().Contain("ran out of time before a meeting", "the handback branch's own wording still carries it");
+        prompt.Should().NotContain("## Operator guidance", "a handback's reason is not retry guidance");
+    }
+
+    /// <summary>
+    /// The same suppression applies to a follow-up dispatched while the field's text is still a
+    /// stale handback label (TaskDetails.cs's own cycle-6/7 finding: a requeue after a handback
+    /// severs <see cref="TaskDetails.ResumesFromHandback"/> but never re-labels this field) — a
+    /// follow-up prompt has no handback-specific wording of its own to fall back on, so the safe
+    /// behavior is to say nothing rather than mislabel it.
+    /// </summary>
+    [Fact]
+    public void Follow_up_prompts_never_mislabel_a_stale_handback_reason_as_operator_guidance()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryReasonIsHandback = true;
+        task.RetryReason = "ran out of time before a meeting";
+
+        string followUp = AgentPromptBuilder.BuildFollowUp(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        followUp.Should().NotContain("## Operator guidance");
+    }
+
     [Fact]
     public void Follow_up_prompts_warn_about_stranded_work_in_the_retained_worktree()
     {

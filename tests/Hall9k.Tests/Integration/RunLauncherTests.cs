@@ -395,6 +395,200 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// The origin incident this feature guards against (2026-09-06): an orchestrator retried
+    /// five stale rebase follow-ups with <c>h9k task retry --reason "rebase onto origin/main
+    /// first"</c>, and the text never reached any dispatched session — RunLauncher's follow-up
+    /// prompt never read <see cref="TaskDetails.RetryReason"/> at all, so each retry ran the
+    /// plain follow-up template, found nothing to rebase, and failed the same gate again. This
+    /// exercises the real path end to end — reopen, fail, retry with a reason, dispatch — and
+    /// reads the prompt actually written to disk by <see cref="ClaudeExecutor"/> rather than the
+    /// in-memory string <c>AgentPromptBuilderTests</c> already covers.
+    /// </summary>
+    [Fact]
+    public async Task A_retried_follow_up_tasks_operator_reason_reaches_the_dispatched_prompt_file()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid failedFollowUpRunId = DomainId.New();
+        Guid retriedRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string branch = "task/retry-reason-reaches-prompt";
+        const string retryReason = "rebase onto origin/main first — main's own gate went red under PR #239";
+        string home = Path.Combine(Path.GetTempPath(), $"hall9k-retry-reason-{DomainId.Short(taskId)}");
+
+        try
+        {
+            TaskAggregate aggregate = new();
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"retry-reason-{taskId:N}", "/tmp/retry-reason-repo",
+                    null, "main", Now, ProjectHome.Parse(home));
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                var added = TaskDecider.Add(
+                    taskId, projectId, "Carries a retry reason into a follow-up prompt",
+                    ["the dispatched prompt file on disk carries the operator's retry reason"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-3), node.OwnerId);
+                aggregate.Apply(added);
+                var published = TaskDecider.Publish(aggregate, TaskDependencyGraph.Empty, Now.AddHours(-3), node.OwnerId);
+                aggregate.Apply(published);
+                var assigned = TaskDecider.Assign(aggregate, node.OwnerId, [], Now.AddHours(-3), node.OwnerId);
+                aggregate.Apply(assigned);
+                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, firstRunId, Now.AddHours(-3));
+                aggregate.Apply(firstClaim);
+                var completed = TaskDecider.Complete(aggregate, firstRunId, PullRequestUrl, Now.AddHours(-2));
+                aggregate.Apply(completed);
+                var reopened = TaskDecider.Reopen(
+                    aggregate, firstRunId, branch, "main's own gate went red", FollowUpKind.Rebase,
+                    automatic: true, Now.AddHours(-1), node.OwnerId);
+                aggregate.Apply(reopened);
+                var followUpClaim = TaskDecider.Claim(
+                    aggregate, node.NodeId, node.OwnerId, failedFollowUpRunId, Now.AddMinutes(-50));
+                aggregate.Apply(followUpClaim);
+                var failed = TaskDecider.Fail(aggregate, failedFollowUpRunId, "still conflicts with main", Now.AddMinutes(-40));
+                aggregate.Apply(failed);
+                var retried = TaskDecider.Retry(
+                    aggregate, failedFollowUpRunId, branch, retryReason, Now.AddMinutes(-10), node.OwnerId);
+                aggregate.Apply(retried);
+                var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+                aggregate.Apply(retryClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId,
+                    [added, published, assigned, firstClaim, completed, reopened, followUpClaim, failed, retried, retryClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            FakeProcessManager processes = new();
+            ClaudeExecutor executor = new(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()));
+            StubWorktreeManager worktrees = new();
+            NotMergedInspector inspector = new();
+            RunLauncher launcher = new(store, worktrees, executor,
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(
+                taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run = (await query.LoadAsync<RunDetails>(retriedRunId, cts.Token))!;
+            string prompt = await File.ReadAllTextAsync(RunPaths.PromptFile(run.RunDirectory), cts.Token);
+
+            prompt.Should().Contain("## Operator guidance");
+            prompt.Should().Contain(retryReason);
+        }
+        finally
+        {
+            if (Directory.Exists(home))
+            {
+                Directory.Delete(home, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The sibling of the test above: an ordinary follow-up dispatch that was never retried
+    /// carries no operator-guidance section at all — the section only ever appears with a
+    /// recorded reason behind it, never as boilerplate every follow-up prompt always shows.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_dispatched_without_a_retry_reason_carries_no_operator_guidance_section()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string branch = "task/no-retry-reason-reaches-prompt";
+        string home = Path.Combine(Path.GetTempPath(), $"hall9k-no-retry-reason-{DomainId.Short(taskId)}");
+
+        try
+        {
+            TaskAggregate aggregate = new();
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"no-retry-reason-{taskId:N}", "/tmp/no-retry-reason-repo",
+                    null, "main", Now, ProjectHome.Parse(home));
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                var added = TaskDecider.Add(
+                    taskId, projectId, "Never retried follow-up", ["carries no operator guidance section"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-2), node.OwnerId);
+                aggregate.Apply(added);
+                var published = TaskDecider.Publish(aggregate, TaskDependencyGraph.Empty, Now.AddHours(-2), node.OwnerId);
+                aggregate.Apply(published);
+                var assigned = TaskDecider.Assign(aggregate, node.OwnerId, [], Now.AddHours(-2), node.OwnerId);
+                aggregate.Apply(assigned);
+                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, firstRunId, Now.AddHours(-2));
+                aggregate.Apply(firstClaim);
+                var completed = TaskDecider.Complete(aggregate, firstRunId, PullRequestUrl, Now.AddHours(-1));
+                aggregate.Apply(completed);
+                var reopened = TaskDecider.Reopen(
+                    aggregate, firstRunId, branch, "main's own gate went red", FollowUpKind.Rebase,
+                    automatic: true, Now.AddMinutes(-30), node.OwnerId);
+                aggregate.Apply(reopened);
+                var followUpClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, followUpRunId, Now);
+                aggregate.Apply(followUpClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId, [added, published, assigned, firstClaim, completed, reopened, followUpClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            FakeProcessManager processes = new();
+            ClaudeExecutor executor = new(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions()));
+            StubWorktreeManager worktrees = new();
+            NotMergedInspector inspector = new();
+            RunLauncher launcher = new(store, worktrees, executor,
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(
+                taskId, followUpRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run = (await query.LoadAsync<RunDetails>(followUpRunId, cts.Token))!;
+            string prompt = await File.ReadAllTextAsync(RunPaths.PromptFile(run.RunDirectory), cts.Token);
+
+            prompt.Should().NotContain("## Operator guidance", "this follow-up was never retried");
+        }
+        finally
+        {
+            if (Directory.Exists(home))
+            {
+                Directory.Delete(home, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
     /// The generation fence (backlog 39): a launch dispatched under a generation the task
     /// has already moved past — the shape a catch-up double-booking or a claim-then-
     /// requeue-then-reclaim race leaves behind — must not close the task out from under

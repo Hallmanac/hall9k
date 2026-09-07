@@ -75,12 +75,18 @@ public static class TaskLifecycleProjectionBackfill
     /// <see cref="TaskDetails.UntrackedAttestedByOwnerId"/> would have served equally well.
     /// <see cref="TaskDetails.UntrackedAttested"/> is used instead only because it is
     /// non-nullable and therefore always present, with no serialization nuance to reason about.
+    /// <see cref="TaskDetails.RetryPending"/> (task: a headless retry's reason reaches the
+    /// resumed session) joins this group for the identical reason: it is non-nullable, so it is
+    /// always present on a document the current projection wrote, and its absent-key reading —
+    /// "no retry pending" — is exactly wrong for a task that was retried on the pre-marker build
+    /// and has not been claimed since (independent pre-PR review, cycle 3, both lenses).
     /// </summary>
     private const string StaleDetailsOnlyDocument =
         "(" + StaleDocument
         + " or not jsonb_exists(d.data, 'failedRunId')"
         + " or not jsonb_exists(d.data, 'resolvedRunId')"
-        + " or not jsonb_exists(d.data, 'untrackedAttested'))";
+        + " or not jsonb_exists(d.data, 'untrackedAttested')"
+        + " or not jsonb_exists(d.data, 'retryPending'))";
 
     /// <summary>
     /// <see cref="StaleDocument"/>'s markers, plus the field <see cref="TaskListItem"/> alone

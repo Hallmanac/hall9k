@@ -1138,6 +1138,16 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// The honest default <c>h9k task retry</c> records when the operator gives no
+    /// <c>--reason</c> of their own (PLAN.md §16 #25) — a fact about how the retry was invoked,
+    /// never a human's own priority instruction. <see cref="Hall9k.Connectors.Prompts.WorkPromptBuilder.AppendOperatorGuidanceSection"/>
+    /// compares against this literal so a bare retry's boilerplate is never re-presented to the
+    /// dispatched session as something a human told it to prioritize (independent pre-PR review,
+    /// cycle 1, conformance lens).
+    /// </summary>
+    public const string DefaultRetryReason = "Retry requested via h9k task retry.";
+
+    /// <summary>
     /// The re-run exit from Failed (Decisions Log #25): failure of the machinery around
     /// the work must not permanently condemn the task that contains the work. Failed-only —
     /// Abandoned stays a dead end, and a done task's lever is Reopen — and human-only: no
