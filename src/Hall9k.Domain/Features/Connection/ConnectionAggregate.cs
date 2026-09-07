@@ -11,6 +11,13 @@ public sealed class ConnectionAggregate
     public CredentialReference CredentialReference { get; private set; } = CredentialReference.GhCli;
     /// <summary>The tenant this account lives at; null for providers with exactly one home (PLAN.md §10).</summary>
     public Uri? SiteUrl { get; private set; }
+    /// <summary>
+    /// The identity the tracker itself reports these credentials as — Jira's own
+    /// <c>accountId</c> — or null when nothing has observed it yet (a connection registered
+    /// before <see cref="ConnectionTrackerIdentityObserved"/> existed). Never typed, never an
+    /// email or a display name.
+    /// </summary>
+    public string? TrackerAccountId { get; private set; }
     public DateTimeOffset RegisteredAt { get; private set; }
 
     public void Apply(ConnectionRegistered @event)
@@ -33,4 +40,6 @@ public sealed class ConnectionAggregate
         CredentialReference = @event.CredentialReference;
         SiteUrl = @event.SiteUrl;
     }
+
+    public void Apply(ConnectionTrackerIdentityObserved @event) => TrackerAccountId = @event.TrackerAccountId;
 }
