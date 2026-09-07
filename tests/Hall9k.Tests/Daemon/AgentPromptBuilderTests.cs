@@ -3176,6 +3176,68 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// Task: a human at the wheel takes the fix role herself, fourth criterion — a review pass's
+    /// own end-of-phase report is the one that reaches her at the review-verdict-to-fix park, so
+    /// its prompt names all four choices there with the exact command for each, and names the
+    /// hands-off exit at the gates-to-pull-request park its merge-ready verdict can reach. Asserted
+    /// on both lenses, since either can be the pass that files the verdict.
+    /// </summary>
+    [Fact]
+    public void Review_prompts_name_every_boundary_choice_with_its_exact_command()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string conformance = AgentPromptBuilder.BuildReview(
+            task, SomeProject(), "task/1-slug", 1, ReviewLens.Conformance,
+            interactiveSessionAddress: "brians-terminal");
+        string adversarial = AgentPromptBuilder.BuildReview(
+            task, SomeProject(), "task/1-slug", 1, ReviewLens.Adversarial,
+            interactiveSessionAddress: "brians-terminal");
+
+        foreach (string prompt in new[] { conformance, adversarial })
+        {
+            prompt.Should().Contain("### What the human chooses from, once your report lands");
+            prompt.Should().Contain($"`h9k review proceed {task.Id}`");
+            prompt.Should().Contain($"`h9k review fixed {task.Id}`");
+            prompt.Should().Contain($"`h9k review resolve {task.Id} --needs-fixes");
+            prompt.Should().Contain($"`h9k review resolve {task.Id} --merge-ready");
+            prompt.Should().Contain(
+                $"`h9k task revise {task.Id} --clear-interactive-mode`",
+                "the gates-to-pull-request boundary a merge-ready verdict can reach also names the hands-off exit");
+            prompt.Should().Contain("An option, never the default");
+            prompt.Should().Contain(
+                "continue exactly where the loop parked",
+                "the fix-to-re-review boundary a merge-ready verdict can park at first renders its own two "
+                + "choices from the shared source too, so both of them carry the task id — describing it as "
+                + "a bare `h9k review resolve` redirect breaks the exact-command promise this block opens "
+                + "with (Copilot review on PR #272)");
+            prompt.Should().Contain("redirect the boundary instead of merely approving it");
+        }
+    }
+
+    /// <summary>
+    /// A fix session's own report ends at the fix-to-re-review boundary, whose only levers are the
+    /// plain proceed-or-redirect pair the milestone sentence already names — so it gets no
+    /// choice block, and in particular is never told to offer the human a lever for taking over
+    /// the fix it has just finished doing.
+    /// </summary>
+    [Fact]
+    public void A_fix_sessions_report_gets_no_boundary_choice_block()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            task, SomeProject(), "task/1-slug", "1. `Auth.cs:42` — the limiter never resets.", 1,
+            interactiveSessionAddress: "brians-terminal");
+
+        prompt.Should().Contain("## Reporting to the human (interactive mode)");
+        prompt.Should().NotContain("### What the human chooses from");
+        prompt.Should().NotContain("h9k review fixed");
+    }
+
+    /// <summary>
     /// Once the caller resolves a registered session (the run's own address, from the slice-7
     /// registration gate), the build prompt names it as where the milestones go, through the
     /// cross-session mesh — and still logs an unreachable send rather than dropping it, per the

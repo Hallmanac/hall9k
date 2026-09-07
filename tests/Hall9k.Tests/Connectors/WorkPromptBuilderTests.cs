@@ -357,6 +357,65 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().NotContain("git reset --mixed");
     }
 
+    /// <summary>
+    /// Task: a human at the wheel takes the fix role herself, fourth criterion — the starting
+    /// prompt <c>h9k task work</c> hands the operator's own session teaches it the same four
+    /// choices the review agents' outbound reports will, so a human agent can offer them in words
+    /// without her reading the docs. Every command is asserted with its own id, because a choice
+    /// named without its exact command is the one she still has to go and look up.
+    /// </summary>
+    [Fact]
+    public void An_attended_interactive_mode_claim_is_taught_all_four_choices_at_the_fix_boundary()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true);
+
+        prompt.Should().Contain("## The boundaries this task will park at, and the operator's choices there");
+        prompt.Should().Contain($"`h9k review proceed {task.Id}`");
+        prompt.Should().Contain($"`h9k review fixed {task.Id}`");
+        prompt.Should().Contain($"`h9k review resolve {task.Id} --needs-fixes");
+        prompt.Should().Contain($"`h9k review resolve {task.Id} --merge-ready");
+        prompt.Should().Contain("--no-change", "the unmoved-tip override is part of the choice, not a footnote");
+        prompt.Should().Contain(
+            "can do the fix by hand",
+            "the second choice is the one that is easy to miss, so the prompt says so out loud");
+    }
+
+    /// <summary>
+    /// The same section names the hands-off exit at the gates-to-pull-request boundary — as an
+    /// option, with interactive staying the default (Brian's ruling, 2026-09-07) — and names both
+    /// steps it actually takes, since clearing the flag does not by itself release a park.
+    /// </summary>
+    [Fact]
+    public void An_attended_interactive_mode_claim_is_taught_the_hands_off_pull_request_option()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true);
+
+        prompt.Should().Contain($"`h9k task revise {task.Id} --clear-interactive-mode`");
+        prompt.Should().Contain($"then `h9k review proceed {task.Id}` once");
+        prompt.Should().Contain("An option, never the default");
+    }
+
+    /// <summary>
+    /// A task without the flag never sees any of it: the boundaries do not park for that task at
+    /// all, so telling its session about her choices there would describe a lifecycle it is not in.
+    /// </summary>
+    [Fact]
+    public void A_claim_without_interactive_mode_is_taught_nothing_about_boundary_choices()
+    {
+        string prompt = Build(isInteractive: true, isDeliberateHeadlessStart: false);
+
+        prompt.Should().NotContain("The boundaries this task will park at");
+        prompt.Should().NotContain("h9k review fixed");
+    }
+
     private string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
         WorkPromptBuilder.Build(
             SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing",
