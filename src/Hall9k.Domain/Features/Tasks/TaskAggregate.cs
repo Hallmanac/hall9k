@@ -193,10 +193,21 @@ public sealed class TaskAggregate
     public int CloseoutAttempts { get; private set; }
 
     /// <summary>
-    /// Automatic stacked replays dispatched since the last human-initiated reopen — the rebase
+    /// Automatic stacked rebases spent since the last human-initiated reopen — the rebase
     /// budget for a stacked child (task: a stacked pull-request edge exists as an explicit opt-in
     /// dependency), bounded by <c>DaemonOptions.MaxStackReplayRuns</c> and reset by a manual reopen
     /// exactly as <see cref="CloseoutAttempts"/> is.
+    /// <para>
+    /// Two things spend it, and one budget covers both because both answer the same cause — the
+    /// parent's branch moving, which this task neither caused nor can prevent. A replay follow-up
+    /// run closeout dispatches once the child's pull request is open
+    /// (<see cref="Events.TaskReopened"/> with <see cref="FollowUpKind.StackReplay"/>), and a
+    /// checkpoint rebase the review loop performs inside a run that has not opened one yet
+    /// (<see cref="Events.StackedCheckpointRebased"/>, task: a stacked child absorbs its parent's
+    /// post-delivery churn safely). The name still says "replays" because that is what the
+    /// dispatched half is and what <c>DaemonOptions.MaxStackReplayRuns</c> is named for; a park
+    /// message past the cap says "rebase(s)", which is the honest word for the mixture.
+    /// </para>
     /// <para>
     /// Counted separately, and deliberately NOT added to <see cref="CloseoutAttempts"/>: a replay
     /// is not a lap on an obstruction of this task's own — it is the parent's branch moving, which
@@ -426,6 +437,10 @@ public sealed class TaskAggregate
     public void Apply(TaskPreApprovedSet @event) => PreApproved = @event.PreApproved;
 
     public void Apply(TaskMechanicalResolutionAttempted @event) => MechanicalResolutionAttempts++;
+
+    // The in-run half of the rebase budget Apply(TaskReopened)'s StackReplay arm spends the
+    // dispatched half of — see StackedCheckpointRebased's own doc for why one budget covers both.
+    public void Apply(StackedCheckpointRebased @event) => StackReplaysDispatched++;
 
     // Absent means "left alone" — a revision that reworded the objective must not also claim
     // the criteria were retyped identically (Optional carries that distinction).
