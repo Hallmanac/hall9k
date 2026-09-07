@@ -784,7 +784,8 @@ public sealed class TaskStartClaimRefusalTests(PostgresFixture postgres) : IClas
             (Guid runId, _, _, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
                 store, session, task, fence, context, DomainId.New(),
                 SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build),
-                acknowledgeUnmetDependencies, interactiveMode: false, cancellationToken);
+                acknowledgeUnmetDependencies, interactiveMode: false, trackerClaimGate: null,
+                cancellationToken);
             return runId;
         }
         finally

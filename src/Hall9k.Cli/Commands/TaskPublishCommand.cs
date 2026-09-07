@@ -174,6 +174,21 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
 
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
         await TaskAssignCommand.AnnounceAsync(assigned, assignee, session, cancellationToken);
+
+        // The same claim-gate warning h9k task assign gives, since this is the same act (idea
+        // 64c75e43) — and read here, at the very end, rather than beside the assignment above,
+        // because on a tracking project the item this reads is created by TrackInBacklogAsync
+        // moments earlier: an issue the platform just filed is assigned to nobody, which is
+        // precisely the wait worth naming while the human is still looking. The aggregate is
+        // re-read for the same reason: `task` predates that link.
+        TaskAggregate? linked = await session.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, token: cancellationToken);
+        if (linked is not null)
+        {
+            await TaskAssignCommand.WarnIfTrackerHoldsAsync(
+                store, session, linked, trackerClaimGate: null, cancellationToken);
+        }
+
         return ExitCodes.Ok;
     }
 
