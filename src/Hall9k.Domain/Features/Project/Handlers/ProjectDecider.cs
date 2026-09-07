@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.Exceptions;
@@ -73,7 +74,8 @@ public static class ProjectDecider
         bool acceptedBrokenGate = false,
         Optional<int?> maxParallelTasks = default,
         Optional<ProjectPriority> priority = default,
-        Optional<ClaimGate> claimGate = default)
+        Optional<ClaimGate> claimGate = default,
+        Optional<IReadOnlyList<LaunchText>> launchTexts = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -247,6 +249,30 @@ public static class ProjectDecider
                 + "tracker shows that item assigned to this install's own tracker identity).");
         }
 
+        // Each entry must name a CLI and carry actual text — an empty launch line is not a
+        // clearing idiom here (unlike ContextLinks, there is no "the whole list of settings this
+        // project needs" to be empty of; a launch-text entry that carries nothing is a mistake,
+        // not an intentional absence), and Cli is stored normalized so a later `show --cli
+        // Claude-Code` finds what `set --cli claude-code` wrote.
+        if (launchTexts.HasValue)
+        {
+            foreach (LaunchText entry in launchTexts.Value ?? [])
+            {
+                if (entry.Cli.IsBlank())
+                {
+                    throw new DomainValidationException("A launch-text entry needs a CLI name.");
+                }
+
+                if (entry.Text.IsBlank())
+                {
+                    throw new DomainValidationException($"The launch text for '{entry.Cli}' cannot be blank.");
+                }
+            }
+
+            launchTexts = Optional<IReadOnlyList<LaunchText>>.Of(
+                [.. (launchTexts.Value ?? []).Select(entry => entry with { Cli = LaunchText.NormalizeCli(entry.Cli) })]);
+        }
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -283,7 +309,8 @@ public static class ProjectDecider
             AcceptedBrokenGate: acceptedBrokenGate && verifyCommands.HasValue,
             MaxParallelTasks: maxParallelTasks,
             Priority: priority,
-            ClaimGate: claimGate);
+            ClaimGate: claimGate,
+            LaunchTexts: launchTexts);
     }
 
     /// <summary>

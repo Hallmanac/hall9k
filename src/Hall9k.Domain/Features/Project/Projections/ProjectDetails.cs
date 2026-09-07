@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -85,6 +86,8 @@ public sealed class ProjectDetails
     public ProjectHome HomeDirectory { get; set; } = ProjectHome.None;
     public List<VerifyCommand> VerifyCommands { get; set; } = [];
     public List<ContextLink> ContextLinks { get; set; } = [];
+    /// <summary>This project's launch text, one per agent CLI (task: an operator starts a lean orchestrator window).</summary>
+    public List<LaunchText> LaunchTexts { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
     public DateTimeOffset? SettingsChangedAt { get; set; }
 }
@@ -216,6 +219,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.ClaimGate.HasValue)
         {
             view.ClaimGate = @event.Data.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        if (@event.Data.LaunchTexts.HasValue)
+        {
+            view.LaunchTexts = [.. @event.Data.LaunchTexts.Value ?? []];
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;

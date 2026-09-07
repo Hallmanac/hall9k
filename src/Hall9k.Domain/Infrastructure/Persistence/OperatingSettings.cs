@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Run;
 
 namespace Hall9k.Domain.Infrastructure.Persistence;
@@ -199,6 +200,15 @@ public sealed class OperatingSettings
     /// throttle on.
     /// </summary>
     public const string DefaultSpendPeriod = "week";
+
+    /// <summary>
+    /// This node's launch text, one <see cref="LaunchText"/> per agent CLI (task: an operator
+    /// starts a lean node or project orchestrator window) — the exact command line
+    /// <c>h9k orchestrator node</c> prints for the node window. Null or empty means nothing has
+    /// been set yet; <c>h9k orchestrator launch-text show</c> still prints a computed default for
+    /// <see cref="LaunchText.DefaultCli"/> in that case.
+    /// </summary>
+    public List<LaunchText>? LaunchTexts { get; set; }
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }

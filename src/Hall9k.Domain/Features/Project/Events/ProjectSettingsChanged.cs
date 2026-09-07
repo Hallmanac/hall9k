@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -146,4 +147,12 @@ public sealed record ProjectSettingsChanged(
     /// again — and reproduces the platform's pre-setting behaviour byte-for-byte. Trailing and
     /// optional so every stream written before this feature existed replays unchanged.
     /// </summary>
-    Optional<ClaimGate> ClaimGate = default);
+    Optional<ClaimGate> ClaimGate = default,
+    /// <summary>
+    /// This project's launch text, one <see cref="LaunchText"/> per agent CLI (task: an operator
+    /// starts a lean node or project orchestrator window) — the exact command line
+    /// <c>h9k orchestrator project &lt;PROJECT&gt;</c> prints for a project window. Present replaces
+    /// the whole list, the <see cref="ContextLinks"/> idiom: the CLI reads the current list, upserts
+    /// the one entry a <c>launch-text set</c> or <c>measure</c> touched, and records the result.
+    /// </summary>
+    Optional<IReadOnlyList<LaunchText>> LaunchTexts = default);
