@@ -16,7 +16,7 @@ namespace Hall9k.Cli.Orchestrator;
 /// generator-written <see cref="RecipeLibraryPaths.OrchestratorRecipeFileName"/> and hand off to
 /// it, plus the <c>.new</c> handling a re-run of the generator relies on to never clobber a
 /// recipe outright. Its content is otherwise identical wherever it is written, with one named
-/// exception Decisions Log #144 sanctions: step 3's own fallback names two machine-specific,
+/// exception Decisions Log #147 sanctions: step 3's own fallback names two machine-specific,
 /// hand-written prototype paths from before the generator existed (the node's own and the
 /// hall9k project's own), for exactly the interim window between install and this skill's first
 /// run.

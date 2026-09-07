@@ -529,7 +529,7 @@ window) is a per-agent-CLI setting on the project or the node, shown and replace
 `h9k orchestrator launch-text show`/`set`, and `h9k orchestrator measure` runs a fixed one-turn
 probe and stamps the observed turn-one token cost onto that same record. `h9k orchestrator node`
 and `h9k orchestrator project [PROJECT]` print a window's daemon liveness, launch text, recipe and
-journal paths, and last-measured cost; neither one launches a session (Decisions Log #144).
+journal paths, and last-measured cost; neither one launches a session (Decisions Log #147).
 
 ### The help tree
 
