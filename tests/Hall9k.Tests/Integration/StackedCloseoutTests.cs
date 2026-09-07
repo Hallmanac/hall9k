@@ -240,6 +240,82 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
     }
 
     /// <summary>
+    /// The boundary is what git can see NOW, not only what dispatch recorded. A parent that
+    /// advanced past the child's cut point, and a child that has since been brought onto that new
+    /// head, leaves the recorded fork point naming a commit that is no longer the highest parent
+    /// commit on the child's line — and a replay from there re-applies the parent's later commit
+    /// onto the base, which is the duplication the boundary exists to prevent (independent pre-PR
+    /// review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_parent_that_advanced_before_merging_replays_from_its_own_head_not_the_stale_record()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+
+        // The parent adds a second commit and pushes; the child is brought onto it, which is the
+        // state that makes the recorded fork point stale rather than merely old.
+        string advancedParentHead = AdvanceTheParent(fixture);
+        RebaseChildOntoParent(fixture, advancedParentHead);
+
+        // Both parent commits land on the base, as a rebase merge would put them there.
+        Git(fixture.RepoPath, "checkout -q main");
+        Git(fixture.RepoPath, $"-c user.name=Test -c user.email=t@t cherry-pick {fixture.ParentHeadCommit}");
+        Git(fixture.RepoPath, $"-c user.name=Test -c user.email=t@t cherry-pick {advancedParentHead}");
+        Git(fixture.RepoPath, "push -q origin main");
+        await using (IDocumentSession session = fixture.Store.LightweightSession())
+        {
+            session.Events.Append(fixture.ParentRunId, new PullRequestMerged(fixture.ParentRunId, Now, Now));
+            session.Events.Append(fixture.ParentRunId, new RunCompleted(fixture.ParentRunId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        child.StackReplayUpstreamCommit.Should().Be(advancedParentHead,
+            "the parent's head is still contained in the child's branch, so it is the boundary — observed "
+            + "directly rather than taken from a record that predates the parent's second commit");
+        child.StackReplayUpstreamCommit.Should().NotBe(fixture.ParentHeadCommit,
+            "replaying from the stale record would carry the parent's second commit onto the base as well");
+    }
+
+    /// <summary>
+    /// Nothing moves the pull request's base unless the replay is actually going to be dispatched.
+    /// The lifetime automatic-closeout ceiling still applies to a stacked child (it is the runaway
+    /// backstop only h9k pr resolve lifts), and a park landing AFTER the retarget would leave a
+    /// human a pull request aimed at the project's base still carrying the parent's duplicated
+    /// commits, with no dispatch coming (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_child_past_its_lifetime_ceiling_parks_without_retargeting()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+        await MergeTheParentAsync(fixture, cts.Token);
+
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector, maxAutomaticCloseoutRuns: 0).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().BeEmpty(
+            "the park verdict is asked before the provider write, so the base is never moved for a replay "
+            + "that is not going to be dispatched");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("lifetime automatic closeout budget spent");
+        run.StackedOnBranch.Should().Be(fixture.ParentBranch, "the stack is left coherent for a human");
+
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        child.StackReplaysDispatched.Should().Be(0, "nothing was dispatched, so nothing was spent");
+    }
+
+    /// <summary>
     /// A stacked child with an ordinary obstruction of its own is unaffected: the stacked check is a
     /// no-op unless the parent actually moved, so failing checks still take the ordinary lap.
     /// </summary>
@@ -279,16 +355,25 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
         string BaseCommit,
         Guid ChildTaskId,
         Guid ChildRunId,
-        string ChildBranch);
+        string ChildBranch,
+        string ChildWorktreePath);
 
     private CloseoutEngine NewEngine(
-        StackedFixture fixture, FakeStackedInspector inspector, int maxStackReplayRuns = 12) =>
+        StackedFixture fixture, FakeStackedInspector inspector, int maxStackReplayRuns = 12,
+        int maxAutomaticCloseoutRuns = 6) =>
         new(fixture.Store, fixture.Node, new DaemonConnection(postgres.ConnectionString), inspector,
             fixture.Worktrees,
             new StackedParentWatch(fixture.Worktrees, NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner,
             FakeJiraRequester.NeverInvoked(),
-            Options.Create(new DaemonOptions { MaxStackReplayRuns = maxStackReplayRuns }),
+            Options.Create(new DaemonOptions
+            {
+                MaxStackReplayRuns = maxStackReplayRuns,
+                // Zero in one test, which is how the ordering of the retarget against the park is
+                // proved: the ceiling is a knob, and a spent one has to stop the sweep before the
+                // provider write rather than after it.
+                MaxAutomaticCloseoutRuns = maxAutomaticCloseoutRuns,
+            }),
             NullLogger<CloseoutEngine>.Instance);
 
     /// <summary>
@@ -314,6 +399,33 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
     /// retained worktree, which is where the real thing happens too and, incidentally, the only
     /// place git will check that branch out (it is already checked out there).
     /// </summary>
+    /// <summary>
+    /// The parent adds a second commit on top of the one the child was cut from and pushes it —
+    /// an ordinary follow-up landing new work, no rewrite, so the child's own copy of the parent's
+    /// first commit is untouched.
+    /// </summary>
+    private static string AdvanceTheParent(StackedFixture fixture)
+    {
+        string parentWorktree = fixture.ParentWorktreePath;
+        File.WriteAllText(Path.Combine(parentWorktree, "PARENT-MORE.md"), "parent slice, second commit\n");
+        Git(parentWorktree, "add -A");
+        Git(parentWorktree, "-c user.name=Test -c user.email=t@t commit -qm \"parent slice, continued\"");
+        Git(parentWorktree, $"push -q origin {fixture.ParentBranch}");
+        return Git(parentWorktree, "rev-parse HEAD").Trim();
+    }
+
+    /// <summary>
+    /// The child brought onto its parent's new head — which is what makes its dispatch-time fork
+    /// point stale: the branch now contains a parent commit later than the one recorded.
+    /// </summary>
+    private static void RebaseChildOntoParent(StackedFixture fixture, string parentHead)
+    {
+        string childWorktree = fixture.ChildWorktreePath;
+        Git(childWorktree, "fetch -q origin");
+        Git(childWorktree, $"rebase -q {parentHead}");
+        Git(childWorktree, $"push -q --force origin {fixture.ChildBranch}");
+    }
+
     private static string ForcePushTheParent(StackedFixture fixture)
     {
         string parentWorktree = fixture.ParentWorktreePath;
@@ -402,7 +514,7 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
         return new StackedFixture(
             store, node, worktrees, originPath, repoPath, projectId,
             parentTaskId, parentRunId, parent.Branch, parent.Path, parentHeadCommit, baseCommit,
-            childTaskId, childRunId, child.Branch);
+            childTaskId, childRunId, child.Branch, child.Path);
     }
 
     /// <summary>
