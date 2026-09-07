@@ -69,6 +69,12 @@ public static class OrchestratorMeasureProbe
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            // The timeout cancels the reads and the wait, not the process itself: left alone, a
+            // hung `claude` (a stalled auth prompt, a network stall) outlives this command and
+            // holds its pipes open, and every retry leaves another one behind (independent pre-PR
+            // review, cycle 1, conformance lens). Best-effort — the process may have exited on its
+            // own between the timeout firing and this catch running.
+            TryKill(process);
             throw new DomainValidationException(
                 $"The measurement probe did not finish within {TimeoutSeconds}s. Is `claude` on PATH "
                 + "and able to run non-interactively here?");
@@ -87,6 +93,21 @@ public static class OrchestratorMeasureProbe
         }
 
         return ParseTurnOneTokens(stdout);
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Already exited between the check above and the kill itself — nothing left to do.
+        }
     }
 
     /// <summary>

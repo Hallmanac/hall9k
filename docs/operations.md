@@ -284,6 +284,12 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ├── h9kd.log                    the daemon log; h9k daemon status tails it
 ├── h9kd.pid, h9kd.lock         the local liveness probe
 ├── skills/                     the canonical skill set, published by h9k install
+├── recipes/                    the node orchestrator window's own recipe ([README's Orchestrator windows](../README.md#orchestrator-windows))
+│   ├── launch-anchor.md        platform-owned, overwritten outright on every install/update
+│   ├── settings.json           platform-owned the same way — rides the launch line as --settings
+│   ├── orchestrator-recipe-generator/  the generator skill, published beside the anchor it writes for
+│   └── orchestrator.md         written once by that skill; never overwritten, only .new beside it
+├── .claude/skills/              the generator skill's adapter symlink, for the node window's own discovery
 ├── projects/<name>/            a project's home, unless the project records another location
 │   ├── AGENTS.md               rendered from the project's facts; never hand-maintained
 │   ├── repo/                   <name>.git (bare) · dev/ (primary branch) · wt-*/ (dispatch)
@@ -292,6 +298,7 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   │   └── runs/<run-id>/      every run this task ever dispatched — see the run shape below
 │   ├── tasks/_archive/<id>-<slug>/  the same shape, moved here once the task is terminal (below)
 │   ├── skills/                 symlinks into ~/.hall9k/skills, plus this project's own
+│   ├── recipes/                this project window's own recipe, the identical shape as above
 │   └── .claude/skills/         symlinks into the line above: the Claude Code adapter
 ├── ideas/<idea-id>/workspace/  the fallback for an idea captured with no project, or a project
 │                               with no home yet: permanent, never relocated after capture

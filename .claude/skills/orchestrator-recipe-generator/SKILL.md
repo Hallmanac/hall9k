@@ -69,9 +69,12 @@ one sentence: the node owns the resource, the project owns the work.
   shipped anchor and is read with `h9k orchestrator launch-text show --cli <name>` for each CLI
   you found installed; if a CLI needs a different line, set it with `launch-text set` and read it
   back. Never edit `launch-anchor.md`.
-- `recipes/settings.json`: read from the platform (`h9k orchestrator settings show`), never
-  composed; it carries the inbound-message policy, the bypass confirmation suppression, the
-  model, and display preferences, and must ride on the launch line as `--settings` because a
+- `recipes/settings.json`: already written by the platform (`h9k install`/`h9k update` for the
+  node, `h9k project init`/`project add` for a project) — never write it, never compose it, and
+  do not tell the operator to run anything to produce it; it exists the moment the recipe does. It
+  carries the inbound-message policy, the bypass confirmation suppression, the model (`h9k config
+  set --orchestrator-model` for the node, `h9k project set --orchestrator-model` for a project),
+  and display preferences, and must ride on the launch line as `--settings` because a
   project-scope settings file can only make the inbound policy stricter.
 - `recipes/idea-discovery.md` and `recipes/task-refinement.md` (same `.new` rule): the
   scoped-session recipes, with the same discovery applied.
