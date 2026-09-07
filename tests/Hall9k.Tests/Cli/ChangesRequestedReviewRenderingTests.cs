@@ -90,6 +90,39 @@ public sealed class ChangesRequestedReviewRenderingTests
             "nothing has been sent yet — the draft is still the implementer's to decide");
     }
 
+    /// <summary>
+    /// The disagreement's url came out of a fix session's free-text summary while the observation's
+    /// came off the provider, so the two can differ in casing alone — which is why
+    /// <c>h9k review resolve</c> vets them OrdinalIgnoreCase. Paired case-sensitively here, a reply
+    /// that command accepts and posts against the review rendered as answering no review at all,
+    /// leaving the two surfaces disagreeing about one fact (independent pre-PR review, cycle 1,
+    /// both lenses).
+    /// </summary>
+    [Fact]
+    public void A_disagreement_naming_its_review_in_different_casing_still_renders_under_it()
+    {
+        RunDetails run = new()
+        {
+            ChangesRequestedReviewObservations =
+            [
+                new ChangesRequestedReviewObservation("teammate", "https://github.com/x/y/pull/7#r1", Now, 1, Now),
+            ],
+            ChangesRequestedDisagreements =
+            [
+                new ReviewDisagreement(
+                    "reset the limiter per request", "per-window is the documented contract",
+                    "The reset is per window deliberately.", "src/Limiter.cs:42", "PRRT_abc",
+                    "https://GitHub.com/x/y/pull/7#r1"),
+            ],
+        };
+
+        IReadOnlyList<string> lines = TaskShowCommand.ComposeChangesRequestedReviews([run]);
+
+        lines.Should().NotContain(line => line.Contains("not attributed to a specific review"),
+            "the session named this very review, spelled with a different host casing");
+        lines.Should().Contain(line => line.Contains("disagreed") && line.Contains("src/Limiter.cs:42"));
+    }
+
     [Fact]
     public void A_disputed_review_body_renders_as_having_no_thread_to_reply_inside()
     {

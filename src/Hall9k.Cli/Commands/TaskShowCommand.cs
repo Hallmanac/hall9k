@@ -841,14 +841,24 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 $"  [yellow]@{ExternalText.OneLineMarkup(first.Reviewer)}[/] "
                 + $"[dim]{when} — {Findings(first.FindingCount)}{reread}[/] "
                 + $"[link]{ExternalText.OneLineMarkup(first.ReviewUrl)}[/]");
-            lines.AddRange(ComposeDisagreements(
-                disagreements.Where(d => d.ReviewUrl == first.ReviewUrl)));
+            // OrdinalIgnoreCase, the comparison ReviewResolveCommand's own vet of this exact pair
+            // uses: the disagreement's url came out of a fix session's free-text summary while the
+            // observation's came off the provider, so casing alone can differ between two spellings
+            // of one review. Compared case-sensitively, a reply the resolve command accepts and
+            // posts against that review rendered here under "not attributed to a specific review",
+            // leaving the two surfaces disagreeing about one fact (independent pre-PR review, cycle
+            // 1, both lenses).
+            lines.AddRange(ComposeDisagreements(disagreements.Where(
+                d => string.Equals(d.ReviewUrl, first.ReviewUrl, StringComparison.OrdinalIgnoreCase))));
         }
 
         // Never dropped for want of a review to sit under: a disagreement the session left
-        // unattributed still parked a run and still awaits a human's decision.
+        // unattributed still parked a run and still awaits a human's decision. The same
+        // OrdinalIgnoreCase pairing as above, so a disagreement is never both rendered under its
+        // review and repeated here as unattributed.
         IReadOnlyList<ReviewDisagreement> unattributed =
-            [.. disagreements.Where(d => !observations.Exists(o => o.ReviewUrl == d.ReviewUrl))];
+            [.. disagreements.Where(d => !observations.Exists(
+                o => string.Equals(o.ReviewUrl, d.ReviewUrl, StringComparison.OrdinalIgnoreCase)))];
         if (unattributed.Count > 0)
         {
             lines.Add("  [dim]disagreements not attributed to a specific review[/]");
