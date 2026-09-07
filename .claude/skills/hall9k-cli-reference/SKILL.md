@@ -121,6 +121,8 @@ h9k task add --project <name> --from-pr 42        # adopt a pull request to revi
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task add --project <name> --objective "…" --stacked-on <id>   # a STACKED edge (Decisions Log #144), not a plain blocked-by — see below
 h9k task revise <id> --stacked-on <id>            # declare the stacked edge on a Draft; --clear-stacked-on drops it (leaving the blocked-by alone)
+h9k task add --project <name> --objective "…" --stacked-on-pull-request 264   # the same edge on a pull request ANOTHER install owns (Decisions Log #153) — no blocked-by, no local task needed
+h9k task revise <id> --stacked-on-pull-request 264   # declare the remote form on a Draft; mutually exclusive with --stacked-on, and --clear-stacked-on drops whichever form the task holds
 h9k task revise <id> --queue-first                # the one revision Draft-only doesn't gate: marks the task-level queue-first fact (Decisions Log #127), settable in any live state; --clear-queue-first removes it
 h9k task revise <id> --clear-interactive-mode     # the other revision Draft-only doesn't gate: clears the interactive-mode flag (below) directly, settable in any live state, for when neither h9k task handback nor a default h9k task release has an active interactive claim left to act on
 h9k task revise <id> --review-stage-composition <VALUE|default>   # Draft-only, unlike the review caps below — a live change reaches only the task's next run (Decisions Log #129)
@@ -183,6 +185,31 @@ feature that are genuinely cohesive — the interactive-mode pair is the canonic
 never reach for it just because one task happens to wait on another. A plain `--blocked-by` task
 behaves exactly as it always has. Slice two, not built: the child still starts at the parent's
 Delivered rather than at its build-complete-before-review.
+
+**The parent can be a pull request another install owns** (Decisions Log #153):
+`--stacked-on-pull-request <number>` on `h9k task add` or `h9k task revise`, taking the number as
+GitHub shows it (`264` or `#264`) on this project's own repository. It is the form a reviewer on her
+own node needs — her machine never held the teammate's run, so that parent never reaches Delivered
+here and no local edge could ever release her task. Everything above holds, with three differences.
+The pull request being **open** is the parent's Delivered, and that is the whole bar. Its state,
+head branch, merge and force-pushes are read from GitHub by one sweep on the closeout watcher's own
+cadence, and everything downstream reads what that sweep recorded rather than calling out again —
+so the board can sit a few minutes behind the browser, and every line `h9k task show` prints about
+the parent is labelled as an observation, with when that reading was taken (an unchanged look
+records nothing, so that is when the parent last *moved*, not when it was last looked at). That
+sweep reads only children that are **assigned**: a child still Published is watched by nothing and
+would not dispatch anyway, so `h9k task assign` is the step that starts the watch — claiming one
+straight from Published is refused, and the refusal says so. And **no `--blocked-by` travels with
+it**: there
+is no local task to name, so the hold is a second one beside the unmet-dependency set. The two
+forms are alternatives — declaring either replaces whatever the task stood on, and
+`--clear-stacked-on` drops whichever it holds. A pull request the repository does not have yet is
+ordinary waiting (the teammate has not opened it); one that **closed unmerged** is the dead parent
+and reads as needing a human; one already merged when the child first dispatches leaves nothing to
+stack on, so the child is an ordinary task on the base branch. Nothing needs to exist locally for
+the parent — no task, no mirror, no issue — though when the pull request itself names an issue it
+closes, `h9k task show` prints it and names a local task carrying the same reference if there
+happens to be one.
 
 **One Jira card that needs many pull requests does not distribute across sibling tasks the way
 it looks like it should.** A task can adopt an external item at all only if no other task already

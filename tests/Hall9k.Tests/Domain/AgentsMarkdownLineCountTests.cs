@@ -18,7 +18,7 @@ namespace Hall9k.Tests.Domain;
 /// rounded off: on 2026-09-07 two branches each added one standing git invariant to the Git rules
 /// section, and the one that merged first (`h9k pr request-changes`, Decisions Log #149) took the
 /// file to exactly 200. The second — an agent never tells a human reviewer they are wrong
-/// (Decisions Log #151) — is a turn-1 rule for dispatched fix sessions, so it belongs in this file
+/// (Decisions Log #152) — is a turn-1 rule for dispatched fix sessions, so it belongs in this file
 /// rather than a skill loaded on demand, and reflowing unrelated paragraphs to buy back its line
 /// would have hidden a capacity decision inside a cosmetic diff. This is a one-line exception, not
 /// a new budget: the next addition here should cut something out rather than raise this again.

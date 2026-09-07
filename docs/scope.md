@@ -30,7 +30,7 @@ changes-requested review from a *person* is its own lap, carrying that review's 
 inline comment as findings: the lap fixes what it agrees with and replies in those threads, and
 where it disagrees it posts nothing and parks with a proposed reply the implementer sends, edits,
 or drops through `h9k review resolve` — no agent ever posts a disagreement to a human reviewer
-(PLAN.md Decisions Log #151). Copilot's own changes-requested review stays on the automated thread
+(PLAN.md Decisions Log #152). Copilot's own changes-requested review stays on the automated thread
 path, disputing and resolving without a human in the loop. A branch
 obstructed only by a conflict with its own base gets a mechanical fix tried first: a plain fetch +
 rebase + force-push in the run's retained worktree, no agent session and no local gates, since
@@ -233,6 +233,20 @@ Each catch-up is mechanical — the same replay, plus the gates, no review cycle
 rebase budget and parking past the same cap. A conflict at a checkpoint restores the branch and
 parks; so does a parent that has died terminally (abandoned, `Failed`, or Done having never
 delivered a pull request that can merge), wherever the child is in its own pipeline.
+
+The parent can also be a pull request **another install owns** —
+`h9k task add --stacked-on-pull-request <number>` (#153), the form a reviewer on her own node needs,
+since her machine never holds the teammate's run and so never sees it reach `Delivered`. The pull
+request being *open* is that parent's `Delivered`; its state, head branch, merge and force-pushes
+are read from GitHub by one sweep on the closeout watcher's cadence, and everything downstream —
+the release from `Blocked`, the branch the cut starts from, the retarget, the replay, `h9k task
+show` — reads what that sweep recorded rather than calling out again. The two forms are
+alternatives, the remote one carries no `--blocked-by` (there is no local task to name), and
+nothing needs to exist locally for the parent. A pull request the repository does not have yet is
+ordinary waiting; one that closed unmerged is the dead parent. The sweep reads only *assigned*
+children, so `h9k task assign` is what starts the watch on one still sitting Published. Because the
+read is on a cadence, the board can sit a few minutes behind the browser, which is why every line
+about a remote parent is labelled as an observation rather than as current.
 
 **Not** built here, deliberately: there is no notion of a stack as a first-class object — no
 `h9k stack` command, no ordering across three or more levels beyond what the pairwise edges happen

@@ -276,7 +276,55 @@ What the edge changes, and nothing else does:
 
 A plain `--blocked-by` task behaves exactly as it always has.
 
-Depth: Decisions Log #144.
+#### Standing on a pull request another install owns
+
+`h9k task add --stacked-on-pull-request <number>` (or `h9k task revise --stacked-on-pull-request`)
+declares the same edge against a pull request rather than against a task in this install's records.
+It is what a reviewer on her own node needs: she is stacking her Playwright tests on a teammate's
+pull request, her node never held that teammate's run, so the parent never reaches `Delivered` here
+and nothing local could ever release her task. Nothing is required to exist for the parent — no
+task, no mirror, no issue.
+
+Everything above stays true, with three differences:
+
+- **The pull request being *open* is the parent's `Delivered`.** That is the whole bar. A pull
+  request the repository does not have yet — a number declared before the teammate opened it — is
+  ordinary waiting, not a problem to hand anybody; a pull request that *closed without merging* is
+  the dead parent, and the child reads as needing you with the situation named. That reading holds
+  even for a child the platform had already released: until it actually dispatches, a parent that
+  stops being open takes the release back, because a run cut then would sit on the base branch
+  carrying none of the parent's work. A pull request
+  already merged when the child first dispatches leaves nothing to stack on, so the child is an
+  ordinary task on the base branch, which is exactly where the retarget would have put it. The
+  earlier-start checkpoints above are for local parents only.
+- **The state is read from GitHub on the closeout watcher's own cadence**, by one sweep, once per
+  tick, for every *assigned* stacked child this owner has that is still waiting, running, or under
+  review. A child still sitting in Draft or Published is assigned to nobody, so nothing looks at its
+  parent and nothing would dispatch it if it did — `h9k task assign` is what starts the watch, and
+  the claim doors and `h9k task show` say so rather than telling you to wait. Everything downstream
+  — the release, the branch a fresh cut starts from, the retarget, the replay, `h9k task show` —
+  reads what that sweep recorded rather than asking GitHub again, so a dispatch never waits on a
+  network call and two readers can never disagree inside one sweep. The practical consequence for a
+  human: the board can be a few minutes behind the browser, so every line about the parent is
+  labelled as an observation, with when that reading was taken. An unchanged look records nothing,
+  so that timestamp is when the parent last *moved*, not when it was last looked at. A look that
+  *failed* records nothing either — the child keeps whatever was last actually seen, and the next
+  sweep asks again.
+- **No `--blocked-by` edge travels with it**, because there is no local task to name. The hold is a
+  second, independent one beside the unmet-dependency set.
+
+The merge, the force-push and the death are all the same operations as above, driven by that
+observation instead of by a local closeout event: the merge retargets the child onto the base
+branch and dispatches the same mechanical replay, a head that moved without merging dispatches the
+replay alone onto the new head, both spend the same rebase budget and park past the same cap, and a
+pull request that closed unmerged parks the child with the situation named.
+
+When the pull request itself names an issue or tracker item it closes, `h9k task show` prints it —
+and names a local task carrying that same reference if one happens to exist. Nothing requires one
+to: the edge is declared by pull request number precisely because not every repository the team
+works in tracks its backlog in GitHub issues.
+
+Depth: Decisions Log #144, #146, #153.
 
 ## Runs
 
