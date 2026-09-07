@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks.Events;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
@@ -23,6 +24,15 @@ public sealed class TaskListItem
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
     public Guid? CurrentRunId { get; set; }
     public string? ExternalReference { get; set; }
+    /// <summary>
+    /// This task's own override of whether true closeout closes its linked GitHub issue; null
+    /// defers to the project's own close-linked-issue setting, live (task: a task's linked GitHub
+    /// issue is closed at true closeout under a configurable rule). Kept on this lean row because
+    /// CloseoutEngine's own cross-task decision — several tasks carrying the same
+    /// <see cref="ExternalReference"/> — needs every linked task's own override, not only the one
+    /// currently closing out.
+    /// </summary>
+    public CloseLinkedIssueRule? CloseLinkedIssue { get; set; }
     public string? PullRequestUrl { get; set; }
     /// <summary>
     /// What a pending Jira write's most recent failed attempt reported — set only while it is a
@@ -211,6 +221,10 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.State = TaskState.Published;
         view.PreApproval = @event.Data.EffectivePreApproval;
         view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
+        if (@event.Data.CloseLinkedIssue.HasValue)
+        {
+            view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
+        }
     }
 
     public void Apply(IEvent<TaskPreApprovedSet> @event, TaskListItem view)
@@ -259,6 +273,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         if (@event.Data.QueuePriority.HasValue)
         {
             view.QueuePriorityMarked = @event.Data.QueuePriority.Value;
+        }
+
+        if (@event.Data.CloseLinkedIssue.HasValue)
+        {
+            view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
         }
     }
 

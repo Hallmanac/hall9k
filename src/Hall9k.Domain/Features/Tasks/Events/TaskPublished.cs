@@ -1,4 +1,6 @@
 using System.Text.Json.Serialization;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Tasks.Events;
 
@@ -63,7 +65,16 @@ public sealed record TaskPublished(
     bool NoExistingItemAttested = false,
     bool UntrackedAttested = false,
     bool PreApproved = false,
-    PreApprovalMode? PreApproval = null)
+    PreApprovalMode? PreApproval = null,
+    /// <summary>
+    /// This task's own override of whether true closeout closes its linked GitHub issue (task: a
+    /// task's linked GitHub issue is closed at true closeout under a configurable rule);
+    /// present-with-null clears the override so the project's own close-linked-issue setting
+    /// decides again, live — the same present-with-null-clears idiom
+    /// <see cref="TaskRevised.ReviewStageComposition"/> already uses. Absent leaves whatever an
+    /// earlier <see cref="TaskRevised"/> already recorded on this still-Draft task untouched.
+    /// </summary>
+    Optional<CloseLinkedIssueRule?> CloseLinkedIssue = default)
 {
     /// <summary>
     /// What this event means, whichever build wrote it — the one home for the mode-from-boolean
