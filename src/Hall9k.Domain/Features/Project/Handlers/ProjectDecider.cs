@@ -75,7 +75,8 @@ public static class ProjectDecider
         Optional<int?> maxParallelTasks = default,
         Optional<ProjectPriority> priority = default,
         Optional<ClaimGate> claimGate = default,
-        Optional<IReadOnlyList<LaunchText>> launchTexts = default)
+        Optional<IReadOnlyList<LaunchText>> launchTexts = default,
+        Optional<AgentModel> orchestratorModel = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -121,6 +122,19 @@ public static class ProjectDecider
         {
             throw new DomainValidationException(
                 $"'{chosen.Value}' is not a usable model name. Use a tier alias "
+                + $"({AgentModel.Fable}, {AgentModel.Opus}, {AgentModel.Sonnet}, {AgentModel.Haiku}) or an exact "
+                + $"model id (for example {AgentModel.PlatformFallback}); letters, digits, and . _ - : / @ [ ] only.");
+        }
+
+        // Unknown clears the orchestrator-window override, the identical clearing idiom `model`
+        // itself uses just above.
+        if (orchestratorModel.HasValue
+            && orchestratorModel.Value is { } chosenOrchestratorModel
+            && chosenOrchestratorModel != AgentModel.Unknown
+            && !chosenOrchestratorModel.IsWellFormed)
+        {
+            throw new DomainValidationException(
+                $"'{chosenOrchestratorModel.Value}' is not a usable model name. Use a tier alias "
                 + $"({AgentModel.Fable}, {AgentModel.Opus}, {AgentModel.Sonnet}, {AgentModel.Haiku}) or an exact "
                 + $"model id (for example {AgentModel.PlatformFallback}); letters, digits, and . _ - : / @ [ ] only.");
         }
@@ -310,7 +324,8 @@ public static class ProjectDecider
             MaxParallelTasks: maxParallelTasks,
             Priority: priority,
             ClaimGate: claimGate,
-            LaunchTexts: launchTexts);
+            LaunchTexts: launchTexts,
+            OrchestratorModel: orchestratorModel);
     }
 
     /// <summary>

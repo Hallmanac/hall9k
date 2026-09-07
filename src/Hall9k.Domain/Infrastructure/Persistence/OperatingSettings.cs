@@ -210,6 +210,19 @@ public sealed class OperatingSettings
     /// </summary>
     public List<LaunchText>? LaunchTexts { get; set; }
 
+    /// <summary>
+    /// The model an orchestrator window's <c>recipes/settings.json</c> is rendered for (task: an
+    /// operator starts a lean node or project orchestrator window) — deliberately independent of
+    /// <see cref="DefaultModel"/>, the model headless agent dispatch runs on. Null defers to
+    /// <see cref="DefaultModel"/>, then <c>AgentModel.PlatformFallback</c>, the chain
+    /// <c>Hall9k.Cli.Orchestrator.OrchestratorModel.ForNode</c> read on its own before this
+    /// existed: without a dedicated lever, every install or update silently retargeted the
+    /// operator's own window onto whatever <see cref="DefaultModel"/> happened to be, with no way
+    /// to change one without also changing the other (independent pre-PR review, cycle 1).
+    /// </summary>
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
+    public string? OrchestratorModel { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 }

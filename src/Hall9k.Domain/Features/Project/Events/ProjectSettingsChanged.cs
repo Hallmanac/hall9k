@@ -155,4 +155,13 @@ public sealed record ProjectSettingsChanged(
     /// the whole list, the <see cref="ContextLinks"/> idiom: the CLI reads the current list, upserts
     /// the one entry a <c>launch-text set</c> or <c>measure</c> touched, and records the result.
     /// </summary>
-    Optional<IReadOnlyList<LaunchText>> LaunchTexts = default);
+    Optional<IReadOnlyList<LaunchText>> LaunchTexts = default,
+    /// <summary>
+    /// This project's orchestrator-window model override (task: an operator starts a lean node
+    /// or project orchestrator window) — outranks <see cref="Model"/> for the project's
+    /// <c>recipes/settings.json</c> alone, so the model dispatched agents run on and the model
+    /// the operator's own window runs on can be raised or lowered independently. Present-with-null
+    /// (Unknown) clears the override so <see cref="Model"/>, then the node's resolution, decides
+    /// again — the same clearing idiom <see cref="Model"/> itself already uses.
+    /// </summary>
+    Optional<AgentModel> OrchestratorModel = default);

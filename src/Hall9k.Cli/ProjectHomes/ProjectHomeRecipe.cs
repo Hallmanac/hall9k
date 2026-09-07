@@ -2,6 +2,7 @@ using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using Spectre.Console;
 
 namespace Hall9k.Cli.ProjectHomes;
@@ -80,10 +81,24 @@ public static class ProjectHomeRecipe
         // Platform-owned, overwritten unconditionally — the same discipline the anchor's own type
         // doc states (task: an operator starts a lean node or project orchestrator window). The
         // project's own model override outranks the node's, the ordinary resolution chain.
-        OperatingSettings operatingSettings = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+        // TryReadOperatingSettingsAsync, not the throwing ReadOperatingSettingsAsync: h9k project
+        // init is itself a repair command (this type's own doc, "run it against a half-made home
+        // and it reports what was already there"), so a malformed config.json must not take out
+        // the rest of the recipe this call is in the middle of building (independent pre-PR
+        // review, cycle 1, adversarial lens).
+        ConfigFileReadResult operatingSettingsRead = await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
+        if (operatingSettingsRead.Problem is { } settingsProblem)
+        {
+            steps.Add(ProjectHomeStep.Skipped(
+                $"{settingsProblem.Message} The orchestrator recipe's settings.json falls back to "
+                + $"{AgentModel.PlatformFallback} for its model this pass — fix the file, then re-run "
+                + "h9k project init to pick up the real setting."));
+        }
+
         steps.Add(LaunchAnchorDocument.WriteStep(ProjectHomePaths.LaunchAnchorFile(home)));
         steps.Add(RecipeSettingsDocument.WriteStep(
-            ProjectHomePaths.RecipeSettingsFile(home), OrchestratorModel.ForProject(project.Model, operatingSettings)));
+            ProjectHomePaths.RecipeSettingsFile(home),
+            OrchestratorModel.ForProject(project.OrchestratorModel, project.Model, operatingSettingsRead.Settings)));
         steps.AddRange(RecipeSkillPublisher.Seed(home));
 
         return steps;
