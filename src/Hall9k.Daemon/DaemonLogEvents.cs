@@ -25,4 +25,17 @@ public static class DaemonLogEvents
     /// push that carries none.
     /// </summary>
     public static readonly EventId BranchPushedWithNoPullRequest = new(2002, nameof(BranchPushedWithNoPullRequest));
+
+    /// <summary>
+    /// A stacked child's pull request opened against the project's own base branch instead of the
+    /// parent branch its run recorded, because that parent branch was already gone from origin — its
+    /// pull request merged and the parent's closeout deleted it while this child was still building
+    /// (task: a stacked pull-request edge exists as an explicit opt-in dependency). Its own id
+    /// because it is the one case where the base a pull request opens against is not the base this
+    /// run recorded, and the retarget and replay closeout still owes the child are the reason the
+    /// record is deliberately left saying so — an operator reading a stack mid-flight wants to see
+    /// this without matching prose.
+    /// </summary>
+    public static readonly EventId StackedParentBranchGoneAtPullRequestOpen =
+        new(2003, nameof(StackedParentBranchGoneAtPullRequestOpen));
 }

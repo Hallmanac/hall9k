@@ -86,10 +86,12 @@ public sealed class PullRequestOpener(
                     // The base this run recorded at dispatch, not the project's own: a stacked
                     // child's pull request targets its parent's branch, which is what forms the
                     // stack on GitHub (task: a stacked pull-request edge exists as an explicit
-                    // opt-in dependency). BaseBranchOr resolves the ordinary blank to the project's
-                    // base, so every unstacked pull request opens exactly as it always has.
+                    // opt-in dependency). ResolveOpenBaseAsync reads that recorded base and, for a
+                    // stacked child only, checks the branch is still on origin at all before aiming
+                    // a pull request at it. Every unstacked pull request opens exactly as it always
+                    // has, without a single extra call.
                     ? await CreatePullRequestAsync(
-                        run, task, run.BaseBranchOr(project.BaseBranch), cancellationToken)
+                        run, task, await ResolveOpenBaseAsync(run, project, cancellationToken), cancellationToken)
                     : (null, 0);
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -208,6 +210,112 @@ public sealed class PullRequestOpener(
             return null;
         }
     }
+
+    /// <summary>
+    /// The branch this run's pull request actually opens against: the base it recorded at dispatch,
+    /// unless that base is a parent branch origin no longer has.
+    /// <para>
+    /// This is the stacked edge's mainline race, not an edge case (adversarial review, cycle 6): the
+    /// whole point of the edge is that the child dispatches at the parent's <em>Delivered</em>, so
+    /// the parent's merge — a human's, or the daemon's own pre-approved auto-merge — routinely lands
+    /// during the child's hours-long build and review pipeline, and the parent's closeout deletes
+    /// its branch everywhere unconditionally. <c>gh pr create --base &lt;a deleted branch&gt;</c> is a
+    /// raw 422 that fails the run and the task with an error naming none of this; the retry then
+    /// resumes the branch and inherits the same frozen base (<c>StackedBaseResolver.ResumedBaseAsync</c>,
+    /// correctly — a resumed branch's base is a fact about the branch), so it fails identically,
+    /// forever. Every retarget and replay mechanism the feature has is reachable only from
+    /// closeout's inspection of an ALREADY-OPEN pull request, so nothing recovered it.
+    /// </para>
+    /// <para>
+    /// Opening against the project's own base is what recovers it, and it is exactly where the
+    /// retarget would have put this pull request anyway. What deliberately does NOT happen here is
+    /// touching the run's recorded base: the branch still physically carries the parent's commits,
+    /// so the replay that drops them is still owed, and the record is what
+    /// <c>StackedParentWatch.IsStackedChild</c> and the merge-bar guard read to know that. Left
+    /// alone, the next closeout sweep observes the merged parent, records the retarget over a
+    /// pull request already on the right base (<c>gh pr edit --base</c> is idempotent), and
+    /// dispatches the replay — the ordinary path, arriving at the ordinary place.
+    /// </para>
+    /// <para>
+    /// A branch origin could not be READ about is not a branch that is gone (AGENTS.md's never-guess
+    /// rule): the recorded base stands, <c>gh</c> fails the run honestly, and <c>h9k task retry</c>
+    /// asks again — which is the same lever a failed push already names.
+    /// </para>
+    /// </summary>
+    private async Task<string> ResolveOpenBaseAsync(
+        RunDetails run, Domain.Features.Project.Projections.ProjectDetails project, CancellationToken cancellationToken)
+    {
+        string recorded = run.BaseBranchOr(project.BaseBranch);
+        if (!run.AwaitsStackedRetarget(project.BaseBranch))
+        {
+            return recorded;
+        }
+
+        // Through the deadline-bounded runner, not the raw process helper further down: this call
+        // reaches origin — through whatever credential helper the node has configured, possibly over
+        // a slow uplink — and that helper carries no deadline at all, so a wedged remote would hang
+        // the opener with nothing to time it out. ExternalProcess's DEFAULT deadline rather than
+        // PushBranchAsync's own longer one, because a single-ref ls-remote is exactly "the short
+        // metadata read" that default is sized for (ExternalProcess.Deadline's own doc), unlike a
+        // push that transfers real data.
+        ProcessResult probe;
+        try
+        {
+            probe = await ExternalProcess.Runner(
+                "git",
+                ["ls-remote", "--exit-code", "origin", $"refs/heads/{recorded}"],
+                run.WorktreePath,
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // A deadline, a held-open output pipe, a refused spawn: origin was not read, which is
+            // not the same fact as the parent's branch being gone. Same direction as a nonzero exit
+            // below — the recorded base stands.
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: could not read whether the stacked parent branch {ParentBranch} is still on origin "
+                + "— opening against it as recorded rather than assuming it is gone",
+                run.Id, recorded);
+            return recorded;
+        }
+
+        string open = OpenBaseFor(recorded, project.BaseBranch, probe.ExitCode);
+        if (open == recorded)
+        {
+            if (probe.ExitCode != 0)
+            {
+                logger.LogWarning(
+                    "Run {RunId}: could not read whether the stacked parent branch {ParentBranch} is still on "
+                    + "origin ({Error}) — opening against it as recorded rather than assuming it is gone; if it "
+                    + "has been deleted, gh fails this run and h9k task retry asks again",
+                    run.Id, recorded, probe.StandardError.IsBlank() ? "no output" : probe.StandardError);
+            }
+
+            return recorded;
+        }
+
+        logger.LogWarning(
+            DaemonLogEvents.StackedParentBranchGoneAtPullRequestOpen,
+            "Run {RunId}: the stacked parent branch {ParentBranch} is gone from origin — its pull request merged "
+            + "while this branch was still building — so this pull request opens against {BaseBranch} instead. "
+            + "The run still records {ParentBranch} as its base, because this branch still carries the parent's "
+            + "commits and closeout's replay onto {BaseBranch} is still owed",
+            run.Id, recorded, project.BaseBranch);
+        return open;
+    }
+
+    /// <summary>
+    /// The decision <see cref="ResolveOpenBaseAsync"/> makes once it has asked origin, split out
+    /// from the asking so the rule can be exercised without a remote: only <c>ls-remote</c>'s
+    /// documented "no matching ref" code (2) moves a stacked child's pull request off the base its
+    /// run recorded. 0 is the branch still being there; every other code is git failing to answer,
+    /// which is not the same fact and must not move the base — the whole hazard here is guessing a
+    /// branch away and opening a stacked pull request against the wrong base while the parent is
+    /// still very much alive.
+    /// </summary>
+    internal static string OpenBaseFor(string recordedBase, string projectBaseBranch, int lsRemoteExitCode) =>
+        lsRemoteExitCode == 2 ? projectBaseBranch : recordedBase;
 
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
         RunDetails run, TaskDetails task, string baseBranch, CancellationToken cancellationToken)
