@@ -76,8 +76,12 @@ public sealed record PullRequestReviewLineComment(string Path, int Line, string 
     // sentence and named a path that does not exist. It failed loudly rather than posting
     // anything wrong (GitHub 422s the whole review), which is why this is graded low; the lazy
     // form simply parses what the reviewer meant.
+    // [0-9] rather than \d, because .NET's \d matches every Unicode decimal digit — Arabic-Indic
+    // digits pasted out of a document matched the shape and then failed int.Parse with a raw
+    // FormatException (independent pre-PR review, cycle 1, adversarial lens). GitHub's line
+    // number is ASCII or it is nothing, so the class that parses is the class that matches.
     private static readonly Regex Shape = new(
-        @"^(?<path>.+?):(?<line>\d+):\s*(?<text>.*\S.*)$", RegexOptions.Singleline, TimeSpan.FromSeconds(1));
+        @"^(?<path>.+?):(?<line>[0-9]+):\s*(?<text>.*\S.*)$", RegexOptions.Singleline, TimeSpan.FromSeconds(1));
 
     /// <summary>
     /// Parses the <c>--finding</c> form a reviewer types: <c>path:line: text</c>. Refuses rather
@@ -88,7 +92,15 @@ public sealed record PullRequestReviewLineComment(string Path, int Line, string 
     public static PullRequestReviewLineComment Parse(string finding)
     {
         Match match = Shape.Match(finding?.Trim() ?? string.Empty);
-        if (!match.Success)
+        // The parse is part of the match check rather than a step after it: the digit run the
+        // shape accepts is unbounded in length, so a fat-fingered or pasted line number past
+        // int.MaxValue threw an OverflowException that Program.cs's mapping (DomainException,
+        // CommandAppException, Npgsql) never sees — a raw stack trace and an unmapped exit code
+        // where this command's own teaching refusal was designed (independent pre-PR review,
+        // cycle 1, both lenses). A number that cannot be an int cannot be a line either, so it
+        // belongs in the same refusal as a missing one.
+        if (!match.Success
+            || !int.TryParse(match.Groups["line"].Value, CultureInfo.InvariantCulture, out int line))
         {
             throw new DomainValidationException(
                 $"'{RelayedText.OneLine(finding ?? string.Empty)}' is not a finding this command can post. "
@@ -99,9 +111,7 @@ public sealed record PullRequestReviewLineComment(string Path, int Line, string 
         }
 
         return new PullRequestReviewLineComment(
-            match.Groups["path"].Value.Trim(),
-            int.Parse(match.Groups["line"].Value, CultureInfo.InvariantCulture),
-            match.Groups["text"].Value.Trim());
+            match.Groups["path"].Value.Trim(), line, match.Groups["text"].Value.Trim());
     }
 
     /// <summary>The <c>path:line: text</c> form again, for the record kept on the task of what was actually posted.</summary>

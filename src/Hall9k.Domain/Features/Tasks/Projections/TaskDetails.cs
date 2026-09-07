@@ -278,7 +278,7 @@ public sealed class TaskDetails
     public ReviewerVerdict ReviewerVerdict { get; set; } = ReviewerVerdict.Unknown;
     /// <summary>The note that went out as the GitHub review's body, kept so <c>h9k task show</c> can say what was actually posted; null until a verdict lands.</summary>
     public string? ReviewerVerdictNote { get; set; }
-    /// <summary>The pull request head the review was submitted against — the tree the verdict is an opinion about, which can have moved since.</summary>
+    /// <summary>The pull request head the review was submitted against, read live at post time: the tree GitHub attached the verdict to, which is not necessarily the one the reviewer read — a push landing mid-lap moves it — and which can have moved again since.</summary>
     public string? ReviewerVerdictHeadSha { get; set; }
     /// <summary>What GitHub answered with when the review was submitted; null when the post succeeded carrying no URL to record.</summary>
     public string? ReviewerVerdictReviewUrl { get; set; }
