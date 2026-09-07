@@ -554,7 +554,7 @@ paste into a fresh terminal to start one), its recipe and journal paths, and its
 cost or "not measured"; with no project named and more than one registered, `project` prints one
 block per project rather than guessing. `launch-text show`/`set` reads and replaces the launch
 line for a given agent CLI (`--cli`, default `claude-code`) — the node's own in the platform
-config file, a project's own via `h9k project set`'s underlying event — and `measure` runs a
+config file, a project's own with `--project` — and `measure` runs a
 fixed, cheap-model, non-interactive probe against it so a "lean window" claim is a number, not an
 adjective. The recipe content itself (what the window is, its start-up sequence, how it spawns
 scoped sessions) is never platform-rendered — only a tiny, always-overwritten hand-off file is —
