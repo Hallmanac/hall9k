@@ -1141,6 +1141,14 @@ public sealed class CloseoutEngine(
     /// change in either — a reviewer approving, a new one being requested — must land its own
     /// event even when Copilot's own state is unchanged.
     /// </para>
+    /// <para>
+    /// The three named-reviewer facts join it on the same terms (task: the people a pull request is
+    /// waiting on are named, and pre-approval gains a mode that waits for human review): who
+    /// requested changes, whether a human review has ever been requested, and which requested
+    /// reviewers have not approved the head are exactly what the waiting line names, so a sweep
+    /// where only one of them moved — the last outstanding reviewer approving, a request being
+    /// withdrawn — is a sweep the display needs to see.
+    /// </para>
     /// </summary>
     private async Task RecordExternalReviewObservationAsync(
         IDocumentSession session,
@@ -1153,7 +1161,11 @@ public sealed class CloseoutEngine(
             && snapshot.CopilotReviewThreadCount == run.ExternalReviewThreadCount
             && snapshot.HasPendingChecks == run.ExternalReviewChecksPending
             && snapshot.ReviewDecision == run.ExternalReviewDecision
-            && snapshot.OutstandingReviewers.SequenceEqual(run.ExternalOutstandingReviewerLogins))
+            && snapshot.OutstandingReviewers.SequenceEqual(run.ExternalOutstandingReviewerLogins)
+            && snapshot.HumanChangesRequestedBy.SequenceEqual(run.ExternalChangesRequestedByLogins)
+            && snapshot.HasEverRequestedHumanReviewer == run.ExternalHumanReviewEverRequested
+            && snapshot.HumanReviewersAwaitingApproval.SequenceEqual(
+                run.ExternalHumanReviewersAwaitingApprovalLogins))
         {
             return;
         }
@@ -1161,7 +1173,8 @@ public sealed class CloseoutEngine(
         session.Events.Append(run.Id, new ExternalReviewObserved(
             run.Id, snapshot.CopilotReviewState, snapshot.CopilotReviewThreadCount,
             snapshot.HasPendingChecks, now, snapshot.ReviewDecision, snapshot.OutstandingReviewers,
-            snapshot.OutstandingHumanReviewers));
+            snapshot.OutstandingHumanReviewers, snapshot.HumanChangesRequestedBy,
+            snapshot.HasEverRequestedHumanReviewer, snapshot.HumanReviewersAwaitingApproval));
         await session.SaveChangesAsync(cancellationToken);
     }
 

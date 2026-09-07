@@ -54,6 +54,28 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     // gate has no human left to fall back on, so it needs the distinction this cap's own
     // comment above did not previously expose (independent pre-PR review, cycle 1,
     // adversarial finding).
+    //
+    // timelineItems reads both halves of the review-request story — the ask and the un-ask — so
+    // the net "who has ever been asked to review this" the after-human-review merge gate needs
+    // (task: the people a pull request is waiting on are named, and pre-approval gains a mode that
+    // waits for human review) can drop a reviewer whose request a human took back. Two itemTypes
+    // now share the cap, so it doubles to 50, and __typename becomes load-bearing: both event
+    // shapes carry a requestedReviewer, and reading a removal as an ask would invert the answer
+    // (as would reading a removal's actor as a human re-requesting, which is what
+    // ReadLastReviewRequesters would have done unfiltered).
+    //
+    // standingReviews is an alias onto the reviews connection, filtered to the three verdict
+    // states, and it exists because latestReviews CANNOT answer "did this person approve": it is
+    // the latest review per author of ANY type, so a reviewer who approves the head and then
+    // answers a question with a comment-only review has that comment as their latest, while
+    // GitHub keeps their approval standing and goes on reporting reviewDecision: APPROVED. Reading
+    // the verdict off latestReviews would hold the after-human-review merge forever on a reviewer
+    // GitHub's own reviewers panel shows as having approved (independent pre-PR review, cycle 1,
+    // adversarial finding). DISMISSED is selected alongside the other two precisely so a dismissal
+    // still clears the approval it dismissed; COMMENTED and PENDING are excluded because neither
+    // is a verdict and a later one must not supersede a standing verdict. last: 50 is a cap on the
+    // same terms as every other read here, and its truncation direction is safe: an approval old
+    // enough to fall out of it reads as absent, which holds the merge rather than granting it.
     private const string ReviewsQuery =
         """
         query($owner: String!, $name: String!, $number: Int!) {
@@ -70,16 +92,23 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
               reviewRequests(first: 20) {
                 nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { slug } } }
               }
-              timelineItems(last: 20, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+              timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT]) {
                 nodes {
+                  __typename
                   ... on ReviewRequestedEvent {
                     actor { login __typename }
-                    requestedReviewer { __typename ... on User { login } ... on Bot { login } }
+                    requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { slug } }
+                  }
+                  ... on ReviewRequestRemovedEvent {
+                    requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Team { slug } }
                   }
                 }
               }
               latestReviews(first: 100) {
                 nodes { id author { login __typename } body url commit { oid } }
+              }
+              standingReviews: reviews(last: 50, states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) {
+                nodes { author { login __typename } state commit { oid } }
               }
             }
           }
@@ -131,7 +160,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             BaseRefName: baseRefName,
             ReviewDecision: reviews.ReviewDecision,
             OutstandingReviewerLogins: reviews.OutstandingReviewerLogins,
-            ReviewThreadsTruncated: reviews.ReviewThreadsTruncated);
+            ReviewThreadsTruncated: reviews.ReviewThreadsTruncated,
+            RequestedHumanReviewerLogins: reviews.RequestedHumanReviewerLogins);
     }
 
     /// <summary>
@@ -227,7 +257,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         bool IsConflicting = false,
         string? ReviewDecision = null,
         IReadOnlyList<string>? OutstandingReviewerLogins = null,
-        bool ReviewThreadsTruncated = false)
+        bool ReviewThreadsTruncated = false,
+        IReadOnlyList<string>? RequestedHumanReviewerLogins = null)
     {
         public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], [], ExternalReviewState.None, 0);
     }
@@ -331,7 +362,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             IsConflicting: ReadMergeable(pullRequest) == "CONFLICTING",
             ReviewDecision: ReadReviewDecision(pullRequest),
             OutstandingReviewerLogins: ReadOutstandingReviewerLogins(pullRequest),
-            ReviewThreadsTruncated: reviewThreadsTruncated);
+            ReviewThreadsTruncated: reviewThreadsTruncated,
+            RequestedHumanReviewerLogins: ReadRequestedHumanReviewerLogins(pullRequest));
     }
 
     /// <summary>GitHub's own branch-protection-aware verdict, or null when the repository has no rule requiring one.</summary>
@@ -383,7 +415,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 && slug.ValueKind == JsonValueKind.String
                 && slug.GetString() is { } slugValue)
             {
-                logins.Add($"team:{slugValue}");
+                logins.Add($"{PullRequestSnapshot.TeamReviewerPrefix}{slugValue}");
             }
         }
 
@@ -644,7 +676,12 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
 
         foreach (JsonElement item in timeline.GetProperty("nodes").EnumerateArray())
         {
-            if (!item.TryGetProperty("requestedReviewer", out JsonElement reviewer)
+            // The timeline now also carries REVIEW_REQUEST_REMOVED_EVENT, which has both a
+            // requestedReviewer and an actor of its own: without this filter a human WITHDRAWING a
+            // request would read here as a human MAKING one, which is precisely the inverted
+            // human-engagement signal ReadPendingReviewRequestLogins exists to get right.
+            if (TimelineItemType(item) != "ReviewRequestedEvent"
+                || !item.TryGetProperty("requestedReviewer", out JsonElement reviewer)
                 || reviewer.ValueKind != JsonValueKind.Object
                 || !reviewer.TryGetProperty("login", out JsonElement login)
                 || login.ValueKind != JsonValueKind.String)
@@ -664,6 +701,93 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         return lastRequesterByReviewer;
     }
 
+    /// <summary>Which timeline event a node is, read from GraphQL's own <c>__typename</c> rather than inferred from its shape.</summary>
+    private static string? TimelineItemType(JsonElement item) =>
+        item.TryGetProperty("__typename", out JsonElement typeName) && typeName.ValueKind == JsonValueKind.String
+            ? typeName.GetString()
+            : null;
+
+    /// <summary>
+    /// Every human (or team) reviewer this pull request has an outstanding-or-answered review
+    /// request for, net of withdrawals — what
+    /// <see cref="PullRequestSnapshot.HumanReviewersEverRequested"/> unions with the
+    /// currently-outstanding list (task: the people a pull request is waiting on are named, and
+    /// pre-approval gains a mode that waits for human review).
+    /// <para>
+    /// <c>timelineItems(last:)</c> returns oldest-first, so walking in order and letting each
+    /// event overwrite the previous verdict for that reviewer leaves the most recent ask-or-un-ask
+    /// per login. A reviewer who simply answered leaves no removal event at all — GitHub retires
+    /// their pending request silently — so they stay in this set and the merge gate goes on to ask
+    /// what their verdict was. One a human un-asked drops out, which is what lets the gate report
+    /// "no human reviewer has been requested" again rather than waiting on somebody nobody is
+    /// waiting on.
+    /// </para>
+    /// <para>
+    /// Copilot is filtered out here, on exactly the same classification every other surface uses
+    /// (<see cref="IsCopilotLogin"/>), so its own request — including the one GitHub's
+    /// review-new-commits-automatically setting recreates on every push — is classified exactly as
+    /// it always was: handled through <see cref="ExternalReviewState"/> and its bounded settle
+    /// window, never as the human review this gate waits for. A requested TEAM is recorded
+    /// <c>team:&lt;slug&gt;</c>, matching <see cref="ReadOutstandingReviewerLogins"/>, because a
+    /// team's request is a request for a person's review even though the slug itself can never
+    /// carry one.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> ReadRequestedHumanReviewerLogins(JsonElement pullRequest)
+    {
+        if (!pullRequest.TryGetProperty("timelineItems", out JsonElement timeline))
+        {
+            return [];
+        }
+
+        Dictionary<string, bool> requestedByReviewer = new(StringComparer.OrdinalIgnoreCase);
+        foreach (JsonElement item in timeline.GetProperty("nodes").EnumerateArray())
+        {
+            string? itemType = TimelineItemType(item);
+            if (itemType is not ("ReviewRequestedEvent" or "ReviewRequestRemovedEvent"))
+            {
+                continue;
+            }
+
+            if (!item.TryGetProperty("requestedReviewer", out JsonElement reviewer)
+                || reviewer.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            string? recordAs = null;
+            if (reviewer.TryGetProperty("login", out JsonElement login)
+                && login.ValueKind == JsonValueKind.String
+                && login.GetString() is { } loginValue)
+            {
+                recordAs = IsCopilotLogin(loginValue) ? null : loginValue;
+            }
+            else if (reviewer.TryGetProperty("slug", out JsonElement slug)
+                && slug.ValueKind == JsonValueKind.String
+                && slug.GetString() is { } slugValue)
+            {
+                recordAs = $"{PullRequestSnapshot.TeamReviewerPrefix}{slugValue}";
+            }
+
+            if (recordAs is not null)
+            {
+                requestedByReviewer[recordAs] = itemType == "ReviewRequestedEvent";
+            }
+        }
+
+        // Sorted and de-duplicated before it reaches a caller, the same reason
+        // ReadOutstandingReviewerLogins sorts: this list feeds an equality comparison
+        // (CloseoutEngine.RecordExternalReviewObservationAsync) that would otherwise append a
+        // fresh event on harmless reordering alone.
+        return
+        [
+            .. requestedByReviewer
+                .Where(entry => entry.Value)
+                .Select(entry => entry.Key)
+                .Order(StringComparer.OrdinalIgnoreCase),
+        ];
+    }
+
     /// <summary>
     /// The accounts whose latest review sits on this pull request, minus its own author and
     /// minus anyone the provider will not accept a request for. GitHub refuses a review
@@ -676,6 +800,12 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     /// countersign skip a reviewer who has already seen the head (Decisions Log #62) instead
     /// of resetting a fresh approval to pending and spending a pass to learn nothing.
     /// </para>
+    /// <para>
+    /// Their STANDING verdict, and the commit that verdict sits on, come from a different read
+    /// (<see cref="ReadStandingVerdicts"/>) for a reason the two fields' names carry: the latest
+    /// review answers "has this person seen the head", and only a verdict-only read answers "did
+    /// this person approve it". The two diverge the moment a reviewer approves and then comments.
+    /// </para>
     /// </summary>
     private static IReadOnlyList<PullRequestReviewer> ReadReviewers(JsonElement pullRequest)
     {
@@ -685,6 +815,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         }
 
         string? author = ReadActor(pullRequest)?.Login;
+        Dictionary<string, StandingVerdict> standing = ReadStandingVerdicts(pullRequest);
         List<PullRequestReviewer> reviewers = [];
         foreach (JsonElement review in latest.GetProperty("nodes").EnumerateArray())
         {
@@ -695,10 +826,63 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 continue;
             }
 
-            reviewers.Add(reviewer with { LastReviewedCommit = ReadReviewedCommit(review) });
+            StandingVerdict? verdict = standing.TryGetValue(reviewer.Login, out StandingVerdict found)
+                ? found
+                : null;
+            reviewers.Add(reviewer with
+            {
+                LastReviewedCommit = ReadReviewedCommit(review),
+                StandingReviewState = verdict?.State,
+                StandingReviewCommit = verdict?.Commit,
+            });
         }
 
         return reviewers;
+    }
+
+    /// <summary>One reviewer's most recent verdict, and the commit it was left on.</summary>
+    private readonly record struct StandingVerdict(string State, string? Commit);
+
+    /// <summary>
+    /// Each account's most recent VERDICT — approval, changes-requested, or a dismissal that
+    /// cleared one — read from the verdict-filtered <c>standingReviews</c> alias rather than from
+    /// <c>latestReviews</c>, which is per-author latest of any type and so loses a standing
+    /// approval behind the commenting review that followed it (independent pre-PR review, cycle 1,
+    /// adversarial finding).
+    /// <para>
+    /// The connection returns oldest-first, so walking in order and letting each verdict overwrite
+    /// the previous one for that account leaves the standing verdict — including a DISMISSED that
+    /// retires an earlier approval, which is why that state is selected alongside the other two.
+    /// An account with no verdict at all is simply absent, which reads downstream as "did not
+    /// approve" and never as approval.
+    /// </para>
+    /// <para>
+    /// Absent entirely (a payload written before this alias existed, or a fixture that never sets
+    /// it) yields an empty map on the same terms: no verdict observed, so nobody has approved.
+    /// </para>
+    /// </summary>
+    private static Dictionary<string, StandingVerdict> ReadStandingVerdicts(JsonElement pullRequest)
+    {
+        Dictionary<string, StandingVerdict> verdictByLogin = new(StringComparer.OrdinalIgnoreCase);
+        if (!pullRequest.TryGetProperty("standingReviews", out JsonElement standing)
+            || standing.ValueKind != JsonValueKind.Object
+            || !standing.TryGetProperty("nodes", out JsonElement nodes)
+            || nodes.ValueKind != JsonValueKind.Array)
+        {
+            return verdictByLogin;
+        }
+
+        foreach (JsonElement review in nodes.EnumerateArray())
+        {
+            if (ReadActor(review) is not { } reviewer || ReadReviewState(review) is not { } state)
+            {
+                continue;
+            }
+
+            verdictByLogin[reviewer.Login] = new StandingVerdict(state, ReadReviewedCommit(review));
+        }
+
+        return verdictByLogin;
     }
 
     /// <summary>
@@ -709,6 +893,17 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
     private static string? ReadReviewedCommit(JsonElement review) =>
         review.TryGetProperty("commit", out JsonElement commit) && commit.ValueKind == JsonValueKind.Object
             ? commit.GetProperty("oid").GetString()
+            : null;
+
+    /// <summary>
+    /// GitHub's own verdict word for a review — APPROVED, CHANGES_REQUESTED, DISMISSED among the
+    /// states <c>standingReviews</c> selects — null when the provider did not report one. Null is
+    /// read downstream as "did not approve", never as approval, the same claim-no-absence reading
+    /// <see cref="ReadReviewedCommit"/> already gets.
+    /// </summary>
+    private static string? ReadReviewState(JsonElement review) =>
+        review.TryGetProperty("state", out JsonElement state) && state.ValueKind == JsonValueKind.String
+            ? state.GetString()
             : null;
 
     /// <summary>The pull request's current head, which the reviews above are compared against.</summary>

@@ -38,8 +38,33 @@ public enum ReviewerKind
 /// the pull request's head: a reviewer whose latest review already covers the current head has
 /// nothing left to be asked about (Decisions Log #62).
 /// </para>
+/// <para>
+/// StandingReviewState is GitHub's own verdict word for this account's most recent VERDICT —
+/// <c>APPROVED</c>, <c>CHANGES_REQUESTED</c>, or the <c>DISMISSED</c> that retired one — with
+/// StandingReviewCommit the commit that verdict was left on, and both null where no verdict was
+/// observed at all. Read by the after-human-review merge gate (task: the people a pull request is
+/// waiting on are named, and pre-approval gains a mode that waits for human review), which needs
+/// "did this person actually approve" rather than the pull request's aggregate
+/// <c>reviewDecision</c>: that verdict is null wherever no branch rule requires one, so a reviewer
+/// who was asked and only commented would otherwise read as satisfied.
+/// </para>
+/// <para>
+/// Standing is deliberately not the same fact as latest, and the pair of commit fields is what
+/// makes the difference visible: a reviewer who approves the head and then answers a question with
+/// a comment-only review has that comment as their LATEST review while GitHub keeps their approval
+/// STANDING (it goes on reporting <c>reviewDecision: APPROVED</c>). Reading the verdict off the
+/// latest review held such a merge forever and named the approver as the person it was waiting on
+/// (independent pre-PR review, cycle 1, adversarial finding), so the verdict comes from a
+/// verdict-only read (<c>GitHubPullRequestInspector.ReadStandingVerdicts</c>) while
+/// <see cref="LastReviewedCommit"/> keeps answering the countersign's own, different question.
+/// </para>
 /// </summary>
-public sealed record PullRequestReviewer(string Login, ReviewerKind Kind, string? LastReviewedCommit = null)
+public sealed record PullRequestReviewer(
+    string Login,
+    ReviewerKind Kind,
+    string? LastReviewedCommit = null,
+    string? StandingReviewState = null,
+    string? StandingReviewCommit = null)
 {
     /// <summary>An app account: the [bot] suffix decision downstream rests on this.</summary>
     public bool IsBot => Kind == ReviewerKind.Bot;
@@ -49,6 +74,25 @@ public sealed record PullRequestReviewer(string Login, ReviewerKind Kind, string
 
     /// <summary>Whether a review request addressed here can be accepted at all.</summary>
     public bool IsRequestable => Kind is ReviewerKind.Human or ReviewerKind.Bot;
+
+    /// <summary>
+    /// Whether this account's STANDING verdict requests changes — whose verdict a
+    /// CHANGES_REQUESTED decision belongs to. Standing rather than latest, so a reviewer who
+    /// requests changes and then comments is still named as the author of the verdict GitHub is
+    /// still reporting.
+    /// </summary>
+    public bool RequestedChanges => StandingReviewState == "CHANGES_REQUESTED";
+
+    /// <summary>
+    /// Whether this account's standing verdict approves <paramref name="headCommit"/>
+    /// specifically. A null head, or a verdict the provider reported without a commit, reads as
+    /// NOT approved: unobservable is not agreement, the same reading
+    /// <see cref="LastReviewedCommit"/> already gets from the countersign.
+    /// </summary>
+    public bool HasApproved(string? headCommit) =>
+        StandingReviewState == "APPROVED"
+        && headCommit is not null
+        && string.Equals(StandingReviewCommit, headCommit, StringComparison.Ordinal);
 }
 
 /// <summary>
@@ -169,6 +213,17 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// human left in that loop, so it treats a truncated read as an obstruction of its own rather than
 /// trusting the zero (independent pre-PR review, cycle 1, adversarial finding).
 /// </para>
+/// <para>
+/// RequestedHumanReviewerLogins is who this pull request's review-request timeline shows was asked
+/// for a review and not un-asked again, humans and teams (task: the people a pull request is
+/// waiting on are named, and pre-approval gains a mode that waits for human review). Distinct from
+/// <see cref="OutstandingReviewerLogins"/>, which is only who is asked <em>right now</em>: a
+/// reviewer who was asked and has since answered is gone from that list and still in this one,
+/// which is the whole point — the after-human-review merge gate has to know a human was brought
+/// into the loop at all before it can ask whether they approved. Null on a snapshot built before
+/// this was collected, and on a test fixture that never sets it, which reads as "no request
+/// observed" and therefore holds that gate rather than opening it.
+/// </para>
 /// </summary>
 public sealed record PullRequestSnapshot(
     bool IsMerged,
@@ -192,8 +247,20 @@ public sealed record PullRequestSnapshot(
     string? ReviewDecision = null,
     IReadOnlyList<string>? OutstandingReviewerLogins = null,
     bool HasObservedChecks = true,
-    bool ReviewThreadsTruncated = false)
+    bool ReviewThreadsTruncated = false,
+    IReadOnlyList<string>? RequestedHumanReviewerLogins = null)
 {
+    /// <summary>
+    /// How a requested TEAM reviewer is recorded in every reviewer list here, since GitHub exposes
+    /// a team by slug and no login: <c>team:&lt;slug&gt;</c>. One home for the prefix because three
+    /// places depend on it agreeing — the two provider readers that write it
+    /// (<c>GitHubPullRequestInspector.ReadOutstandingReviewerLogins</c> and
+    /// <c>ReadRequestedHumanReviewerLogins</c>) and <see cref="HumanReviewersAwaitingApproval"/>,
+    /// which recognizes a team by it in order to ask a different approval question of it than of a
+    /// person.
+    /// </summary>
+    public const string TeamReviewerPrefix = "team:";
+
     /// <summary>Every unresolved thread's id, or empty when the provider read predates ids being collected.</summary>
     public IReadOnlyList<string> ThreadIds => UnresolvedReviewThreadIds ?? [];
 
@@ -232,6 +299,126 @@ public sealed record PullRequestSnapshot(
     /// task can be published pre-approved).
     /// </summary>
     public bool ReviewDecisionSatisfied => ReviewDecision is null or "APPROVED";
+
+    /// <summary>
+    /// Every human (or team) reviewer this pull request has had a review request for and has not
+    /// had it withdrawn again — the union of the provider's own review-request timeline, net of
+    /// removals, with whoever is outstanding right now (task: the people a pull request is waiting
+    /// on are named, and pre-approval gains a mode that waits for human review).
+    /// <para>
+    /// Netting removals matters because a request GitHub retires by itself, when its reviewer
+    /// submits a review, leaves no removal event — so a reviewer who answered stays in this set
+    /// and their verdict is checked, while one whose request a human took back drops out, and the
+    /// after-human-review gate goes back to saying no reviewer has been asked rather than waiting
+    /// forever on somebody nobody is asking any more.
+    /// </para>
+    /// <para>
+    /// The union with <see cref="OutstandingHumanReviewers"/> is the belt to the timeline's braces:
+    /// the timeline read is capped (a deliberate cap, like every other read here), and a request
+    /// that is outstanding right now was definitionally made at some point, whether or not the
+    /// event that made it still fits inside the cap.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> HumanReviewersEverRequested =>
+    [
+        .. (RequestedHumanReviewerLogins ?? [])
+            .Concat(OutstandingHumanReviewers)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase),
+    ];
+
+    /// <summary>
+    /// Whether a human review has ever been asked for on this pull request — the first of the two
+    /// gates <c>PreApprovalMode.AfterHumanReview</c> adds. False is a wait, never a park: the owner
+    /// adds a reviewer on GitHub, or flips the mode to on.
+    /// </summary>
+    public bool HasEverRequestedHumanReviewer => HumanReviewersEverRequested.Count > 0;
+
+    /// <summary>
+    /// The ever-requested human reviewers whose standing verdict is not an approval of
+    /// <see cref="HeadCommit"/> — the second of the two gates
+    /// <c>PreApprovalMode.AfterHumanReview</c> adds, and the list the display names as who the
+    /// merge is waiting on. A reviewer who commented without ever approving, one who requested
+    /// changes, one whose approval was dismissed, one whose approval sits on a superseded commit,
+    /// and one who has not answered at all are all here: each is a person who was asked and has
+    /// not approved what is about to merge. A reviewer who approved the head and then left a
+    /// comment-only review is NOT here, because their approval stands — see
+    /// <see cref="PullRequestReviewer.StandingReviewState"/>.
+    /// <para>
+    /// A requested TEAM (recorded <c>team:&lt;slug&gt;</c> by
+    /// <c>GitHubPullRequestInspector.ReadOutstandingReviewerLogins</c>) is not asked to approve
+    /// under its own slug — GitHub satisfies a team's request when any one member reviews, and it
+    /// is that member's own login, never the slug, that carries the review, so demanding an
+    /// approval FROM the slug would hold this gate shut forever. What answers for it instead is
+    /// <see cref="HasStandingHumanApprovalOfHead"/>: while nobody at all has a standing approval of
+    /// the head, every requested team stays on this list and the merge keeps waiting. That is the
+    /// weakest requirement this read can actually observe — team membership is not in the pull
+    /// request payload, so which accounts belong to the slug is genuinely unknown here and is not
+    /// guessed at (AGENTS.md, never guess at unobserved facts) — and it is what keeps the mode's
+    /// promise: a team request answered by a member's comment-only or changes-requested review
+    /// retires the pending request, and without this the gate would open on a pull request no
+    /// person ever approved, which is exactly what an individually requested reviewer's identical
+    /// answer holds (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
+    /// <para>
+    /// This is strictly narrower than the outstanding-request refusal that runs ahead of it
+    /// (<see cref="HasOutstandingHumanReviewer"/>, which every automatic merge checks first): that
+    /// one covers a team nobody has answered for yet, this one covers a team somebody answered
+    /// without approving. Like every other wait this mode adds, it has no clock and never parks —
+    /// the owner's levers are an approval on GitHub, another reviewer, or flipping the mode to on.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> HumanReviewersAwaitingApproval =>
+    [
+        .. HumanReviewersEverRequested
+            .Where(login => login.StartsWith(TeamReviewerPrefix, StringComparison.Ordinal)
+                ? !HasStandingHumanApprovalOfHead
+                : !Reviewers.Any(reviewer =>
+                    string.Equals(reviewer.Login, login, StringComparison.OrdinalIgnoreCase)
+                    && reviewer.HasApproved(HeadCommit))),
+    ];
+
+    /// <summary>
+    /// Whether anybody other than Copilot has a standing approval of <see cref="HeadCommit"/> —
+    /// what a requested TEAM's approval requirement is answered by, since a slug carries no review
+    /// of its own (see <see cref="HumanReviewersAwaitingApproval"/>).
+    /// <para>
+    /// "Anybody" is deliberate: the approving account need not be the one that was requested,
+    /// because a team request is satisfied by whichever member picks it up and this read cannot
+    /// see who that team's members are. Copilot is filtered on the same
+    /// <c>GitHubPullRequestInspector.IsCopilotLogin</c> table every other list here uses, so the
+    /// review it leaves — automatic on every push, wherever the repository turns that setting on —
+    /// can never stand in for the human review this mode waits for; everyone else counts, the same
+    /// "Copilot out, everyone else in" reading <see cref="HumanChangesRequestedBy"/> gives its own
+    /// blocking verdicts.
+    /// </para>
+    /// </summary>
+    public bool HasStandingHumanApprovalOfHead => Reviewers.Any(reviewer =>
+        !GitHubPullRequestInspector.IsCopilotLogin(reviewer.Login) && reviewer.HasApproved(HeadCommit));
+
+    /// <summary>
+    /// Whose standing verdict requests changes — who to name alongside a <c>CHANGES_REQUESTED</c>
+    /// review decision, which is a verdict about the pull request and says nothing on its own about
+    /// whose verdict it is.
+    /// <para>
+    /// Filtered on the same rule as <see cref="OutstandingHumanReviewers"/> and
+    /// <see cref="HumanReviewersEverRequested"/> — Copilot out, everyone else in — rather than on
+    /// <see cref="PullRequestReviewer.IsHuman"/>, so all three lists that reach the display mean the
+    /// identical thing by "human". Copilot's own read stays where it has always been
+    /// (<see cref="CopilotReviewState"/> and its bounded settle window); any other account's
+    /// changes-requested verdict genuinely blocks the merge and is named rather than silently
+    /// dropped, which would leave a reader with an unsatisfied review decision and nobody attached
+    /// to it.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> HumanChangesRequestedBy =>
+    [
+        .. Reviewers
+            .Where(reviewer => reviewer.RequestedChanges
+                && !GitHubPullRequestInspector.IsCopilotLogin(reviewer.Login))
+            .Select(reviewer => reviewer.Login)
+            .Order(StringComparer.OrdinalIgnoreCase),
+    ];
 }
 
 /// <summary>

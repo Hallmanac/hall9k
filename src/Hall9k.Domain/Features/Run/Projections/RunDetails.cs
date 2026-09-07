@@ -146,6 +146,31 @@ public sealed class RunDetails
     /// </summary>
     public List<string> ExternalOutstandingHumanReviewerLogins { get; set; } = [];
     /// <summary>
+    /// The human reviewers whose standing verdict requests changes, as last observed (task: the
+    /// people a pull request is waiting on are named, and pre-approval gains a mode that waits for
+    /// human review) — display only, same reasoning as <see cref="ExternalReviewDecision"/>. Empty
+    /// covers both "nobody requested changes" and an observation recorded before this was
+    /// collected, so it is read alongside <see cref="ExternalReviewDecision"/> rather than as a
+    /// standalone claim: a decision of <c>CHANGES_REQUESTED</c> with nothing here means the
+    /// verdict was observed but its author was not.
+    /// </summary>
+    public List<string> ExternalChangesRequestedByLogins { get; set; } = [];
+    /// <summary>
+    /// Whether a human review had ever been requested on the pull request as of the last
+    /// observation — the fact <see cref="Hall9k.Domain.Features.Tasks.PreApprovalMode.AfterHumanReview"/>
+    /// holds the merge on, and what <c>h9k task show</c> renders under that mode. Null before any
+    /// sweep recorded it, and on a stream written before it was collected: unknown, never "nobody
+    /// was ever asked".
+    /// </summary>
+    public bool? ExternalHumanReviewEverRequested { get; set; }
+    /// <summary>
+    /// The ever-requested human reviewers whose standing verdict is not an approval of the pull
+    /// request's current head, as last observed — exactly who the after-human-review merge gate is
+    /// still waiting on, recorded so the display names the same people the daemon's own gate holds
+    /// for. Display only, same reasoning as <see cref="ExternalReviewDecision"/>.
+    /// </summary>
+    public List<string> ExternalHumanReviewersAwaitingApprovalLogins { get; set; } = [];
+    /// <summary>
     /// When Copilot's review request was first observed still pending, null once it lands, goes
     /// stale, or clears — the bounded settle-window anchor (task: a task can be published
     /// pre-approved): a requested review that never arrives within
@@ -1035,6 +1060,15 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ExternalReviewDecision = @event.Data.ReviewDecision;
         view.ExternalOutstandingReviewerLogins = [.. @event.Data.OutstandingReviewerLogins ?? []];
         view.ExternalOutstandingHumanReviewerLogins = [.. @event.Data.OutstandingHumanReviewerLogins ?? []];
+        view.ExternalChangesRequestedByLogins = [.. @event.Data.ChangesRequestedByLogins ?? []];
+        view.ExternalHumanReviewersAwaitingApprovalLogins =
+            [.. @event.Data.HumanReviewersAwaitingApprovalLogins ?? []];
+        // Deliberately not coalesced to false: an observation recorded before this was collected
+        // says nothing about whether a reviewer was ever asked, and writing false would turn that
+        // silence into the one claim the after-human-review mode acts on (AGENTS.md, never guess
+        // at unobserved facts). A later sweep on the current build fills it in.
+        view.ExternalHumanReviewEverRequested =
+            @event.Data.HumanReviewEverRequested ?? view.ExternalHumanReviewEverRequested;
     }
 
     public void Apply(IEvent<PullRequestAutoMergeAttempted> @event, RunDetails view)

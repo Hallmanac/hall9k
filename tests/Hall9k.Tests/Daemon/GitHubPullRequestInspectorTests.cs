@@ -18,7 +18,8 @@ public sealed class GitHubPullRequestInspectorTests
     private static string Payload(
         string author, string headOid, string threads, string reviews,
         string reviewRequests = "", string timelineItems = "", string? mergeable = null,
-        string? reviewDecision = null, bool? reviewThreadsHasNextPage = null) =>
+        string? reviewDecision = null, bool? reviewThreadsHasNextPage = null,
+        string standingReviews = "") =>
         ("{'data':{'repository':{'pullRequest':{"
             + $"'author':{author},'headRefOid':'{headOid}',"
             + (mergeable is null ? "" : $"'mergeable':'{mergeable}',")
@@ -30,7 +31,8 @@ public sealed class GitHubPullRequestInspectorTests
             + "},"
             + $"'reviewRequests':{{'nodes':[{reviewRequests}]}},"
             + $"'timelineItems':{{'nodes':[{timelineItems}]}},"
-            + $"'latestReviews':{{'nodes':[{reviews}]}}"
+            + $"'latestReviews':{{'nodes':[{reviews}]}},"
+            + $"'standingReviews':{{'nodes':[{standingReviews}]}}"
             + "}}}}").Replace('\'', '"');
 
     private static string Thread(bool resolved, string author, string id = "thread-1", string? reviewId = null) =>
@@ -47,7 +49,15 @@ public sealed class GitHubPullRequestInspectorTests
         $"{{'login':'{login}','__typename':'{typeName}'}}";
 
     private static string Review(string author, string oid, string body = "", string id = "review-1") =>
-        $"{{'id':'{id}','author':{author},'body':'{body}','url':'https://x/y/pull/7#r1','commit':{{'oid':'{oid}'}}}}";
+        $"{{'id':'{id}','author':{author},'body':'{body}','url':'https://x/y/pull/7#r1',"
+            + $"'commit':{{'oid':'{oid}'}}}}";
+
+    // One node of the standingReviews alias — the reviews connection filtered to the three verdict
+    // states, which is a DIFFERENT read from latestReviews above and the only one a verdict may be
+    // taken from: latestReviews is per-author latest of ANY type, so a comment left after an
+    // approval supersedes it there while GitHub keeps the approval standing.
+    private static string Verdict(string author, string oid, string state) =>
+        $"{{'author':{author},'state':'{state}','commit':{{'oid':'{oid}'}}}}";
 
     private static string ReviewWithoutCommit(string author, string body = "", string id = "review-1") =>
         $"{{'id':'{id}','author':{author},'body':'{body}','url':'https://x/y/pull/7#r1'}}";
@@ -59,8 +69,21 @@ public sealed class GitHubPullRequestInspectorTests
         $"{{'requestedReviewer':{{'__typename':'Team','slug':'{slug}'}}}}";
 
     private static string ReviewRequestedEvent(string actorLogin, string actorTypeName, string reviewerLogin, string reviewerTypeName) =>
-        "{'actor':" + Actor(actorLogin, actorTypeName)
+        "{'__typename':'ReviewRequestedEvent','actor':" + Actor(actorLogin, actorTypeName)
             + $",'requestedReviewer':{{'__typename':'{reviewerTypeName}','login':'{reviewerLogin}'}}}}";
+
+    /// <summary>
+    /// The un-ask half of the review-request timeline. It carries an actor of its own, which is
+    /// exactly why the readers filter on <c>__typename</c>: a human withdrawing a request must
+    /// never read as a human making one (task: the people a pull request is waiting on are named).
+    /// </summary>
+    private static string ReviewRequestRemovedEvent(string reviewerLogin, string reviewerTypeName) =>
+        "{'__typename':'ReviewRequestRemovedEvent','actor':" + Actor("hallmanac", "User")
+            + $",'requestedReviewer':{{'__typename':'{reviewerTypeName}','login':'{reviewerLogin}'}}}}";
+
+    private static string ReviewRequestedTeamEvent(string slug) =>
+        "{'__typename':'ReviewRequestedEvent','actor':" + Actor("hallmanac", "User")
+            + $",'requestedReviewer':{{'__typename':'Team','slug':'{slug}'}}}}";
 
     /// <summary>
     /// Every unresolved thread is feedback; only the ones a person started say somebody is
@@ -372,6 +395,308 @@ public sealed class GitHubPullRequestInspectorTests
 
         observation.PendingReviewRequestLogins.Should().BeEmpty("the automatic re-request is the more recent one");
     }
+
+    /// <summary>
+    /// The net "who has ever been asked to review this" the after-human-review merge gate rests
+    /// on (task: the people a pull request is waiting on are named, and pre-approval gains a mode
+    /// that waits for human review): a request that was withdrawn drops out, a request GitHub
+    /// retired silently when its reviewer answered does not, a team is recorded by slug, and
+    /// Copilot is filtered out exactly as everywhere else.
+    /// </summary>
+    [Fact]
+    public void Requested_human_reviewers_are_read_net_of_withdrawals()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("answered", "User"), "cafe1"),
+            timelineItems: string.Join(",",
+                ReviewRequestedEvent("hallmanac", "User", "answered", "User"),
+                ReviewRequestedEvent("hallmanac", "User", "withdrawn", "User"),
+                ReviewRequestedEvent("hallmanac", "User", "copilot-pull-request-reviewer", "Bot"),
+                ReviewRequestedTeamEvent("platform"),
+                ReviewRequestRemovedEvent("withdrawn", "User")));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.RequestedHumanReviewerLogins.Should().Equal(
+            "answered", "team:platform");
+    }
+
+    /// <summary>
+    /// A request re-made after being withdrawn is asked again: the LAST event per reviewer wins,
+    /// in either direction, which is the only reading that survives a human changing their mind
+    /// twice.
+    /// </summary>
+    [Fact]
+    public void A_withdrawn_request_that_is_made_again_counts_as_requested()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            timelineItems: string.Join(",",
+                ReviewRequestedEvent("hallmanac", "User", "teammate", "User"),
+                ReviewRequestRemovedEvent("teammate", "User"),
+                ReviewRequestedEvent("hallmanac", "User", "teammate", "User")));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.RequestedHumanReviewerLogins.Should().Equal("teammate");
+    }
+
+    /// <summary>
+    /// A removal carries an actor of its own, so without the <c>__typename</c> filter a human
+    /// WITHDRAWING a review request would read as a human MAKING one — the exact inversion of the
+    /// human-engagement signal (Decisions Log #80).
+    /// </summary>
+    [Fact]
+    public void A_human_withdrawing_a_request_is_not_read_as_a_human_making_one()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", "",
+            reviewRequests: RequestedReviewer("copilot-pull-request-reviewer", "Bot"),
+            timelineItems: string.Join(",",
+                ReviewRequestedEvent("github-actions", "Bot", "copilot-pull-request-reviewer", "Bot"),
+                ReviewRequestRemovedEvent("copilot-pull-request-reviewer", "Bot")));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.PendingReviewRequestLogins.Should().BeEmpty(
+            "the most recent ASK is still the automatic one; the removal that followed is not an ask at all");
+    }
+
+    /// <summary>
+    /// Each reviewer's own verdict word, read off their verdicts rather than inferred from the pull
+    /// request's aggregate <c>reviewDecision</c> — which is null wherever no branch rule requires
+    /// one, so a reviewer who only commented would otherwise read as satisfied.
+    /// </summary>
+    [Fact]
+    public void A_reviewers_own_verdict_and_the_commit_it_sits_on_are_both_read()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            string.Join(",",
+                Review(Actor("approver", "User"), "cafe1", id: "r1"),
+                Review(Actor("blocker", "User"), "cafe1", id: "r2"),
+                Review(Actor("chatter", "User"), "cafe1", id: "r3"),
+                Review(Actor("stale", "User"), "beef2", id: "r4")),
+            standingReviews: string.Join(",",
+                Verdict(Actor("approver", "User"), "cafe1", "APPROVED"),
+                Verdict(Actor("blocker", "User"), "cafe1", "CHANGES_REQUESTED"),
+                Verdict(Actor("stale", "User"), "beef2", "APPROVED")));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.Reviewers.Single(reviewer => reviewer.Login == "approver").HasApproved("cafe1")
+            .Should().BeTrue();
+        observation.Reviewers.Single(reviewer => reviewer.Login == "blocker").RequestedChanges
+            .Should().BeTrue();
+        observation.Reviewers.Single(reviewer => reviewer.Login == "chatter").HasApproved("cafe1")
+            .Should().BeFalse("a comment is not a verdict, so it never reaches the verdict read at all");
+        observation.Reviewers.Single(reviewer => reviewer.Login == "stale").HasApproved("cafe1")
+            .Should().BeFalse("the approval sits on a superseded commit");
+    }
+
+    /// <summary>
+    /// The defect the verdict read exists to prevent (independent pre-PR review, cycle 1,
+    /// adversarial finding): a reviewer who approves the head and then answers a question with a
+    /// comment-only review has that comment as their LATEST review, while GitHub keeps their
+    /// approval standing and goes on reporting <c>reviewDecision: APPROVED</c>. Reading the verdict
+    /// off <c>latestReviews</c> held the after-human-review merge forever and named the approver as
+    /// the person it was waiting on.
+    /// </summary>
+    [Fact]
+    public void An_approval_followed_by_a_comment_on_the_same_head_still_reads_as_an_approval()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            // latestReviews reports the COMMENTED review, because it is the more recent of the two.
+            Review(Actor("alice", "User"), "cafe1"),
+            timelineItems: ReviewRequestedEvent("hallmanac", "User", "alice", "User"),
+            standingReviews: Verdict(Actor("alice", "User"), "cafe1", "APPROVED"));
+
+        PullRequestSnapshot snapshot = Snapshot(GitHubPullRequestInspector.ParseReviews(json));
+
+        snapshot.Reviewers.Single().HasApproved("cafe1").Should().BeTrue();
+        snapshot.HumanReviewersAwaitingApproval.Should().BeEmpty(
+            "her approval of this head stands; the comment that followed is not a withdrawal of it");
+    }
+
+    /// <summary>
+    /// The other half of the same read: <c>DISMISSED</c> is selected alongside the two live
+    /// verdicts precisely so a dismissal supersedes the approval it dismissed, rather than leaving
+    /// the earlier approval standing forever.
+    /// </summary>
+    [Fact]
+    public void A_dismissed_approval_no_longer_reads_as_an_approval()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("alice", "User"), "cafe1"),
+            timelineItems: ReviewRequestedEvent("hallmanac", "User", "alice", "User"),
+            standingReviews: string.Join(",",
+                Verdict(Actor("alice", "User"), "cafe1", "APPROVED"),
+                Verdict(Actor("alice", "User"), "cafe1", "DISMISSED")));
+
+        PullRequestSnapshot snapshot = Snapshot(GitHubPullRequestInspector.ParseReviews(json));
+
+        snapshot.Reviewers.Single().HasApproved("cafe1").Should().BeFalse();
+        snapshot.HumanReviewersAwaitingApproval.Should().Equal("alice");
+    }
+
+    /// <summary>
+    /// A reviewer the provider reported no verdict for at all — the shape of every payload written
+    /// before the verdict was collected, and of every reviewer who has only ever commented — reads
+    /// as "did not approve", never as approval: unobservable is not agreement (AGENTS.md, never
+    /// guess at unobserved facts).
+    /// </summary>
+    [Fact]
+    public void A_review_reported_without_a_verdict_never_reads_as_an_approval()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "", Review(Actor("teammate", "User"), "cafe1"));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.Reviewers.Single().StandingReviewState.Should().BeNull();
+        observation.Reviewers.Single().StandingReviewCommit.Should().BeNull();
+        observation.Reviewers.Single().HasApproved("cafe1").Should().BeFalse();
+        observation.Reviewers.Single().RequestedChanges.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The snapshot's three display lists all mean the identical thing by "human": Copilot out,
+    /// everyone else in. Copilot's own read stays where it has always been — its review state and
+    /// bounded settle window — while any other account's changes-requested verdict genuinely blocks
+    /// the merge and is named, rather than leaving a reader with an unsatisfied review decision and
+    /// nobody attached to it.
+    /// </summary>
+    [Fact]
+    public void Changes_requested_names_every_account_except_copilot()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            string.Join(",",
+                Review(Actor("teammate", "User"), "cafe1", id: "r1"),
+                Review(Actor("lint-bot", "Bot"), "cafe1", id: "r2"),
+                Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", id: "r3")),
+            standingReviews: string.Join(",",
+                Verdict(Actor("teammate", "User"), "cafe1", "CHANGES_REQUESTED"),
+                Verdict(Actor("lint-bot", "Bot"), "cafe1", "CHANGES_REQUESTED"),
+                Verdict(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "CHANGES_REQUESTED")));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+        PullRequestSnapshot snapshot = Snapshot(observation);
+
+        snapshot.HumanChangesRequestedBy.Should().Equal("lint-bot", "teammate");
+    }
+
+    /// <summary>
+    /// A requested TEAM is never asked to approve under its own slug — GitHub satisfies a team's
+    /// request when any member reviews, and it is that member's own login, never the slug, that
+    /// carries the review, so demanding an approval FROM the slug would hold an after-human-review
+    /// merge shut forever. A member's approval of the head is what clears it, whether or not that
+    /// member was ever individually requested: team membership is not in the payload, so which
+    /// accounts belong to the slug is unknown here and never guessed at.
+    /// </summary>
+    [Fact]
+    public void A_requested_team_is_cleared_by_a_members_approval_rather_than_by_its_own_slug()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("member", "User"), "cafe1"),
+            timelineItems: ReviewRequestedTeamEvent("platform"),
+            standingReviews: Verdict(Actor("member", "User"), "cafe1", "APPROVED"));
+
+        PullRequestSnapshot snapshot = Snapshot(GitHubPullRequestInspector.ParseReviews(json));
+
+        snapshot.HasEverRequestedHumanReviewer.Should().BeTrue();
+        snapshot.HasStandingHumanApprovalOfHead.Should().BeTrue();
+        snapshot.HumanReviewersAwaitingApproval.Should().BeEmpty(
+            "a slug can never carry an approval, so the member's own approval is what answers for it");
+    }
+
+    /// <summary>
+    /// The hole the standing-approval requirement closes (independent pre-PR review, cycle 1, both
+    /// lenses): a team answered WITHOUT approving. A member's comment-only review retires GitHub's
+    /// pending team request, so the outstanding-reviewer gate that every automatic merge checks
+    /// first goes quiet — and with the slug simply dropped from the approval requirement, an
+    /// after-human-review merge would then land on a pull request nobody ever approved, which is
+    /// exactly what an individually requested reviewer's identical answer holds.
+    /// </summary>
+    [Fact]
+    public void A_team_answered_without_an_approval_still_awaits_one()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("member", "User"), "cafe1", body: "hold on, checking something"),
+            timelineItems: ReviewRequestedTeamEvent("platform"));
+
+        PullRequestSnapshot snapshot = Snapshot(GitHubPullRequestInspector.ParseReviews(json));
+
+        snapshot.HasOutstandingHumanReviewer.Should().BeFalse("GitHub retired the team's request when a member reviewed");
+        snapshot.HasEverRequestedHumanReviewer.Should().BeTrue();
+        snapshot.HasStandingHumanApprovalOfHead.Should().BeFalse("a comment is not a verdict, let alone an approval");
+        snapshot.HumanReviewersAwaitingApproval.Should().Equal(["team:platform"],
+            "the team was asked and nobody has approved the head, so the merge waits and says on whom");
+    }
+
+    /// <summary>
+    /// Copilot's own approval never answers for a requested team: its review is automatic wherever
+    /// the repository turns that setting on, so counting it would let the mode that waits for human
+    /// review merge on a bot's word. It is filtered on the same login table every other list here
+    /// uses.
+    /// </summary>
+    [Fact]
+    public void A_copilot_approval_never_answers_for_a_requested_team()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1"),
+            timelineItems: ReviewRequestedTeamEvent("platform"),
+            standingReviews: Verdict(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", "APPROVED"));
+
+        PullRequestSnapshot snapshot = Snapshot(GitHubPullRequestInspector.ParseReviews(json));
+
+        snapshot.HasStandingHumanApprovalOfHead.Should().BeFalse();
+        snapshot.HumanReviewersAwaitingApproval.Should().Equal("team:platform");
+    }
+
+    /// <summary>
+    /// A team's standing-approval requirement is answered by an approval of the CURRENT head, the
+    /// same commit comparison an individually requested reviewer's approval gets: an approval left
+    /// on a commit the branch has since moved past is not an approval of what is about to merge.
+    /// </summary>
+    [Fact]
+    public void A_teams_approval_requirement_is_not_answered_by_an_approval_of_a_superseded_commit()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("member", "User"), "beef2"),
+            timelineItems: ReviewRequestedTeamEvent("platform"),
+            standingReviews: Verdict(Actor("member", "User"), "beef2", "APPROVED"));
+
+        PullRequestSnapshot snapshot = Snapshot(GitHubPullRequestInspector.ParseReviews(json));
+
+        snapshot.HasStandingHumanApprovalOfHead.Should().BeFalse();
+        snapshot.HumanReviewersAwaitingApproval.Should().Equal("team:platform");
+    }
+
+    /// <summary>
+    /// A snapshot around one parsed observation, carrying only what the review read produces — the
+    /// merge/close and checks facts an inspection gathers separately are irrelevant to the reviewer
+    /// lists under test here.
+    /// </summary>
+    private static PullRequestSnapshot Snapshot(GitHubPullRequestInspector.ReviewObservation observation) => new(
+        IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null,
+        FailingChecks: [], HasPendingChecks: false,
+        UnresolvedReviewThreadCount: observation.UnresolvedThreads,
+        UnresolvedHumanThreadCount: observation.UnresolvedHumanThreads,
+        Reviewers: observation.Reviewers, ErroredReview: observation.ErroredReview,
+        CopilotReviewState: observation.CopilotReviewState,
+        CopilotReviewThreadCount: observation.CopilotReviewThreadCount,
+        HeadCommit: observation.HeadCommit,
+        ReviewDecision: observation.ReviewDecision,
+        OutstandingReviewerLogins: observation.OutstandingReviewerLogins,
+        RequestedHumanReviewerLogins: observation.RequestedHumanReviewerLogins);
 
     /// <summary>
     /// GitHub's own mergeable read, observed exactly as reported (backlog 44) — never inferred
