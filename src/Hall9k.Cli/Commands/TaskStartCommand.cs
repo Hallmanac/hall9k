@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
@@ -469,13 +470,17 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             // that blank would discard a fork point an earlier run had already observed, leaving a
             // stacked child's later retarget and replay permanently unobservable. Re-resolving the
             // base here would be wrong for the mirror reason: the resolver reads the parent's
-            // CURRENT state, not where this branch actually sits.
+            // CURRENT state, not where this branch actually sits. The inherited fork point is
+            // checked against the branch before this run re-asserts it —
+            // TaskWorkCommand.ResumedForkPointAsync's own doc — the same check RunLauncher applies
+            // on the daemon's door (conformance review, cycle 8).
             StackedBaseResolver.ResumedBase? resumedBase = resumesPreviousWork
                 ? await StackedBaseResolver.ResumedBaseAsync(
                     session, taskDetails, project, runId, cancellationToken)
                 : null;
             runBaseBranch = resumedBase?.BaseBranch ?? stackedBase.BaseBranch;
-            baseCommit = resumedBase?.ForkPointCommit ?? worktree.StartPointCommit;
+            baseCommit = await TaskWorkCommand.ResumedForkPointAsync(
+                ExternalProcess.Runner, resumedBase, worktree, runBaseBranch, project, cancellationToken);
 
             session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
                 runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,

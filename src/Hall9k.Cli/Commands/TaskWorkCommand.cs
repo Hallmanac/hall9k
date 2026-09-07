@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
@@ -820,13 +821,17 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // branch instead of cutting one — read off the run before it through the same domain
             // query RunLauncher reads it with (conformance and adversarial review, cycle 4): a
             // resumed checkout performs no fresh cut, so it reports no start point, and re-resolving
-            // the base here reads the parent's CURRENT state rather than the branch's own.
+            // the base here reads the parent's CURRENT state rather than the branch's own. The
+            // inherited fork point is checked against the branch before this run re-asserts it —
+            // ResumedForkPointAsync's own doc — the same check RunLauncher applies on the daemon's
+            // door (conformance review, cycle 8).
             StackedBaseResolver.ResumedBase? resumedBase = resumesPreviousWork
                 ? await StackedBaseResolver.ResumedBaseAsync(
                     session, taskDetails, project, runId, cancellationToken)
                 : null;
             string runBaseBranch = resumedBase?.BaseBranch ?? stackedBase.BaseBranch;
-            string baseCommit = resumedBase?.ForkPointCommit ?? worktree.StartPointCommit;
+            string baseCommit = await ResumedForkPointAsync(
+                ExternalProcess.Runner, resumedBase, worktree, runBaseBranch, project, cancellationToken);
 
             // Fable is the human-interactive model tier (AgentModel's own doc comment, Decisions
             // Log #33) — a fixed platform choice for an operator-attended session, not the
@@ -1198,6 +1203,105 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 project.BranchNameTemplate, taskDetails.ExternalReference),
             cancellationToken);
         return (fresh, false);
+    }
+
+    /// <summary>
+    /// This run's own fork point: the one an earlier run recorded when this checkout RESUMED the
+    /// branch, and the fresh cut's own start point otherwise — with the resumed value carried
+    /// forward only while the branch still actually contains it.
+    /// <para>
+    /// The check exists because exactly one of those two can name a commit the branch never landed
+    /// on, and it is the inherited one. A <c>StackReplay</c> run's <c>RunDispatched.BaseCommit</c>
+    /// is a dispatch-time PREDICTION — the commit the replay was told to land on, recorded before
+    /// the session rebases anything — and the replay's prompt sanctions <c>git rebase --abort</c>
+    /// on a conflict it cannot honestly resolve, which leaves the branch where it was with the
+    /// prediction on record as though it were observed. A later run that inherits it through
+    /// <see cref="StackedBaseResolver.ResumedBaseAsync"/> then asserts it as fact: an interactive
+    /// session's recompose boundary and its self-review ranges are both computed from it, so the
+    /// parent's whole delta folds into what the session treats as its own work.
+    /// </para>
+    /// <para>
+    /// Lives here beside <see cref="CheckoutFreshOrRetryAsync"/>, and shared with
+    /// <see cref="TaskStartCommand"/>, for the reason
+    /// <see cref="StackedBaseResolver.ResumedBaseAsync"/>'s own doc gives: all three dispatch doors
+    /// can resume a branch, and a door that read a resumed branch differently would record a fork
+    /// point contradicting what the branch actually holds. <c>RunLauncher</c> applies this same
+    /// check on the daemon's door; these two are the other two (conformance review, cycle 8).
+    /// </para>
+    /// <para>
+    /// A fresh cut needs no check (the cut just observed its start point), and only a stacked run
+    /// pays for the git call at all, because blank-versus-recorded changes nothing an unstacked run
+    /// reads (<c>RunDetails.StackedForkPoint</c>). Unlike the daemon's door there is no replay
+    /// exemption to make: an interactive claim is never a follow-up, so it is never the replay
+    /// whose own prediction the branch is not yet meant to contain.
+    /// </para>
+    /// </summary>
+    internal static async Task<string> ResumedForkPointAsync(
+        ProcessRunner git, StackedBaseResolver.ResumedBase? resumedBase, Worktree worktree,
+        string runBaseBranch, ProjectDetails project, CancellationToken cancellationToken)
+    {
+        string baseCommit = resumedBase?.ForkPointCommit ?? worktree.StartPointCommit;
+        if (resumedBase is null || baseCommit.IsBlank() || runBaseBranch == project.BaseBranch)
+        {
+            return baseCommit;
+        }
+
+        if (await BranchContainsCommitAsync(git, worktree, baseCommit, cancellationToken) != false)
+        {
+            return baseCommit;
+        }
+
+        // Blank, not a substitute: nothing else on record names where this branch actually forked
+        // from, and the prompts already have an honest path for an unobserved boundary — a stacked
+        // rebase says so and disputes rather than replaying from a guess.
+        string warning =
+            $"Branch {worktree.Branch} does not contain the fork point {baseCommit} the previous run recorded "
+            + "(ordinarily a stacked replay that aborted its rebase); recording no fork point rather than a "
+            + "commit this branch never landed on.";
+        AnsiConsole.MarkupLineInterpolated($"[yellow]{warning}[/]");
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="worktree"/>'s branch actually contains <paramref name="commit"/> —
+    /// true, false, or null for "git could not answer", which is deliberately not the same as false
+    /// (AGENTS.md's never-guess rule, and the identical three-way reading of <c>--is-ancestor</c>
+    /// <c>RunLauncher</c> and <c>StackedParentWatch</c> both take: git documents exit 0 as
+    /// contained, 1 as not, and anything else as a failure to answer). Null and true are both
+    /// treated as "keep the record" by the one caller: a failed git call is not evidence a branch is
+    /// missing a commit, and discarding an honest fork point over a transient would cost this branch
+    /// its boundary permanently — nothing can re-derive one later.
+    /// <para>
+    /// Asks the branch ref rather than <c>HEAD</c>: the claim being checked is about the branch, and
+    /// a resumed worktree can be sitting on a detached HEAD left by an earlier session's own
+    /// interrupted rebase.
+    /// </para>
+    /// </summary>
+    private static async Task<bool?> BranchContainsCommitAsync(
+        ProcessRunner git, Worktree worktree, string commit, CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProcessResult contained = await git(
+                "git",
+                ["merge-base", "--is-ancestor", commit, $"refs/heads/{worktree.Branch}"],
+                worktree.Path,
+                cancellationToken);
+            return contained.ExitCode switch
+            {
+                0 => true,
+                1 => false,
+                _ => null,
+            };
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            string warning =
+                $"Could not read whether branch {worktree.Branch} contains {commit} ({exception.Message}); "
+                + "leaving the recorded fork point as it was.";
+            AnsiConsole.MarkupLineInterpolated($"[yellow]{warning}[/]");
+            return null;
+        }
     }
 
     private static async Task AppendSessionStartedAsync(
