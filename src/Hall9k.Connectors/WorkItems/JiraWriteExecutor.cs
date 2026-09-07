@@ -24,11 +24,23 @@ public enum JiraWriteFailureKind
 }
 
 /// <summary>The one exception every <see cref="JiraWriteExecutor"/> call can throw, classified so a caller can tell an expected state from a real refusal.</summary>
-public sealed class JiraWriteExecutionException(JiraWriteFailureKind kind, string message) : Exception(message)
+public sealed class JiraWriteExecutionException(
+    JiraWriteFailureKind kind, string message, bool writeAlreadyRan = false) : Exception(message)
 {
     public JiraWriteFailureKind Kind { get; } = kind;
 
     public bool IsAuthFailure => Kind == JiraWriteFailureKind.AuthFailure;
+
+    /// <summary>
+    /// Whether Jira's own create, update or comment call had already answered 2xx when this was
+    /// thrown — so what failed is the read-back that verifies the write, not the write. The
+    /// distinction is stated in the message already, but a caller deciding what to <em>record</em>
+    /// cannot read a sentence: <c>h9k task assign --take</c> would otherwise report "the item could
+    /// not be assigned" about a write that landed, and refuse an assignment its own assignee
+    /// read-back would very likely have confirmed (independent pre-PR review, cycle 1, adversarial
+    /// lens). False by default, which is every failure of a write itself.
+    /// </summary>
+    public bool WriteAlreadyRan { get; } = writeAlreadyRan;
 }
 
 /// <summary>What a create, an update, or a comment came back with once Jira's own answer was read back and verified.</summary>
@@ -407,7 +419,11 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
         // CommentAsync's own catch already reclassifies that case for the one operation (a comment)
         // where retrying automatically would risk a duplicate; Create and Update stay accurately
         // AuthFailure so they keep retrying automatically, which is safe for both (a create's own
-        // marker search, an update's own idempotent re-apply).
+        // marker search, an update's own idempotent re-apply) — and so an excluded AuthFailure
+        // carries no JiraWriteExecutionException.WriteAlreadyRan marker either, which is correct
+        // for the retrying callers and, for a caller that reads the marker instead, means only
+        // that a credential this executor could not read the card back with is one nothing else
+        // could confirm it with either.
         catch (JiraWriteExecutionException exception) when (writeAlreadyRan && exception.Kind != JiraWriteFailureKind.AuthFailure)
         {
             string detail = exception.Message.TrimEnd();
@@ -422,7 +438,8 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
                     : "The marker search this executor runs first will find the card if it exists rather "
                         + "than filing a second one, but Jira's own search index updates asynchronously, so "
                         + "a resubmission inside that lag window can still find nothing and file a second "
-                        + "card — check the board before resubmitting if you can."));
+                        + "card — check the board before resubmitting if you can."),
+                writeAlreadyRan: true);
         }
 
         string? found = ExtractKey(response.Body);
@@ -431,7 +448,8 @@ public sealed class JiraWriteExecutor(JiraAccount account, JiraRequester? reques
             throw new JiraWriteExecutionException(
                 JiraWriteFailureKind.Other,
                 $"Jira reported {issueKey} {verb}, but reading it back to verify found nothing. The "
-                + "write was not recorded — check the board before writing again.");
+                + "write was not recorded — check the board before writing again.",
+                writeAlreadyRan);
         }
 
         return new JiraWriteResult(

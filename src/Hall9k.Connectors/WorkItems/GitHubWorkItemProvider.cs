@@ -316,6 +316,105 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     }
 
     /// <summary>
+    /// Put one login in an issue's assignee field, adding it rather than replacing whatever is
+    /// there — the write behind <c>h9k task assign --take</c> (idea 64c75e43, Decisions Log #143).
+    /// <c>--add-assignee</c> is the whole of the call: a GitHub issue's state, its labels and its
+    /// milestone are the repository's own workflow, so this touches the one field it was asked to
+    /// and nothing else, exactly as <see cref="CommentAsync"/> refuses to close or transition.
+    /// <para>
+    /// Whether taking it is <em>allowed</em> is checked by the caller and not here: this method
+    /// writes what it is told to write, and <see cref="TrackerAssignmentTake"/> is the one place
+    /// that refuses to take an item somebody else holds. What comes back is a sentence rather than
+    /// an exception, for the reason <see cref="ReadAssigneesAsync"/>'s own doc gives — a take has
+    /// several outcomes and a caller composing one refusal out of them needs the tracker's words,
+    /// not a stack unwind.
+    /// </para>
+    /// <para>
+    /// GitHub only accepts an assignee who can be assigned on that repository — a collaborator, or
+    /// a member of an organisation team with access — and refuses (or silently ignores) any other
+    /// login. That requirement is surfaced by quoting gh's own stderr verbatim and naming the rule
+    /// beside it, deliberately without matching on gh's wording the way <see cref="Classify"/>
+    /// does for a read: the exact text GitHub answers a non-assignable login with has not been
+    /// observed from this build environment, so a message keyed to a guessed string would be
+    /// confidently wrong for whatever it actually says (AGENTS.md, never guess at unobserved
+    /// facts). The read-back the caller runs next is what proves the assignment landed either way,
+    /// which is the case a silent ignore would otherwise pass off as success.
+    /// </para>
+    /// <para>
+    /// <paramref name="login"/> is written literally, deliberately not through gh's own <c>@me</c>
+    /// shorthand: the caller has just read the live login and will compare the read-back against
+    /// that same string, and <c>@me</c> would make the write and the comparison two different
+    /// notions of "me" that a change of gh account or default host between calls could quietly pull
+    /// apart. One identity through read, write and read-back.
+    /// </para>
+    /// </summary>
+    public async Task<TrackerAssignmentWrite> AddAssigneeAsync(
+        ExternalReference reference, string login, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (!TryParseCanonical(reference.Reference, out string repository, out int number))
+        {
+            return TrackerAssignmentWrite.Refused(
+                $"'{RelayedText.OneLine(reference.ToString())}' does not read as a github owner/repo#number "
+                + "reference, so there is no issue whose assignee could be written.");
+        }
+
+        ProcessResult result;
+        try
+        {
+            result = await RunGhAsync(
+                [
+                    "issue", "edit", number.ToString(CultureInfo.InvariantCulture),
+                    "--repo", repository, "--add-assignee", login,
+                ],
+                workingDirectory, cancellationToken,
+                onStoppedAnswering: exception =>
+                    GhStoppedAnsweringOnAssign(exception, workingDirectory, repository, number, login));
+        }
+        catch (DomainException exception)
+        {
+            return TrackerAssignmentWrite.Refused(exception.Message);
+        }
+
+        // The repository half is relayed text too, and not only the login: TryParseCanonical asks
+        // an owner/repo#number reference for two non-empty halves and nothing else, so what a task
+        // recorded through h9k task link-issue can carry a newline or a bidirectional override into
+        // this sentence exactly as an assignee's own display name could (independent pre-PR review,
+        // cycle 1, adversarial lens).
+        return result.ExitCode == 0
+            ? TrackerAssignmentWrite.Wrote()
+            : TrackerAssignmentWrite.Refused(
+                $"gh could not assign {Item(repository, number)} to {RelayedText.OneLine(login)}. gh reported: "
+                + $"{RelayedText.Truncate(RelayedText.OneLine(result.StandardError).Trim(), 400)}. GitHub only "
+                + "accepts an assignee who can be assigned on that repository — a collaborator, or a member "
+                + "of an organisation team with access to it — so check that the account 'gh auth status' "
+                + "reports is one, and ask whoever owns the repository if it is not.");
+    }
+
+    /// <summary>
+    /// The assign-flavoured sibling of <see cref="GhStoppedAnswering"/>: an assignment is a write,
+    /// never retried automatically, so the import wording's "import again" points at a command that
+    /// has nothing to do with what stalled — and, unlike a comment, whether it landed decides
+    /// whether anything on this install may claim the task, so the check to run is named.
+    /// </summary>
+    private static DomainValidationException GhStoppedAnsweringOnAssign(
+        TimeoutException exception, string workingDirectory, string repository, int number, string login) => new(
+        $"{exception.Message} It was assigning {Item(repository, number)} to {RelayedText.OneLine(login)} from "
+        + $"{workingDirectory}. An assignment that stops here is usually gh, or something gh started, "
+        + "waiting on input it cannot ask for — an unlocked keychain or a credential helper — so run "
+        + "'gh auth status' by hand from that directory to see what it is waiting on. Whether the "
+        + $"assignment landed before that is unknown; 'gh issue view {number} --repo "
+        + $"{RelayedText.OneLine(repository)} --json assignees' says who holds it now.");
+
+    /// <summary>
+    /// One issue as it is spoken in a sentence bound for a terminal — <c>owner/repo#42</c>, with the
+    /// repository half relayed rather than trusted, for the reason
+    /// <see cref="AddAssigneeAsync"/>'s own comment gives. The number cannot need it: it only
+    /// exists because <c>int.TryParse</c> read it.
+    /// </summary>
+    private static string Item(string repository, int number) =>
+        $"{RelayedText.OneLine(repository)}#{number.ToString(CultureInfo.InvariantCulture)}";
+
+    /// <summary>
     /// Which of the three remedies a failed <c>gh</c> call earns, read off the same strings
     /// <see cref="Explain"/> itself matches on — the account being the problem, and the reference
     /// or the account's access to it being the problem — and nothing else.
