@@ -621,9 +621,13 @@ public static class SkillSeeder
     /// Removes a symlink without following it. <c>DirectoryInfo.Delete</c> resolves the link
     /// first and so throws on a dangling one — which is precisely the case this is used for —
     /// while <c>File.Delete</c> unlinks. Windows needs the other call for a directory reparse
-    /// point, so both are here rather than one being assumed portable.
+    /// point, so both are here rather than one being assumed portable. Internal rather than
+    /// private: <see cref="RecipeSkillPublisher"/>'s own <c>Point</c> shares this exact
+    /// discipline for the identical reason (independent pre-PR review, cycle 1, adversarial
+    /// lens — its own first cut used a bare <c>File.Delete</c>, which throws
+    /// <c>UnauthorizedAccessException</c> on a Windows directory reparse point).
     /// </summary>
-    private static void Unlink(string path)
+    internal static void Unlink(string path)
     {
         try
         {

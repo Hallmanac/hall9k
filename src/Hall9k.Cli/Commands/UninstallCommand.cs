@@ -4,6 +4,7 @@ using System.Security;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -141,11 +142,22 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         // need is loaded (or at least still on disk to load) while bin/ still exists.
         List<string> stillPresent = [];
         (IReadOnlyList<string> skillsRemoved, bool skillManifestConfirmed) = SkillSeeder.RemovePublished(stillPresent);
+        // The orchestrator-recipe-generator skill (task: an operator starts a lean node or
+        // project orchestrator window) is published beside the anchor rather than into the
+        // ordinary skill set (RecipeSkillPublisher's own doc), so it needs the identical
+        // removal discipline as a second, separate call rather than folding silently into the
+        // ordinary skill set's own manifest (independent pre-PR review, cycle 1, both lenses:
+        // this skill and its node adapter had no removal counterpart at all before this).
+        (IReadOnlyList<string> recipeSkillRemoved, bool recipeSkillManifestConfirmed) =
+            RecipeSkillPublisher.RemovePublished(stillPresent);
+        RecipeSkillPublisher.RemoveNodeAdapter(stillPresent);
+        List<string> allSkillsRemoved = [.. skillsRemoved, .. recipeSkillRemoved];
+        bool allSkillManifestsConfirmed = skillManifestConfirmed && recipeSkillManifestConfirmed;
         stillPresent.AddRange(RemoveInstallOwnedEntries(InstallOwnedEntries(home, stillPresent)));
         TryRemoveIfEmpty(home, stillPresent);
         bool homeFullyRemoved = stillPresent.Count == 0 && pathLinkRemoved;
 
-        ReportHomeRemoval(home, homeExistedBeforeRemoval, stillPresent, skillsRemoved, skillManifestConfirmed);
+        ReportHomeRemoval(home, homeExistedBeforeRemoval, stillPresent, allSkillsRemoved, allSkillManifestsConfirmed);
         PrintSummary(settings.PurgeData, dataTierOutcome, daemonStopped: true, homeRemovalOutcome: homeFullyRemoved);
 
         return dataTierOk && homeFullyRemoved ? ExitCodes.Ok : ExitCodes.Error;
@@ -711,7 +723,15 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// handles it separately, because unlike every entry below it is not safe to delete
     /// outright: an operator can and does write skills of their own straight into that same
     /// directory (see that method's own origin incident), so removing it needs the install's
-    /// publish manifest, not a blind delete.
+    /// publish manifest, not a blind delete. The orchestrator-recipe-generator skill and its
+    /// node adapter symlink are the identical case one level down, in <c>recipes/</c> rather
+    /// than <c>skills/</c>, and are removed the same separate, manifest-checked way by
+    /// <see cref="RecipeSkillPublisher.RemovePublished"/> and
+    /// <see cref="RecipeSkillPublisher.RemoveNodeAdapter"/> — only <c>launch-anchor.md</c> and
+    /// <c>settings.json</c>, platform-owned and overwritten outright on every install exactly
+    /// like the Postgres compose file, are listed below. Every other file <c>recipes/</c> can
+    /// hold — the hand-written prototypes, the generator skill's own output — is an operator's
+    /// or that skill's, never install's to remove.
     /// <para>
     /// The daemon's pid, single-instance lock, and stop-request files are included
     /// unconditionally: this method is only ever reached once <see cref="ExecuteAsync"/> has
@@ -758,6 +778,13 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         Path.Combine(home, "bin.old"),
         .. RetiredBinFallbacks(home, stillPresent),
         Path.Combine(home, "postgres"),
+        // The two platform-owned, always-overwritten recipe files (task: an operator starts a
+        // lean node or project orchestrator window) — safe to delete outright the same way the
+        // Postgres compose file above is, unlike the recipe skill (RemovePublished, called
+        // separately) or the hand-written recipes an operator or the generator skill itself
+        // wrote beside them, which are deliberately not listed here at all.
+        Path.Combine(home, "recipes", RecipeLibraryPaths.LaunchAnchorFileName),
+        Path.Combine(home, "recipes", RecipeLibraryPaths.SettingsFileName),
         Path.Combine(home, "h9kd.log"),
         Path.Combine(home, "h9kd.log.1"),
         Path.Combine(home, "h9kd.pid"),

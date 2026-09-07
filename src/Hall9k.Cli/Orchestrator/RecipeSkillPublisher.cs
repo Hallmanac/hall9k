@@ -89,8 +89,24 @@ public static class RecipeSkillPublisher
         Directory.CreateDirectory(adapterDirectory);
         string adapterLink = Path.Combine(adapterDirectory, GeneratorSkillName);
 
-        Point(link, canonicalSkill);
-        Point(adapterLink, link);
+        // Reported honestly rather than unconditionally (independent pre-PR review, cycle 1,
+        // adversarial lens): Point declines to touch a real directory an operator wrote by hand,
+        // and a green "seeded" line over that outcome would be exactly the guessed-at provenance
+        // AGENTS.md's "never guess at unobserved facts" rule forbids.
+        if (Point(link, canonicalSkill) == PointOutcome.LeftAlone)
+        {
+            return [ProjectHomeStep.Skipped(
+                $"recipes/{GeneratorSkillName}/ left alone: a real directory is already there that this "
+                + "did not seed.")];
+        }
+
+        if (Point(adapterLink, link) == PointOutcome.LeftAlone)
+        {
+            return [ProjectHomeStep.Created(
+                $"recipes/{GeneratorSkillName}/ seeded from {RecipeLibraryPaths.CanonicalDirectory}, "
+                + $".claude/skills/{GeneratorSkillName} left alone: a real directory is already there "
+                + "that this did not seed.")];
+        }
 
         return [ProjectHomeStep.Created(
             $"recipes/{GeneratorSkillName}/ seeded from {RecipeLibraryPaths.CanonicalDirectory}, "
@@ -110,15 +126,49 @@ public static class RecipeSkillPublisher
         Point(Path.Combine(RecipeLibraryPaths.ClaudeSkillsDirectory, GeneratorSkillName), canonicalSkill);
     }
 
+    /// <summary>
+    /// Removes the <see cref="SeedNode"/> adapter link at
+    /// <c>~/.hall9k/.claude/skills/orchestrator-recipe-generator</c>, so <c>h9k uninstall</c>
+    /// does not leave a platform-authored symlink dangling once <see cref="RemovePublished"/>
+    /// deletes what it points at. Only ever touches a symlink — a real directory there could
+    /// only be an operator's own, and is left alone exactly like <see cref="Point"/> itself
+    /// would leave it (independent pre-PR review, cycle 1, both lenses: this adapter had no
+    /// removal counterpart at all before this).
+    /// </summary>
+    public static void RemoveNodeAdapter(List<string> stillPresent)
+    {
+        string link = Path.Combine(RecipeLibraryPaths.ClaudeSkillsDirectory, GeneratorSkillName);
+        if (new DirectoryInfo(link).LinkTarget is null)
+        {
+            return;
+        }
+
+        try
+        {
+            SkillSeeder.Unlink(link);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            stillPresent.Add(link);
+        }
+    }
+
+    private enum PointOutcome
+    {
+        Linked,
+        Copied,
+        LeftAlone,
+    }
+
     /// <summary>Makes <paramref name="link"/> point at <paramref name="target"/>, the same discipline <c>SkillSeeder</c>'s own private <c>Point</c> uses.</summary>
-    private static void Point(string link, string target)
+    private static PointOutcome Point(string link, string target)
     {
         FileSystemInfo entry = new DirectoryInfo(link);
         if (entry.LinkTarget is null && Directory.Exists(link))
         {
             if (!File.Exists(Path.Combine(link, SkillSeeder.CopyMarkerFile)))
             {
-                return;
+                return PointOutcome.LeftAlone;
             }
 
             Directory.Delete(link, recursive: true);
@@ -128,15 +178,109 @@ public static class RecipeSkillPublisher
         {
             if (entry.LinkTarget is not null)
             {
-                File.Delete(link);
+                // SkillSeeder.Unlink, not a bare File.Delete: a directory reparse point on
+                // Windows throws UnauthorizedAccessException from File.Delete, which used to
+                // fall into the copy fallback below with link still resolving through the very
+                // symlink this was trying to replace, corrupting a second Seed/SeedNode pass
+                // (independent pre-PR review, cycle 1, adversarial lens).
+                SkillSeeder.Unlink(link);
             }
 
             Directory.CreateSymbolicLink(link, target);
+            return PointOutcome.Linked;
         }
         catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
         {
             SkillSeeder.CopyDirectory(target, link);
             File.WriteAllText(Path.Combine(link, SkillSeeder.CopyMarkerFile), string.Empty);
+            return PointOutcome.Copied;
+        }
+    }
+
+    /// <summary>
+    /// Removes the published copy at <see cref="RecipeLibraryPaths.CanonicalDirectory"/>, the
+    /// <see cref="SkillSeeder.RemovePublished"/> discipline scoped to this one skill: an
+    /// unmodified publish is deleted outright, an operator's own edit is left alone (recorded
+    /// into <paramref name="stillPresent"/> so <c>h9k uninstall</c> does not claim a clean
+    /// removal over it), and a manifest that cannot be confirmed leaves the whole directory
+    /// untouched rather than guessed at (task: an operator starts a lean node or project
+    /// orchestrator window — independent pre-PR review, cycle 1, both lenses: this skill had no
+    /// removal counterpart at all before this).
+    /// </summary>
+    public static (IReadOnlyList<string> Removed, bool ManifestConfirmed) RemovePublished(List<string> stillPresent)
+    {
+        (bool manifestConfirmed, string? recordedHash) = TryReadManifest();
+        if (!manifestConfirmed)
+        {
+            stillPresent.Add(RecipeLibraryPaths.PublishedManifest);
+            return ([], false);
+        }
+
+        if (recordedHash is null)
+        {
+            return ([], true);
+        }
+
+        string directory = Path.Combine(RecipeLibraryPaths.CanonicalDirectory, GeneratorSkillName);
+        if (!Directory.Exists(directory))
+        {
+            TryDeleteManifest(stillPresent);
+            return ([], true);
+        }
+
+        string? currentHash = TryComputeContentHash(directory);
+        if (currentHash is null)
+        {
+            // Unreadable, not confirmed unmodified — recorded as still present rather than
+            // guessed at, the same discriminator SkillSeeder.RemovePublished uses for its own
+            // identical read at the same point in h9k uninstall (bin/ and the PATH link already
+            // gone by here, so this cannot afford to throw).
+            stillPresent.Add(directory);
+            return ([], true);
+        }
+
+        if (currentHash != recordedHash)
+        {
+            // An operator's own edit — left alone exactly like SkillSeeder.RemovePublished
+            // leaves an edited ordinary skill alone.
+            return ([], true);
+        }
+
+        try
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            stillPresent.Add(directory);
+            return ([], true);
+        }
+
+        TryDeleteManifest(stillPresent);
+        return ([GeneratorSkillName], true);
+    }
+
+    private static void TryDeleteManifest(List<string> stillPresent)
+    {
+        try
+        {
+            File.Delete(RecipeLibraryPaths.PublishedManifest);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            stillPresent.Add(RecipeLibraryPaths.PublishedManifest);
+        }
+    }
+
+    private static string? TryComputeContentHash(string directory)
+    {
+        try
+        {
+            return ComputeContentHash(directory);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 

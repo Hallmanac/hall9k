@@ -116,6 +116,21 @@ public sealed class UninstallCommandTests : IDisposable
     }
 
     [Fact]
+    public void The_platform_owned_recipe_files_are_swept_too()
+    {
+        // launch-anchor.md and settings.json (task: an operator starts a lean node or project
+        // orchestrator window) are platform-owned and overwritten outright on every install,
+        // exactly like the Postgres compose file — before this, h9k uninstall left them behind
+        // and still reported a clean removal (independent pre-PR review, cycle 1, both lenses).
+        string home = Path.Combine(directory, "home");
+
+        UninstallCommand.InstallOwnedEntries(home, []).Should().Contain(
+            Path.Combine(home, "recipes", "launch-anchor.md"));
+        UninstallCommand.InstallOwnedEntries(home, []).Should().Contain(
+            Path.Combine(home, "recipes", "settings.json"));
+    }
+
+    [Fact]
     public void The_rotated_log_is_swept_alongside_the_live_one()
     {
         // DaemonLogRotation writes h9kd.log.1 once the live log passes its size budget. Before
