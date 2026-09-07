@@ -207,6 +207,25 @@ public sealed class TaskDetails
     /// </summary>
     public bool RetryReasonIsHandback { get; set; }
     /// <summary>
+    /// Whether <see cref="RetryReason"/> is still this task's live, unconsumed instruction —
+    /// the discriminator a prompt has to ask before treating it as "what to prioritize for this
+    /// run" rather than a stale note from an attempt that already finished.
+    /// <see cref="RetryBranch"/> cannot answer this alone: it is null both when nothing is
+    /// pending (an ended task's three exits clear it, same as this field) and when a retry was
+    /// recorded with no branch to resume (the failure predated any run record) — two states this
+    /// field tells apart by tracking "is a retry or handback pending" directly instead of
+    /// piggybacking on whether a branch happened to survive. Set alongside
+    /// <see cref="RetryReason"/> by <see cref="Events.TaskRetried"/> and
+    /// <see cref="Events.TaskHandedBack"/>; cleared alongside <see cref="RetryBranch"/> by
+    /// <see cref="Events.TaskCompleted"/>, <see cref="Events.TaskResolved"/> and
+    /// <see cref="Events.TaskAbandoned"/> — an ended task has no retry pending, the same
+    /// reasoning those handlers already give for <see cref="RetryBranch"/>. Left untouched by
+    /// <see cref="Events.TaskRequeued"/> and <see cref="Events.TaskReopened"/> for the identical
+    /// reason <see cref="RetryReasonIsHandback"/> survives them: neither event rewrites whether
+    /// the standing reason is still pending.
+    /// </summary>
+    public bool RetryPending { get; set; }
+    /// <summary>
     /// Whether the run about to claim this task next is resuming directly from a still-unbroken
     /// human handback — an observed fact <c>WorkPromptBuilder</c> states plainly, rather than the
     /// causeless "a previous attempt worked here" wording it falls back to otherwise (adversarial
@@ -543,6 +562,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpPullRequestHeadSha = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
+        view.RetryPending = false;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.CompletedAt;
     }
@@ -591,6 +611,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryBranch = @event.Data.Branch;
         view.RetryReason = @event.Data.Reason;
         view.RetryReasonIsHandback = false;
+        view.RetryPending = true;
         view.ResumesFromHandback = false;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
@@ -610,6 +631,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryBranch = @event.Data.Branch;
         view.RetryReason = @event.Data.Reason;
         view.RetryReasonIsHandback = true;
+        view.RetryPending = true;
         view.ResumesFromHandback = true;
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
@@ -637,6 +659,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpPullRequestHeadSha = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
+        view.RetryPending = false;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.ResolvedAt;
     }
@@ -653,6 +676,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpPullRequestHeadSha = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
+        view.RetryPending = false;
         view.State = TaskState.Abandoned;
         view.FinishedAt = @event.Data.AbandonedAt;
 

@@ -4,6 +4,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -96,13 +97,41 @@ public static class WorkPromptBuilder
             prompt.AppendLine("`git diff`), judge it against the acceptance criteria, and continue from it.");
             prompt.AppendLine("Do not start over when usable work exists; redoing finished work is the");
             prompt.AppendLine("failure mode this note exists to prevent.");
-            if (resumeReason.IsNotBlank())
-            {
-                prompt.AppendLine();
-                prompt.AppendLine($"Why this run resumes here, in the requester's own words: {resumeReason}");
-            }
-
             prompt.AppendLine();
+        }
+
+        // Reachable regardless of which branch above ran, or none of them (independent pre-PR
+        // review, cycle 1, adversarial lens): the operator's retry reason is about the attempt,
+        // not about whether an old branch happened to survive to resume — a retry that starts
+        // clean because the branch is gone still carries a reason just as live as one that
+        // resumes. Excluded only where the reason already has its own, more specific rendering:
+        // isDelegatedContractor's own delegationNote is unrelated to a retry, and the explicit
+        // handback branch above already quoted resumeReason under "Why they handed it back".
+        if (!isDelegatedContractor && !(resumesPreviousWork && isHandback))
+        {
+            // task.RetryPending gates this branch the same way it gates AppendOperatorGuidanceSection
+            // below (independent pre-PR review, cycle 3, both lenses): a handback's own reason
+            // survives a later TaskCompleted/TaskResolved/TaskAbandoned on this same field
+            // (RetryReasonIsHandback's own doc), so without this check a long-settled attempt's
+            // handback note would be presented as "why this run resumes here" on a run that
+            // resumes nothing of the sort — the same stale-reason failure mode RetryPending was
+            // introduced to close off on the operator-guidance path.
+            if (task.RetryReasonIsHandback && task.RetryReason.IsNotBlank() && task.RetryPending)
+            {
+                // This dispatch did not take the explicit handback branch above — isHandback is
+                // false, whether because this caller never passes it (h9k task work) or because
+                // TaskRequeued severed ResumesFromHandback after an earlier headless attempt on
+                // this same handback died — but the standing reason is still a handback's own
+                // words, not a retry instruction, so it keeps the same causeless wording that
+                // branch would have used rather than being mislabeled as operator guidance
+                // (independent pre-PR review, cycle 1, both lenses).
+                prompt.AppendLine($"Why this run resumes here, in the requester's own words: {task.RetryReason}");
+                prompt.AppendLine();
+            }
+            else
+            {
+                AppendOperatorGuidanceSection(prompt, task);
+            }
         }
 
         prompt.AppendLine("## Acceptance criteria");
@@ -281,6 +310,56 @@ public static class WorkPromptBuilder
         }
 
         return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The operator's own words at retry time (task: a headless retry's reason reaches the
+    /// resumed session), rendered under one clearly-labeled heading wherever a run dispatches
+    /// straight out of <c>h9k task retry --reason</c>: the resumed-build branch above, and each
+    /// of <c>Hall9k.Daemon.Execution.AgentPromptBuilder</c>'s follow-up prompts (review feedback,
+    /// failing checks, rebase), which call this same helper through the <c>using static</c> import
+    /// that already shares the rest of this type's rendering helpers with that file.
+    /// <para>
+    /// Origin incident (2026-09-06): <see cref="TaskDetails.RetryReason"/> reached only
+    /// <c>h9k task show</c> and the interactive CLI's own prompt calls — nothing under
+    /// <c>src/Hall9k.Daemon</c> read it, so five stale tasks retried with "rebase onto origin/main
+    /// first" each ran their ordinary follow-up template, found nothing to do, and failed the
+    /// same gate again.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// Skipped when the field is blank (the task has never been retried), when
+    /// <see cref="TaskDetails.RetryReasonIsHandback"/> is set — that flag means this same field's
+    /// text was last written by a handback (<c>h9k task handback</c>), not a retry, and rendering
+    /// it here under "operator guidance" would mislabel a hand-off note as a retry instruction —
+    /// when <see cref="TaskDetails.RetryPending"/> is false, because the retry this text answers
+    /// for has already been superseded by a completion (or resolve, or abandon) with no new retry
+    /// since, so presenting it as "what to prioritize for THIS run" would hand a long-settled
+    /// attempt's own reason to a run working on something else entirely (independent pre-PR
+    /// review, cycle 1, both lenses), and when the text is exactly
+    /// <see cref="TaskDecider.DefaultRetryReason"/> — the CLI's own honest filler for a bare
+    /// <c>h9k task retry</c> with no <c>--reason</c>, which states that a retry happened but
+    /// asserts nothing about what to prioritize, so rendering it under a heading that promises "a
+    /// human gave this instruction" would be exactly the unobserved-fact guess AGENTS.md forbids
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </remarks>
+    public static void AppendOperatorGuidanceSection(StringBuilder prompt, TaskDetails task)
+    {
+        if (task.RetryReason.IsBlank()
+            || task.RetryReasonIsHandback
+            || !task.RetryPending
+            || task.RetryReason == TaskDecider.DefaultRetryReason)
+        {
+            return;
+        }
+
+        prompt.AppendLine("## Operator guidance");
+        prompt.AppendLine();
+        prompt.AppendLine("A human gave this instruction when retrying this task (`h9k task retry --reason`).");
+        prompt.AppendLine("Treat it as what to prioritize for this run:");
+        prompt.AppendLine();
+        prompt.AppendLine(task.RetryReason);
+        prompt.AppendLine();
     }
 
     /// <summary>

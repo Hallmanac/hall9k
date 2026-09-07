@@ -61,7 +61,7 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Retry(
             task, previousRunId, branch,
-            settings.Reason ?? "Retry requested via h9k task retry.",
+            settings.Reason ?? TaskDecider.DefaultRetryReason,
             DateTimeOffset.UtcNow, context.OwnerId));
         // The failed run's own stream.jsonl, if it ever launched a headless session, is
         // otherwise never read back once this run is left behind by the retry — a start-it-mine
