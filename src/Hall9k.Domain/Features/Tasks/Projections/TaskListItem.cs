@@ -92,10 +92,18 @@ public sealed class TaskListItem
     /// <summary>
     /// The one blocker this task is stacked on, or null when it is stacked on nothing — mirrors
     /// <see cref="TaskAggregate.StackedOnTaskId"/> (task: a stacked pull-request edge exists as an
-    /// explicit opt-in dependency). Kept here as well as on <see cref="TaskDetails"/> because
-    /// closeout queries it: when a parent merges, this is the key that finds the children whose
-    /// pull requests need retargeting, and a document old enough to be missing it simply does not
-    /// match — which is the right answer, since a task that never declared an edge has none.
+    /// explicit opt-in dependency). Kept here as well as on <see cref="TaskDetails"/> because this
+    /// row is what a reader holding only a task id can load: <c>StackedBaseResolver</c> reads a
+    /// PARENT's row through it when resolving a child's base, and the CLI's board composers
+    /// (<c>PublishedFacts</c>, <c>TaskPhaseComposer</c>) read a child's own to say it is stacked.
+    /// <para>
+    /// Nothing queries BY this key, and the retarget does not need one to (both lenses, cycle 6 —
+    /// this comment used to claim closeout finds children by it): closeout reaches a stacked child
+    /// from the child's own closeout sweep, which recognises it from its run's recorded base
+    /// (<c>StackedParentWatch.IsStackedChild</c> over <c>RunDetails.BaseBranch</c>) and only then
+    /// reads the parent it declares. A parent-driven children-by-parent query is not how any of it
+    /// works, so do not go looking for one.
+    /// </para>
     /// </summary>
     public Guid? StackedOnTaskId { get; set; }
     /// <summary>

@@ -160,7 +160,10 @@ h9k epic close <id> --reason "<why>"              # the only way an epic ends
 (Decisions Log #144, Brian's cohesion ruling 2026-08-28). `--stacked-on <parent>` implies the
 `--blocked-by` edge and adds six behaviours a plain blocked-by never gets: the child dispatches at
 the parent's **Delivered** rather than its merge; its branch is cut from the parent's branch head;
-its pull request opens **against the parent's branch**, forming a GitHub stack; its diff, review
+its pull request opens **against the parent's branch**, forming a GitHub stack — unless that branch
+is already gone from origin because the parent merged mid-build, in which case it opens against the
+project's base branch, where the retarget below would have put it anyway, with the replay still
+owed; its diff, review
 packet, self-review hunt and end-of-work recompose are all computed against the parent's branch, so
 its reviewers read the child's own delta; it is **not at the merge bar** while its pull request is
 still aimed at the parent (the board never says "the merge is yours" and a pre-approved child is
