@@ -334,7 +334,13 @@ log and in `h9k status`, which prints an unmissable line when a paused project i
 while slots sit free. The old session-denominated `--max-parallel` value is retired rather than
 converted (nothing enforced it, so its number is not carried into a setting that is), with the
 retirement named in `h9k project show`/`h9k project set`; `--max-parallel` itself survives as a
-quiet alias for the new option. A node-level periodic token-spend budget (`h9k config set
+quiet alias for the new option. Which project receives a free slot when several are ready is a
+round-robin across the eligible ones — longest unserved wins, oldest task first within it, no
+configuration and no difference at all on a single-project node — with an optional priority tier
+(`h9k project set --priority high|normal|low`, Decisions Log #141) that outranks the rotation
+while its project has ready work and releases itself when that queue drains, the self-releasing
+counterpart to the sticky cap-0 pause. Nothing preempts: ordering decides only who gets the next
+free slot, and every claim logs one sentence naming the project that won and why. A node-level periodic token-spend budget (`h9k config set
 --spend-budget`/`--spend-period`, Decisions Log #120) paces dispatch the same way: once the
 current period's recorded spend, summed live from every session's own token usage rather than a
 stored counter, meets the budget, the dispatcher declines to claim further queued work until the

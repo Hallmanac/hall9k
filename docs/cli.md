@@ -459,6 +459,16 @@ one project's task runs may be live at once. It is a ceiling, never a reservatio
 held free for an idle project — `0` pauses the project, and it lives on the project's own stream
 rather than in the config file, so a change lands on the next dispatch cycle with no restart.
 
+Which project a free slot actually goes to is a rotation (Decisions Log #141): the eligible
+project longest unserved since its last dispatch wins the next one, oldest task first within it,
+with no configuration and nothing to set on a single-project node.
+`h9k project set <project> --priority high|normal|low|default` overrides it for a focus — a higher
+tier wins every free slot while it has ready work and releases itself the moment its queue drains,
+which is what makes it the opposite lever to the sticky cap-0 pause; `default` is the clearing
+word, putting the project back in the rotation. Nothing preempts either way:
+ordering decides only who receives the next free slot, and every claim logs one sentence naming
+the winner and why. See [operations.md](operations.md#who-gets-the-next-free-slot).
+
 ## Identifiers
 
 **Tasks and ideas** take the full identifier **or an unambiguous fragment of it**. A fragment is
