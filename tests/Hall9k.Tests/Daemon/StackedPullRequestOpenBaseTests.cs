@@ -76,12 +76,16 @@ public sealed class StackedPullRequestOpenBaseTests
         PullRequestOpener.LogStackedParentBranchGone(logger, Guid.Empty, ParentBranch, "main");
 
         logger.Messages.Should().ContainSingle().Which.Should().Be(
-            $"Run {Guid.Empty}: the stacked parent branch {ParentBranch} is gone from origin — its pull request "
-            + "merged while this branch was still building — so this pull request opens against main instead. "
-            + $"The run still records {ParentBranch} as its base, because this branch still carries the parent's "
-            + "commits and closeout's replay onto main is still owed",
+            $"Run {Guid.Empty}: the stacked parent branch {ParentBranch} is not on origin — merged and deleted "
+            + "while this branch was still building, or never pushed at all — so this pull request opens against "
+            + $"main instead. The run still records {ParentBranch} as its base, because this branch still carries "
+            + "the parent's commits and closeout's replay onto main is still owed",
             "each repeated placeholder needs its argument repeated too, and in its own position — a message "
             + "that names the parent branch where it means the project's base would misreport the retarget");
+
+        logger.Messages.Should().ContainSingle().Which.Should().Contain("or never pushed at all",
+            "ls-remote's missing-ref code is returned just as readily by a parent branch that was never "
+            + "pushed, so a merge asserted from it alone is provenance nothing observed");
     }
 
     /// <summary>

@@ -303,6 +303,17 @@ public sealed class PullRequestOpener(
     /// The warning that accompanies the fallback, in a named method purely so a test can render it
     /// through a real logger without a GitHub origin to reach.
     /// <para>
+    /// It reports the branch's absence and stops there. A merged-and-deleted parent is the shape
+    /// this fallback was written for, but <c>ls-remote</c>'s "no matching ref" is returned just as
+    /// readily by a parent branch that was never pushed at all — the child claimed ahead of its
+    /// parent with <c>--acknowledge-unmet-dependencies</c> and finished first, which is an
+    /// explicitly supported override — and a log line asserting a merge nothing observed is exactly
+    /// the guessed provenance AGENTS.md's never-guess rule forbids (independent pre-PR review,
+    /// 2026-09-07, adversarial lens). The behaviour is right for either shape: the merge bar still
+    /// holds the child while its recorded base says the parent's branch, and that record keeps the
+    /// watch armed.
+    /// </para>
+    /// <para>
     /// Its template repeats <c>{ParentBranch}</c> and <c>{BaseBranch}</c>, and Microsoft.Extensions.Logging
     /// binds placeholders POSITIONALLY per occurrence — <c>LogValuesFormatter</c> rewrites the template to
     /// <c>{0}</c>…<c>{4}</c> and never deduplicates repeated names — so a repeated placeholder needs its
@@ -318,10 +329,10 @@ public sealed class PullRequestOpener(
         ILogger logger, Guid runId, string parentBranch, string projectBaseBranch) =>
         logger.LogWarning(
             DaemonLogEvents.StackedParentBranchGoneAtPullRequestOpen,
-            "Run {RunId}: the stacked parent branch {ParentBranch} is gone from origin — its pull request merged "
-            + "while this branch was still building — so this pull request opens against {BaseBranch} instead. "
-            + "The run still records {ParentBranch} as its base, because this branch still carries the parent's "
-            + "commits and closeout's replay onto {BaseBranch} is still owed",
+            "Run {RunId}: the stacked parent branch {ParentBranch} is not on origin — merged and deleted while "
+            + "this branch was still building, or never pushed at all — so this pull request opens against "
+            + "{BaseBranch} instead. The run still records {ParentBranch} as its base, because this branch still "
+            + "carries the parent's commits and closeout's replay onto {BaseBranch} is still owed",
             runId, parentBranch, projectBaseBranch, parentBranch, projectBaseBranch);
 
     /// <summary>
