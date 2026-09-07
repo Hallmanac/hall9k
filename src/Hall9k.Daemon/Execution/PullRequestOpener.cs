@@ -295,15 +295,34 @@ public sealed class PullRequestOpener(
             return recorded;
         }
 
+        LogStackedParentBranchGone(logger, run.Id, recorded, project.BaseBranch);
+        return open;
+    }
+
+    /// <summary>
+    /// The warning that accompanies the fallback, in a named method purely so a test can render it
+    /// through a real logger without a GitHub origin to reach.
+    /// <para>
+    /// Its template repeats <c>{ParentBranch}</c> and <c>{BaseBranch}</c>, and Microsoft.Extensions.Logging
+    /// binds placeholders POSITIONALLY per occurrence — <c>LogValuesFormatter</c> rewrites the template to
+    /// <c>{0}</c>…<c>{4}</c> and never deduplicates repeated names — so a repeated placeholder needs its
+    /// argument repeated too (the same shape <c>DispatchEngine</c> and <c>DispatchLoop</c>'s own repeated
+    /// templates already use). Passing three arguments for five slots threw a <c>FormatException</c> out of
+    /// the <c>LogWarning</c> call itself, which aborted <see cref="ResolveOpenBaseAsync"/> before it could
+    /// return the fallback base: the run failed on a logging error, and every <c>h9k task retry</c> resumed
+    /// the branch, probed origin, and failed identically — reinstating the permanent-failure loop the
+    /// fallback exists to end (independent pre-PR review, cycle 8, both lenses).
+    /// </para>
+    /// </summary>
+    internal static void LogStackedParentBranchGone(
+        ILogger logger, Guid runId, string parentBranch, string projectBaseBranch) =>
         logger.LogWarning(
             DaemonLogEvents.StackedParentBranchGoneAtPullRequestOpen,
             "Run {RunId}: the stacked parent branch {ParentBranch} is gone from origin — its pull request merged "
             + "while this branch was still building — so this pull request opens against {BaseBranch} instead. "
             + "The run still records {ParentBranch} as its base, because this branch still carries the parent's "
             + "commits and closeout's replay onto {BaseBranch} is still owed",
-            run.Id, recorded, project.BaseBranch);
-        return open;
-    }
+            runId, parentBranch, projectBaseBranch, parentBranch, projectBaseBranch);
 
     /// <summary>
     /// The decision <see cref="ResolveOpenBaseAsync"/> makes once it has asked origin, split out

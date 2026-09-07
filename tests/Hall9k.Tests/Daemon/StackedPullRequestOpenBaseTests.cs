@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -51,4 +52,62 @@ public sealed class StackedPullRequestOpenBaseTests
             .Should().Be(ParentBranch,
                 "a failed read is not evidence the parent's branch is gone, and retargeting on a guess would "
                 + "aim a stacked pull request at the wrong base while the parent is still open");
+
+    /// <summary>
+    /// The fallback's own warning renders. Asserted because the fallback runs INSIDE the log
+    /// call's blast radius: the template repeats {ParentBranch} and {BaseBranch}, MEL binds
+    /// placeholders positionally per occurrence without deduplicating names, and passing one
+    /// argument per NAME rather than per OCCURRENCE threw a FormatException out of LogWarning
+    /// itself — before ResolveOpenBaseAsync could return the base the decision above had just
+    /// picked. The run then failed on "An error occurred while writing to logger(s)", and every
+    /// retry resumed the branch and failed identically, which is the permanent-failure loop this
+    /// whole path exists to end (independent pre-PR review, cycle 8, both lenses).
+    /// <para>
+    /// Rendered through a logger that actually calls the formatter, because that is where the
+    /// binding happens: the integration tests' NullLogger never formats, so nothing else here
+    /// would notice.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void The_fallbacks_own_warning_renders_every_placeholder_it_names()
+    {
+        RenderingLogger logger = new();
+
+        PullRequestOpener.LogStackedParentBranchGone(logger, Guid.Empty, ParentBranch, "main");
+
+        logger.Messages.Should().ContainSingle().Which.Should().Be(
+            $"Run {Guid.Empty}: the stacked parent branch {ParentBranch} is gone from origin — its pull request "
+            + "merged while this branch was still building — so this pull request opens against main instead. "
+            + $"The run still records {ParentBranch} as its base, because this branch still carries the parent's "
+            + "commits and closeout's replay onto main is still owed",
+            "each repeated placeholder needs its argument repeated too, and in its own position — a message "
+            + "that names the parent branch where it means the project's base would misreport the retarget");
+    }
+
+    /// <summary>
+    /// An <see cref="ILogger"/> that renders rather than discards. <c>NullLogger</c> and the test
+    /// hosts' own providers can skip the formatter entirely, and a template whose arguments do not
+    /// match its placeholders only fails when something formats it.
+    /// </summary>
+    private sealed class RenderingLogger : ILogger
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+
+        private sealed class NullScope : IDisposable
+        {
+            internal static readonly NullScope Instance = new();
+
+            public void Dispose()
+            {
+            }
+        }
+    }
 }
