@@ -193,6 +193,13 @@ public sealed class TaskAggregate
     /// </summary>
     public string? StackReplayOntoCommit { get; private set; }
     /// <summary>
+    /// The human CHANGES_REQUESTED reviews a pending
+    /// <see cref="FollowUpKind.ReviewRequestedChanges"/> follow-up is answering — see
+    /// <see cref="TaskReopened.ChangesRequestedReviews"/>'s own doc. Empty for every other
+    /// follow-up kind and for a task never reopened at all.
+    /// </summary>
+    public IReadOnlyList<ChangesRequestedReview> ChangesRequestedReviews { get; private set; } = [];
+    /// <summary>
     /// Set while a human-requested retry of a failed task is pending (Decisions Log #25):
     /// the failed run's branch, resumed by the next claim when it still exists — the
     /// launcher starts clean from the base branch when it is gone (or when this is null).
@@ -779,6 +786,7 @@ public sealed class TaskAggregate
         FollowUpPullRequestHeadSha = null;
         StackReplayUpstreamCommit = null;
         StackReplayOntoCommit = null;
+        ChangesRequestedReviews = [];
         RetryBranch = null;
         State = TaskState.Done;
         // A marker set while this same claim was live (h9k task revise --queue-first on a
@@ -800,6 +808,7 @@ public sealed class TaskAggregate
         FollowUpPullRequestHeadSha = @event.PullRequestHeadSha;
         StackReplayUpstreamCommit = @event.StackReplayUpstreamCommit;
         StackReplayOntoCommit = @event.StackReplayOntoCommit;
+        ChangesRequestedReviews = @event.ChangesRequestedReviews ?? [];
 
         if (@event.Automatic && @event.Kind == FollowUpKind.StackReplay)
         {
@@ -943,6 +952,7 @@ public sealed class TaskAggregate
         FollowUpPullRequestHeadSha = null;
         StackReplayUpstreamCommit = null;
         StackReplayOntoCommit = null;
+        ChangesRequestedReviews = [];
         RetryBranch = null;
         State = TaskState.Done;
         // Same reasoning as Apply(TaskCompleted): a resolved task reaches Done without ever
@@ -1097,6 +1107,7 @@ public sealed class TaskAggregate
         FollowUpPullRequestHeadSha = null;
         StackReplayUpstreamCommit = null;
         StackReplayOntoCommit = null;
+        ChangesRequestedReviews = [];
         RetryBranch = null;
         State = TaskState.Abandoned;
         // Same reasoning as Apply(TaskCompleted): a marker set earlier in this task's life is a
