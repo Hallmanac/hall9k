@@ -1322,7 +1322,8 @@ public static class TaskDecider
         IReadOnlyList<string>? knownPendingReviewRequestLogins = null,
         string? pullRequestHeadSha = null,
         string? stackReplayUpstreamCommit = null,
-        string? stackReplayOntoCommit = null)
+        string? stackReplayOntoCommit = null,
+        IReadOnlyList<ChangesRequestedReview>? changesRequestedReviews = null)
     {
         if (task.State != TaskState.Done)
         {
@@ -1372,11 +1373,25 @@ public static class TaskDecider
                 + "dispatch, only a plain rebase wearing its name.");
         }
 
+        // A changes-requested lap's whole job is answering a named human review: without the
+        // review itself the fix session has nothing to read but the reopen's one-line reason, and
+        // the disagreement park it may reach has no review to name or link. Refused rather than
+        // degraded into an ordinary thread lap wearing this kind's name, for the same reason a
+        // replay missing either of its commits is.
+        if (kind == FollowUpKind.ReviewRequestedChanges && changesRequestedReviews is not { Count: > 0 })
+        {
+            throw new DomainValidationException(
+                $"A changes-requested fix lap for task {task.Id} needs the review it is answering — the "
+                + "reviewer, the review's link, and its findings. Without them the fix session has no "
+                + "findings to read and a disagreement park has no review to name, which is the whole "
+                + "shape of this lap.");
+        }
+
         return new TaskReopened(
             task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId, kind, automatic,
             obstructionKey, obstructionSummary,
             knownHumanReviewThreadIds, knownPendingReviewRequestLogins, pullRequestHeadSha,
-            stackReplayUpstreamCommit, stackReplayOntoCommit);
+            stackReplayUpstreamCommit, stackReplayOntoCommit, changesRequestedReviews);
     }
 
     /// <summary>

@@ -1,3 +1,5 @@
+using Hall9k.Domain.Features.Run;
+
 namespace Hall9k.Domain.Features.Tasks.Events;
 
 /// <summary>
@@ -61,6 +63,14 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// freshness machinery's business, exactly as it is for every other run.
 /// </para>
 /// </param>
+/// <param name="ChangesRequestedReviews">
+/// For a <see cref="FollowUpKind.ReviewRequestedChanges"/> reopen only (task: a changes-requested
+/// pull-request review from a human becomes a fix lap): every human CHANGES_REQUESTED review
+/// closeout observed on the head, with the review body and every inline comment as findings. The
+/// launcher renders them into the fix session's prompt in the shape platform review findings
+/// take, so the session reads what the reviewer wrote rather than a count of it. Null on every
+/// other reopen kind and on events recorded before this field existed.
+/// </param>
 public sealed record TaskReopened(
     Guid Id,
     Guid PreviousRunId,
@@ -76,4 +86,5 @@ public sealed record TaskReopened(
     IReadOnlyList<string>? KnownPendingReviewRequestLogins = null,
     string? PullRequestHeadSha = null,
     string? StackReplayUpstreamCommit = null,
-    string? StackReplayOntoCommit = null);
+    string? StackReplayOntoCommit = null,
+    IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null);

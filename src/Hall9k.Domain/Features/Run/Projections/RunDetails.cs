@@ -226,6 +226,15 @@ public sealed class RunDetails
     /// cleared once the park resolves.
     /// </summary>
     public bool ParkedOnRebaseRecoveryDispute { get; set; }
+    /// <summary>
+    /// Whether the current park is a changes-requested lap's disagreement park (task: a
+    /// changes-requested pull-request review from a human becomes a fix lap) — mirrors
+    /// <see cref="RunAggregate.ParkedOnReviewDisagreement"/> so <c>AttentionComposer</c> can lead
+    /// with the lever that actually applies here: the three reply choices, which is the question
+    /// this park is asking and which no other park takes. Set when a lap disagrees, cleared once
+    /// the park resolves.
+    /// </summary>
+    public bool ParkedOnReviewDisagreement { get; set; }
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; set; }
     /// <summary>Errored-review re-requests issued for this run; adds to the task's CloseoutAttempts against the shared budget.</summary>
@@ -279,6 +288,30 @@ public sealed class RunDetails
     /// prompts carry prior rulings). A run can park and resolve more than once.
     /// </summary>
     public List<ReviewParkResolution> ReviewParkResolutions { get; set; } = [];
+    /// <summary>
+    /// Every human CHANGES_REQUESTED review this run's closeout has observed on its pull request,
+    /// oldest first (task: a changes-requested pull-request review from a human becomes a fix
+    /// lap) — the reviewer, when they submitted, how many findings they left, and the review's own
+    /// link. One entry per read, not per review: closeout re-reads a review its last lap did not
+    /// satisfy, so the same url can land here more than once, and <c>h9k task show</c> renders one
+    /// row per review with the later reads counted on it rather than one row per entry.
+    /// </summary>
+    public List<ChangesRequestedReviewObservation> ChangesRequestedReviewObservations { get; set; } = [];
+    /// <summary>
+    /// Every disagreement a changes-requested fix lap on this run parked rather than answering
+    /// itself, oldest first and never cleared: this is history, not the live park (that is
+    /// <see cref="RunAggregate.ParkedDisagreements"/>, which the resolve command reads and which
+    /// empties the moment the park is resolved). <c>h9k task show</c> renders these under the
+    /// review each one names.
+    /// </summary>
+    public List<ReviewDisagreement> ChangesRequestedDisagreements { get; set; } = [];
+    /// <summary>
+    /// What the implementer directed be said back, one entry per <c>h9k review resolve</c> that
+    /// answered a disagreement park, oldest first. Paired with
+    /// <see cref="ChangesRequestedDisagreements"/> by nothing but order and time — deliberately,
+    /// since one resolve directs whatever the park held rather than a single finding.
+    /// </summary>
+    public List<ReviewDisagreementReplyDirection> ChangesRequestedReplyDirections { get; set; } = [];
     /// <summary>
     /// Every <see cref="Events.ExternalInteractionLogged"/> this run's agents have recorded,
     /// oldest first (the escape-hatch invariant, idea fcaded0b's design rulings 4 and 5): whatever
@@ -889,6 +922,32 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.State = RunState.UnderReview;
     }
 
+    // History, appended and never cleared — the run stays AwaitingReview here, exactly as it does
+    // for every other closeout observation: the reopen this same sweep appends to the TASK stream
+    // is what dispatches the fix lap, and this event only records what was read.
+    public void Apply(IEvent<PullRequestChangesRequested> @event, RunDetails view)
+    {
+        foreach (ChangesRequestedReview review in @event.Data.Reviews)
+        {
+            view.ChangesRequestedReviewObservations.Add(new ChangesRequestedReviewObservation(
+                review.Reviewer, review.ReviewUrl, review.SubmittedAt, review.Findings.Count,
+                @event.Data.ObservedAt));
+        }
+    }
+
+    // No state move and no EndSessions: the ReviewParked appended immediately after this one owns
+    // both (RunAggregate.Apply(ReviewDisagreementParked) says the same). Splitting them keeps one
+    // event responsible for parking and this one responsible only for the positions.
+    public void Apply(IEvent<ReviewDisagreementParked> @event, RunDetails view)
+    {
+        view.ChangesRequestedDisagreements.AddRange(@event.Data.Disagreements);
+        view.ParkedOnReviewDisagreement = true;
+    }
+
+    public void Apply(IEvent<ReviewDisagreementReplyDirected> @event, RunDetails view) =>
+        view.ChangesRequestedReplyDirections.Add(new ReviewDisagreementReplyDirection(
+            @event.Data.Choice, @event.Data.PostedBody, @event.Data.PostedTarget, @event.Data.DirectedAt));
+
     public void Apply(IEvent<ReviewParked> @event, RunDetails view)
     {
         view.ParkedReason = @event.Data.Reason;
@@ -979,6 +1038,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
         view.ParkedOnRebaseRecoveryDispute = false;
+        view.ParkedOnReviewDisagreement = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
         EndSessions(view);
         view.State = RunState.UnderReview;
@@ -1167,6 +1227,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ReviewRerequestsAfterFixes++;
         view.RequestedReviewerLogins.AddRange(@event.Data.Reviewers);
     }
+
+    // The login is recorded so closeout's human-engagement check knows this pending request is
+    // the platform's own, not a person re-requesting (HasHumanEngagement/StillAwaitingOwnRequest).
+    // ReviewRerequestsAfterFixes is deliberately NOT incremented: this re-request is unconditional
+    // and is bounded by the lifetime reopen budget, not by the countersign pass cap, and spending
+    // that cap here would silence a later genuine countersign on the same pull request.
+    public void Apply(IEvent<ChangesRequestedReviewerRerequested> @event, RunDetails view) =>
+        view.RequestedReviewerLogins.Add(@event.Data.Reviewer);
 
     public void Apply(IEvent<CloseoutParked> @event, RunDetails view)
     {

@@ -733,6 +733,26 @@ public sealed class RunAggregate
     /// </summary>
     public bool ParkedNeedsFixesOffersNoProgress { get; private set; }
 
+    /// <summary>
+    /// The disagreements a changes-requested fix lap parked rather than answering itself (task: a
+    /// changes-requested pull-request review from a human becomes a fix lap) — each with the
+    /// reviewer's point, the session's reasoning, and the reply it drafted for the implementer to
+    /// send, edit, or drop. Empty on every other park, and emptied again the moment the park is
+    /// resolved: a drafted reply describes the park it was drafted for and nothing after it.
+    /// </summary>
+    public IReadOnlyList<ReviewDisagreement> ParkedDisagreements { get; private set; } = [];
+
+    /// <summary>
+    /// Whether the park just recorded is a changes-requested lap's disagreement park, which is
+    /// what makes <c>h9k review resolve</c> require one of its three reply choices before it will
+    /// let the run continue. Kept as its own flag rather than inferred from
+    /// <see cref="ParkedDisagreements"/> being non-empty: a session that emitted the disagreement
+    /// marker without a single parseable block still parked for exactly this reason, and the
+    /// implementer still has to say what the reviewer hears — reading an unparseable park as an
+    /// ordinary one would silently skip that question.
+    /// </summary>
+    public bool ParkedOnReviewDisagreement { get; private set; }
+
     /// <summary>Human guidance from a resolved pre-final-pass rebase-recovery dispute (h9k review resolve --needs-fixes), consumed by the next recovery-session dispatch.</summary>
     public string? PendingRebaseRecoveryGuidance { get; private set; }
 
@@ -1164,6 +1184,18 @@ public sealed class RunAggregate
         State = RunState.UnderReview;
     }
 
+    /// <summary>
+    /// Recorded immediately ahead of the <see cref="ReviewParked"/> that actually parks the run
+    /// (task: a changes-requested pull-request review from a human becomes a fix lap) — ahead, so
+    /// that the park event stays the one thing that moves state, and these positions are already
+    /// on the aggregate by the time anything reads the parked run.
+    /// </summary>
+    public void Apply(ReviewDisagreementParked @event)
+    {
+        ParkedDisagreements = @event.Disagreements;
+        ParkedOnReviewDisagreement = true;
+    }
+
     public void Apply(ReviewParked @event)
     {
         // Captured before the overwrite: State (and, for interactive mode's own gate, ReviewPhase)
@@ -1303,6 +1335,12 @@ public sealed class RunAggregate
 
         ParkedNeedsFixesOffersNoProgress = false;
         ParkedIsInteractiveGate = false;
+        // A drafted reply belongs to the park it was drafted for: the implementer has now said
+        // what the reviewer hears (ReviewDisagreementReplyDirected, appended by the resolve just
+        // ahead of this), so carrying the draft forward would leave a later reader looking at an
+        // unsent proposal that has in fact already been sent or deliberately dropped.
+        ParkedDisagreements = [];
+        ParkedOnReviewDisagreement = false;
         // A verdict-bearing resolve engages the boundary exactly as a bare proceed would (task:
         // interactive mode becomes a recorded property of the task) — whichever phase this
         // resolution landed the loop on, that phase's own next dispatch must not immediately
