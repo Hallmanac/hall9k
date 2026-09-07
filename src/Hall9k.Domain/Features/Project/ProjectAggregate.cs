@@ -88,6 +88,11 @@ public sealed class ProjectAggregate
     public BranchNameTemplate BranchNameTemplate { get; private set; } = BranchNameTemplate.Default;
     /// <summary>Whether a GitHub reviewer assignment to this install's own login auto-creates a pr-review task, and how fast it starts; Off is the platform's original behavior (idea e5e98a33).</summary>
     public AutoPrReviewSpeed AutoPrReview { get; private set; } = AutoPrReviewSpeed.Off;
+    /// <summary>
+    /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
+    /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
+    /// </summary>
+    public ClaimGate ClaimGate { get; private set; } = ClaimGate.Off;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -216,6 +221,11 @@ public sealed class ProjectAggregate
         if (@event.Priority.HasValue)
         {
             Priority = @event.Priority.Value ?? ProjectPriority.Normal;
+        }
+
+        if (@event.ClaimGate.HasValue)
+        {
+            ClaimGate = @event.ClaimGate.Value ?? ClaimGate.Off;
         }
     }
 }

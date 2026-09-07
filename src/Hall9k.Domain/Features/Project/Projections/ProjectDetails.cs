@@ -74,6 +74,11 @@ public sealed class ProjectDetails
     /// <summary>Whether a GitHub reviewer assignment to this install's own login auto-creates a pr-review task, and how fast it starts; Off is the platform's original behavior (idea e5e98a33).</summary>
     public AutoPrReviewSpeed AutoPrReview { get; set; } = AutoPrReviewSpeed.Off;
     /// <summary>
+    /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
+    /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
+    /// </summary>
+    public ClaimGate ClaimGate { get; set; } = ClaimGate.Off;
+    /// <summary>
     /// Where this project lives on disk (backlog 47). None for a project registered before homes
     /// existed, or one whose home has not been created on this machine.
     /// </summary>
@@ -206,6 +211,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.Priority.HasValue)
         {
             view.Priority = @event.Data.Priority.Value ?? ProjectPriority.Normal;
+        }
+
+        if (@event.Data.ClaimGate.HasValue)
+        {
+            view.ClaimGate = @event.Data.ClaimGate.Value ?? ClaimGate.Off;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
