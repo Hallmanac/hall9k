@@ -204,6 +204,24 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Dependency", $"[red]{details.DependencyFailureReason.EscapeMarkup()}[/]");
         }
 
+        // A reviewer's own lap (Decisions Log #149): open, or ended with the verdict it submitted.
+        // Both rows are worth the space for the same reason: the whole deliverable of a pr-review
+        // task is a review that lives on somebody else's pull request, so without this the task's
+        // own screen could only say it closed, never what it said.
+        if (details.ReviewLapOpen)
+        {
+            header.AddRow(
+                "Review lap",
+                "[blue]open[/] [dim]— " + (details.ReviewLapWorktreePath.IsNotBlank()
+                    ? $"reading in {details.ReviewLapWorktreePath.EscapeMarkup()}; "
+                    : "no checkout (--no-worktree); ")
+                + $"ends at h9k pr approve {details.Id} or h9k pr request-changes {details.Id}[/]");
+        }
+        else if (details.ReviewerVerdict != ReviewerVerdict.Unknown)
+        {
+            header.AddRow("Review verdict", ReviewerVerdictMarkup(details));
+        }
+
         // A failure the task has already moved on from — retried, resolved, or abandoned. While
         // it is still Failed the attention block above leads with the composed cause, so this
         // row exists for the history rather than for the ask. That suppression is only honest
@@ -1171,6 +1189,31 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         return importer.WebUrl(canonicalReference) is { } url
             ? $"[link={url}]{label}[/] [dim](read once; never re-checked)[/]"
             : label;
+    }
+
+    /// <summary>
+    /// The verdict a reviewer's lap submitted (Decisions Log #149) — the verdict itself, the head
+    /// it was submitted against, and a link to the review when GitHub answered with one. The head
+    /// is named rather than assumed current: a review is an opinion about one tree, and the pull
+    /// request's head can have moved several times since. An absent review URL is left absent
+    /// rather than composed from the pull request and a review id nobody read.
+    /// </summary>
+    private static string ReviewerVerdictMarkup(TaskDetails details)
+    {
+        string colour = details.ReviewerVerdict == ReviewerVerdict.Approved ? "green" : "yellow";
+        string head = details.ReviewerVerdictHeadSha.IsNotBlank()
+            ? $" [dim]on {details.ReviewerVerdictHeadSha[..Math.Min(12, details.ReviewerVerdictHeadSha.Length)].EscapeMarkup()}[/]"
+            : string.Empty;
+        string note = details.ReviewerVerdictNote.IsNotBlank()
+            ? $" [dim]— {ExternalText.OneLineMarkup(details.ReviewerVerdictNote)}[/]"
+            : string.Empty;
+        string findings = details.ReviewerVerdictFindings.Count > 0
+            ? $" [dim]({details.ReviewerVerdictFindings.Count} line comment(s))[/]"
+            : string.Empty;
+        string link = details.ReviewerVerdictReviewUrl.IsNotBlank()
+            ? $" [link]{details.ReviewerVerdictReviewUrl.EscapeMarkup()}[/]"
+            : string.Empty;
+        return $"[{colour}]{details.ReviewerVerdict.Value.EscapeMarkup()}[/]{head}{findings}{note}{link}";
     }
 
     /// <summary>

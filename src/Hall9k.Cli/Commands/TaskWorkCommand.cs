@@ -1135,7 +1135,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             + "h9k status to see where it stands.");
     }
 
-    private static async Task FailInteractiveClaimAsync(
+    /// <summary>
+    /// Internal rather than private: a reviewer's own review lap
+    /// (<see cref="PullRequestReviewCommand"/>, Decisions Log #149) claims its pr-review task and
+    /// cuts a checkout in exactly this order and owes the identical recovery for exactly the same
+    /// reason — a claim that committed and then failed to prepare would otherwise leave the task
+    /// Claimed with no run record, which <c>h9k task release</c> cannot undo because it loads the
+    /// very <c>RunDetails</c> the failed cut never wrote.
+    /// </summary>
+    internal static async Task FailInteractiveClaimAsync(
         DocumentStore store, Guid taskId, long claimedVersion, Guid runId, string reason, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
