@@ -1,3 +1,4 @@
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Node;
@@ -37,9 +38,17 @@ public sealed class DispatchEngine(
     DaemonConnection connection,
     IProcessManager processManager,
     IOptions<DaemonOptions> options,
-    ILogger<DispatchEngine> logger)
+    ILogger<DispatchEngine> logger,
+    TrackerClaimGate? trackerClaimGate = null)
 {
     private readonly DaemonOptions _options = options.Value;
+
+    /// <summary>
+    /// The project claim gate this node's claims go through (idea 64c75e43). Optional so a test
+    /// that never touches a gated project constructs this engine as it always has; the default is
+    /// the real gate, which for an ungated project makes not one call.
+    /// </summary>
+    private readonly TrackerClaimGate _trackerClaimGate = trackerClaimGate ?? new TrackerClaimGate();
 
     /// <summary>
     /// When the last sweep started, by this process's wall clock — the baseline for
@@ -105,6 +114,32 @@ public sealed class DispatchEngine(
     /// </para>
     /// </summary>
     private readonly Dictionary<Guid, DateTimeOffset> _lastServedByProject = [];
+    /// When this node last actually read the tracker for a task its claim gate turned away (idea
+    /// 64c75e43), keyed by task. It is what keeps the gate off the tracker's back: the dispatch
+    /// loop sweeps roughly every <see cref="DaemonOptions.PollInterval"/> — five seconds — and a
+    /// card assigned to a teammate would otherwise cost one Jira or GitHub call every five
+    /// seconds, indefinitely, for as long as it sits in the queue. A held task is re-read no more
+    /// often than <see cref="DaemonOptions.PullRequestPollInterval"/> instead, the same
+    /// human-timescale cadence closeout polls pull requests at and for the same reason (Decisions
+    /// Log #22): an assignment is a human act, and three minutes of latency on picking it up is
+    /// invisible next to the round trip of a person noticing a card.
+    /// <para>
+    /// Only a refusal records a timestamp, and a pass clears it: a check that passed and then lost
+    /// the claim race must be re-read on the very next sweep rather than treated as still held for
+    /// three minutes on the strength of a read that said the opposite.
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<Guid, DateTimeOffset> _trackerGateReadAt = [];
+
+    /// <summary>
+    /// What this node last said in the log about each tracker-held task, so the hold is stated
+    /// once per episode rather than once per sweep — the same discipline
+    /// <see cref="ReportDeferrals"/> gives the concurrency ceiling. The reason itself is the key,
+    /// not merely the task id: a card that moves from one teammate to another, or from held to
+    /// unreadable, is a different hold and worth a fresh line, while the same hold repeating for
+    /// an hour is not.
+    /// </summary>
+    private readonly Dictionary<Guid, string> _reportedTrackerHolds = [];
 
     /// <summary>
     /// The period start <see cref="SpendBudgetExhaustedAsync"/> last confirmed exhausted, or null
@@ -481,6 +516,7 @@ public sealed class DispatchEngine(
         await PublishLoadAsync(
             session, load, queuedProjects, claimed.Count, deferredByCeiling, deferredByProjectCap, cancellationToken);
         ReportSpendExhausted(spendExhausted, deferredBySpend);
+        ForgetTrackerHoldsOutsideTheQueue(queued);
         return claimed;
     }
 
@@ -985,10 +1021,26 @@ public sealed class DispatchEngine(
             return null;
         }
 
+        // The project's claim gate, ahead of TaskDecider.Claim (idea 64c75e43): a task linked to
+        // a Jira card or a GitHub issue is claimed here only while the tracker shows that item
+        // assigned to this install's own tracker identity. A refusal simply returns — the task
+        // stays Queued, exactly as the ceiling's and the spend budget's own turned-away tasks do,
+        // and nothing about this task's run history records the wait.
+        (bool refused, TrackerAssignmentObserved? gateEvidence) =
+            await CheckTrackerGateAsync(session, task, cancellationToken);
+        if (refused)
+        {
+            return null;
+        }
+
         Guid runId = DomainId.New();
         TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, DateTimeOffset.UtcNow);
 
-        session.Events.Append(taskId, expectedVersion: state.Version + 1, claimed);
+        // The gate's own evidence rides ahead of the claim it justified, in the same transaction
+        // and under the same expected version, so the stream reads in the order the two things
+        // happened and neither can land without the other.
+        object[] events = gateEvidence is null ? [claimed] : [gateEvidence, claimed];
+        session.Events.Append(taskId, expectedVersion: state.Version + events.Length, events);
         session.Store(new TaskLease
         {
             Id = taskId,
@@ -1011,6 +1063,213 @@ public sealed class DispatchEngine(
             "Claimed task {TaskId} at generation {Generation}, run {RunId}",
             taskId, claimed.LeaseGeneration, runId);
         return new ClaimedWork(taskId, runId, claimed.LeaseGeneration);
+    }
+
+    /// <summary>
+    /// This project's claim gate, applied to one candidate (idea 64c75e43). Returns whether the
+    /// claim is refused and, when it is not, the observation a passing check produced for the
+    /// caller to append beside the claim.
+    /// <para>
+    /// Three things happen here besides the read itself, and all three are what make a hold
+    /// legible rather than merely effective: the refusal is published as a
+    /// <see cref="TrackerClaimHold"/> so <c>h9k status</c>, <c>h9k task show</c> and
+    /// <c>h9k project show</c> can say the same sentence this log line says; it is logged once per
+    /// episode rather than once per sweep; and it is re-read no more often than
+    /// <see cref="DaemonOptions.PullRequestPollInterval"/> (<see cref="_trackerGateReadAt"/>).
+    /// </para>
+    /// <para>
+    /// A task that stops being gated — the setting turned off, or a reference that changed kind —
+    /// has its published hold and its cached read cleared here, so a board never shows a wait that
+    /// has already ended.
+    /// </para>
+    /// <para>
+    /// The read itself is caught: an unforeseen failure in a tracker connector must hold the claim
+    /// (the gate fails closed, always) rather than throw out of the sweep and take every other
+    /// project's claims down with it, the same reasoning <see cref="PublishLoadAsync"/>'s own catch
+    /// documents. That hold is published and announced exactly as a concluded one is
+    /// (<see cref="TrackerClaimGate.Threw"/>), so all three of the above hold for it too — the
+    /// only difference being that its warning carries the exception a status row cannot.
+    /// </para>
+    /// </summary>
+    private async Task<(bool Refused, TrackerAssignmentObserved? Evidence)> CheckTrackerGateAsync(
+        IDocumentSession session, TaskAggregate task, CancellationToken cancellationToken)
+    {
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+
+        // The reference is narrowed here rather than re-read from the task further down: Gates()
+        // already requires one, and a local carries that through to the failure path without a
+        // null-forgiving '!' (AGENTS.md).
+        if (project is null
+            || task.ExternalReference is not { } item
+            || !TrackerClaimGate.Gates(project.ClaimGate, item))
+        {
+            ReleaseTrackerHold(session, task.Id);
+            return (false, null);
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (_trackerGateReadAt.TryGetValue(task.Id, out DateTimeOffset lastRead)
+            && now - lastRead < _options.PullRequestPollInterval)
+        {
+            return (true, null);
+        }
+
+        TrackerClaimDecision decision;
+        try
+        {
+            decision = await _trackerClaimGate.CheckAsync(
+                store, project.ClaimGate, item, project.RepositoryPath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Published and announced exactly as a concluded hold is, because holding is only half
+            // of failing closed: this path used to refuse the claim with nothing written, so
+            // h9k status showed the task queued and could give no reason for it — the one hold on
+            // this gate a board could not explain (Copilot review, PR #260). The warning keeps the
+            // exception, which the hold's own one-line sentence cannot carry, and is said once per
+            // episode rather than once per re-read, off the same key ReportTrackerHold uses.
+            decision = TrackerClaimGate.Threw(item, exception, now);
+            _trackerGateReadAt[task.Id] = now;
+            await PublishTrackerHoldAsync(task.Id, decision, cancellationToken);
+            if (FirstReportOfTrackerHold(task.Id, decision))
+            {
+                logger.LogWarning(
+                    exception,
+                    "Task {TaskId} stays queued: this project's tracker-assignee claim gate could not read "
+                    + "{Reference} at all, so it fails closed. The next read is in at most {Interval}",
+                    task.Id, item.ToString(), _options.PullRequestPollInterval);
+            }
+
+            return (true, null);
+        }
+
+        if (decision.Holds)
+        {
+            _trackerGateReadAt[task.Id] = now;
+            await PublishTrackerHoldAsync(task.Id, decision, cancellationToken);
+            ReportTrackerHold(task.Id, decision);
+            return (true, null);
+        }
+
+        ReleaseTrackerHold(session, task.Id);
+        return (false, decision.Assignee is { } assignee
+            ? new TrackerAssignmentObserved(
+                task.Id, item.ToString(), assignee.Identity, assignee.Name, decision.ObservedAt)
+            : null);
+    }
+
+    /// <summary>
+    /// Publish the hold in its own transaction, before the caller returns without claiming
+    /// anything. Its own, because the claim session is about to be abandoned unsaved — there is no
+    /// claim to commit it alongside — and because a failure to publish must not become a failure
+    /// to hold: the gate's refusal has already taken effect by the time this runs, and the worst a
+    /// swallowed write costs is one stale line on the board until the next re-read.
+    /// </summary>
+    private async Task PublishTrackerHoldAsync(
+        Guid taskId, TrackerClaimDecision decision, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession holdSession = store.LightweightSession();
+            holdSession.Store(decision.ToHold(taskId, node.NodeId, Environment.MachineName));
+            await holdSession.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Task {TaskId} is held by this project's claim gate, but recording why for h9k status failed; "
+                + "the hold itself is unaffected",
+                taskId);
+        }
+    }
+
+    /// <summary>
+    /// Forget everything this node was holding about a task whose wait has ended — the gate passed,
+    /// or stopped applying at all — so a project whose gate was just turned off claims on the very
+    /// next sweep with no stale hold left on the board. The delete rides the caller's own session,
+    /// which both callers go on to commit with the claim.
+    /// <para>
+    /// Only a task this node actually recorded a hold for is deleted, so the ordinary ungated
+    /// sweep — the overwhelmingly common case, and the one this feature promises to leave
+    /// byte-for-byte alone — issues no statement at all rather than a delete for a row that was
+    /// never written. The cost is narrow and self-healing: a hold published before a daemon restart,
+    /// on a project whose gate was turned off while the daemon was down, is not deleted here — and
+    /// every reader freshness-gates it (<c>DispatchPressure.Freshness</c>), so it stops being shown
+    /// within minutes on its own.
+    /// </para>
+    /// </summary>
+    private void ReleaseTrackerHold(IDocumentSession session, Guid taskId)
+    {
+        bool held = _trackerGateReadAt.Remove(taskId) | _reportedTrackerHolds.Remove(taskId);
+        if (held)
+        {
+            // This node's own row and no other's: the key carries the node precisely so a second
+            // daemon against the same database keeps its own explanation of the same task
+            // (TrackerClaimHold.KeyFor).
+            session.Delete<TrackerClaimHold>(TrackerClaimHold.KeyFor(taskId, node.NodeId));
+        }
+    }
+
+    /// <summary>
+    /// Drop the per-task claim-gate bookkeeping for every task no longer in this node's queue, so
+    /// the two dictionaries cannot grow for the life of the process — a card claimed, closed out,
+    /// or unassigned would otherwise leave its read time and its reported line behind forever.
+    /// Replacement semantics, exactly as <see cref="ReportDeferrals"/> rebuilds its own set each
+    /// sweep: a task that leaves the queue and comes back is a fresh hold, re-read on the next
+    /// sweep and announced again.
+    /// </summary>
+    private void ForgetTrackerHoldsOutsideTheQueue(IReadOnlyCollection<QueuedCandidate> queued)
+    {
+        if (_trackerGateReadAt.Count == 0 && _reportedTrackerHolds.Count == 0)
+        {
+            return;
+        }
+
+        HashSet<Guid> stillQueued = [.. queued.Select(candidate => candidate.TaskId)];
+        foreach (Guid taskId in _trackerGateReadAt.Keys.Where(taskId => !stillQueued.Contains(taskId)).ToList())
+        {
+            _trackerGateReadAt.Remove(taskId);
+        }
+
+        foreach (Guid taskId in _reportedTrackerHolds.Keys.Where(taskId => !stillQueued.Contains(taskId)).ToList())
+        {
+            _reportedTrackerHolds.Remove(taskId);
+        }
+    }
+
+    /// <summary>
+    /// One line per hold, not one per sweep — <see cref="ReportDeferrals"/>'s own discipline. The
+    /// full sentence rather than the short reason, because this is the surface where the tracker's
+    /// own error and what ends the hold have to be quotable verbatim.
+    /// </summary>
+    private void ReportTrackerHold(Guid taskId, TrackerClaimDecision decision)
+    {
+        if (FirstReportOfTrackerHold(taskId, decision))
+        {
+            logger.LogInformation(
+                "Task {TaskId} stays queued: {Reason} It is re-read in at most {Interval}",
+                taskId, decision.RefusalLine, _options.PullRequestPollInterval);
+        }
+    }
+
+    /// <summary>
+    /// Whether this hold has not been announced yet, remembering it as announced if so — the
+    /// once-per-episode gate the two report paths share, so a hold the tracker's own answer
+    /// produced and one an unforeseen failure produced are each said once rather than once per
+    /// re-read. Kept apart from <see cref="ReportTrackerHold"/> because the second caller logs a
+    /// warning carrying its exception rather than this method's information line, and the keying
+    /// must not be duplicated to say that.
+    /// </summary>
+    private bool FirstReportOfTrackerHold(Guid taskId, TrackerClaimDecision decision)
+    {
+        if (_reportedTrackerHolds.TryGetValue(taskId, out string? reported) && reported == decision.RefusalLine)
+        {
+            return false;
+        }
+
+        _reportedTrackerHolds[taskId] = decision.RefusalLine;
+        return true;
     }
 
     /// <summary>
