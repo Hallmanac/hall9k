@@ -47,4 +47,21 @@ public sealed record RunRebasedOntoBase(
     bool WasNoOp,
     bool RecoveredByAgentSession,
     string Detail,
-    DateTimeOffset RebasedAt);
+    DateTimeOffset RebasedAt)
+{
+    /// <summary>
+    /// What <see cref="RebasedFromCommit"/> and <see cref="RebasedOntoCommit"/> carry when the read
+    /// that would have named a commit failed — an admitted gap in an audit field rather than a
+    /// guessed commit (AGENTS.md's never-guess rule), written by
+    /// <c>ReviewEngine.ResolveObservedOntoCommitAsync</c> and its dispatch-time sibling. Named here
+    /// so a reader deciding whether the pair is a commit at all cannot drift from the writer.
+    /// </summary>
+    public const string UnreadableCommit = "unknown";
+
+    /// <summary>
+    /// Whether <see cref="RebasedOntoCommit"/> actually names an observed commit — the gate on
+    /// treating it as this branch's new fork point (see <c>RunAggregate.Apply</c>'s own comment).
+    /// </summary>
+    public bool OntoCommitObserved =>
+        RebasedOntoCommit.IsNotBlank() && RebasedOntoCommit != UnreadableCommit;
+}

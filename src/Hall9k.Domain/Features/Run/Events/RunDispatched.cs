@@ -76,7 +76,11 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// at the moment it was true: the start point a fresh cut resolved
 /// (<c>Worktree.StartPointCommit</c>), carried forward unchanged by a follow-up that resumes the
 /// branch (resuming does not move a fork point), and replaced by the commit a stacked replay is
-/// dispatched to land on. It exists because a ref cannot recover this: a force-pushed parent
+/// dispatched to land on. It is a dispatch-time record of a fact that can move afterwards, and the
+/// one thing that moves it is a rebase: <see cref="RunRebasedOntoBase"/>'s own apply advances the
+/// aggregate's and the projection's copy to the commit the branch was actually rebased onto, so a
+/// later replay never reads an upstream the branch no longer contains. It exists because a ref
+/// cannot recover this: a force-pushed parent
 /// rewrites the history the child shares with it, so <c>git merge-base</c> collapses to the base
 /// branch and a replay from there re-applies the parent's old commit against its new one. Empty
 /// when nothing was observed — a resumed branch whose predecessor recorded none, an unreadable

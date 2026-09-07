@@ -45,8 +45,9 @@ public enum StackedParentVerdict
 /// <param name="BoundaryCommit">
 /// The commit everything at or before which belongs to the parent — the <c>&lt;upstream&gt;</c> of
 /// the replay's own <c>git rebase --onto</c>, which is what drops the parent's commits instead of
-/// replaying them onto a base that already holds them. This is the child run's own recorded fork
-/// point (<c>RunDetails.BaseCommit</c>), never <c>git merge-base</c>: see
+/// replaying them onto a base that already holds them. The parent's own head where that head is
+/// still on the child's line (a merged parent that was never rewritten), and otherwise the child
+/// run's own recorded fork point (<c>RunDetails.BaseCommit</c>) — never <c>git merge-base</c>: see
 /// <see cref="StackedParentWatch"/>'s own doc for the force-push case that proves merge-base wrong
 /// here. Blank on <see cref="StackedParentVerdict.Aligned"/> and
 /// <see cref="StackedParentVerdict.Unobservable"/>, where there is no replay to describe.
@@ -78,16 +79,19 @@ public sealed record StackedParentObservation(
 /// closeout asks each sweep: has that branch moved out from under this child?
 /// <para>
 /// Everything here is read from git and from the parent's own recorded state — never inferred from
-/// elapsed time or from the child's own age. The one thing that is <em>not</em> recomputed is the
-/// boundary the replay drops the parent's commits at: that is the child run's own recorded fork
-/// point (<c>RunDetails.BaseCommit</c>), and it has to be, because <c>git merge-base</c> gets it
+/// elapsed time or from the child's own age. The boundary the replay drops the parent's commits at
+/// is observed directly wherever git can still answer it — the parent's head, where that head is
+/// still contained in the child's branch — and falls back to the child run's own recorded fork
+/// point (<c>RunDetails.BaseCommit</c>) where it cannot, which is the force-pushed case. What it is
+/// never computed from is <c>git merge-base</c>, because that gets it
 /// wrong in exactly the case this watch exists for. A force-pushed parent rewrites the history the
 /// child shares with it, so the merge base of the child and the parent's NEW head collapses back to
 /// the base branch — and a replay from there re-applies the child's copy of the parent's OLD commit
 /// against the parent's new one, which conflicts on the parent's own content. Verified in a scratch
 /// repository while this was being built, which is the only reason it is not still written the
-/// obvious way. A child whose run recorded no fork point (a stream written before that field) is
-/// therefore <see cref="StackedParentVerdict.Unobservable"/> rather than replayed on a guess.
+/// obvious way. A child whose parent moved without merging and whose run recorded no fork point
+/// either (a stream written before that field) is therefore
+/// <see cref="StackedParentVerdict.Unobservable"/> rather than replayed on a guess.
 /// </para>
 /// <para>
 /// Runs against the project's bare repository rather than the child run's retained worktree,
@@ -224,18 +228,25 @@ public sealed class StackedParentWatch(
                     $"still built on {parentBranch}'s current head — nothing to replay");
             }
 
-            // The boundary, from the child's own record rather than from git (this type's own doc
-            // says why merge-base cannot answer it for a force-pushed parent). One case does not
-            // need the record at all: a child that CONTAINS the parent's current head, which only
-            // reaches here when the parent merged. The parent's branch was not rewritten, and the
-            // child holding its whole branch means that head is the highest parent commit on the
-            // child's own line — which is the boundary, observed directly. So a merged parent's
-            // child is still served when its run predates the recorded fork point; only a moved
-            // parent genuinely needs the record, and a child without one is admitted as
-            // unobservable rather than replayed on a guess.
-            string boundary = childRun.BaseCommit.IsNotBlank()
-                ? childRun.BaseCommit
-                : childHoldsParentHead ? parentHead : string.Empty;
+            // The boundary. Directly observed wherever it can be: a child that CONTAINS the
+            // parent's current head — which only reaches here when the parent merged — was not
+            // rewritten out from under, and holding the parent's whole branch means that head IS
+            // the highest parent commit on the child's own line. Preferred over the record even
+            // when there is one (independent pre-PR review, cycle 1, adversarial lens): the record
+            // is this run's fork point as it was at dispatch, and a rebase that moves the branch
+            // afterwards leaves it naming a commit the branch may no longer contain — a replay
+            // from a stale upstream re-applies the parent's commits onto the base instead of
+            // dropping them, the exact duplication this boundary exists to prevent. An observed
+            // commit that is currently true beats a recorded one that was.
+            //
+            // Only a parent that moved WITHOUT merging falls back to the record, and it has to:
+            // the parent's head is no longer on the child's line at all there, so git has nothing
+            // left to read the boundary from — merge-base gets it wrong for exactly this case
+            // (this type's own doc). A child whose run recorded no fork point either is admitted
+            // as unobservable rather than replayed on a guess.
+            string boundary = childHoldsParentHead
+                ? parentHead
+                : childRun.BaseCommit;
             if (boundary.IsBlank())
             {
                 return StackedParentObservation.Unobservable(

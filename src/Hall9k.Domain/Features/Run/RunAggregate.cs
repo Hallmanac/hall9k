@@ -1627,6 +1627,19 @@ public sealed class RunAggregate
             LastPreFinalPassRebaseAt = @event.RebasedAt;
         }
 
+        // A real rebase moves this branch's fork point, so the recorded one stops being true of it
+        // (independent pre-PR review, cycle 1, adversarial lens): a stale BaseCommit names a commit
+        // the branch may no longer contain, and a replay dispatched from a stale upstream re-applies
+        // commits it was supposed to drop. Only a non-no-op event moves anything — a no-op means
+        // origin's base was already contained, so the fork point is exactly where it was — and only
+        // an actual commit is written: RebasedOntoCommit carries the literal "unknown" sentinel when
+        // the read failed (ReviewEngine.ResolveObservedOntoCommitAsync), which is an admitted gap,
+        // never a commit to record as this branch's fork point.
+        if (!@event.WasNoOp && @event.OntoCommitObserved)
+        {
+            BaseCommit = @event.RebasedOntoCommit;
+        }
+
         // RebaseRecoveryRounds' own doc promises "in a row without ever landing cleanly", and a
         // confirmed no-op is the only fact here git itself observed rather than a session's own
         // claim: it means EnsureRebasedBeforeFinalPassAsync freshly compared origin/<base>'s tip
