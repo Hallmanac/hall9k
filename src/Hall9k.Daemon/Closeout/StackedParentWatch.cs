@@ -102,7 +102,8 @@ public sealed record StackedParentObservation(
 /// elapsed time or from the child's own age. The boundary the replay drops the parent's commits at
 /// is observed directly wherever git can still answer it — the parent's head, where that head is
 /// still contained in the child's branch — and falls back to the child run's own recorded fork
-/// point (<c>RunDetails.BaseCommit</c>) where it cannot — which is the force-pushed case, and which
+/// point (<c>RunDetails.BaseCommit</c>) where it cannot — which is the parent that moved without
+/// merging, the force-pushed lap among them — and which
 /// is trusted only once git confirms the child's branch actually contains that commit, because for a
 /// replay run the field is a dispatch-time prediction rather than an observation (see
 /// <see cref="ObserveAsync"/>'s own containment check). What it is
