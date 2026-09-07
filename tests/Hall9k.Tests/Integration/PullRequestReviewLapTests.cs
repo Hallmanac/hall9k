@@ -682,6 +682,57 @@ public sealed class PullRequestReviewLapTests : IClassFixture<PostgresFixture>, 
     }
 
     /// <summary>
+    /// The same interrupted opening, reached from the verdict side by a reviewer who read the
+    /// pull request anyway. The refusal stands — nothing on the task says a lap is open, and the
+    /// daemon still reads that run as a dispatch that never started — but it has to name the lap
+    /// it is actually looking at rather than credit the automated review's adversarial pass with
+    /// occupying the worktree, which is a session nobody launched
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public async Task A_verdict_on_a_lap_whose_opening_was_interrupted_names_the_lap_and_not_an_automated_pass()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        SeededProject project = await SeedProjectAsync(store, node, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession seeding = store.LightweightSession())
+        {
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, project.Id, "Review pull request acme/web#42", ["the verdict is submitted"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#42"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.ClaimInteractively(task, node.OwnerId, runId, Now);
+            seeding.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            seeding.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+                string.Empty, "pr/42", ExecutorMode.Subscription, Now,
+                RunDirectory: RunPaths.GlobalDirectory(runId),
+                SessionName: SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.ReviewLap),
+                DispatchingNodeId: node.NodeId));
+            await seeding.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingGh gh = new(PullRequestJson, ReviewUrl);
+        await using IDocumentSession delivering = store.LightweightSession();
+        Func<Task> act = () => PullRequestReviewVerdict.DeliverAsync(
+            delivering, taskId, ReviewerVerdict.Approved, "Read it on GitHub; looks right.",
+            findings: [], new GitHubPullRequestSurface(gh.Runner), cts.Token);
+
+        string message = (await act.Should().ThrowAsync<DomainConflictException>()).Which.Message;
+        message.Should().Contain("review lap of this node's own", "that is the run the reviewer is looking at");
+        message.Should().Contain("h9k pr review", "re-entering is what records the lap the interrupt lost");
+        message.Should().NotContain(
+            "adversarial pass", "no automated session was ever launched under this run — asserting one guesses");
+        gh.ReviewPayload.Should().BeNull("the refusal comes before the irreversible half");
+    }
+
+    /// <summary>
     /// The lap adopts and claims a task in whichever project it resolves, so guessing between
     /// several would put a review task on the wrong repository's board — and, worse, run gh from
     /// the wrong repository, which is what decides the bare number's meaning.
@@ -887,6 +938,44 @@ public sealed class PullRequestReviewLapTests : IClassFixture<PostgresFixture>, 
             "somewhere-else", "the lap that got there first is the one on the task, undisturbed");
     }
 
+    /// <summary>
+    /// A cut that succeeds and a run-stream commit that then fails is the one window in which a
+    /// checkout exists at a path no run records — and every consumer that ever removes a
+    /// pr-review checkout enumerates recorded run paths, so nothing else in the platform could
+    /// ever have collected it (independent pre-PR review, cycle 1, adversarial lens). The
+    /// collision is a run stream already standing at the id this lap is about to start, which is
+    /// what a real connection drop between the fetch and the commit looks like from here.
+    /// </summary>
+    [Fact]
+    public async Task A_checkout_cut_for_a_run_that_never_committed_is_released_rather_than_leaked()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        string projectName = (await SeedProjectAsync(store, node, cts.Token)).Name;
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        worktrees.WhileCuttingTheCheckoutForRequest = async request =>
+        {
+            await using IDocumentSession collision = store.LightweightSession();
+            collision.Events.StartStream<RunAggregate>(
+                request.RunId, new RunResumed(request.RunId, 4242, Now, Now, "already-there"));
+            await collision.SaveChangesAsync(cts.Token);
+        };
+
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => PullRequestReviewCommand.RunAsync(
+            store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = projectName },
+            ScriptedGh(), worktrees, cts.Token);
+
+        await act.Should().ThrowAsync<DomainConflictException>();
+
+        worktrees.PrReviewCheckouts.Should().ContainSingle().Which.Should().Be(42, "the cut itself succeeded");
+        worktrees.Removed.Should().ContainSingle(
+            "the checkout is on no run, so this command is the last thing that will ever know where it is");
+        worktrees.TrackingRefsDeleted.Should().ContainSingle().Which.Should().Be(
+            42, "the ref the cut fetched goes with it, exactly as PrReviewEngine.FinalizeAsync releases both");
+    }
+
     private DocumentStore NewStore() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);
@@ -955,6 +1044,18 @@ public sealed class PullRequestReviewLapTests : IClassFixture<PostgresFixture>, 
         /// </summary>
         public Func<Task>? WhileCuttingTheCheckout { get; set; }
 
+        /// <summary>
+        /// The same window with the request in hand: colliding with the run-stream commit that
+        /// FOLLOWS a cut needs the run id the cut was for, and this is where a test can read it.
+        /// </summary>
+        public Func<PrReviewWorktreeRequest, Task>? WhileCuttingTheCheckoutForRequest { get; set; }
+
+        /// <summary>Every checkout this fake was asked to remove, so a leak can be asserted against rather than inferred.</summary>
+        public List<string> Removed { get; } = [];
+
+        /// <summary>Every pull request whose tracking ref this fake was asked to delete.</summary>
+        public List<int> TrackingRefsDeleted { get; } = [];
+
         public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("a review lap never cuts a branch of its own");
 
@@ -970,17 +1071,29 @@ public sealed class PullRequestReviewLapTests : IClassFixture<PostgresFixture>, 
                 await interference();
             }
 
+            if (WhileCuttingTheCheckoutForRequest is { } collision)
+            {
+                await collision(request);
+            }
+
             string path = Path.Combine(Path.GetTempPath(), $"hall9k-lap-wt-{request.RunId:N}");
             Directory.CreateDirectory(path);
             scratch.Add(path);
             return new Worktree(path, $"pr/{request.PullRequestNumber}", "refs/remotes/origin/pr-review/42");
         }
 
-        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken)
+        {
+            Removed.Add(worktreePath);
+            return Task.CompletedTask;
+        }
 
         public Task DeletePrReviewTrackingRefAsync(
-            string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) => Task.CompletedTask;
+            string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken)
+        {
+            TrackingRefsDeleted.Add(pullRequestNumber);
+            return Task.CompletedTask;
+        }
 
         public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
             Task.CompletedTask;

@@ -126,17 +126,32 @@ public static class ClaudeSettingsFile
     /// <para>
     /// <c>git push</c> is matched on the subcommand rather than on the whole command line, so it
     /// catches every form of it, including one with the remote and refspec spelled out. The
-    /// <c>gh</c> rules name the four write verbs that reach a pull request; a read
-    /// (<c>gh pr view</c>, <c>gh pr diff</c>) is untouched, because reading the pull request is
-    /// most of what a lap does.
+    /// <c>gh pr</c> rules are the complete write half of that subcommand as <c>gh pr --help</c>
+    /// itself lists it — <c>create</c>, <c>review</c>, <c>comment</c>, <c>edit</c>, <c>merge</c>,
+    /// <c>close</c>, <c>reopen</c>, <c>ready</c>, <c>lock</c>, <c>unlock</c>, <c>revert</c>,
+    /// <c>update-branch</c> — and enumerating all of them rather than the obvious few is the
+    /// correction this list needed twice over (independent pre-PR review, cycle 1, adversarial
+    /// lens). It first named only <c>review</c>, <c>comment</c>, <c>merge</c> and <c>close</c>,
+    /// which are the verbs a session reaching for a *review* would use, and left the ones a
+    /// session reaching for something helpful would: <c>gh pr update-branch</c> merges the base
+    /// into somebody else's branch server-side, <c>gh pr edit --body</c> rewrites their pull
+    /// request's description, and both are ordinary first-class verbs rather than the
+    /// spelled-around commands the "not a sandbox" paragraph below admits this cannot stop. A
+    /// reviewer asking the session to "bring it current with main" is enough to reach the first
+    /// one, and the briefing quotes a foreign pull request's body and findings report verbatim,
+    /// so the ask need not even be the reviewer's. The reads (<c>gh pr view</c>,
+    /// <c>gh pr diff</c>, <c>gh pr list</c>, <c>gh pr status</c>, <c>gh pr checks</c>) are
+    /// untouched, because reading the pull request is most of what a lap does;
+    /// <c>gh pr checkout</c> is left alone with them, as it writes nothing outside this machine
+    /// and the push it would make possible is denied on its own line.
     /// </para>
     /// <para>
     /// <c>gh api</c> is denied alongside them, and it is the rule this list was first written
-    /// without (independent pre-PR review, cycle 1, both lenses). It is not a fifth write verb —
+    /// without (independent pre-PR review, cycle 1, both lenses). It is not one more write verb —
     /// it is the write surface this list's whole point reaches through:
     /// <c>GitHubPullRequestSurface.PostReviewAsync</c>, this platform's own poster, uses
     /// <c>gh api .../pulls/&lt;n&gt;/reviews</c> precisely because <c>gh pr review</c> takes no
-    /// line comments — so a session denied the four verbs could still post a review, or start a
+    /// line comments — so a session denied the verbs could still post a review, or start a
     /// thread with <c>gh api .../issues/&lt;n&gt;/comments</c>, under the reviewer's own login
     /// (AGENTS.md's never-start-a-review-thread rule, origin incident 2026-08-20). Denying the
     /// whole subcommand costs a lap nothing, because every read it makes goes through
@@ -178,10 +193,18 @@ public static class ClaudeSettingsFile
     public static readonly IReadOnlyList<string> ReviewLapDeniedTools =
     [
         "Bash(git push:*)",
+        "Bash(gh pr create:*)",
         "Bash(gh pr review:*)",
         "Bash(gh pr comment:*)",
+        "Bash(gh pr edit:*)",
         "Bash(gh pr merge:*)",
         "Bash(gh pr close:*)",
+        "Bash(gh pr reopen:*)",
+        "Bash(gh pr ready:*)",
+        "Bash(gh pr lock:*)",
+        "Bash(gh pr unlock:*)",
+        "Bash(gh pr revert:*)",
+        "Bash(gh pr update-branch:*)",
         "Bash(gh api:*)",
         "Bash(h9k pr approve:*)",
         "Bash(h9k pr request-changes:*)",

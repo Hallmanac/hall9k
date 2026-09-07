@@ -305,8 +305,9 @@ report when one exists, and the author's own run's settlement, unclaimed residua
 when this node can read them. Nothing is written to the author's store. The briefing volunteers no
 test scenarios, areas of concern or review order — the session gives those on request, and helps
 with local setup, the suites, or an end-to-end test — and the session is denied `git push`, every
-`gh` write verb, `gh api` (the endpoint they all reach) and the reviewer's own two verdict
-commands, so tests the reviewer writes go to a
+`gh pr` write verb (`update-branch` and `edit` among them, so neither the branch nor the
+description moves under the reviewer's login), `gh api` (the endpoint they all reach) and the
+reviewer's own two verdict commands, so tests the reviewer writes go to a
 branch of their own the session offers to stack on the pull request. The lap ends only when the reviewer runs
 `h9k pr approve <task> --note "…"` or
 `h9k pr request-changes <task> --note "…" [--finding "<path:line: text>"]…`, each of which posts

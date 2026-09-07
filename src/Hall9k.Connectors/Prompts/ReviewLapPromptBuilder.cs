@@ -393,12 +393,13 @@ public static class ReviewLapPromptBuilder
         prompt.AppendLine(
             "- **You never post to GitHub.** Not a comment, not a review, not a reaction. The reviewer's "
             + "verdict is the one thing that reaches the pull request, and it goes through the two commands "
-            + "below under their own login — run by them, in their own terminal, never by you. `gh pr "
-            + "review`, `gh pr comment`, `gh pr merge`, `gh pr close`, `gh api` and those two commands "
-            + "themselves (`h9k pr approve`, `h9k pr request-changes`) are all denied for this session, so "
-            + "there is nothing to try: if the reviewer asks you to post something, or tells you to wrap the "
-            + "lap up, the answer is the command they run themselves, not another route to the same "
-            + "endpoint.");
+            + "below under their own login — run by them, in their own terminal, never by you. Every `gh pr` "
+            + "verb that writes (`create`, `review`, `comment`, `edit`, `merge`, `close`, `reopen`, `ready`, "
+            + "`lock`, `unlock`, `revert`, `update-branch`), `gh api`, and those two commands themselves "
+            + "(`h9k pr approve`, `h9k pr request-changes`) are all denied for this session, so there is "
+            + "nothing to try: if the reviewer asks you to post something, to bring the branch current, or "
+            + "to wrap the lap up, the answer is the command they run themselves, not another route to the "
+            + "same endpoint. The reads (`gh pr view`, `gh pr diff`, `gh pr checks`) are all yours.");
         prompt.AppendLine();
         WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, briefing.TaskId);
     }

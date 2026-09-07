@@ -591,14 +591,18 @@ author's store.
 
 The lap's push guard is Claude Code's own `permissions.deny`, written both to the run's settings
 file and to `<worktree>/.claude/settings.local.json` so a session started in the checkout with no
-`--settings` flag is covered: `git push`, `gh pr review`, `gh pr comment`, `gh pr merge`,
-`gh pr close`, `gh api`, `h9k pr approve` and `h9k pr request-changes` are denied. `gh api` is in
-that list because it is the surface the others reach through — this platform's own poster uses
+`--settings` flag is covered: `git push`, the whole write half of `gh pr` (`create`, `review`,
+`comment`, `edit`, `merge`, `close`, `reopen`, `ready`, `lock`, `unlock`, `revert`,
+`update-branch`), `gh api`, `h9k pr approve` and `h9k pr request-changes` are denied. The `gh pr`
+side is denied verb-complete rather than by the few a session reaching for a *review* would use:
+`gh pr update-branch` merges the base into somebody else's branch server-side and `gh pr edit
+--body` rewrites their description, both under the reviewer's login. `gh api` is in the list
+because it is the surface the others reach through — this platform's own poster uses
 `gh api .../pulls/<n>/reviews`, since `gh pr review` takes no line comments — and the two verdict
 commands are in it because they ARE that poster: they reach the same endpoint under the reviewer's
 own login and finalize the task besides, so a session that ran one would post a verdict the
 reviewer never gave. A lap loses nothing by any of it, because every read it makes
-goes through `gh pr view` / `gh pr diff`. It is a session-level permission deny matched on the
+goes through `gh pr view` / `gh pr diff` / `gh pr checks`. It is a session-level permission deny matched on the
 command as spelled, not a sandbox: it refuses the ordinary route to each of these, and a command
 spelled around the prefix does not match it. `git commit` is deliberately **not** — the checkout is detached with no
 local branch, so a commit there moves nothing, and the reviewer's own tests have to be committable;
@@ -608,8 +612,11 @@ shared hooks directory, so one written for this worktree would fire for the daem
 pushes from every other.
 
 The lap **never ends on its own**. `h9k pr approve` / `h9k pr request-changes` post the GitHub
-review on the pull request's **current head** (read live moments before, so a lap open for hours
-never attaches a verdict to a push nobody read) under the reviewer's own login, then record the
+review on the pull request's **current head** (read live moments before, so the review names one
+commit instead of floating, and a pull request closed or merged mid-lap is refused before anything
+is posted — the read does *not* detect that the head moved, so an author who pushes during a long
+lap gets the verdict pinned to a commit the reviewer may never have read; ratified as current-head
+posting in #149) under the reviewer's own login, then record the
 verdict on the task and `PrReviewDelivered` on the run — byte-for-byte where
 `h9k review resolve --merge-ready` already leaves a pr-review run, so `PrReviewEngine` finalizes
 from there with the worktree released and no merge ever observed. `--note` is required on both: a

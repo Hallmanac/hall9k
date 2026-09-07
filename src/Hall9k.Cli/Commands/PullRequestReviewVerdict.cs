@@ -3,6 +3,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -21,7 +22,7 @@ namespace Hall9k.Cli.Commands;
 /// <c>h9k pr request-changes</c>, Decisions Log #149). Its shape is deliberate and the order of
 /// its four steps is the whole design:
 /// <list type="number">
-/// <item>Read the pull request's head live, so the review is submitted against the tree the reviewer actually read rather than whatever the head is when GitHub gets around to it.</item>
+/// <item>Read the pull request's head live, so the review is pinned to one named commit rather than left to float, and a pull request that closed or merged mid-lap is refused before anything is posted.</item>
 /// <item>Post the GitHub review. This is the deliverable — everything after it is bookkeeping about something that already happened out in the world.</item>
 /// <item>Record the verdict on the pr-review task, and <see cref="PrReviewDelivered"/> on its run, in one transaction.</item>
 /// <item>Ring the doorbell so the daemon finalizes the task exactly as <c>h9k review resolve --merge-ready</c> already does — releasing the worktree, completing the task, dropping the lease, with no merge ever observed.</item>
@@ -111,7 +112,14 @@ internal static class PullRequestReviewVerdict
                 + "Nothing was posted to the pull request by this command.");
         }
 
-        RefuseVerdictOnUnsettledRun(taskId, runId, task, run);
+        // The run's own recorded session role, read for the refusal below and nothing else: a
+        // lap-owned run whose PullRequestReviewLapOpened never landed is indistinguishable from
+        // an automated pass by state alone, and the refusal has to say which one it is looking at
+        // rather than guess (independent pre-PR review, cycle 1, conformance lens). The
+        // projection can be newer than the fenced aggregate; SessionName is written once, by the
+        // dispatch that started the stream, so newer cannot mean different here.
+        RunDetails? runDetails = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        RefuseVerdictOnUnsettledRun(taskId, runId, task, run, runDetails?.SessionName ?? string.Empty);
 
         // Resolved BEFORE the post, not after, though only the append below needs it: this reads
         // the store and shells out to git and gh for a first-run owner record, so it is a real
@@ -120,9 +128,20 @@ internal static class PullRequestReviewVerdict
         // platform never managed to record (self-review, round one).
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
-        // Live, immediately before posting: a lap can be open for hours, and a review attached to
-        // a head the reviewer never read is worse than no review. The read is also what refuses a
-        // pull request that closed or merged mid-lap, before a post that GitHub would reject.
+        // Live, immediately before posting, for two things it does give and one it does not. It
+        // gives the post a commit_id — the review names the tree it is an opinion about instead
+        // of floating over whatever the branch becomes — and it refuses a pull request that
+        // closed or merged mid-lap, before a post that GitHub would reject.
+        //
+        // What it does NOT do is notice that the head MOVED. Nothing here compares this sha
+        // against the head the lap opened on or against the checkout's own HEAD, so an author who
+        // pushes during a long lap gets the reviewer's verdict pinned to a commit the reviewer may
+        // never have read. Decisions Log #149 ratifies posting on the current head, and the two
+        // commands' help says CURRENT head plainly — this comment is here because the sentence
+        // that stood in its place claimed the opposite guarantee, and the next maintainer would
+        // have read the case as handled (independent pre-PR review, cycle 1, adversarial lens).
+        // Closing it properly means carrying the opened-on sha to the verdict and refusing (or
+        // warning) on a mismatch, which is a design change for a human to make, not a comment.
         PullRequestSurface pullRequest = await github.ReadAsync(
             $"{repository}#{number}", project.RepositoryPath, cancellationToken);
         if (!pullRequest.State.Equals("OPEN", StringComparison.OrdinalIgnoreCase))
@@ -212,9 +231,21 @@ internal static class PullRequestReviewVerdict
     /// <c>h9k review resolve --merge-ready</c> by hand. Refused before anything is posted, which
     /// is the whole point of doing it here rather than after the irreversible half.
     /// </para>
+    /// <para>
+    /// <paramref name="sessionName"/> is what keeps the Dispatched arm honest. A lap-owned run
+    /// whose <c>PullRequestReviewLapOpened</c> never landed — a Ctrl-C between the dispatch and
+    /// the record — leaves <c>ReviewLapOpen</c> false on a Dispatched run, and describing that as
+    /// the automated review's own adversarial pass credits a session nobody launched with reading
+    /// the pull request: the same never-guess-in-refusal-text class this file already fixed for
+    /// Dispatched-versus-Running (independent pre-PR review, cycle 1, conformance lens). The lap
+    /// side tells the two apart by the run's recorded session role
+    /// (<c>PullRequestReviewCommand.IsLapRunWithNoLapRecordedAsync</c>) and so does this, with
+    /// the same suffix check and for the same reason its own doc gives — a pre-field stream
+    /// carries no name at all, which correctly reads as "not a lap".
+    /// </para>
     /// </summary>
     private static void RefuseVerdictOnUnsettledRun(
-        Guid taskId, Guid runId, TaskAggregate task, RunAggregate run)
+        Guid taskId, Guid runId, TaskAggregate task, RunAggregate run, string sessionName)
     {
         bool ownOpenLap = task.ReviewLapOpen
             && task.ReviewLapRunId == runId
@@ -224,6 +255,9 @@ internal static class PullRequestReviewVerdict
             return;
         }
 
+        bool lapRunWithNoLapRecorded = run.State == RunState.Dispatched
+            && sessionName.EndsWith("-" + SessionRoleName.ReviewLap, StringComparison.Ordinal);
+
         // Same reason-carries-its-own-way-out shape as
         // PullRequestReviewCommand.RefuseUnattachableRunAsync, and for the same finding: a
         // terminal run parks nothing, ever, so the shared "once it parks" suffix named a route
@@ -231,8 +265,27 @@ internal static class PullRequestReviewVerdict
         const string OnceItParks =
             "deliver the verdict once the automated review parks its findings report, or run h9k pr review "
             + "to read the pull request with the platform's help first";
-        (string Because, string WayOut) refusal = run.State switch
+        // The consequence travels per arm for the same never-guess reason the way out does: only
+        // a run that is still going to park one can have a verdict overwritten by a findings
+        // park, so asserting that for a terminal run — or for a lap whose opening is simply
+        // missing — describes a park nobody will observe.
+        const string OverwrittenByThePark =
+            "would be overwritten by the review's own findings park and nothing would finalize the task";
+        (string Because, string Consequence, string WayOut) refusal = run.State switch
         {
+            // A lap of this node's own that never got its opening recorded is named as exactly
+            // that, and its way out is the one command that records it: without the flag, the
+            // daemon reads this run as a dispatch that died, so telling the reviewer an automated
+            // pass occupies it names a session nobody launched (independent pre-PR review, cycle
+            // 1, conformance lens). Ordered ahead of the plain Dispatched arm below, which is the
+            // automated pass's own.
+            var state when state == RunState.Dispatched && lapRunWithNoLapRecorded =>
+                ("a review lap of this node's own was dispatched under that run and its opening was never "
+                    + "recorded, so nothing on the task says a lap is open",
+                    "would sit on a run the daemon still reads as a dispatch that never started — a restart "
+                    + "fails that run, and takes the verdict's own record with it",
+                    "h9k pr review on this pull request re-enters that same run and records the lap, and the "
+                    + "verdict lands after it"),
             // Dispatched and Running are two different facts and shared one sentence: a
             // dispatched pass has been launched and has recorded nothing since, so telling its
             // reviewer it "is still reading" asserts a read nobody observed — AGENTS.md's
@@ -240,24 +293,25 @@ internal static class PullRequestReviewVerdict
             // #271). Same split, same reason, in RefuseUnattachableRunAsync's mirror of this.
             var state when state == RunState.Dispatched =>
                 ("the automated review's own adversarial pass has been dispatched and has not reported "
-                    + "starting yet", OnceItParks),
+                    + "starting yet", OverwrittenByThePark, OnceItParks),
             var state when state == RunState.Running =>
-                ("the automated review's own adversarial pass is still reading the pull request", OnceItParks),
+                ("the automated review's own adversarial pass is still reading the pull request",
+                    OverwrittenByThePark, OnceItParks),
             var state when state == RunState.Verifying =>
                 ("the automated review's adversarial pass has finished and the engine has not dispatched its "
-                    + "conformance pass yet", OnceItParks),
+                    + "conformance pass yet", OverwrittenByThePark, OnceItParks),
             var state when state == RunState.UnderReview =>
-                ("the automated review's conformance pass is still running", OnceItParks),
+                ("the automated review's conformance pass is still running", OverwrittenByThePark, OnceItParks),
             var state when state.IsTerminal =>
                 ($"its run is {state.Value}, which is terminal — that run will never park a findings report",
+                    "would sit on a run that has already ended, and nothing finalizes a task from there",
                     $"h9k task retry {taskId} dispatches a fresh review, then h9k pr review opens the lap on it"),
-            _ => ($"its run is {run.State.Value}", OnceItParks),
+            _ => ($"its run is {run.State.Value}", OverwrittenByThePark, OnceItParks),
         };
         throw new DomainConflictException(
             $"Task {taskId} cannot take a verdict right now: {refusal.Because}, so a verdict recorded against "
-            + $"run {runId} would be overwritten by the review's own findings park and nothing would finalize "
-            + "the task. NOTHING was posted to the pull request by this command. h9k task show "
-            + $"{taskId} to see where it stands; {refusal.WayOut}.");
+            + $"run {runId} {refusal.Consequence}. NOTHING was posted to the pull request by this command. "
+            + $"h9k task show {taskId} to see where it stands; {refusal.WayOut}.");
     }
 
     /// <summary>

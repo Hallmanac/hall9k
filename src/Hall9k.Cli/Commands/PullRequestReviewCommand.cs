@@ -667,9 +667,15 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
+        // Outside the try, because the catch arms have to know whether a checkout exists: a cut
+        // that succeeded and a commit that then failed is the one window in which a worktree
+        // exists at a path no run records, and every consumer that ever removes one
+        // (PrReviewEngine.FinalizeAsync, RunLauncher.CleanUpPreviousPrReviewWorktreesAsync)
+        // enumerates recorded RunDetails.WorktreePath — so nothing would ever have collected it
+        // (independent pre-PR review, cycle 1, adversarial lens).
+        string worktreePath = string.Empty;
         try
         {
-            string worktreePath = string.Empty;
             if (!noWorktree)
             {
                 Worktree cut = await worktrees.CreatePrReviewCheckoutAsync(
@@ -729,6 +735,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             // h9k task release cannot undo that — it loads the very RunDetails this failed cut
             // never wrote. CancellationToken.None because the token that just fired is the one
             // this cleanup exists for (TaskWorkCommand's own claim does both the same way).
+            await ReleaseUnrecordedCheckoutAsync(
+                project, pullRequest.Number, worktreePath, worktrees, CancellationToken.None);
             await TaskWorkCommand.FailInteractiveClaimAsync(
                 store, taskId, claimedVersion, runId, "cancelled while preparing the read-only checkout",
                 CancellationToken.None);
@@ -736,12 +744,54 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         }
         catch (Exception exception)
         {
+            await ReleaseUnrecordedCheckoutAsync(
+                project, pullRequest.Number, worktreePath, worktrees, cancellationToken);
             await TaskWorkCommand.FailInteractiveClaimAsync(
                 store, taskId, claimedVersion, runId, exception.Message, cancellationToken);
             throw new DomainConflictException(
-                $"Task {taskId} was claimed for the lap but its read-only checkout could not be prepared "
+                // "the lap could not be prepared" rather than naming the checkout: this arm also
+                // catches the commit that follows the cut, so blaming the checkout for a database
+                // failure would name a cause nobody observed. The exception's own message says
+                // which half it was.
+                $"Task {taskId} was claimed for the lap but the lap could not be prepared "
                 + $"({exception.Message}). It has been recorded Failed — h9k task retry {taskId} to dispatch "
-                + "the automated review, or open the lap again once whatever blocked the checkout is fixed.");
+                + "the automated review, or open the lap again once whatever blocked it is fixed.");
+        }
+    }
+
+    /// <summary>
+    /// Removes a checkout that was cut and then never recorded on any run, plus the tracking ref
+    /// the cut fetched — the same two cleanups <c>PrReviewEngine.FinalizeAsync</c> does at the
+    /// other end of a run's life, and in the same order, because a checked-out worktree pins the
+    /// ref it detached.
+    /// <para>
+    /// Best-effort and loud rather than silent: this runs while another failure is already on its
+    /// way out, so a removal that fails must not replace it — but a directory left behind gets
+    /// named, because the alternative is a leak nothing else in the platform can ever see (the
+    /// cleanup consumers all enumerate recorded run paths, and this path is on no run). No
+    /// worktree means nothing to say: <c>--no-worktree</c>, or a cut that itself failed, and a
+    /// warning about a cleanup that was never needed reads as a leak somebody has to chase
+    /// (AGENTS.md's honest-absence rule, the same reading <c>FinalizeAsync</c> applies to a
+    /// checkout-less run).
+    /// </para>
+    /// </summary>
+    private static async Task ReleaseUnrecordedCheckoutAsync(
+        ProjectDetails project, int pullRequestNumber, string worktreePath, IWorktreeManager worktrees,
+        CancellationToken cancellationToken)
+    {
+        if (worktreePath.IsNotBlank())
+        {
+            try
+            {
+                await worktrees.RemoveAsync(project.RepositoryPath, worktreePath, cancellationToken);
+                await worktrees.DeletePrReviewTrackingRefAsync(
+                    project.RepositoryPath, pullRequestNumber, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]The read-only checkout at {worktreePath} could not be removed ({exception.Message}), and no run records it — git worktree remove --force it, or git worktree prune, to reclaim the space.[/]");
+            }
         }
     }
 

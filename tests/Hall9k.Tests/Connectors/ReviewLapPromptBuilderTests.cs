@@ -270,6 +270,16 @@ public sealed class ReviewLapPromptBuilderTests
             + "the four gh pr verbs alone left a session able to post a review — or start a thread — under the "
             + "reviewer's own login (independent pre-PR review, cycle 1, both lenses)");
         deny.EnumerateArray().Select(rule => rule.GetString()).Should().Contain(
+            ["Bash(gh pr update-branch:*)", "Bash(gh pr edit:*)", "Bash(gh pr ready:*)", "Bash(gh pr reopen:*)"],
+            "the write half of gh pr is denied whole rather than by the few verbs a session reaching for a "
+            + "REVIEW would use: gh pr update-branch merges the base into somebody else's branch server-side "
+            + "and gh pr edit --body rewrites their description, both ordinary first-class verbs and both "
+            + "reachable from a reviewer's casual 'bring it current with main' (independent pre-PR review, "
+            + "cycle 1, adversarial lens)");
+        deny.EnumerateArray().Select(rule => rule.GetString()).Should().NotContain(
+            ["Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr checks:*)"],
+            "reading the pull request is most of what a lap does");
+        deny.EnumerateArray().Select(rule => rule.GetString()).Should().Contain(
             ["Bash(h9k pr approve:*)", "Bash(h9k pr request-changes:*)"],
             "the platform's own verdict commands post through that same gh api endpoint under the reviewer's "
             + "own login AND finalize the task, and the lap's briefing prints both with the task id filled in "
@@ -374,6 +384,13 @@ public sealed class ReviewLapPromptBuilderTests
     [InlineData("just some prose about the diff")]
     [InlineData("src/Program.cs:42:")]
     [InlineData("")]
+    // A line number that cannot be an int is not a line either, and it reaches this same refusal
+    // rather than escaping as an OverflowException/FormatException that Program.cs's exception
+    // mapping never sees — a raw stack trace where a self-correctable message was designed
+    // (independent pre-PR review, cycle 1, both lenses). Second case: Arabic-Indic digits, which
+    // .NET's \d matched happily and int.Parse then refused.
+    [InlineData("src/Program.cs:99999999999: a line number past int.MaxValue")]
+    [InlineData("src/Program.cs:٤٢: digits pasted out of a document")]
     public void A_finding_that_names_no_line_is_refused(string finding)
     {
         Action act = () => PullRequestReviewLineComment.Parse(finding);
