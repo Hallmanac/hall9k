@@ -11,7 +11,6 @@ using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
-using Hall9k.Domain.Shared.ValueObjects;
 using Microsoft.Win32;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -226,16 +225,16 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // to abort install partway through, after the binaries were already swapped into place but
         // before the PATH link and service registration ran).
         ConfigFileReadResult nodeOperatingSettingsRead = await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
+        string nodeOrchestratorModel = OrchestratorModel.ForNode(nodeOperatingSettingsRead.Settings);
         if (nodeOperatingSettingsRead.Problem is { } nodeSettingsProblem)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]{nodeSettingsProblem.Message.EscapeMarkup()} The orchestrator recipe's settings.json "
-                + $"falls back to {AgentModel.PlatformFallback.EscapeMarkup()} for its model this pass — fix "
-                + "the file, then re-run h9k install to pick up the real setting.[/]");
+                + $"resolves to {nodeOrchestratorModel.EscapeMarkup()} for its model this pass — fix "
+                + "the file, then re-run h9k install to confirm that is still what you expect.[/]");
         }
 
-        RecipeSettingsDocument.Write(
-            RecipeLibraryPaths.SettingsFile, OrchestratorModel.ForNode(nodeOperatingSettingsRead.Settings));
+        RecipeSettingsDocument.Write(RecipeLibraryPaths.SettingsFile, nodeOrchestratorModel);
         AnsiConsole.MarkupLine(
             $"[dim]Wrote the node orchestrator's launch anchor to {RecipeLibraryPaths.LaunchAnchorFile.EscapeMarkup()} "
             + "(h9k orchestrator node prints the launch line).[/]");

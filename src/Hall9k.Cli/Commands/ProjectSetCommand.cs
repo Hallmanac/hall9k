@@ -600,17 +600,18 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             if (settings.Model is not null || settings.OrchestratorModel is not null)
             {
                 ConfigFileReadResult operatingSettingsRead = await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
+                string resolvedOrchestratorModel = OrchestratorModel.ForProject(
+                    updated.OrchestratorModel, updated.Model, operatingSettingsRead.Settings);
                 if (operatingSettingsRead.Problem is { } settingsProblem)
                 {
                     homeSteps.Add(ProjectHomeStep.Skipped(
-                        $"{settingsProblem.Message} The orchestrator recipe's settings.json falls back to "
-                        + $"{AgentModel.PlatformFallback} for its model this pass — fix the file, then re-run "
-                        + "h9k project set to pick up the real setting."));
+                        $"{settingsProblem.Message} The orchestrator recipe's settings.json resolves to "
+                        + $"{resolvedOrchestratorModel} for its model this pass — fix the file, then re-run "
+                        + "h9k project set to confirm that is still what you expect."));
                 }
 
                 homeSteps.Add(RecipeSettingsDocument.WriteStep(
-                    ProjectHomePaths.RecipeSettingsFile(updated.HomeDirectory.Value),
-                    OrchestratorModel.ForProject(updated.OrchestratorModel, updated.Model, operatingSettingsRead.Settings)));
+                    ProjectHomePaths.RecipeSettingsFile(updated.HomeDirectory.Value), resolvedOrchestratorModel));
             }
 
             ProjectHomeRecipe.Report(homeSteps);

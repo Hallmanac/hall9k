@@ -2,7 +2,6 @@ using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
-using Hall9k.Domain.Shared.ValueObjects;
 using Spectre.Console;
 
 namespace Hall9k.Cli.ProjectHomes;
@@ -87,18 +86,19 @@ public static class ProjectHomeRecipe
         // the rest of the recipe this call is in the middle of building (independent pre-PR
         // review, cycle 1, adversarial lens).
         ConfigFileReadResult operatingSettingsRead = await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
+        string resolvedOrchestratorModel = OrchestratorModel.ForProject(
+            project.OrchestratorModel, project.Model, operatingSettingsRead.Settings);
         if (operatingSettingsRead.Problem is { } settingsProblem)
         {
             steps.Add(ProjectHomeStep.Skipped(
-                $"{settingsProblem.Message} The orchestrator recipe's settings.json falls back to "
-                + $"{AgentModel.PlatformFallback} for its model this pass — fix the file, then re-run "
-                + "h9k project init to pick up the real setting."));
+                $"{settingsProblem.Message} The orchestrator recipe's settings.json resolves to "
+                + $"{resolvedOrchestratorModel} for its model this pass — fix the file, then re-run "
+                + "h9k project init to confirm that is still what you expect."));
         }
 
         steps.Add(LaunchAnchorDocument.WriteStep(ProjectHomePaths.LaunchAnchorFile(home)));
         steps.Add(RecipeSettingsDocument.WriteStep(
-            ProjectHomePaths.RecipeSettingsFile(home),
-            OrchestratorModel.ForProject(project.OrchestratorModel, project.Model, operatingSettingsRead.Settings)));
+            ProjectHomePaths.RecipeSettingsFile(home), resolvedOrchestratorModel));
         steps.AddRange(RecipeSkillPublisher.Seed(home));
 
         return steps;
