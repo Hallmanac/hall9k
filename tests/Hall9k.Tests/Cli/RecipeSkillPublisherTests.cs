@@ -112,6 +112,105 @@ public sealed class RecipeSkillPublisherTests : IDisposable
             .Should().BeTrue();
     }
 
+    [Fact]
+    public void Seeding_a_home_twice_does_not_throw()
+    {
+        // Regression for the Windows directory-reparse-point bug (independent pre-PR review,
+        // cycle 1, adversarial lens): Point used to unlink a live symlink with a bare File.Delete,
+        // which is fine on this platform but threw UnauthorizedAccessException on a Windows
+        // reparse point, falling into a copy fallback that copied a directory onto itself through
+        // the still-live symlink. A second Seed against an already-seeded home is exactly the
+        // shape that hit it.
+        WriteSkill("Shipped by the platform.");
+        RecipeSkillPublisher.PublishCanonical(_source);
+        string home = Path.Combine(_platformHome, "projects", "hall9k");
+        Directory.CreateDirectory(home);
+
+        RecipeSkillPublisher.Seed(home);
+        IReadOnlyList<ProjectHomeStep> steps = RecipeSkillPublisher.Seed(home);
+
+        steps.Should().ContainSingle(step => step.Outcome == ProjectHomeOutcome.Created);
+        File.Exists(Path.Combine(
+                ProjectHomePaths.RecipeSkillDirectory(home, RecipeSkillPublisher.GeneratorSkillName), "SKILL.md"))
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void Seeding_a_home_with_an_operators_own_real_directory_leaves_it_alone_and_says_so()
+    {
+        WriteSkill("Shipped by the platform.");
+        RecipeSkillPublisher.PublishCanonical(_source);
+        string home = Path.Combine(_platformHome, "projects", "hall9k");
+        string link = ProjectHomePaths.RecipeSkillDirectory(home, RecipeSkillPublisher.GeneratorSkillName);
+        Directory.CreateDirectory(link);
+        File.WriteAllText(Path.Combine(link, "SKILL.md"), "the operator's own skill, not seeded");
+
+        IReadOnlyList<ProjectHomeStep> steps = RecipeSkillPublisher.Seed(home);
+
+        steps.Should().ContainSingle(step => step.Outcome == ProjectHomeOutcome.Skipped);
+        File.ReadAllText(Path.Combine(link, "SKILL.md")).Should().Be("the operator's own skill, not seeded");
+    }
+
+    [Fact]
+    public void Removing_the_published_skill_takes_it_off_and_reports_it()
+    {
+        WriteSkill("Shipped by the platform.");
+        RecipeSkillPublisher.PublishCanonical(_source);
+        List<string> stillPresent = [];
+
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = RecipeSkillPublisher.RemovePublished(stillPresent);
+
+        manifestConfirmed.Should().BeTrue();
+        removed.Should().Equal([RecipeSkillPublisher.GeneratorSkillName]);
+        stillPresent.Should().BeEmpty();
+        Directory.Exists(Path.Combine(RecipeLibraryPaths.CanonicalDirectory, RecipeSkillPublisher.GeneratorSkillName))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void Removing_the_published_skill_leaves_an_operators_edit_alone()
+    {
+        WriteSkill("Shipped by the platform.");
+        RecipeSkillPublisher.PublishCanonical(_source);
+        string published = Path.Combine(RecipeLibraryPaths.CanonicalDirectory, RecipeSkillPublisher.GeneratorSkillName, "SKILL.md");
+        File.WriteAllText(published, "the operator's own edit");
+        List<string> stillPresent = [];
+
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = RecipeSkillPublisher.RemovePublished(stillPresent);
+
+        manifestConfirmed.Should().BeTrue();
+        removed.Should().BeEmpty();
+        File.ReadAllText(published).Should().Be("the operator's own edit");
+    }
+
+    [Fact]
+    public void Removing_with_nothing_ever_published_reports_nothing_removed_and_nothing_still_present()
+    {
+        List<string> stillPresent = [];
+
+        (IReadOnlyList<string> removed, bool manifestConfirmed) = RecipeSkillPublisher.RemovePublished(stillPresent);
+
+        manifestConfirmed.Should().BeTrue();
+        removed.Should().BeEmpty();
+        stillPresent.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Removing_the_node_adapter_unlinks_the_seeded_symlink()
+    {
+        WriteSkill("Shipped by the platform.");
+        RecipeSkillPublisher.PublishCanonical(_source);
+        RecipeSkillPublisher.SeedNode();
+        string adapter = Path.Combine(RecipeLibraryPaths.ClaudeSkillsDirectory, RecipeSkillPublisher.GeneratorSkillName);
+        Directory.Exists(adapter).Should().BeTrue("SeedNode should have linked it first");
+        List<string> stillPresent = [];
+
+        RecipeSkillPublisher.RemoveNodeAdapter(stillPresent);
+
+        stillPresent.Should().BeEmpty();
+        Directory.Exists(adapter).Should().BeFalse();
+    }
+
     private void WriteSkill(string body)
     {
         string directory = Path.Combine(_source, RecipeSkillPublisher.GeneratorSkillName);
