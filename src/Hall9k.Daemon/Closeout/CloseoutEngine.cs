@@ -866,7 +866,7 @@ public sealed class CloseoutEngine(
                 // triage ruling governs that path unchanged): the follow-up's own job is resolving
                 // the conflict, not a diff a reviewer would read against a prior push.
                 now, pullRequestHeadSha: null, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
-                predecided: null,
+                predecided: null, changesRequestedReviews: null,
                 cancellationToken);
             return InspectionOutcome.Inspected;
         }
@@ -891,7 +891,39 @@ public sealed class CloseoutEngine(
                 // Discovery cycle seeds its diff instruction from it (task: a lap reviews only what
                 // it changed), so the reviewer reads the fix rather than the whole branch again.
                 now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
+                predecided: null, changesRequestedReviews: null,
+                cancellationToken);
+            return InspectionOutcome.Inspected;
+        }
+
+        // Checked ahead of the thread count, deliberately (task: a changes-requested pull-request
+        // review from a human becomes a fix lap). A person's changes-requested review ordinarily
+        // opens threads too, so with the thread branch first every such review would take the
+        // automated thread path — which replies to a human's disagreement itself, the one thing
+        // this lap exists to stop (Brian's ruling, 2026-09-06 12:15). The narrower fact wins, and
+        // the thread branch below keeps every case this one does not claim: a comment-only review,
+        // a bot's review, and threads left behind with no review state at all.
+        if (snapshot.ChangesRequested.Count > 0)
+        {
+            IReadOnlyList<ChangesRequestedReview> changesRequested = snapshot.ChangesRequested;
+            session.Events.Append(run.Id, new PullRequestChangesRequested(run.Id, changesRequested, now));
+            await DispatchFollowUpOrParkAsync(
+                session, task, run, fence.Version,
+                FollowUpKind.ReviewRequestedChanges,
+                // The reviews themselves are the obstruction identity: a review's url is unique to
+                // it, so the SAME reviewer submitting a fresh review after this lap pushes reads as
+                // a different obstruction and earns its own lap, while a lap that pushed nothing
+                // the reviewer accepted re-reads the identical url and spends the progress cap. The
+                // reviewer login would collapse those two; the finding text would make an edited
+                // comment a new obstruction.
+                [.. changesRequested.Select(review => review.ReviewUrl)],
+                snapshot,
+                DescribeChangesRequested(changesRequested),
+                // Same reasoning as the FailingChecks branch above: seed the follow-up's own
+                // opening Discovery cycle from the pull request head this sweep just observed.
+                now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
                 predecided: null,
+                changesRequestedReviews: changesRequested,
                 cancellationToken);
             return InspectionOutcome.Inspected;
         }
@@ -909,7 +941,7 @@ public sealed class CloseoutEngine(
                 // Same reasoning as the FailingChecks branch above: seed the follow-up's own
                 // opening Discovery cycle from the pull request head this sweep just observed.
                 now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
-                predecided: null,
+                predecided: null, changesRequestedReviews: null,
                 cancellationToken);
             return InspectionOutcome.Inspected;
         }
@@ -2109,6 +2141,14 @@ public sealed class CloseoutEngine(
     /// lap. A fixed, binary identity (e.g. a literal "conflict") would instead park a busy
     /// repository for the crime of staying alive, exactly what #80's two-counter split exists to
     /// prevent.
+    /// <para>
+    /// A changes-requested review keys on the review's own url(s), which is the same rule read
+    /// against the unit that matters there: a reviewer submitting a fresh review is a new url and
+    /// so a new obstruction with its own lap count, while a lap that pushed nothing the reviewer
+    /// accepted re-reads the identical url and spends the progress cap. Keying on the reviewer's
+    /// login would collapse those two, and keying on the findings' text would make an edited
+    /// comment look like a different review.
+    /// </para>
     /// </summary>
     private static string ObstructionKey(FollowUpKind kind, IReadOnlyList<string> identity) =>
         $"{kind.Value}:{string.Join('␟', identity.OrderBy(id => id, StringComparer.Ordinal))}";
@@ -2131,8 +2171,37 @@ public sealed class CloseoutEngine(
             _ when kind == FollowUpKind.StackReplay =>
                 "the parent branch having moved past what this branch was built on "
                 + $"(boundary {string.Join(", ", identity)})",
+            // The identity here is the review url(s) themselves, so the summary names them: what a
+            // park reads back has to be the thing the human opens, and a count of reviews would
+            // send them hunting for which one.
+            _ when kind == FollowUpKind.ReviewRequestedChanges =>
+                $"the same changes-requested review(s) {string.Join(", ", identity.OrderBy(id => id, StringComparer.Ordinal))} "
+                + "still unanswered",
             _ => $"the same {identity.Count} unresolved review thread(s)",
         };
+
+    /// <summary>
+    /// The sentence a changes-requested reopen records, and — when the lifetime budget is already
+    /// spent — the opening of the park message the implementer reads (task: a changes-requested
+    /// pull-request review from a human becomes a fix lap). It names each reviewer, links each
+    /// review, and says how many findings it carried, which is what
+    /// <see cref="DecideFollowUpAsync"/>'s budget park needs in front of its own clause so the
+    /// park names and links the last review rather than only counting it.
+    /// </summary>
+    private static string DescribeChangesRequested(IReadOnlyList<ChangesRequestedReview> reviews)
+    {
+        string described = string.Join("; ", reviews.Select(review =>
+        {
+            string findings = review.Findings.Count == 1 ? "1 finding" : $"{review.Findings.Count} findings";
+            // The submission time is stated only where the provider reported one — a review whose
+            // timestamp went unread says so rather than borrowing this sweep's own clock.
+            string when = review.SubmittedAt is { } submitted ? $", submitted {submitted:u}" : "";
+            return $"@{review.Reviewer} ({findings}{when}) {review.ReviewUrl}";
+        }));
+        return reviews.Count == 1
+            ? $"A human reviewer requested changes on the pull request: {described}."
+            : $"{reviews.Count} human reviewers requested changes on the pull request: {described}.";
+    }
 
     /// <summary>
     /// Whether something a human did on the pull request since the task's last automatic
@@ -2235,6 +2304,7 @@ public sealed class CloseoutEngine(
         string? stackReplayUpstreamCommit,
         string? stackReplayOntoCommit,
         FollowUpDecision? predecided,
+        IReadOnlyList<ChangesRequestedReview>? changesRequestedReviews,
         CancellationToken cancellationToken)
     {
         // Every park verdict is decided before anything is appended or written — including by a
@@ -2267,7 +2337,8 @@ public sealed class CloseoutEngine(
             knownPendingReviewRequestLogins: snapshot.PendingReviewers,
             pullRequestHeadSha: pullRequestHeadSha,
             stackReplayUpstreamCommit: stackReplayUpstreamCommit,
-            stackReplayOntoCommit: stackReplayOntoCommit));
+            stackReplayOntoCommit: stackReplayOntoCommit,
+            changesRequestedReviews: changesRequestedReviews));
 
         // The reopen hands the pull request to a successor, so this run's watch ends
         // with it — retire it in the same transaction (TASK-MODEL.md §2.2). A lost race
@@ -2632,7 +2703,7 @@ public sealed class CloseoutEngine(
             now, pullRequestHeadSha: null,
             stackReplayUpstreamCommit: observation.BoundaryCommit,
             stackReplayOntoCommit: observation.OntoCommit,
-            predecided: decision,
+            predecided: decision, changesRequestedReviews: null,
             cancellationToken);
         return true;
     }

@@ -4394,4 +4394,157 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         {
         }
     }
+
+    /// <summary>
+    /// A changes-requested review from a person is its own lap (task: a changes-requested
+    /// pull-request review from a human becomes a fix lap): the reopen carries the review's body
+    /// and every inline comment as findings, each with the file and line the comment had, and the
+    /// reason names and links the review.
+    /// </summary>
+    [Fact]
+    public async Task A_human_changes_requested_review_reopens_the_task_carrying_its_findings()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new() { Snapshot = ChangesRequested() };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Superseded);
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(
+            FollowUpKind.ReviewRequestedChanges,
+            "a person's verdict is not the automated thread lap — a disagreement here is theirs to hear");
+        task.FollowUpReason.Should().Contain("@teammate").And.Contain(ChangesRequestedReviewUrl);
+
+        ChangesRequestedReview carried = task.ChangesRequestedReviews.Should().ContainSingle().Subject;
+        carried.Findings.Should().HaveCount(2);
+        carried.Findings[0].Location.Should().BeNull("the review's own body has no file or line");
+        carried.Findings[1].Location.Should().Be("src/Limiter.cs:42");
+        carried.Findings[1].ThreadId.Should().Be("PRRT_abc");
+
+        RunDetails observed = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        ChangesRequestedReviewObservation observation =
+            observed.ChangesRequestedReviewObservations.Should().ContainSingle().Subject;
+        observation.Reviewer.Should().Be("teammate");
+        observation.FindingCount.Should().Be(2);
+        observation.ReviewUrl.Should().Be(ChangesRequestedReviewUrl);
+    }
+
+    /// <summary>
+    /// The boundary that keeps this feature from swallowing every review: threads with no
+    /// changes-requested verdict behind them still take the thread-based follow-up, which replies
+    /// and resolves on its own.
+    /// </summary>
+    [Fact]
+    public async Task Threads_left_without_a_changes_requested_verdict_still_take_the_review_feedback_lap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            // A comment-only review's threads: unresolved, human-started, no verdict on the head.
+            Snapshot = FakeInspector.Quiet() with
+            {
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["PRRT_comment"],
+                UnresolvedHumanThreadIds = ["PRRT_comment"],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+        task.ChangesRequestedReviews.Should().BeEmpty();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!
+            .ChangesRequestedReviewObservations.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A changes-requested lap spends the same lifetime reopen budget every other closeout
+    /// follow-up does, and the park at exhaustion names and links the review rather than counting
+    /// it — the operator has to be able to open the thing they are being asked about.
+    /// </summary>
+    [Fact]
+    public async Task A_changes_requested_lap_spends_the_lifetime_budget_and_parks_naming_the_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid firstTaskId, Guid firstRunId, _) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new() { Snapshot = ChangesRequested() };
+        await NewEngine(store, node, inspector, worktrees, maxAutomaticCloseoutRuns: 1)
+            .PollOnceAsync(cts.Token);
+
+        await using (IQuerySession afterFirst = store.QuerySession())
+        {
+            TaskAggregate task = (await afterFirst.Events.AggregateStreamAsync<TaskAggregate>(
+                firstTaskId, token: cts.Token))!;
+            task.CloseoutAttempts.Should().Be(
+                1, "the lap is an automatic reopen like any other and draws on the shared ceiling");
+        }
+
+        await RetireWatchAsync(store, firstRunId, cts.Token);
+
+        // A second task whose ceiling is already spent: the identical observation must park.
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1);
+        FakeInspector spent = new() { Snapshot = ChangesRequested() };
+        await NewEngine(store, node, spent, worktrees, maxAutomaticCloseoutRuns: 1).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain("budget spent")
+            .And.Contain("@teammate", "the park names the reviewer who is waiting")
+            .And.Contain(ChangesRequestedReviewUrl, "and links the review, so it can actually be opened");
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.FollowUpKind.Should().Be(
+            FollowUpKind.Unknown, "nothing was dispatched — the run parked instead");
+    }
+
+    private const string ChangesRequestedReviewUrl = $"{PullRequestUrl}#pullrequestreview-42";
+
+    /// <summary>
+    /// One person's changes-requested review on the head, body plus one inline comment — the
+    /// shape <c>GitHubPullRequestInspector.ReadChangesRequestedReviews</c> produces, asserted
+    /// against a real payload in <c>GitHubPullRequestInspectorTests</c>.
+    /// </summary>
+    private static PullRequestSnapshot ChangesRequested() => FakeInspector.Quiet() with
+    {
+        HeadCommit = "cafe1",
+        // A real changes-requested review's inline comments are unresolved threads too, which is
+        // exactly why the changes-requested branch has to be checked ahead of the thread branch.
+        UnresolvedReviewThreadCount = 1,
+        UnresolvedHumanThreadCount = 1,
+        UnresolvedReviewThreadIds = ["PRRT_abc"],
+        UnresolvedHumanThreadIds = ["PRRT_abc"],
+        ChangesRequestedReviews =
+        [
+            new ChangesRequestedReview(
+                "teammate", ChangesRequestedReviewUrl, Now.AddMinutes(-5),
+                [
+                    new ChangesRequestedFinding("Two things before this ships."),
+                    new ChangesRequestedFinding(
+                        "This limiter never resets.", "src/Limiter.cs:42", "PRRT_abc"),
+                ]),
+        ],
+    };
 }
