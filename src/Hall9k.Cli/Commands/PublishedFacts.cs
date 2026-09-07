@@ -88,13 +88,15 @@ internal static class PublishedFacts
             // LifecycleState.Done renders only at TRUE closeout (the merge observed), so a task's
             // pre-approval no longer governs anything there — stating it would claim a future
             // merge for a pull request that has already merged (independent pre-PR review, cycle
-            // 1, conformance lens). LifecycleState.Draft is the symmetric case at the other end:
-            // TaskAggregate.Apply(TaskReturnedToDraft) leaves the flag on the stream untouched, but
-            // TaskDecider.Publish unconditionally re-records it (defaulting false) the moment the
-            // draft is republished, so a Draft carrying a stale true would claim a pull request
-            // will be auto-merged when a plain republish is one command away from silently
-            // clearing that promise (independent pre-PR review, cycle 1, conformance lens).
-            // LifecycleState.Archived is the third: TaskAggregate.Apply(TaskAbandoned) leaves
+            // 1, conformance lens). LifecycleState.Draft used to be carved out for the symmetric
+            // reason and no longer is: TaskDecider.Publish once re-recorded the flag
+            // unconditionally (defaulting false), so a Draft carrying a true claimed a promise a
+            // plain republish would silently clear (independent pre-PR review, cycle 1, conformance
+            // lens). Publish carries a standing grant forward now (task: a published task's GitHub
+            // issue carries the whole task record — an adopted task needs its own answer settable
+            // while still a Draft), so the promise survives, and a draft that holds it says so
+            // here exactly as h9k task show's own Pre-approved row does.
+            // LifecycleState.Archived is the remaining carve-out: TaskAggregate.Apply(TaskAbandoned) leaves
             // PreApproved untouched too, but TaskDecider.SetPreApproved itself refuses to flip the
             // flag on an abandoned task ("there is no future pull request left for pre-approval to
             // govern") — so a stale true surviving abandonment must not go on claiming a merge the
@@ -104,7 +106,6 @@ internal static class PublishedFacts
                 .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
                 .. task.EffectivePreApproval.MergesAutomatically
                     && state != LifecycleState.Done
-                    && state != LifecycleState.Draft
                     && state != LifecycleState.Archived
                     ? (string[])[PreApprovedFact(task.EffectivePreApproval)]
                     : [],

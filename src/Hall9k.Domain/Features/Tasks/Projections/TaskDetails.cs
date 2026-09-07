@@ -95,6 +95,12 @@ public sealed class TaskDetails
     /// <see cref="TaskListItem.EffectivePreApproval"/> twin.
     /// </summary>
     public PreApprovalMode EffectivePreApproval => PreApprovalMode.Resolve(PreApproval, PreApproved);
+    /// <summary>
+    /// Which install published the work this task mirrors, or null when it is local work — see
+    /// <see cref="TaskOrigin"/>. What lets <c>h9k task show</c> tell a mirror apart from local work
+    /// without anybody keeping a ledger.
+    /// </summary>
+    public TaskOrigin? Origin { get; set; }
     /// <summary>The write hall9k has outstanding against Jira for this task, or null when none is (Brian's design, 2026-08-28).</summary>
     public Guid? PendingJiraWriteId { get; set; }
     /// <summary>Which of create, update, or comment the outstanding write is.</summary>
@@ -329,6 +335,9 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         SourceIdeaId = @event.Data.SourceIdeaId,
         EpicId = @event.Data.EpicId,
         ReviewStageComposition = @event.Data.ReviewStageComposition,
+        PreApproval = @event.Data.EffectivePreApproval,
+        PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved,
+        Origin = @event.Data.Origin,
     };
 
     public void Apply(IEvent<TaskPublished> @event, TaskDetails view)

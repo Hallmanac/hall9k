@@ -490,19 +490,78 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
-    /// Refused rather than silently lost: Publish unconditionally records
-    /// TaskPublished.PreApproved (defaulting false), so a value set here on a still-Draft task
-    /// would otherwise be clobbered back to false by an ordinary publish that forgot to repeat
-    /// --pre-approved (independent self-review finding).
+    /// A draft was once refused here, because Publish recorded TaskPublished's pre-approval
+    /// unconditionally and would have clobbered a value set on a still-Draft task back to off.
+    /// Publish now carries a standing grant forward instead, so the refusal's only reason is gone
+    /// and the grant survives — which is what lets a task adopted from another install's record
+    /// carry the adopting install's own answer across from Draft (task: a published task's GitHub
+    /// issue carries the whole task record).
     /// </summary>
     [Fact]
-    public void SetPreApproved_refuses_a_draft_so_publish_can_never_silently_clobber_it()
+    public void A_drafts_pre_approval_survives_an_ordinary_publish_that_omits_the_flag()
     {
         TaskAggregate task = DraftTask();
 
-        Action act = () => TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false);
+        task.Apply(TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false));
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner);
 
-        act.Should().Throw<DomainConflictException>().WithMessage("*publish*--pre-approved*");
+        published.EffectivePreApproval.Should().Be(PreApprovalMode.On,
+            "publish passed no mode at all, and a publish that says nothing about pre-approval leaves "
+            + "a standing grant alone — h9k task set-pre-approved is the explicit change");
+        published.PreApproved.Should().BeTrue("the legacy boolean carries forward with it");
+    }
+
+    /// <summary>
+    /// The other half of the rule above: passing nothing carries a grant forward, but saying "off"
+    /// out loud is a choice publish honours. The three-valued vocabulary can express that; the
+    /// boolean it replaced could not tell it apart from omitting the flag, which is the whole
+    /// reason the carry-forward keys on null rather than on falseness.
+    /// </summary>
+    [Fact]
+    public void Publish_honours_an_explicit_off_over_a_standing_grant()
+    {
+        TaskAggregate task = DraftTask();
+        task.Apply(TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false));
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, preApproval: PreApprovalMode.Off);
+
+        published.EffectivePreApproval.Should().Be(PreApprovalMode.Off);
+    }
+
+    /// <summary>
+    /// Creation is the third door onto pre-approval, and it carries the same three-valued
+    /// vocabulary the other two do — the shape adoption needs, since a task adopted from another
+    /// install's record arrives as a Draft (task: a published task's GitHub issue carries the whole
+    /// task record).
+    /// </summary>
+    [Fact]
+    public void Add_grants_the_pre_approval_mode_it_was_created_with()
+    {
+        TaskAdded added = TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Adopt the record's own answer",
+            acceptanceCriteria: ["it is recorded"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(),
+            preApproval: PreApprovalMode.AfterHumanReview);
+
+        added.EffectivePreApproval.Should().Be(PreApprovalMode.AfterHumanReview);
+        added.PreApproved.Should().BeFalse(
+            "the legacy boolean is mode == On, so a build that predates the mode reads "
+            + "after-human-review as not pre-approved rather than as a merge it may perform");
+    }
+
+    [Fact]
+    public void Add_refuses_a_pre_approval_mode_outside_the_vocabulary()
+    {
+        Action act = () => TaskDecider.Add(
+            DomainId.New(), DomainId.New(), objective: "Ask for a mode nobody defined",
+            acceptanceCriteria: ["it is refused"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null,
+            addedAt: Now, addedByOwnerId: DomainId.New(), preApproval: "eventually");
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*after-human-review*");
     }
 
     [Fact]

@@ -404,22 +404,24 @@ public sealed class TaskLifecycleSurfaceTests
     }
 
     /// <summary>
-    /// TaskAggregate.Apply(TaskReturnedToDraft) leaves the pre-approval flag on the stream
-    /// untouched, but TaskDecider.Publish unconditionally re-records it (defaulting false) the
-    /// moment the draft is republished — so a Draft row must not claim a pull request will be
-    /// auto-merged when a plain republish is one command away from silently clearing that promise
-    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// A Draft's pre-approval is stated, and once was not. The old rule existed because
+    /// TaskDecider.Publish re-recorded the flag unconditionally (defaulting false), so a Draft row
+    /// claiming auto-merge was one plain republish away from being silently wrong (independent
+    /// pre-PR review, cycle 1, conformance lens). Publish carries a standing grant forward now
+    /// (task: a published task's GitHub issue carries the whole task record — an adopted task needs
+    /// its own answer to pre-approval settable while still a Draft), so the promise survives the
+    /// republish, and a board that stayed quiet about it would be the surface where somebody finds
+    /// out after the merge.
     /// </summary>
     [Fact]
-    public void A_draft_returned_from_published_no_longer_states_a_stale_pre_approval()
+    public void A_draft_that_holds_pre_approval_says_so_because_publish_no_longer_clears_it()
     {
         TaskListItem task = StatusFixtures.Task(TaskState.Draft, preApproved: true);
 
         TaskStatusRow row = StatusFixtures.Compose(task);
 
         row.State.Should().Be(LifecycleState.Draft);
-        row.Facts.Should().BeEmpty(
-            "a plain republish would silently clear the flag, so a Draft must not claim it still governs anything");
+        row.Facts.Should().ContainSingle().Which.Should().Contain("pre-approved");
     }
 
     [Fact]

@@ -78,11 +78,20 @@ public sealed class TaskAggregate
     /// has approved the current head. Every existing human waypoint (Failed, a review park, a
     /// severity-bar failure, a cap trip) still stops the pipeline exactly as it does for an
     /// unflagged task; pre-approval only removes the owner as a SYNCHRONOUS gate at the pull
-    /// request, never any of those. Set at publish
-    /// (<see cref="Events.TaskPublished.PreApproval"/>), defaulting off, and flippable afterward on
-    /// any live non-terminal task via <see cref="Events.TaskPreApprovedSet"/>.
+    /// request, never any of those. Granted at creation
+    /// (<see cref="Events.TaskAdded.PreApproval"/>) or at publish
+    /// (<see cref="Events.TaskPublished.PreApproval"/>), defaulting off at both, and flippable
+    /// afterward on any live non-terminal task via <see cref="Events.TaskPreApprovedSet"/>.
     /// </summary>
     public PreApprovalMode PreApproval { get; private set; } = PreApprovalMode.Off;
+
+    /// <summary>
+    /// Which install published the work this task mirrors, or null when it is local work — see
+    /// <see cref="Tasks.TaskOrigin"/>. Set once at creation and never again: a mirror's origin is a
+    /// fact about where the copy came from, not a link that is maintained afterwards (Decisions Log
+    /// #60 — the record is read once at adoption and never re-checked).
+    /// </summary>
+    public TaskOrigin? Origin { get; private set; }
 
     /// <summary>
     /// This pre-approved task's own mechanical-resolution budget spend — see
@@ -457,6 +466,8 @@ public sealed class TaskAggregate
         _blockedBy.Clear();
         _blockedBy.AddRange(@event.BlockedBy ?? []);
         StackedOnTaskId = @event.StackedOnTaskId;
+        PreApproval = @event.EffectivePreApproval;
+        Origin = @event.Origin;
 
         if (@event.StartsAsDraft)
         {

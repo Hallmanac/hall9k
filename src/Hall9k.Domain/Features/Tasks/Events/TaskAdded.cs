@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -62,4 +63,40 @@ public sealed record TaskAdded(
     /// tool never infers stacking from an ordinary blocked-by (Brian's cohesion ruling, 2026-08-28),
     /// so a task that never declared one has none.
     /// </summary>
-    Guid? StackedOnTaskId = null);
+    Guid? StackedOnTaskId = null,
+    /// <summary>
+    /// Standing pre-approval declared at creation rather than at publish, as the legacy boolean:
+    /// <see cref="PreApprovalMode.LegacyPreApproved"/> — <c>mode == On</c> — recorded beside
+    /// <paramref name="PreApproval"/> for exactly the reason
+    /// <see cref="TaskPublished.PreApproved"/> is, so a build older than the mode reads a stream
+    /// this one wrote without being told after-human-review is a merge it may perform. Read
+    /// through <see cref="EffectivePreApproval"/> rather than directly. False on every stream
+    /// written before this field existed, which is the honest reading: nobody granted it.
+    /// </summary>
+    bool PreApproved = false,
+    /// <summary>
+    /// Which install published the work this task mirrors, when it was adopted from a task record
+    /// (see <see cref="Tasks.TaskOrigin"/>). Null on local work, which is almost every task.
+    /// </summary>
+    TaskOrigin? Origin = null,
+    /// <summary>
+    /// The three-valued pre-approval granted at creation rather than at publish — the shape
+    /// adoption needs (task: a published task's GitHub issue carries the whole task record), since
+    /// a task adopted from another install's record arrives as a Draft and the adopting install's
+    /// answer to pre-approval has to live somewhere until publish. <c>TaskDecider.Publish</c>
+    /// carries it forward, so an ordinary publish never silently drops what was granted here —
+    /// changing it is <c>h9k task set-pre-approved</c>'s job. Null on every event written before
+    /// the vocabulary existed, which is exactly the case <see cref="PreApprovalMode.Resolve"/>
+    /// maps back onto <paramref name="PreApproved"/>.
+    /// </summary>
+    PreApprovalMode? PreApproval = null)
+{
+    /// <summary>
+    /// What this event granted, whichever build wrote it — the same one home for the
+    /// mode-from-boolean mapping that <see cref="TaskPublished.EffectivePreApproval"/> and
+    /// <see cref="TaskPreApprovedSet.EffectivePreApproval"/> are. Deliberately not serialized: the
+    /// stream carries the facts that were recorded, never a derived one.
+    /// </summary>
+    [JsonIgnore]
+    public PreApprovalMode EffectivePreApproval => PreApprovalMode.Resolve(PreApproval, PreApproved);
+}
