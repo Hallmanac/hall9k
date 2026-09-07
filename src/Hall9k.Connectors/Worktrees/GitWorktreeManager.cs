@@ -231,6 +231,30 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         {
             await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
+            // The fetch above only needs the repository lock (it writes refs shared across every
+            // worktree, never checkoutPath's own working tree), but the rev-list and merge below
+            // read and mutate checkoutPath itself — the identical checkout AcquireCheckoutLockAsync
+            // guards for a gate spawn (VerificationRunner.DescribeCleanBaseComparisonAsync, `h9k
+            // task verify`, `h9k project set --verify`). Before this lock existed here, those two
+            // locks resolved to different files for a linked worktree (this one's own git-dir vs.
+            // the shared repository's git-common-dir), so a gate command running under the checkout
+            // lock and this fast-forward could interleave freely — the merge could rewrite the tree
+            // out from under a build already reading it, and the resulting failure would be recorded
+            // (and cached) as an observation of a commit whose tree was never actually what ran
+            // (independent pre-PR review, cycle 3, conformance and adversarial lenses, both high).
+            // Acquired nested inside the repository lock, never the other way around, so the two
+            // locks always acquire in the same order across every caller and cannot deadlock against
+            // each other. Skipped when the checkout IS the repository (a bare clone, or an ordinary
+            // non-worktree checkout — the two paths this method's own two tests exercise fresh
+            // clones through) — AcquireCheckoutLockCoreAsync would resolve to the identical
+            // git-common-dir and the identical semaphore key as the repository lock already held
+            // above, and re-entering a non-reentrant SemaphoreSlim on the exact same instance is a
+            // guaranteed self-deadlock, not exclusion.
+            string fullCheckoutPath = Path.GetFullPath(checkoutPath);
+            await using IAsyncDisposable? checkoutLock = fullCheckoutPath == repositoryPath
+                ? null
+                : await AcquireCheckoutLockCoreAsync(fullCheckoutPath, cancellationToken);
+
             (int behindExit, string counted, string countError) = await TryRunGitAsync(
                 checkoutPath, $"rev-list --count HEAD..origin/{branch}", cancellationToken);
             if (behindExit != 0 || !int.TryParse(counted.Trim(), out int behind))
@@ -497,14 +521,23 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         await AcquireRepositoryLockCoreAsync(Path.GetFullPath(repositoryPath), cancellationToken);
 
     /// <inheritdoc/>
-    public async Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken)
+    public async Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+        await AcquireCheckoutLockCoreAsync(Path.GetFullPath(checkoutPath), cancellationToken);
+
+    /// <summary>
+    /// Shared by the public <see cref="AcquireCheckoutLockAsync"/> and by
+    /// <see cref="RefreshReadingCheckoutAsync"/>'s own internal use of the identical lock around
+    /// the rev-list/merge it runs against a checkout it does not own exclusively. <paramref
+    /// name="fullCheckoutPath"/> must already be normalized (<see cref="Path.GetFullPath(string)"/>)
+    /// — both callers normalize before calling in, so this does not repeat it.
+    /// </summary>
+    private async Task<IAsyncDisposable> AcquireCheckoutLockCoreAsync(string fullCheckoutPath, CancellationToken cancellationToken)
     {
-        string fullPath = Path.GetFullPath(checkoutPath);
-        SemaphoreSlim mutex = LockFor(fullPath);
+        SemaphoreSlim mutex = LockFor(fullCheckoutPath);
         await mutex.WaitAsync(cancellationToken);
         try
         {
-            string lockDirectory = await ResolveCheckoutLockDirectoryAsync(fullPath, cancellationToken);
+            string lockDirectory = await ResolveCheckoutLockDirectoryAsync(fullCheckoutPath, cancellationToken);
             FileStream crossProcessLock = await AcquireLockFileAsync(lockDirectory, cancellationToken);
             return new RepositoryLock(mutex, crossProcessLock);
         }
@@ -554,7 +587,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                 // right away. CloseoutEngine.RemoveWorktreeBestEffortAsync's own best-effort catch
                 // already treats any non-cancellation exception as "safe to log and continue",
                 // which is exactly the right outcome for a repository that has already vanished.
-                throw new WorktreeException($"Repository {lockDirectory} no longer exists on disk.");
+                throw new WorktreeException($"Repository or checkout lock directory {lockDirectory} no longer exists on disk.");
             }
             catch (IOException)
             {
