@@ -900,13 +900,20 @@ internal static class AttentionComposer
             // anyway is what makes it discoverable at all from the attention pane; asserting it
             // applies would be the guess.
             ? $"h9k review proceed {id} (or h9k review resolve {id} --merge-ready / --needs-fixes \"…\" to redirect it, or h9k review fixed {id} once your own fix is committed — the reason above names which apply)"
-            : task.Type == TaskType.PrReview
-                ? $"h9k review resolve {id} --merge-ready (a pr-review task has no diff of its own for a fix session; direct the findings report by hand first)"
-                : (task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0) || run.ParkedOnRebaseRecoveryDispute
-                    ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
-                    : run.ParkedNeedsFixesOffersNoProgress
-                        ? $"h9k review resolve {id} --merge-ready (--needs-fixes will not clear this park — raise the cap or budget first, per the reason above)"
-                        : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
+            // A changes-requested disagreement park (task: a changes-requested pull-request review
+            // from a human becomes a fix lap) asks a question none of the arms below do: what the
+            // reviewer hears. It is checked ahead of them because the verdict alone is not
+            // accepted there — ReviewResolveCommand refuses a resolve that names no reply choice —
+            // so a lever offering only --merge-ready/--needs-fixes would be a command that fails.
+            : run.ParkedOnReviewDisagreement
+                ? $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\") plus one of --post-reply-as-written / --post-reply \"…\" / --post-nothing — the reviewer has heard nothing yet"
+                : task.Type == TaskType.PrReview
+                    ? $"h9k review resolve {id} --merge-ready (a pr-review task has no diff of its own for a fix session; direct the findings report by hand first)"
+                    : (task.FollowUpKind == FollowUpKind.Rebase && run.ReviewCycle == 0) || run.ParkedOnRebaseRecoveryDispute
+                        ? $"h9k review resolve {id} --needs-fixes \"<how to resolve the conflict>\""
+                        : run.ParkedNeedsFixesOffersNoProgress
+                            ? $"h9k review resolve {id} --merge-ready (--needs-fixes will not clear this park — raise the cap or budget first, per the reason above)"
+                            : $"h9k review resolve {id} --merge-ready (or --needs-fixes \"…\")";
 
     private static string Reason(string? recorded, string absent) =>
         recorded.IsNotBlank() ? recorded : absent;
