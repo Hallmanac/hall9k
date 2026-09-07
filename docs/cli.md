@@ -119,8 +119,20 @@ parent's branch head, opens its pull request against that branch, reviews and re
 it, is kept off the merge bar until the parent merges, and is then retargeted onto the base branch
 and mechanically replayed there (a parent branch that moves short of merging gets the replay alone,
 with the base left where it is). The tool never infers a stack from an ordinary `--blocked-by`;
-reserve the edge for slices of one feature that are genuinely cohesive. Full behaviour:
-[concepts.md](concepts.md#stacked-pull-requests).
+reserve the edge for slices of one feature that are genuinely cohesive.
+
+`--stacked-on-pull-request <number>` is the same edge when the parent lives on somebody else's
+node — a teammate's pull request this install never dispatched and whose run it will never see
+reach `Delivered`. It takes the number as GitHub shows it (`264` or `#264`) on this project's own
+repository, carries **no** `--blocked-by` (there is no local task to name), and needs no task to
+exist for that pull request at all. The pull request being *open* is the remote parent's
+`Delivered`, read from GitHub on the closeout watcher's cadence once the child is assigned — an
+unassigned one is on no cadence at all, so `h9k task assign` is what starts the watch. A hold can
+lag a few minutes behind the browser, and `h9k task show` labels every line about the parent as an
+observation, with when that reading was taken, rather than as current. The two forms are
+alternatives: pass one, and declaring either one replaces
+whatever the task previously stood on. `--clear-stacked-on` drops whichever form the task holds.
+Full behaviour: [concepts.md](concepts.md#stacked-pull-requests).
 
 ### Pull-request review
 

@@ -136,8 +136,10 @@ $ h9k task revise 2088f4fc --criteria "…" --blocked-by 81d8bca0
 `--stacked-on` declares a stronger edge for slices of one feature: the task dispatches as soon as
 its parent is Delivered, builds on the parent's branch, and opens its pull request against it —
 a GitHub stack the platform retargets and replays for you when the parent merges. It is never
-inferred from a plain `--blocked-by`
-([concepts.md](docs/concepts.md#stacked-pull-requests)).
+inferred from a plain `--blocked-by`. `--stacked-on-pull-request <number>` is the same edge against
+a teammate's pull request instead — a parent this install never dispatched, whose state it reads
+from GitHub on the closeout watcher's cadence, with the pull request being open standing in for
+Delivered ([concepts.md](docs/concepts.md#stacked-pull-requests)).
 
 Refinement ends when the contract is honest: an outcome-phrased objective and criteria a
 reviewer could actually check. A published task is immutable; the edit-after-the-fact path is
