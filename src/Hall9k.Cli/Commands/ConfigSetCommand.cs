@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Spectre.Console;
@@ -66,6 +68,16 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "or a context variant like claude-opus-5[[1m]]); anything 'claude -p --model' accepts, except the word "
             + "'default'. 'default' clears the override, so the built-in shipped default decides.")]
         public string? DefaultModel { get; init; }
+
+        [CommandOption("--orchestrator-model <MODEL>")]
+        [Description(
+            "This node's orchestrator-window override (task: an operator starts a lean node or project "
+            + "orchestrator window) — the model recipes/settings.json is rendered for, independent of "
+            + "--default-model: raising or lowering the model dispatched agents run on never moves the "
+            + "operator's own window, and the reverse. A tier alias or an exact model id, the same "
+            + "values --default-model accepts. 'default' clears the override so --default-model, then "
+            + "the compiled platform fallback, decides again.")]
+        public string? OrchestratorModel { get; init; }
 
         [CommandOption("--model-build <MODEL>")]
         [Description("This node's model for the Build role — the session that writes the feature. 'default' clears it.")]
@@ -210,12 +222,32 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         Validate(settings);
 
         List<string> changed = [];
+        OperatingSettings? mutated = null;
         bool created = await PlatformConfigFile.WriteOperatingSettingsAsync(
-            operating => Apply(settings, operating, changed), cancellationToken);
+            operating =>
+            {
+                Apply(settings, operating, changed);
+                mutated = operating;
+            },
+            cancellationToken);
 
         if (created)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]{Hall9kDatabase.ConfigFile} did not exist — created it with these settings.[/]");
+        }
+
+        // Otherwise recipes/settings.json (task: an operator starts a lean node or project
+        // orchestrator window) pins whatever model was resolved the last time h9k install, h9k
+        // update, or this branch ran, and nothing else ever refreshes it — an orchestrator window
+        // launched from the node's own recipe would keep reading a model this very command just
+        // changed (independent pre-PR review, cycle 1, adversarial lens). This re-renders only the
+        // node's own file; a registered project's own recipes/settings.json that defers to the
+        // node is caught up the next time h9k project init runs against it, or the next time that
+        // project's own --model/--orchestrator-model changes (h9k project set already re-renders
+        // its own file on either).
+        if ((settings.DefaultModel is not null || settings.OrchestratorModel is not null) && mutated is not null)
+        {
+            RecipeSettingsDocument.Write(RecipeLibraryPaths.SettingsFile, OrchestratorModel.ForNode(mutated));
         }
 
         foreach (string line in changed)
@@ -227,6 +259,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             settings.InteractiveClaimStaleAfterDays is not null
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
+            && settings.OrchestratorModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
@@ -254,6 +287,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     {
         if (settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
+            && settings.OrchestratorModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
@@ -379,6 +413,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         }
 
         ApplyModel("default-model", settings.DefaultModel, value => operating.DefaultModel = value, changed);
+        ApplyModel("orchestrator-model", settings.OrchestratorModel, value => operating.OrchestratorModel = value, changed);
         ApplyModel("model (build)", settings.ModelBuild, value => operating.ModelByRole.Build = value, changed);
         ApplyModel("model (review)", settings.ModelReview, value => operating.ModelByRole.Review = value, changed);
         ApplyModel(

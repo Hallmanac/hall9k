@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.Worktrees;
@@ -9,6 +10,7 @@ using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -115,6 +117,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "'default' is not a model name: it clears the project override so the levels above and "
             + "below decide. An exact id is the stabler choice: an alias is re-pointed as new models ship")]
         public string? Model { get; init; }
+
+        [CommandOption("--orchestrator-model <MODEL>")]
+        [Description(
+            "This project's orchestrator-window override (task: an operator starts a lean node or "
+            + "project orchestrator window) — the model recipes/settings.json is rendered for, "
+            + "independent of --model: raising or lowering the model dispatched agents run on never "
+            + "moves the operator's own window, and the reverse. A tier alias (fable, opus, sonnet, "
+            + "haiku) or an exact model id, the same values --model accepts. 'default' clears the "
+            + "override so --model, then the node's own resolution (h9k config set "
+            + "--orchestrator-model, else --default-model), decides again.")]
+        public string? OrchestratorModel { get; init; }
 
         [CommandOption("--rerequest-review <ON|OFF|DEFAULT>")]
         [Description(
@@ -403,6 +416,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             model: settings.Model is { } model
                 ? Optional<AgentModel>.Of(AgentModel.FromInput(model))
                 : Optional<AgentModel>.None,
+            orchestratorModel: settings.OrchestratorModel is { } orchestratorModel
+                ? Optional<AgentModel>.Of(AgentModel.FromInput(orchestratorModel))
+                : Optional<AgentModel>.None,
             reviewRerequest: settings.RerequestReview is { } rerequestReview
                 ? Optional<ReviewRerequestPolicy>.Of(ReviewRerequestOption.Parse(rerequestReview))
                 : Optional<ReviewRerequestPolicy>.None,
@@ -571,7 +587,24 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         if (updated.HomeDirectory.HasValue && Directory.Exists(updated.HomeDirectory.Value))
         {
-            ProjectHomeRecipe.Report([ProjectAgentsDocument.Write(updated.HomeDirectory.Value, updated)]);
+            List<ProjectHomeStep> homeSteps = [ProjectAgentsDocument.Write(updated.HomeDirectory.Value, updated)];
+
+            // recipes/settings.json (task: an operator starts a lean node or project orchestrator
+            // window) pins whatever model this project resolved to at the last h9k project init —
+            // re-rendered here too, or a --model/--orchestrator-model change just recorded above
+            // would leave the project's own orchestrator window reading a stale one until somebody
+            // happened to re-run h9k project init (independent pre-PR review, cycle 1, adversarial
+            // lens).
+            if (settings.Model is not null || settings.OrchestratorModel is not null)
+            {
+                Hall9k.Domain.Infrastructure.Persistence.ConfigFileReadResult operatingSettingsRead =
+                    await Hall9k.Domain.Infrastructure.Persistence.PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken);
+                homeSteps.Add(RecipeSettingsDocument.WriteStep(
+                    ProjectHomePaths.RecipeSettingsFile(updated.HomeDirectory.Value),
+                    OrchestratorModel.ForProject(updated.OrchestratorModel, updated.Model, operatingSettingsRead.Settings)));
+            }
+
+            ProjectHomeRecipe.Report(homeSteps);
         }
         else if (updated.HomeDirectory.HasValue)
         {

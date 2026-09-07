@@ -4,18 +4,38 @@ using Hall9k.Domain.Shared.ValueObjects;
 namespace Hall9k.Cli.Orchestrator;
 
 /// <summary>
-/// The model an orchestrator recipe's <see cref="RecipeSettingsDocument"/> is rendered for — the
-/// same node-then-platform-default chain every other model resolution in this codebase reads
-/// (Decisions Log #33), with a project's own override (when the recipe is for a project window)
-/// outranking the node's.
+/// The model an orchestrator recipe's <see cref="RecipeSettingsDocument"/> is rendered for.
+/// Deliberately its own chain, not <c>Hall9k.Domain.Shared.ValueObjects.AgentModel.Resolve</c>'s
+/// agent-dispatch one: an orchestrator window's own override
+/// (<see cref="OperatingSettings.OrchestratorModel"/> for the node, the project's own
+/// <c>OrchestratorModel</c> field for a project window) outranks everything else, precisely so
+/// raising or lowering the model dispatched agents run on (<c>DefaultModel</c>/a project's
+/// <c>Model</c>) never silently moves the operator's own window, and the reverse (independent
+/// pre-PR review, cycle 1). Only when no orchestrator-specific override is set does this fall
+/// through to the ordinary agent-dispatch chain, which is what every window rendered before that
+/// override existed already carries.
 /// </summary>
 public static class OrchestratorModel
 {
-    /// <summary>The node's own default, or the platform fallback when nothing overrides it.</summary>
+    /// <summary>
+    /// The node's own orchestrator override, else its agent-dispatch default, else the platform
+    /// fallback.
+    /// </summary>
     public static string ForNode(OperatingSettings settings) =>
-        settings.DefaultModel is { Length: > 0 } configured ? configured : AgentModel.PlatformFallback;
+        settings.OrchestratorModel is { Length: > 0 } orchestratorOverride
+            ? orchestratorOverride
+            : settings.DefaultModel is { Length: > 0 } configured
+                ? configured
+                : AgentModel.PlatformFallback;
 
-    /// <summary>The project's own override, or the node's resolution when the project defers.</summary>
-    public static string ForProject(AgentModel projectModel, OperatingSettings settings) =>
-        projectModel != AgentModel.Unknown ? projectModel.Value : ForNode(settings);
+    /// <summary>
+    /// The project's own orchestrator override, else its agent-dispatch model, else the node's
+    /// resolution.
+    /// </summary>
+    public static string ForProject(AgentModel projectOrchestratorModel, AgentModel projectModel, OperatingSettings settings) =>
+        projectOrchestratorModel != AgentModel.Unknown
+            ? projectOrchestratorModel.Value
+            : projectModel != AgentModel.Unknown
+                ? projectModel.Value
+                : ForNode(settings);
 }

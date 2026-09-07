@@ -259,6 +259,44 @@ public sealed class ConfigSetCommandTests
     }
 
     [Fact]
+    public void Applying_the_orchestrator_model_sets_only_that_field_and_leaves_the_default_model_alone()
+    {
+        ConfigSetCommand.Settings settings = new() { OrchestratorModel = "sonnet" };
+        OperatingSettings operating = new() { DefaultModel = "opus" };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.OrchestratorModel.Should().Be("sonnet");
+        operating.DefaultModel.Should().Be("opus", "the orchestrator window's model is independent of agent dispatch");
+    }
+
+    [Fact]
+    public void The_word_default_clears_an_existing_orchestrator_model_override()
+    {
+        ConfigSetCommand.Settings settings = new() { OrchestratorModel = "default" };
+        OperatingSettings operating = new() { OrchestratorModel = "sonnet" };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.OrchestratorModel.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_not_well_formed_orchestrator_model_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { OrchestratorModel = "claude-opus-5 (1m)" };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        Action act = () => ConfigSetCommand.Apply(settings, operating, changed);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
+        operating.OrchestratorModel.Should().BeNull("a refused value must never reach the config file");
+    }
+
+    [Fact]
     public void A_not_well_formed_default_model_is_refused_the_same_way_project_set_refuses_it()
     {
         ConfigSetCommand.Settings settings = new() { DefaultModel = "claude-opus-5 (1m)" };

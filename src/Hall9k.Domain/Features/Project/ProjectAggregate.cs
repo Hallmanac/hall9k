@@ -51,6 +51,13 @@ public sealed class ProjectAggregate
     /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
     /// <summary>
+    /// This project's orchestrator-window override (task: an operator starts a lean node or
+    /// project orchestrator window) — outranks <see cref="Model"/> for the project's
+    /// <c>recipes/settings.json</c> alone. Unknown defers to <see cref="Model"/>, then the node's
+    /// resolution.
+    /// </summary>
+    public AgentModel OrchestratorModel { get; private set; } = AgentModel.Unknown;
+    /// <summary>
     /// Whether closeout asks this project's reviewers for another pass after a fix follow-up
     /// pushed (Decisions Log #62). Outranks the owner's preference; Unknown defers to it.
     /// </summary>
@@ -155,6 +162,11 @@ public sealed class ProjectAggregate
         if (@event.Model.HasValue)
         {
             Model = @event.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.OrchestratorModel.HasValue)
+        {
+            OrchestratorModel = @event.OrchestratorModel.Value ?? AgentModel.Unknown;
         }
 
         if (@event.ReviewRerequest.HasValue)

@@ -336,6 +336,46 @@ public sealed class ProjectDeciderTests
     }
 
     /// <summary>
+    /// The orchestrator-window model override (task: an operator starts a lean node or project
+    /// orchestrator window) is independent of the agent-dispatch <c>Model</c> above — the same
+    /// clearing idiom, but a distinct field, so raising or lowering the model dispatched agents
+    /// run on never silently moves the operator's own window.
+    /// </summary>
+    [Fact]
+    public void Change_settings_carries_an_orchestrator_model_override_independent_of_the_agent_dispatch_model()
+    {
+        ProjectAggregate project = Registered();
+
+        ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            model: Optional<AgentModel>.Of(AgentModel.FromInput("claude-sonnet-5")),
+            orchestratorModel: Optional<AgentModel>.Of(AgentModel.FromInput("claude-opus-5")));
+        project.Apply(set);
+        project.Model.Value.Should().Be("claude-sonnet-5");
+        project.OrchestratorModel.Value.Should().Be("claude-opus-5");
+
+        ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            orchestratorModel: Optional<AgentModel>.Of(AgentModel.FromInput("default")));
+        project.Apply(cleared);
+        project.OrchestratorModel.Should().Be(AgentModel.Unknown, "'default' hands the decision back to the chain");
+        project.Model.Value.Should().Be("claude-sonnet-5", "clearing the orchestrator override leaves the dispatch model untouched");
+    }
+
+    [Fact]
+    public void Change_settings_rejects_an_orchestrator_model_that_could_not_be_handed_to_the_executors_shell()
+    {
+        Action act = () => ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            orchestratorModel: Optional<AgentModel>.Of(AgentModel.FromInput("$(id)")));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*not a usable model name*");
+    }
+
+    /// <summary>
     /// Task: the review pipeline's stage composition becomes configuration recorded per run —
     /// the project-level door, h9k project set, canonicalizes an alias and 'default' clears it,
     /// the same shape --model already has.
@@ -547,7 +587,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             launchTexts: Optional<IReadOnlyList<LaunchText>>.Of([new LaunchText("Claude-Code", "claude --strict-mcp-config")])));
@@ -566,7 +605,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             launchTexts: Optional<IReadOnlyList<LaunchText>>.Of([new LaunchText(" ", "some text")]));
@@ -576,7 +614,6 @@ public sealed class ProjectDeciderTests
             project,
             verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
             skipPermissions: Optional<bool>.None,
-            maxParallelAgents: Optional<int>.None,
             contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
             changedAt: Now, changedByOwnerId: DomainId.New(),
             launchTexts: Optional<IReadOnlyList<LaunchText>>.Of([new LaunchText("claude-code", " ")]));

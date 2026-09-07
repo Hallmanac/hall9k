@@ -57,7 +57,6 @@ public sealed class OrchestratorLaunchTextSetCommand : Hall9kAsyncCommand<Orches
                 project,
                 verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
                 skipPermissions: Optional<bool>.None,
-                maxParallelAgents: Optional<int>.None,
                 contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
                 DateTimeOffset.UtcNow,
                 context.OwnerId,

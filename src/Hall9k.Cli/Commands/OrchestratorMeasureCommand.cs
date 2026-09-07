@@ -74,7 +74,6 @@ public sealed class OrchestratorMeasureCommand : Hall9kAsyncCommand<Orchestrator
                 project,
                 verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
                 skipPermissions: Optional<bool>.None,
-                maxParallelAgents: Optional<int>.None,
                 contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
                 measuredAt,
                 context.OwnerId,
