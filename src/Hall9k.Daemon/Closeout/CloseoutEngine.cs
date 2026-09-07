@@ -5,6 +5,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -1904,10 +1905,29 @@ public sealed class CloseoutEngine(
     private async Task TellGitHubAsync(
         Guid taskId, ProjectDetails project, TaskAggregate task, ExternalReference reference, CancellationToken cancellationToken)
     {
+        GitHubWorkItemProvider provider = new(processRunner);
+
+        // Decided before the comment is posted, not after: the note's own wording says whether
+        // the issue is being closed alongside it (MergeComment), and a decision that fails must
+        // never abort the comment — the merge is already recorded and dependents already
+        // unblocked, so the note is the one thing this method must still say regardless.
+        bool shouldClose;
         try
         {
-            await new GitHubWorkItemProvider(processRunner).CommentAsync(
-                reference, MergeComment(project, task), project.RepositoryPath, cancellationToken);
+            shouldClose = await ShouldCloseGitHubIssueAsync(provider, taskId, project, task, reference, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Task {TaskId}: could not decide whether to close {Reference}; leaving it open. "
+                + "Close it by hand if it should close", taskId, reference);
+            shouldClose = false;
+        }
+
+        try
+        {
+            await provider.CommentAsync(
+                reference, MergeComment(project, task, shouldClose), project.RepositoryPath, cancellationToken);
             logger.LogInformation("Task {TaskId}: told {Reference} that {Url} merged", taskId, reference, task.PullRequestUrl);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -1917,20 +1937,209 @@ public sealed class CloseoutEngine(
                 + "add the note by hand if it matters",
                 task.PullRequestUrl, reference);
         }
+
+        if (!shouldClose)
+        {
+            return;
+        }
+
+        try
+        {
+            await provider.CloseAsync(reference, project.RepositoryPath, cancellationToken);
+            logger.LogInformation("Task {TaskId}: closed {Reference} per this project's close-linked-issue rule", taskId, reference);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Could not close {Reference} after {Url} merged. Nothing is retried automatically; "
+                + "close it by hand if it matters",
+                task.PullRequestUrl, reference);
+        }
     }
 
     /// <summary>
-    /// What the card is told. Short, factual, and explicit that nothing else is going to happen
-    /// to it — a card that silently gains a comment and never moves reads like an integration
-    /// that half worked, and saying so costs one sentence.
+    /// Whether closeout should close this task's linked GitHub issue right now (task: a task's
+    /// linked GitHub issue is closed at true closeout under a configurable rule). Reads the
+    /// issue's own live state once — its open/closed status and its current labels — because a
+    /// task's explicit override wins over a never-close label, and a never-close label wins over
+    /// the project's own default, and both the label check and the final "is it still open" gate
+    /// need the same fresh read. An issue GitHub reports missing, unreadable, or already closed is
+    /// left alone: this returns false rather than let a later close attempt fail or retry on
+    /// account of it.
     /// </summary>
-    internal static string MergeComment(ProjectDetails project, TaskAggregate task) =>
+    private async Task<bool> ShouldCloseGitHubIssueAsync(
+        GitHubWorkItemProvider provider,
+        Guid taskId,
+        ProjectDetails project,
+        TaskAggregate task,
+        ExternalReference reference,
+        CancellationToken cancellationToken)
+    {
+        CloseLinkedIssueRule? taskOverride = task.CloseLinkedIssue;
+        if (taskOverride == CloseLinkedIssueRule.Never)
+        {
+            return false;
+        }
+
+        // Nothing a fresh read could learn would change the answer: no override to weigh against
+        // a label, no label list to check the issue against, and the project's own default is
+        // already never — so the read that exists to inform exactly those two questions is
+        // skipped rather than spent on a call whose answer cannot matter.
+        if (taskOverride is null && project.NeverCloseLabels.Count == 0 && project.CloseLinkedIssue == CloseLinkedIssueRule.Never)
+        {
+            return false;
+        }
+
+        GitHubIssueCloseoutRead read = await provider.ReadCloseoutStateAsync(reference, project.RepositoryPath, cancellationToken);
+        if (read.Failed)
+        {
+            logger.LogWarning(
+                "Task {TaskId}: could not read {Reference} to decide whether to close it — {Error}. "
+                + "Left alone; the merge note is still posted", taskId, reference, read.Error);
+            return false;
+        }
+
+        if (!read.IsOpen)
+        {
+            logger.LogWarning(
+                "Task {TaskId}: {Reference} is already closed; left alone rather than re-closed or retried",
+                taskId, reference);
+            return false;
+        }
+
+        CloseLinkedIssueRule rule = taskOverride
+            ?? (project.NeverCloseLabels.Count > 0
+                && read.Labels.Any(label => project.NeverCloseLabels.Contains(label, StringComparer.OrdinalIgnoreCase))
+                ? CloseLinkedIssueRule.Never
+                : project.CloseLinkedIssue);
+
+        if (rule == CloseLinkedIssueRule.OnCloseout)
+        {
+            return true;
+        }
+
+        if (rule != CloseLinkedIssueRule.WhenAllTasksClose)
+        {
+            // Never, or a recorded value this build does not recognize — fails toward leaving the
+            // issue open (CloseLinkedIssueRule.Unknown's own doc).
+            return false;
+        }
+
+        await using IQuerySession session = store.QuerySession();
+        if (!await AllOtherLinkedTasksClosedOutAsync(session, taskId, reference, cancellationToken))
+        {
+            return false;
+        }
+
+        return await ResolveFinalClosureAcrossLinkedTasksAsync(session, project, reference, read.Labels, cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether every OTHER task linked to this same external reference has itself reached true
+    /// closeout or been abandoned — the gate <see cref="CloseLinkedIssueRule.WhenAllTasksClose"/>
+    /// waits behind. This task's own Done/RunCompleted state is already committed by the time this
+    /// runs (<see cref="CompleteCloseoutAsync"/> saves before calling <see cref="TellTheCardAsync"/>),
+    /// so a fresh read here sees this task correctly without needing to special-case it — it is
+    /// simply excluded, since the question is about every task besides it.
+    /// </summary>
+    private static async Task<bool> AllOtherLinkedTasksClosedOutAsync(
+        IQuerySession session, Guid currentTaskId, ExternalReference reference, CancellationToken cancellationToken)
+    {
+        string canonical = reference.ToString();
+        IReadOnlyList<TaskListItem> linked = await session.Query<TaskListItem>()
+            .Where(candidate => candidate.ExternalReference == canonical)
+            .ToListAsync(cancellationToken);
+
+        List<TaskListItem> others = [.. linked.Where(candidate => candidate.Id != currentTaskId)];
+        if (others.Count == 0)
+        {
+            return true;
+        }
+
+        Guid[] runIds = [.. others.Select(candidate => candidate.CurrentRunId).OfType<Guid>()];
+        Dictionary<Guid, RunState> runStates = [];
+        if (runIds.Length > 0)
+        {
+            foreach (RunDetails run in await session.Query<RunDetails>()
+                .Where(run => run.Id.IsOneOf(runIds))
+                .ToListAsync(cancellationToken))
+            {
+                runStates[run.Id] = run.State;
+            }
+        }
+
+        return others.All(candidate =>
+            candidate.State == TaskState.Abandoned
+            || (candidate.State == TaskState.Done
+                && candidate.CurrentRunId is { } runId
+                && runStates.TryGetValue(runId, out RunState? runState)
+                && runState == RunState.Completed));
+    }
+
+    /// <summary>
+    /// The rule decided across every task linked to this issue, at the moment the last one of
+    /// them reaches true closeout or is abandoned: an explicit override recorded on ANY linked
+    /// task settles it — <see cref="CloseLinkedIssueRule.Never"/> anywhere keeps the issue open,
+    /// otherwise <see cref="CloseLinkedIssueRule.OnCloseout"/> or
+    /// <see cref="CloseLinkedIssueRule.WhenAllTasksClose"/> anywhere closes it — and only when NO
+    /// linked task carries an explicit override at all does the never-close label list and then
+    /// the project's own default apply. Recency plays no part: every linked task's own recorded
+    /// override is read fresh, not whichever was set most recently.
+    /// </summary>
+    private static async Task<bool> ResolveFinalClosureAcrossLinkedTasksAsync(
+        IQuerySession session,
+        ProjectDetails project,
+        ExternalReference reference,
+        IReadOnlyList<string> labels,
+        CancellationToken cancellationToken)
+    {
+        string canonical = reference.ToString();
+        List<CloseLinkedIssueRule> explicitOverrides = [
+            .. (await session.Query<TaskListItem>()
+                    .Where(candidate => candidate.ExternalReference == canonical)
+                    .ToListAsync(cancellationToken))
+                .Select(candidate => candidate.CloseLinkedIssue)
+                .OfType<CloseLinkedIssueRule>(),
+        ];
+
+        if (explicitOverrides.Contains(CloseLinkedIssueRule.Never))
+        {
+            return false;
+        }
+
+        if (explicitOverrides.Any(overrideRule =>
+            overrideRule == CloseLinkedIssueRule.OnCloseout || overrideRule == CloseLinkedIssueRule.WhenAllTasksClose))
+        {
+            return true;
+        }
+
+        bool labelForcesNever = project.NeverCloseLabels.Count > 0
+            && labels.Any(label => project.NeverCloseLabels.Contains(label, StringComparer.OrdinalIgnoreCase));
+        if (labelForcesNever)
+        {
+            return false;
+        }
+
+        return project.CloseLinkedIssue == CloseLinkedIssueRule.OnCloseout
+            || project.CloseLinkedIssue == CloseLinkedIssueRule.WhenAllTasksClose;
+    }
+
+    /// <summary>
+    /// What the card is told. Short, factual, and explicit about whether anything else is going
+    /// to happen to it — a card that silently gains a comment and never moves reads like an
+    /// integration that half worked, and saying so costs one sentence; a card that is about to be
+    /// closed alongside this note deserves the same explicitness rather than the platform's older,
+    /// now only sometimes true, promise never to touch its status at all.
+    /// </summary>
+    internal static string MergeComment(ProjectDetails project, TaskAggregate task, bool closing = false) =>
         $"""
          The pull request for this work has merged: {task.PullRequestUrl}
 
          Recorded by Hall9k as task {task.Id} in project {project.Name}. This is a one-off note at
-         merge — Hall9k does not change this item's status or close it, because which status a
-         merge means is this project's workflow to decide.
+         merge{(closing
+             ? " — the issue is being closed alongside it, per this project's close-linked-issue setting."
+             : ". Hall9k does not change this item's status or close it here, because which status a "
+               + "merge means is this project's workflow to decide.")}
          """;
 
     /// <summary>
