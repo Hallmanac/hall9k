@@ -126,6 +126,11 @@ public sealed class StackedSurfaceTests
     /// The mark beside a blocker on <c>h9k task show</c> and <c>h9k task assign</c>: a Delivered
     /// stacked parent is met, the same Delivered blocker on a plain edge is not, and the stacked one
     /// says which bar it is waiting on rather than leaving a reader to assume the stricter one.
+    /// A met stacked parent is marked at the bar it actually reached, never "closed out": its pull
+    /// request is still open, the row's own state word beside the mark reads Delivered, and the
+    /// sentence above the list says this edge is met at Delivered — so a closeout word here would
+    /// contradict all three (independent pre-PR review, 2026-09-07, adversarial lens; the same
+    /// 2026-08-22 word-versus-mark incident one bar further down).
     /// </summary>
     [Fact]
     public void The_dependency_mark_reads_the_declared_edge()
@@ -135,10 +140,27 @@ public sealed class StackedSurfaceTests
             parentId, "Parent slice", TaskState.Done, IsClosedOut: false, RunState.AwaitingReview,
             PullRequest, TaskType.Feature, []);
 
-        TaskStatusComposer.DependencyMark(delivered, parentId).Should().Contain("closed out",
-            "a stacked parent at Delivered no longer holds its child back");
+        TaskStatusComposer.DependencyMark(delivered, parentId).Should().Contain("met at Delivered",
+            "a stacked parent at Delivered no longer holds its child back")
+            .And.NotContain("closed out", "nothing observed a closeout — its pull request is still open");
         TaskStatusComposer.DependencyMark(delivered).Should().Contain("waiting",
             "the same blocker on a plain edge still waits for the merge");
+    }
+
+    /// <summary>
+    /// The closeout word is still the right one where a closeout was actually observed: a merged
+    /// parent is past Delivered rather than short of it, on either kind of edge.
+    /// </summary>
+    [Fact]
+    public void A_merged_parent_is_still_marked_closed_out_on_the_stacked_edge()
+    {
+        Guid parentId = DomainId.New();
+        TaskDependency merged = new(
+            parentId, "Parent slice", TaskState.Done, IsClosedOut: true, RunState.Completed,
+            PullRequest, TaskType.Feature, []);
+
+        TaskStatusComposer.DependencyMark(merged, parentId).Should().Contain("closed out");
+        TaskStatusComposer.DependencyMark(merged).Should().Contain("closed out");
     }
 
     [Fact]
@@ -149,10 +171,27 @@ public sealed class StackedSurfaceTests
             parentId, "Parent slice", TaskState.Done, IsClosedOut: false, RunState.Superseded,
             PullRequest, TaskType.Feature, []);
 
-        TaskStatusComposer.DependencyMark(stranded, parentId).Should().Contain("closed out",
+        TaskStatusComposer.DependencyMark(stranded, parentId).Should().Contain("met at Delivered",
             "it delivered the branch and pull request the child is already built on");
         TaskStatusComposer.DependencyMark(stranded).Should().Contain("never closes out",
             "the same blocker on a plain edge strands its dependent, exactly as before");
+    }
+
+    /// <summary>
+    /// The mark for the shape that made <c>IsDelivered</c> narrower: a parent whose pull request was
+    /// closed without merging never delivered, so its stacked child is held and told rather than
+    /// released — and the mark says the one thing the human has to know.
+    /// </summary>
+    [Fact]
+    public void A_stacked_parent_whose_pull_request_closed_unmerged_is_marked_dead()
+    {
+        Guid parentId = DomainId.New();
+        TaskDependency closed = new(
+            parentId, "Parent slice", TaskState.Done, IsClosedOut: false, RunState.Failed,
+            PullRequest, TaskType.Feature, [], RunFailureReason: RunDetails.PullRequestClosedWithoutMerge);
+
+        TaskStatusComposer.DependencyMark(closed, parentId).Should().Contain("never closes out",
+            "a closed pull request cannot reach Delivered either, so the child needs a human");
     }
 
     private static readonly Guid StackedRunId = DomainId.New();
