@@ -770,11 +770,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // ordinary Failed waypoint (retry, resolve, or abandon), exactly as
         // RunLauncher.RecordLaunchFailureAsync does for a headless launch failure (adversarial
         // review, cycle 1).
-        // The branch this claim's work sits on top of, resolved before the checkout and recorded
-        // on this run's own RunDispatched below — the same answer RunLauncher resolves for a
-        // headless dispatch, through the same resolver, because an interactive claim of a stacked
-        // task must cut from the same branch and target the same pull-request base the daemon
-        // would (task: a stacked pull-request edge exists as an explicit opt-in dependency).
+        // The branch a fresh cut starts from, resolved before the checkout — the same answer
+        // RunLauncher resolves for a headless dispatch, through the same resolver, because an
+        // interactive claim of a stacked task must cut from the same branch and target the same
+        // pull-request base the daemon would (task: a stacked pull-request edge exists as an
+        // explicit opt-in dependency). A claim that RESUMES this task's existing retry branch
+        // inherits the base that branch already sits on instead, below, once the checkout has said
+        // which of the two happened (StackedBaseResolver.ResumedBaseAsync).
         StackedBase stackedBase = await StackedBaseResolver.ResolveAsync(
             session, taskDetails, project, cancellationToken);
 
@@ -814,6 +816,18 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 taskDetails.ReviewStageComposition, project.ReviewStageComposition,
                 nodeSettings.ReviewStageComposition.Value);
 
+            // Where this branch already sits, when the checkout resumed this task's existing retry
+            // branch instead of cutting one — read off the run before it through the same domain
+            // query RunLauncher reads it with (conformance and adversarial review, cycle 4): a
+            // resumed checkout performs no fresh cut, so it reports no start point, and re-resolving
+            // the base here reads the parent's CURRENT state rather than the branch's own.
+            StackedBaseResolver.ResumedBase? resumedBase = resumesPreviousWork
+                ? await StackedBaseResolver.ResumedBaseAsync(
+                    session, taskDetails, project, runId, cancellationToken)
+                : null;
+            string runBaseBranch = resumedBase?.BaseBranch ?? stackedBase.BaseBranch;
+            string baseCommit = resumedBase?.ForkPointCommit ?? worktree.StartPointCommit;
+
             // Fable is the human-interactive model tier (AgentModel's own doc comment, Decisions
             // Log #33) — a fixed platform choice for an operator-attended session, not the
             // project/task role-resolution chain a headless build session runs through. SessionId
@@ -825,18 +839,18 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
                 IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory, SessionName: sessionName,
                 ReviewStageComposition: reviewStageComposition,
-                // Blank whenever the resolved base IS the project's own, which is every ordinary
-                // task — the invariant RunDetails.StackedOnBranch reads, held identically here and
-                // in RunLauncher.
-                BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch,
-                // This cut's own observed start point, recorded exactly as RunLauncher records it
-                // for a headless dispatch (independent pre-PR review, cycle 1, both lenses): a
-                // stacked child claimed through the CLI with no recorded fork point left
+                // Blank whenever the base IS the project's own, which is every ordinary task — the
+                // invariant RunDetails.StackedOnBranch reads, held identically here and in
+                // RunLauncher.
+                BaseBranch: runBaseBranch == project.BaseBranch ? string.Empty : runBaseBranch,
+                // This run's own fork point, recorded exactly as RunLauncher records it for a
+                // headless dispatch (independent pre-PR review, cycle 1, both lenses): a stacked
+                // child claimed through the CLI with no recorded fork point left
                 // StackedParentWatch permanently Unobservable, so a parent force-push while the
                 // child was Delivered dispatched no replay and its later merge no retarget. Blank
-                // only when the checkout resumed an existing worktree or the rev-parse could not
-                // be read — the two cases RunDispatched.BaseCommit's own doc already admits.
-                BaseCommit: worktree.StartPointCommit));
+                // only when no earlier run recorded one either and the rev-parse could not be
+                // read — the cases RunDispatched.BaseCommit's own doc already admits.
+                BaseCommit: baseCommit));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

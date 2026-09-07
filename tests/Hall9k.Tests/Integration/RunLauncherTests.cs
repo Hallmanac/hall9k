@@ -44,6 +44,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
     private const string PullRequestUrl = "https://github.com/x/y/pull/11";
 
+    private const string ParentPullRequestUrl = "https://github.com/x/y/pull/7";
+
     private sealed class MergedInspector : IPullRequestInspector
     {
         public int Inspections { get; private set; }
@@ -1222,6 +1224,250 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         prompt.Should().NotContain($"--autosquash origin/{parentBranch}",
             "and a gate fix folds back to an observed commit, never to the parent's own branch ref");
     }
+
+    /// <summary>
+    /// A RETRY that resumes the branch inherits the fork point too (conformance review, cycle 4).
+    /// <c>h9k task retry</c> on a stacked child whose run failed resumes <c>task.RetryBranch</c>
+    /// through the same <c>CheckoutExistingAsync</c> a follow-up uses, and that path reports no
+    /// start point at all — a resumed checkout performs no fresh cut to observe one from. Reading it
+    /// there recorded a BLANK fork point over one the failed run had already observed, which leaves
+    /// <c>StackedParentWatch</c> permanently unobservable for the rest of the branch's life: no
+    /// replay when the parent is force-pushed, and no retarget when it merges.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_that_resumes_a_stacked_childs_branch_carries_the_recorded_fork_point_forward()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid parentTaskId = DomainId.New();
+        Guid parentRunId = DomainId.New();
+        Guid childTaskId = DomainId.New();
+        Guid failedRunId = DomainId.New();
+        Guid retriedRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string parentBranch = "task/parent-slice-one";
+        const string childBranch = "task/child-slice-two";
+        const string forkPoint = "abc1234def5678";
+        int leaseGeneration;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"stacked-retry-{childTaskId:N}",
+                "/tmp/stacked-retry-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            SeedDeliveredParent(session, node, projectId, parentTaskId, parentRunId, parentBranch, closedOut: false);
+
+            (TaskAggregate child, object[] childLifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    childTaskId, projectId, "Child slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId,
+                    blockedBy: [parentTaskId], stackedOnTaskId: parentTaskId),
+                node.OwnerId, Now, StackedOnDeliveredParent(parentTaskId));
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed childClaimed =
+                TaskDecider.Claim(child, node.NodeId, node.OwnerId, failedRunId, Now);
+            child.Apply(childClaimed);
+            // The run failed with work already committed on the branch, which is exactly why the
+            // retry resumes it rather than cutting a fresh one.
+            Hall9k.Domain.Features.Tasks.Events.TaskFailed failed =
+                TaskDecider.Fail(child, failedRunId, "the gates went red", Now);
+            child.Apply(failed);
+            Hall9k.Domain.Features.Tasks.Events.TaskRetried retried = TaskDecider.Retry(
+                child, failedRunId, childBranch, "the gates should pass on a second look", Now, node.OwnerId);
+            child.Apply(retried);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
+                TaskDecider.Claim(child, node.NodeId, node.OwnerId, retriedRunId, Now);
+            child.Apply(reclaimed);
+            leaseGeneration = child.LeaseGeneration;
+            session.Events.StartStream<TaskAggregate>(
+                childTaskId, [.. childLifecycle, childClaimed, failed, retried, reclaimed]);
+
+            // The failed run recorded where its cut actually forked from.
+            session.Events.StartStream<RunAggregate>(failedRunId,
+                new RunDispatched(failedRunId, childTaskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/child-wt", childBranch, ExecutorMode.Subscription, Now,
+                    BaseBranch: parentBranch, BaseCommit: forkPoint),
+                new RunFailed(failedRunId, "the gates went red", Now));
+
+            session.Store(new TaskLease
+            {
+                Id = childTaskId, NodeId = node.NodeId, LeaseGeneration = leaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(childTaskId, retriedRunId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
+
+        worktrees.CreateRequests.Should().BeEmpty("the retry resumes the branch rather than cutting a fresh one");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails retriedRun = (await query.LoadAsync<RunDetails>(retriedRunId, cts.Token))!;
+        retriedRun.BaseCommit.Should().Be(forkPoint,
+            "resuming a branch does not move its fork point, and nothing can re-derive it later");
+        retriedRun.BaseBranch.Should().Be(parentBranch, "the branch still sits on the parent's commits");
+        executor.Request!.Prompt.Should().Contain($"git diff {forkPoint}...HEAD",
+            "and the carried-forward commit is what the resumed session's own hunt reads its delta from");
+    }
+
+    /// <summary>
+    /// A follow-up that resumes a stacked child's branch inherits the base that branch already sits
+    /// on, rather than re-resolving it against the parent's CURRENT state (adversarial review,
+    /// cycle 4). The parent closing out between the reopen and this launch is the case that proves
+    /// it: the resolver answers "the project's base" — right for a fresh cut, since the parent's
+    /// branch is gone — while this branch still physically carries the parent's commits with its
+    /// pull request still aimed at the parent's branch. Recording it as unstacked would disarm
+    /// <c>StackedParentWatch.IsStackedChild</c>, the merge-bar guard and every stacked prompt
+    /// variant for the rest of the branch's life, and the replay actually owed could never dispatch.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_on_a_stacked_child_keeps_its_recorded_base_after_the_parent_closed_out()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid parentTaskId = DomainId.New();
+        Guid parentRunId = DomainId.New();
+        Guid childTaskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string parentBranch = "task/parent-slice-one";
+        const string childBranch = "task/child-slice-two";
+        const string forkPoint = "abc1234def5678";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"stacked-closed-parent-{childTaskId:N}",
+                "/tmp/stacked-closed-parent-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            // The parent, merged and closed out — so the resolver's own answer for this child is
+            // now the project's base branch.
+            SeedDeliveredParent(session, node, projectId, parentTaskId, parentRunId, parentBranch, closedOut: true);
+
+            (TaskAggregate child, object[] childLifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    childTaskId, projectId, "Child slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId,
+                    blockedBy: [parentTaskId], stackedOnTaskId: parentTaskId),
+                node.OwnerId, Now, StackedOnDeliveredParent(parentTaskId));
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed childClaimed =
+                TaskDecider.Claim(child, node.NodeId, node.OwnerId, firstRunId, Now);
+            child.Apply(childClaimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted childCompleted =
+                TaskDecider.Complete(child, firstRunId, PullRequestUrl, Now);
+            child.Apply(childCompleted);
+            // A human granting another attempt (h9k pr resolve) reopens with an ordinary kind —
+            // never StackReplay — so nothing here re-derives the stacked base for the launcher.
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                child, firstRunId, childBranch, "another attempt granted by hand",
+                FollowUpKind.ReviewFeedback, automatic: false, Now, node.OwnerId);
+            child.Apply(reopened);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
+                TaskDecider.Claim(child, node.NodeId, node.OwnerId, followUpRunId, Now);
+            session.Events.StartStream<TaskAggregate>(
+                childTaskId, [.. childLifecycle, childClaimed, childCompleted, reopened, reclaimed]);
+
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(firstRunId, childTaskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/child-wt", childBranch, ExecutorMode.Subscription, Now,
+                    BaseBranch: parentBranch, BaseCommit: forkPoint),
+                new AgentSessionCompleted(firstRunId, Now),
+                new VerificationPassed(firstRunId, Now),
+                new PullRequestOpened(firstRunId, PullRequestUrl, 13, Now),
+                new RunSuperseded(firstRunId, 2, Now));
+
+            session.Store(new TaskLease
+            {
+                Id = childTaskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(childTaskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails followUp = (await query.LoadAsync<RunDetails>(followUpRunId, cts.Token))!;
+        followUp.BaseBranch.Should().Be(parentBranch,
+            "the branch still carries the parent's commits and its pull request is still aimed at the "
+            + "parent's branch — the retarget and replay are owed, not spent");
+        followUp.AwaitsStackedRetarget("main").Should().BeTrue(
+            "so the merge bar still refuses it and the parent watch still watches it");
+        followUp.BaseCommit.Should().Be(forkPoint);
+    }
+
+    /// <summary>
+    /// A parent at the top of the stack: Delivered onto its own pull request, and — when
+    /// <paramref name="closedOut"/> — merged and completed, which is the state that makes
+    /// <see cref="StackedBaseResolver"/> answer "the project's base" for its children.
+    /// </summary>
+    private static void SeedDeliveredParent(
+        IDocumentSession session, NodeContext node, Guid projectId, Guid parentTaskId, Guid parentRunId,
+        string parentBranch, bool closedOut)
+    {
+        (TaskAggregate parent, object[] parentLifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                parentTaskId, projectId, "Parent slice", ["it works"], TaskType.Feature,
+                null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed parentClaimed =
+            TaskDecider.Claim(parent, node.NodeId, node.OwnerId, parentRunId, Now);
+        parent.Apply(parentClaimed);
+        Hall9k.Domain.Features.Tasks.Events.TaskCompleted parentCompleted =
+            TaskDecider.Complete(parent, parentRunId, ParentPullRequestUrl, Now);
+        session.Events.StartStream<TaskAggregate>(
+            parentTaskId, [.. parentLifecycle, parentClaimed, parentCompleted]);
+
+        List<object> parentRun =
+        [
+            new RunDispatched(parentRunId, parentTaskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                "/tmp/parent-wt", parentBranch, ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(parentRunId, Now),
+            new VerificationPassed(parentRunId, Now),
+            new PullRequestOpened(parentRunId, ParentPullRequestUrl, 7, Now),
+        ];
+        if (closedOut)
+        {
+            parentRun.Add(new PullRequestMerged(parentRunId, Now, Now));
+            parentRun.Add(new RunCompleted(parentRunId, Now));
+        }
+
+        session.Events.StartStream<RunAggregate>(parentRunId, [.. parentRun]);
+    }
+
+    /// <summary>The dependency graph a child declared stacked on a Delivered parent is published against.</summary>
+    private static TaskDependencyGraph StackedOnDeliveredParent(Guid parentTaskId) => new([
+        new TaskDependency(
+            parentTaskId, "Parent slice", TaskState.Done, IsClosedOut: false, RunState.AwaitingReview,
+            ParentPullRequestUrl, TaskType.Feature, []),
+    ]);
 
     /// <summary>
     /// The pr-review dispatch branch itself (cycle-1 conformance finding, `PrReviewEngine.cs:50`
