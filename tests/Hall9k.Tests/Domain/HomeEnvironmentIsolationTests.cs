@@ -133,6 +133,22 @@ public sealed class HomeEnvironmentIsolationTests
         // without a caller having to name either directly (task 92da629d).
         "DaemonProcess.Probe(",
         "DaemonProcess.ProbeBootStatus(",
+        // The recipes/ canonical set (task: an operator starts a lean node or project
+        // orchestrator window) is SkillLibraryPaths's own sibling, one level up: same
+        // reaches-PlatformPaths.Home-with-no-redirect shape, found the same way (reading
+        // RecipeSkillPublisher's own callers of RecipeLibraryPaths).
+        "RecipeLibraryPaths.CanonicalDirectory",
+        "RecipeLibraryPaths.LaunchAnchorFile",
+        "RecipeLibraryPaths.SettingsFile",
+        "RecipeLibraryPaths.OrchestratorRecipeFile",
+        "RecipeLibraryPaths.JournalFile",
+        "RecipeLibraryPaths.PublishedManifest",
+        "RecipeLibraryPaths.ClaudeDirectory",
+        "RecipeLibraryPaths.ClaudeSkillsDirectory",
+        "OrchestratorRecipeContext.NodeWorkingDirectory",
+        "RecipeSkillPublisher.PublishCanonical(",
+        "RecipeSkillPublisher.Seed(",
+        "RecipeSkillPublisher.SeedNode(",
     ];
 
     private static readonly Regex ClassDeclaration = new(
