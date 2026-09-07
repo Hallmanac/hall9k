@@ -157,7 +157,8 @@ public static class ProjectAgentsDocument
             $"│   └── {Column("_archive/")}terminal tasks only (closed out or abandoned); moved "
             + "back out automatically if reopened");
         document.AppendLine("├── skills/     skill docs: plain markdown, no vendor framing");
-        document.AppendLine("└── .claude/    generated Claude Code plumbing (skills/ symlinked, never copied)");
+        document.AppendLine("├── .claude/    generated Claude Code plumbing (skills/ symlinked, never copied)");
+        document.AppendLine("└── recipes/    the project orchestrator's launch anchor and settings (see Orchestrator, below)");
         document.AppendLine("```");
         document.AppendLine();
         document.AppendLine(
@@ -204,6 +205,18 @@ public static class ProjectAgentsDocument
         document.AppendLine(
             "A missing tool fails honestly at the moment it is used. `h9k doctor` (backlog 24) checks "
             + "the same list up front, from the same facts.");
+        document.AppendLine();
+
+        document.AppendLine("## Orchestrator");
+        document.AppendLine();
+        document.AppendLine(
+            "If you are an interactive session opened in this directory, you are an ad hoc "
+            + "orchestrator for this project. There is a lean, disposable one already designed for "
+            + "this: `h9k orchestrator project " + project.Name + "` prints its launch line, its "
+            + "recipe path, and its journal, without launching anything itself. If "
+            + $"`{Path.Combine("recipes", "orchestrator.md")}` does not exist yet, run the "
+            + "`orchestrator-recipe-generator` skill from here once to write it, then start a fresh "
+            + "session with the printed launch line instead of continuing in this one.");
         document.AppendLine();
 
         document.AppendLine("## Working here");

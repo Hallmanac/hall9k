@@ -7,6 +7,7 @@ using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Installation;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -209,6 +210,59 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             PublishSkills(skillsSource);
         }
 
+        // Platform-owned, overwritten outright on every install and update (task: an operator
+        // starts a lean node or project orchestrator window) — the same never-hand-edited
+        // discipline as the Postgres compose file just above, not the skill set's
+        // publish/shadow/retire one. h9k orchestrator node prints the launch line that reads it.
+        Directory.CreateDirectory(RecipeLibraryPaths.CanonicalDirectory);
+        LaunchAnchorDocument.Write(RecipeLibraryPaths.LaunchAnchorFile);
+        OperatingSettings nodeOperatingSettings = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+        RecipeSettingsDocument.Write(RecipeLibraryPaths.SettingsFile, OrchestratorModel.ForNode(nodeOperatingSettings));
+        AnsiConsole.MarkupLine(
+            $"[dim]Wrote the node orchestrator's launch anchor to {RecipeLibraryPaths.LaunchAnchorFile.EscapeMarkup()} "
+            + "(h9k orchestrator node prints the launch line).[/]");
+
+        // The one skill this platform ships beside the anchor rather than into the ordinary skill
+        // set (task: an operator starts a lean node or project orchestrator window) — same source,
+        // same publish/shadow/retire reporting as PublishSkills below, a different canonical home.
+        if (skillsSource is not null)
+        {
+            SkillPublication recipeSkill = RecipeSkillPublisher.PublishCanonical(skillsSource);
+            if (recipeSkill.ManifestUnconfirmed)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Could not confirm {RecipeLibraryPaths.PublishedManifest.EscapeMarkup()} this pass "
+                    + "(a lock or a permission problem) — the orchestrator-recipe-generator skill was left "
+                    + "untouched rather than guessed at; the next install retries.[/]");
+            }
+            else
+            {
+                if (recipeSkill.Published.Count > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[green]Recipe skill[/]: {recipeSkill.Published.Count} published to "
+                        + $"{RecipeLibraryPaths.CanonicalDirectory.EscapeMarkup()}");
+                }
+
+                if (recipeSkill.Retired.Count > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Recipe skill retired[/]: {string.Join(", ", recipeSkill.Retired).EscapeMarkup()} — "
+                        + "this install no longer ships it.");
+                }
+
+                if (recipeSkill.LeftAlone.Count > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Recipe skill left alone[/]: {string.Join(", ", recipeSkill.LeftAlone).EscapeMarkup()} "
+                        + "— it was edited since it was published, so yours was kept and the platform's was not "
+                        + "written.");
+                }
+            }
+
+            RecipeSkillPublisher.SeedNode();
+        }
+
         // linkOntoPath defaults true for both real callers; a test passes false to skip
         // it, because this step mutates the REAL process PATH and home directory (a
         // real symlink in a real /opt/homebrew/bin or ~/.local/bin) — there is no safe
@@ -283,6 +337,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         AnsiConsole.MarkupLine(
             "[dim]No background service was registered — the daemon runs on demand (h9k daemon start / stop). "
             + "Start-at-login is a separate, explicit opt-in: h9k daemon autostart enable.[/]");
+
+        AnsiConsole.MarkupLine(OrchestratorPointer.ForNode());
 
         return runningBefore is null
             ? ExitCodes.Ok

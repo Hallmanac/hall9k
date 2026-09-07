@@ -1,4 +1,6 @@
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Spectre.Console;
 
@@ -74,6 +76,15 @@ public static class ProjectHomeRecipe
 
         steps.AddRange(SkillSeeder.Seed(home));
         steps.Add(ProjectAgentsDocument.Write(home, project));
+
+        // Platform-owned, overwritten unconditionally — the same discipline the anchor's own type
+        // doc states (task: an operator starts a lean node or project orchestrator window). The
+        // project's own model override outranks the node's, the ordinary resolution chain.
+        OperatingSettings operatingSettings = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+        steps.Add(LaunchAnchorDocument.WriteStep(ProjectHomePaths.LaunchAnchorFile(home)));
+        steps.Add(RecipeSettingsDocument.WriteStep(
+            ProjectHomePaths.RecipeSettingsFile(home), OrchestratorModel.ForProject(project.Model, operatingSettings)));
+        steps.AddRange(RecipeSkillPublisher.Seed(home));
 
         return steps;
     }
