@@ -124,10 +124,18 @@ internal static class PublishedFacts
             // so the line says that rather than reporting a wait on zero things.
             "Blocked" when task.UnmetDependencies.Count == 0 =>
                 ["blocked, but no unmet dependency is recorded"],
+            // "to close out" is the bar for a plain blocked-by edge and the wrong one for a stacked
+            // parent still on this task's unmet set: that one releases the task at its Delivered
+            // (task: a stacked pull-request edge exists as an explicit opt-in dependency), so the
+            // count line names the mixed bar rather than promising the stricter one for both.
             "Blocked" =>
             [
                 $"waiting on {task.UnmetDependencies.Count} dependenc"
-                    + $"{(task.UnmetDependencies.Count == 1 ? "y" : "ies")} to close out",
+                    + $"{(task.UnmetDependencies.Count == 1 ? "y" : "ies")} to "
+                    + (task.StackedOnTaskId is { } stackedParentId
+                        && task.UnmetDependencies.Contains(stackedParentId)
+                        ? task.UnmetDependencies.Count == 1 ? "reach Delivered (stacked)" : "clear (one stacked)"
+                        : "close out"),
                 .. BlockedBy(task),
             ],
             // A published task in a state this build does not recognize says so rather than

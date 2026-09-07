@@ -51,6 +51,19 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "Revise the set later with h9k task revise --blocked-by")]
         public string[] BlockedBy { get; init; } = [];
 
+        [CommandOption("--stacked-on <TASK>")]
+        [Description(
+            "Declare this task STACKED ON that blocker rather than merely blocked by it: its id or an "
+            + "unambiguous fragment. A stacked task dispatches as soon as its parent reaches Delivered "
+            + "(pull request open, internal review done) instead of waiting for the merge, cuts its "
+            + "branch from the parent's branch head, opens its pull request against that branch — "
+            + "forming a GitHub stack — and is retargeted onto the base branch automatically when the "
+            + "parent merges. Reserve it for slices of one feature that are genuinely cohesive; the "
+            + "tool never infers a stack from an ordinary --blocked-by, and a plain --blocked-by task "
+            + "behaves exactly as before. Implies the dependency edge, so it needs no separate "
+            + "--blocked-by for the same task")]
+        public string? StackedOn { get; init; }
+
         [CommandOption("--type <TYPE>")]
         [Description(
             "feature | bugfix | refactor | chore | research | pr-review. pr-review is set for you by "
@@ -63,7 +76,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         [CommandOption("--file <PATH>")]
         [Description(
-            "Task file: frontmatter (project/type/objective/criteria/model/blocked-by/epic) + markdown "
+            "Task file: frontmatter (project/type/objective/criteria/model/blocked-by/stacked-on/epic) + markdown "
             + "body as agent context")]
         public string? File { get; init; }
 
@@ -165,6 +178,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         string? epic = settings.Epic;
         IReadOnlyList<string> criteria = settings.Criteria;
         IReadOnlyList<string> blockedBy = settings.BlockedBy;
+        string? stackedOn = settings.StackedOn;
 
         AdoptionSource? adoption = ChooseSource(settings);
         if (settings.File.IsNotBlank() && adoption is { } seeded)
@@ -192,6 +206,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             epic ??= file.Epic;
             criteria = criteria.Count > 0 ? criteria : file.Criteria;
             blockedBy = blockedBy.Count > 0 ? blockedBy : file.BlockedBy;
+            stackedOn ??= file.StackedOn;
         }
 
         if (project.IsBlank())
@@ -215,6 +230,18 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // the event, which is where the rule belongs; this asks it early, on the near side of
         // the prompts, because that is where the human's typing sits.
         Guid[] dependencies = await ResolveDependenciesAsync(session, blockedBy, cancellationToken);
+        // A stacked edge is also a dependency edge — the invariant TaskDecider.VetStackedEdge
+        // enforces — so the option implies the blocked-by rather than making the human type the
+        // same id twice. Merged here, on the near side of the prompts, for the same reason every
+        // other refusal above is: an unresolvable --stacked-on must not cost someone the
+        // acceptance criteria they were about to type.
+        Guid? stackedOnId = stackedOn.IsNotBlank()
+            ? await TaskIdResolver.ResolveAsync(session, stackedOn, cancellationToken)
+            : null;
+        if (stackedOnId is { } parentId && !dependencies.Contains(parentId))
+        {
+            dependencies = [.. dependencies, parentId];
+        }
         bool adoptingPullRequest = adoption?.Provider == WorkItemProvider.GitHubPullRequest;
         if (adoptingPullRequest && type.IsBlank())
         {
@@ -250,6 +277,11 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // network call and re-typed criteria and then throw both away.
         Guid taskId = DomainId.New();
         TaskDecider.RefuseCompositionOnPrReview(taskType, reviewStageComposition);
+        // Vetted on the near side of the prompts for the identical reason, and with the identical
+        // arguments the decider itself will re-vet with below: a stacked edge on a pr-review task,
+        // or one naming this task itself, is refused before AdoptAsync's own gh call and the
+        // criteria prompt are paid for.
+        TaskDecider.VetStackedEdge(taskId, stackedOnId, dependencies, taskType);
         Guid? epicId = epic.IsNotBlank()
             ? await EpicIdResolver.ResolveForMembershipAsync(session, epic, projectDetails.Id, cancellationToken)
             : null;
@@ -285,7 +317,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             dependencies,
             epicId: epicId,
             reviewStageComposition: reviewStageComposition,
-            reviewStageCompositionAcknowledged: settings.AcceptReducedReview);
+            reviewStageCompositionAcknowledged: settings.AcceptReducedReview,
+            stackedOnTaskId: stackedOnId);
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         await session.SaveChangesAsync(cancellationToken);

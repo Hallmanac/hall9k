@@ -761,7 +761,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // Printed only once the claim is actually committed: printing it earlier would leave a
         // lost optimistic-concurrency race (the catch above) showing a warning that implies the
         // claim proceeded despite blockers when nothing was in fact committed (review, PR #192).
-        PrintUnmetDependencyWarning("Claiming", task.Id, unmet, carriedForward);
+        PrintUnmetDependencyWarning("Claiming", task.Id, unmet, carriedForward, task.StackedOnTaskId);
 
         // Cut only after the claim is safely committed. A failure from here on has already
         // committed the claim, so leaving the task stuck Claimed with no run record would need
@@ -770,6 +770,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // ordinary Failed waypoint (retry, resolve, or abandon), exactly as
         // RunLauncher.RecordLaunchFailureAsync does for a headless launch failure (adversarial
         // review, cycle 1).
+        // The branch this claim's work sits on top of, resolved before the checkout and recorded
+        // on this run's own RunDispatched below — the same answer RunLauncher resolves for a
+        // headless dispatch, through the same resolver, because an interactive claim of a stacked
+        // task must cut from the same branch and target the same pull-request base the daemon
+        // would (task: a stacked pull-request edge exists as an explicit opt-in dependency).
+        StackedBase stackedBase = await StackedBaseResolver.ResolveAsync(
+            session, taskDetails, project, cancellationToken);
+
         Worktree worktree;
         bool resumesPreviousWork;
         string runDirectory;
@@ -777,7 +785,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         {
             GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
             (worktree, resumesPreviousWork) = await CheckoutFreshOrRetryAsync(
-                worktrees, taskDetails, project, task.Id, runId, cancellationToken);
+                worktrees, taskDetails, project, task.Id, runId, stackedBase.BaseBranch, cancellationToken);
 
             string? existingTaskDirectory = project.HomeDirectory.HasValue
                 ? HomeEntryLookup.FindExisting(ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id)
@@ -816,7 +824,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
                 IsFollowUp: false, Model: AgentModel.Fable, RunDirectory: runDirectory, SessionName: sessionName,
-                ReviewStageComposition: reviewStageComposition));
+                ReviewStageComposition: reviewStageComposition,
+                // Blank whenever the resolved base IS the project's own, which is every ordinary
+                // task — the invariant RunDetails.StackedOnBranch reads, held identically here and
+                // in RunLauncher.
+                BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -892,7 +904,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 + string.Join("; ", unmet.Select(dependency => ExternalText.OneLine(dependency.Describe()))) + ". "
                 + "The platform advises rather than refuses here: "
                 + $"h9k task work {task.Id} --acknowledge-unmet-dependencies to claim it anyway, once you have "
-                + $"confirmed that is what you want. {DescribeUnmetDependencyAdvice(task.Id, unmet)} "
+                + $"confirmed that is what you want. {DescribeUnmetDependencyAdvice(task.Id, unmet, stackedOnTaskId: task.StackedOnTaskId)} "
                 + $"h9k task show {task.Id} for the full picture.");
         }
 
@@ -930,7 +942,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 + "The platform advises rather than refuses here: "
                 + $"h9k task work {task.Id} --acknowledge-unmet-dependencies to claim it anyway, once you have "
                 + $"confirmed that is what you want. "
-                + $"{DescribeUnmetDependencyAdvice(task.Id, unmetDependencies, alreadyAssigned: true)} "
+                + $"{DescribeUnmetDependencyAdvice(task.Id, unmetDependencies, alreadyAssigned: true, stackedOnTaskId: task.StackedOnTaskId)} "
                 + $"h9k task show {task.Id} for the full picture.");
         }
 
@@ -957,10 +969,23 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// be advice that cannot be followed; that case drops the command and keeps only the promise
     /// (or the honest lack of one) behind it.
     /// </summary>
+    /// <param name="stackedOnTaskId">
+    /// The task's own declared stacked edge, null on every unstacked task: what decides whether a
+    /// blocker here is dead for this dependent and which bar releases it (task: a stacked
+    /// pull-request edge exists as an explicit opt-in dependency). A stacked parent reads dead only
+    /// on Failed or Abandoned, since a Done-but-never-merging parent has still delivered the branch
+    /// and pull request this child needs.
+    /// </param>
     internal static string DescribeUnmetDependencyAdvice(
-        Guid taskId, IReadOnlyList<TaskDependency> unmet, bool alreadyAssigned = false)
+        Guid taskId, IReadOnlyList<TaskDependency> unmet, bool alreadyAssigned = false,
+        Guid? stackedOnTaskId = null)
     {
-        IReadOnlyList<TaskDependency> dead = [.. unmet.Where(dependency => dependency.IsDead)];
+        IReadOnlyList<TaskDependency> dead =
+            [.. unmet.Where(dependency => StackedEdgeRules.IsDead(stackedOnTaskId, dependency))];
+        bool waitsOnStackedParent = unmet.Any(dependency => stackedOnTaskId == dependency.Id);
+        string clearsWhen = waitsOnStackedParent
+            ? "the last one clears — its stacked parent at Delivered, any other blocker at its merge"
+            : "the last one's pull request merges";
         if (dead.Count == 0)
         {
             // "It", not "it" (independent pre-PR review, cycle 1, both lenses): the alreadyAssigned
@@ -968,9 +993,9 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // sentence with no antecedent — the non-alreadyAssigned form gets away with lowercase
             // only because it opens with the literal command name.
             return alreadyAssigned
-                ? "It queues itself the moment the last one's pull request merges, or"
+                ? $"It queues itself the moment {clearsWhen}, or"
                 : $"h9k task assign {taskId} to hold it Blocked until they clear (it queues itself the moment "
-                  + "the last one's pull request merges), or";
+                  + $"{clearsWhen}), or";
         }
 
         // ExternalText.OneLine, same reasoning as the refusal message's own Describe() calls
@@ -1002,8 +1027,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// adversarial lens: a carried-forward acknowledgment given against a live blocker that has
     /// since died would otherwise proceed with no honest advice ever printed for it).
     /// </summary>
+    /// <param name="stackedOnTaskId">
+    /// The task's own declared stacked edge, null on every unstacked task — the same reason
+    /// <see cref="DescribeUnmetDependencyAdvice"/> takes one: a stacked parent that reads Done with
+    /// no merge coming has still delivered what this child needs, so printing a death notice for it
+    /// would advise a human about a hold that never applied.
+    /// </param>
     internal static void PrintUnmetDependencyWarning(
-        string verb, Guid taskId, IReadOnlyList<TaskDependency> unmet, bool carriedForward)
+        string verb, Guid taskId, IReadOnlyList<TaskDependency> unmet, bool carriedForward,
+        Guid? stackedOnTaskId = null)
     {
         if (unmet.Count == 0)
         {
@@ -1024,7 +1056,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             AnsiConsole.MarkupLine($"[yellow]  - {ExternalText.OneLineMarkup(dependency.Describe())}[/]");
         }
 
-        foreach (TaskDependency dependency in unmet.Where(dependency => dependency.IsDead))
+        foreach (TaskDependency dependency in unmet.Where(
+            dependency => StackedEdgeRules.IsDead(stackedOnTaskId, dependency)))
         {
             AnsiConsole.MarkupLine($"[yellow]  {ExternalText.OneLineMarkup(dependency.DescribeDeath())}.[/]");
         }
@@ -1108,9 +1141,18 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// <see cref="TaskStartCommand"/>'s own claim shares this exact worktree-resume logic
     /// (task 8a56af78-h9k) rather than duplicating it.
     /// </summary>
+    /// <param name="baseBranch">
+    /// The branch a fresh cut starts from, resolved by the caller through
+    /// <see cref="StackedBaseResolver"/> — the project's own for every ordinary task, a stacked
+    /// child's parent branch instead (task: a stacked pull-request edge exists as an explicit
+    /// opt-in dependency). Passed in rather than read off <paramref name="project"/> here for the
+    /// reason this method's own summary gives about mirroring the daemon: an interactive claim of a
+    /// stacked task must cut from the same branch the daemon would, or the two doors onto the same
+    /// task produce branches with different histories.
+    /// </param>
     internal static async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
         IWorktreeManager worktrees, TaskDetails taskDetails, ProjectDetails project, Guid taskId, Guid runId,
-        CancellationToken cancellationToken)
+        string baseBranch, CancellationToken cancellationToken)
     {
         if (taskDetails.RetryBranch.IsNotBlank())
         {
@@ -1124,13 +1166,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             catch (WorktreeException exception)
             {
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[yellow]Could not resume branch {taskDetails.RetryBranch} ({exception.Message}); starting clean from {project.BaseBranch}.[/]");
+                    $"[yellow]Could not resume branch {taskDetails.RetryBranch} ({exception.Message}); starting clean from {baseBranch}.[/]");
             }
         }
 
         Worktree fresh = await worktrees.CreateAsync(
             new WorktreeRequest(
-                project.RepositoryPath, project.BaseBranch, taskId, runId, taskDetails.Objective,
+                project.RepositoryPath, baseBranch, taskId, runId, taskDetails.Objective,
                 project.BranchNameTemplate, taskDetails.ExternalReference),
             cancellationToken);
         return (fresh, false);

@@ -362,9 +362,22 @@ internal static class AttentionComposer
     /// rather than red.
     /// </summary>
     private static TaskAttention AwaitingReviewAttention(TaskListItem task, RunDetails run, DateTimeOffset now) =>
-        task.PreApproved
-            ? PreApprovedAwaitingReviewAttention(run, now)
-            : AwaitingReviewAttention(run);
+        // Ahead of both arms below, because it outranks whatever either would say: an
+        // un-retargeted stacked pull request is not at the merge bar at all (task: the bar
+        // machinery treats an un-retargeted stacked PR as not at the bar), so "the merge is yours"
+        // and "the daemon merges it on its own" are both false of it — the one would hand the
+        // reader a merge that would land this branch's commits on its parent's branch, and the
+        // other would promise something the daemon's own gate refuses. Waiting-but-handled rather
+        // than red: the retarget arrives on its own the moment the parent merges.
+        run.StackedOnBranch is { } parentBranch
+            ? new TaskAttention(
+                AttentionLevel.WaitingHandled,
+                $"stacked on `{parentBranch}` and its pull request still targets that branch — nothing for "
+                + "you here until its parent merges, which retargets this one onto the base branch and "
+                + "replays it there automatically")
+            : task.PreApproved
+                ? PreApprovedAwaitingReviewAttention(run, now)
+                : AwaitingReviewAttention(run);
 
     /// <summary>
     /// The pre-approved arm (task: a task can be published pre-approved): a synchronous human gate

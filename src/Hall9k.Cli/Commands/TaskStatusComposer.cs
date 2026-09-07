@@ -424,12 +424,19 @@ internal static class TaskStatusComposer
     /// (2026-08-22, pre-PR review cycle 4): <c>h9k task assign</c> listed a hand-resolved blocker
     /// as "(Done)" directly under the sentence saying it had not closed out.
     /// </summary>
-    public static string DependencyMark(TaskDependency dependency) => dependency switch
-    {
-        { Blocks: false } => "[green]closed out[/]",
-        { IsDead: true } => "[red]never closes out[/]",
-        _ => "[yellow]waiting[/]",
-    };
+    /// <summary>
+    /// <paramref name="stackedOnTaskId"/> is the dependent's own declared stacked edge
+    /// (<c>TaskDetails.StackedOnTaskId</c>), null on every unstacked task — what decides whether
+    /// this blocker is met at Delivered or only at true closeout (task: a stacked pull-request edge
+    /// exists as an explicit opt-in dependency). Read through <see cref="StackedEdgeRules"/> rather
+    /// than off the dependency alone, so this mark and the dispatcher's own reading of the same edge
+    /// can never disagree.
+    /// </summary>
+    public static string DependencyMark(TaskDependency dependency, Guid? stackedOnTaskId = null) =>
+        !StackedEdgeRules.Blocks(stackedOnTaskId, dependency) ? "[green]closed out[/]"
+        : StackedEdgeRules.IsDead(stackedOnTaskId, dependency) ? "[red]never closes out[/]"
+        : stackedOnTaskId == dependency.Id ? "[yellow]waiting (stacked: met at Delivered)[/]"
+        : "[yellow]waiting[/]";
 
     /// <summary>
     /// The mapping itself, over the two facts every caller can answer: whether the work was

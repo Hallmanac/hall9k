@@ -10,11 +10,18 @@ public sealed record TaskFileContent(
     string? AgentContext,
     string? Model,
     IReadOnlyList<string> BlockedBy,
-    string? Epic);
+    string? Epic,
+    /// <summary>
+    /// The blocker this task declares itself stacked on, or null when it declares none (task: a
+    /// stacked pull-request edge exists as an explicit opt-in dependency). Single-valued: a branch
+    /// sits on top of exactly one other branch.
+    /// </summary>
+    string? StackedOn = null);
 
 /// <summary>
 /// Parses the h9k task file format: a minimal frontmatter block (project, type, objective,
-/// criteria as "- " items, optional model, optional blocked-by as "- " items, optional epic)
+/// criteria as "- " items, optional model, optional blocked-by as "- " items, optional stacked-on,
+/// optional epic)
 /// followed by a markdown body that becomes the agent context. Deliberately not YAML, since a
 /// handful of known keys don't warrant a dependency.
 /// </summary>
@@ -35,6 +42,7 @@ public static class TaskFileParser
         string? objective = null;
         string? model = null;
         string? epic = null;
+        string? stackedOn = null;
         List<string> criteria = [];
         List<string> blockedBy = [];
         List<string>? list = null;
@@ -81,6 +89,10 @@ public static class TaskFileParser
                 case "epic":
                     epic = value;
                     break;
+                case "stacked-on":
+                case "stackedon":
+                    stackedOn = value;
+                    break;
                 case "criteria":
                     list = criteria;
                     break;
@@ -95,6 +107,7 @@ public static class TaskFileParser
 
         string body = string.Join('\n', lines.Skip(bodyStart)).Trim();
         return new TaskFileContent(
-            project, type, objective, criteria, body.IsBlank() ? null : body, model, blockedBy, epic);
+            project, type, objective, criteria, body.IsBlank() ? null : body, model, blockedBy, epic,
+            stackedOn.IsBlank() ? null : stackedOn);
     }
 }

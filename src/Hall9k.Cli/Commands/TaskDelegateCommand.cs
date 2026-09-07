@@ -409,8 +409,13 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // already holds work" instead, the conservative direction design ruling R6 calls for —
         // the only user-visible effect is which of two true sentences the contractor's prompt
         // states, never a decision that discards anything.
+        // This run's own recorded base, not the project's: a stacked child's branch sits on top of
+        // its parent's, so counting against the project's base would count the PARENT's commits as
+        // this claim's own and read a genuinely empty branch as holding work (task: a stacked
+        // pull-request edge exists as an explicit opt-in dependency).
         int commitsAheadOfBase = await InteractiveWorktreeGit.CountBranchCommitsAsync(
-            run.WorktreePath, project.BaseBranch, cancellationToken, headReference: run.Branch);
+            run.WorktreePath, run.BaseBranchOr(project.BaseBranch), cancellationToken,
+            headReference: run.Branch);
         (IReadOnlyList<string>? modifiedFiles, IReadOnlyList<string> untrackedFiles) =
             await InteractiveWorktreeGit.ListUncommittedFilesAsync(run.WorktreePath, cancellationToken);
         bool resumesPreviousWork = commitsAheadOfBase != 0
