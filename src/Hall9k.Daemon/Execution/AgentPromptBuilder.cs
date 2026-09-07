@@ -852,9 +852,19 @@ public static class AgentPromptBuilder
     /// happens, because the commit has to be present locally before it can be rebased onto.
     /// </para>
     /// </summary>
+    /// <param name="commitStyle">
+    /// The project's own resolved style (project-over-platform, Decisions Log #26), threaded in
+    /// exactly as it is for every sibling follow-up prompt rather than assumed. A replay only ever
+    /// reads it for the gate-fix instruction below, and that instruction is where assuming would
+    /// bite hardest: an append-style project told the narrative rule would have an unreviewed
+    /// mechanical session fold a fix into an owning commit and rewrite this branch's history
+    /// against the convention the project declared (conformance review, cycle 6 — this used to
+    /// hard-code <c>Narrative</c> while <see cref="RunLauncher"/> held the resolved value at the
+    /// call site).
+    /// </param>
     public static string BuildStackReplay(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl,
-        string baseBranch, string upstreamCommit, string ontoCommit)
+        CommitStyle commitStyle, string baseBranch, string upstreamCommit, string ontoCommit)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: replay this stacked branch onto its new base");
@@ -922,7 +932,7 @@ public static class AgentPromptBuilder
         // this session runs — the same reason the replay itself is keyed to a commit rather than a
         // ref (independent pre-PR review, cycle 2, adversarial lens).
         AppendRebaseVerificationRule(
-            prompt, project, CommitStyle.Narrative, baseBranch,
+            prompt, project, commitStyle, baseBranch,
             fold: WorkPromptBuilder.StackedForkPoint(project, baseBranch, ontoCommit) is null
                 ? null
                 : new FoldBoundary(
