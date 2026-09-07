@@ -31,6 +31,7 @@ namespace Hall9k.Daemon.Closeout;
 /// </summary>
 public sealed class PullRequestMonitor(
     CloseoutEngine engine,
+    RemoteStackedParentSweep remoteStackedParents,
     IOptions<DaemonOptions> options,
     ILogger<PullRequestMonitor> logger) : BackgroundService
 {
@@ -47,6 +48,12 @@ public sealed class PullRequestMonitor(
             bool sweepFailed;
             try
             {
+                // Ahead of the closeout sweep, deliberately (task: a stacked child can stand on a
+                // pull request another install owns): a delivered child's retarget and replay read
+                // the observation this records, so looking first means a parent that merged since
+                // the last tick is acted on in this one rather than the next.
+                await SweepRemoteStackedParentsAsync(stoppingToken);
+
                 CloseoutSweepResult sweep = await engine.PollOnceAsync(stoppingToken);
                 sweepFailed = IsSweepFailure(sweep);
                 if (sweep.RunsInspected > 0)
@@ -83,6 +90,45 @@ public sealed class PullRequestMonitor(
                         "Closeout sweep succeeded; poll interval reset to {Interval}", currentInterval);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// One look at every stacked child's remote parent, on this same cadence (Brian's ruling,
+    /// 2026-09-07: the sweep runs on the closeout watcher's cadence, and this monitor is it).
+    /// <para>
+    /// Its failures are deliberately kept out of the backoff verdict this loop computes. That
+    /// verdict answers one question — is <c>gh</c> in trouble for the pull requests this node
+    /// OWNS — and it drives how often those get inspected. A stacked parent is somebody else's
+    /// pull request, watched for a handful of children at most; letting one unreadable number
+    /// widen the interval for every merge this node is waiting on would trade the important poll
+    /// for the incidental one. It never throws out of here either, for the same reason: a failed
+    /// look must not cost this tick its closeout sweep.
+    /// </para>
+    /// </summary>
+    private async Task SweepRemoteStackedParentsAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            RemoteParentSweepResult sweep = await remoteStackedParents.SweepOnceAsync(stoppingToken);
+            if (sweep.ChildrenLooked > 0 || sweep.Failures > 0)
+            {
+                // The failure count rides the same line rather than being left to the per-child
+                // warnings alone: a summary saying it looked at three children while two of them
+                // threw would be a true number and a misleading sentence.
+                logger.LogDebug(
+                    "Remote stacked-parent sweep looked at {Count} child(ren), recorded {Recorded} new "
+                    + "observation(s), {Failures} failed",
+                    sweep.ChildrenLooked, sweep.ObservationsRecorded, sweep.Failures);
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Remote stacked-parent sweep failed; will retry next tick");
         }
     }
 

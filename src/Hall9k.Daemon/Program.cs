@@ -163,6 +163,13 @@ builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
 // edge exists as an explicit opt-in dependency) — its own seam so CloseoutEngine's stacked path is
 // testable against an observation rather than a real repository.
 builder.Services.AddSingleton<StackedParentWatch>();
+// The single reader of a stacked child's REMOTE parent — the pull request another install owns
+// (task: a stacked child can stand on a pull request another install owns). Its own seam for the
+// same reason the watch has one, and one implementation behind it so nothing else in the daemon
+// reaches that pull request on its own.
+builder.Services.AddSingleton<IRemoteParentReader>(services =>
+    new GitHubRemoteParentReader(services.GetRequiredService<ProcessRunner>()));
+builder.Services.AddSingleton<RemoteStackedParentSweep>();
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
