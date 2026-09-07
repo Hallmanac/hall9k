@@ -3041,11 +3041,13 @@ public sealed class ReviewEngine(
     /// (<c>RunSupervisor.ParkedOnThreadDisputeAsync</c>): no review pass ever ran ahead of it
     /// (<see cref="RunAggregate.ReviewCycle"/> is still 0 — cycle numbers start at 1, at the
     /// first <c>ReviewDispatched</c>), so pointing at <see cref="RunPaths.ReviewFindingsFile"/>
-    /// like an ordinary disputed cycle would name a file nothing ever wrote, for either kind of
-    /// pre-gate dispute — a rebase conflict or a review thread. <see cref="RecordFixResultAsync"/>
+    /// like an ordinary disputed cycle would name a file nothing ever wrote, for any of the three
+    /// kinds of pre-gate dispute — a rebase conflict, a review thread, or a human reviewer's
+    /// changes-requested finding. <see cref="RecordFixResultAsync"/>
     /// saves this dispute's own closing summary under the same well-known dispute-file name the
-    /// first park used (<see cref="RunPaths.RebaseConflictDisputeFile"/> or
-    /// <see cref="RunPaths.ReviewThreadDisputeFile"/>), so a human checks one path for a cycle-0
+    /// first park used, and this reason names it through the same
+    /// <see cref="RunPaths.FollowUpDisputeFile"/> selector rather than a second conditional of its
+    /// own, so a human checks one path for a cycle-0
     /// dispute regardless of which attempt it came from. <c>ReviewCycle == 0</c> is also what
     /// tells this apart from a later, ordinary review-cycle dispute on the same task — that one
     /// has already run at least one review pass, so its cycle is never 0.
@@ -3062,17 +3064,34 @@ public sealed class ReviewEngine(
                 "Decide between them, then resolve with h9k review resolve.";
         }
 
-        return context.Task.FollowUpKind == FollowUpKind.Rebase
-            ? "A resumed rebase follow-up still could not honestly resolve the conflict — both sides " +
-              "change the same behavior, not just the same lines. " +
-              $"Conflicting files and its position: {RunPaths.RebaseConflictDisputeFile(runDirectory)}. " +
-              "Decide the conflict yourself, then resolve with h9k review resolve --needs-fixes " +
-              "\"<your resolution>\" — nothing has been pushed. (--merge-ready is refused here: " +
-              "nothing has been rebased yet.)"
-            : "A resumed follow-up still could not honestly judge a review thread — as not-a-defect, " +
-              "as human territory, or as wrongly graded. No review pass has run yet, so its position " +
-              $"is: {RunPaths.ReviewThreadDisputeFile(runDirectory)}. Decide between it and the " +
-              "fix session's own read, then resolve with h9k review resolve.";
+        string position = RunPaths.FollowUpDisputeFile(runDirectory, context.Task.FollowUpKind);
+        return context.Task.FollowUpKind switch
+        {
+            _ when context.Task.FollowUpKind == FollowUpKind.Rebase =>
+                "A resumed rebase follow-up still could not honestly resolve the conflict — both sides " +
+                "change the same behavior, not just the same lines. " +
+                $"Conflicting files and its position: {position}. " +
+                "Decide the conflict yourself, then resolve with h9k review resolve --needs-fixes " +
+                "\"<your resolution>\" — nothing has been pushed. (--merge-ready is refused here: " +
+                "nothing has been rebased yet.)",
+            // A resumed changes-requested lap is dispatched over the human's own resolution, and
+            // its prompt is the fix-findings one rather than the changes-requested one — so it was
+            // never taught the DISAGREEMENT block and nothing here reads one. What it disputed is
+            // the human's instruction, not a fresh reply to the reviewer, which is why this park
+            // takes an ordinary verdict and no reply choice (RunAggregate.Apply(ReviewParkResolved)
+            // cleared ParkedOnReviewDisagreement when the first park resolved). The reviewer has
+            // still heard nothing, and saying so is the point.
+            _ when context.Task.FollowUpKind == FollowUpKind.ReviewRequestedChanges =>
+                "A resumed changes-requested fix lap still could not accept the reviewer's finding, even " +
+                "with your resolution in hand. No review pass has run yet, so its position is: " +
+                $"{position}. The reviewer has still heard nothing — decide between it and your own read, " +
+                "then resolve with h9k review resolve.",
+            _ =>
+                "A resumed follow-up still could not honestly judge a review thread — as not-a-defect, " +
+                "as human territory, or as wrongly graded. No review pass has run yet, so its position " +
+                $"is: {position}. Decide between it and the " +
+                "fix session's own read, then resolve with h9k review resolve.",
+        };
     }
 
     /// <summary>
@@ -4229,9 +4248,13 @@ public sealed class ReviewEngine(
             // name the first park used, so a human dealing with a cycle-0 dispute always finds every
             // attempt at the one path — appended, per RunPaths.AppendDisputePositionAsync, so the
             // earlier attempt's position survives instead of being overwritten by this one.
-            string disputeFile = followUpKind == FollowUpKind.Rebase
-                ? RunPaths.RebaseConflictDisputeFile(runDirectory)
-                : RunPaths.ReviewThreadDisputeFile(runDirectory);
+            // The same selector the park itself used (RunPaths.FollowUpDisputeFile), not a second
+            // conditional: the park's reason already named a file, and writing this attempt's
+            // position somewhere else would leave the human reading only the first position at the
+            // path they were pointed at. That mattered the moment a third kind existed — a
+            // changes-requested lap's disagreement park names its own file, and this site knew
+            // only two (self-review, this task).
+            string disputeFile = RunPaths.FollowUpDisputeFile(runDirectory, followUpKind);
             Exception? failure = await RunPaths.AppendDisputePositionAsync(disputeFile, summary, cancellationToken);
             if (failure is not null)
             {

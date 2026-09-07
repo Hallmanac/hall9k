@@ -282,6 +282,20 @@ public static class RunPaths
         Path.Combine(runDirectory, "review-thread-dispute.md");
 
     /// <summary>
+    /// A changes-requested fix lap's closing position when it disagreed with one of a human
+    /// reviewer's findings (task: a changes-requested pull-request review from a human becomes a
+    /// fix lap) — the reviewer's point, the session's reasoning, and the reply it drafted, which
+    /// is what the park points the implementer at. A sibling of
+    /// <see cref="ReviewThreadDisputeFile"/> rather than a reuse of it: that file holds a dispute
+    /// the session already argued in-thread, and this one holds a reply nobody has sent, so
+    /// pointing a human at the same path would leave them unable to tell what the reviewer has
+    /// already seen from what they have not. Appended the same way across repeated disputes on the
+    /// same run.
+    /// </summary>
+    public static string ChangesRequestedDisagreementFile(string runDirectory) =>
+        Path.Combine(runDirectory, "changes-requested-disagreement.md");
+
+    /// <summary>
     /// A rebase follow-up's closing position when it disputed a merge conflict rather than
     /// resolving it (backlog 44) — the conflicting files and both positions, which is what a
     /// park points the human at. The rebase counterpart of <see cref="ReviewThreadDisputeFile"/>,
@@ -301,6 +315,26 @@ public static class RunPaths
     /// </summary>
     public static string PreFinalPassRebaseDisputeFile(string runDirectory) =>
         Path.Combine(runDirectory, "pre-final-pass-rebase-dispute.md");
+
+    /// <summary>
+    /// Which of the three follow-up dispute files a park's positions belong in, chosen from the
+    /// follow-up kind that asked the question. One implementation rather than a conditional at
+    /// each site: three places decide this — the park itself (<c>RunSupervisor</c>, twice, for the
+    /// live directory and the sweep-anticipated one) and a resumed pre-gate dispute that disputes
+    /// again (<c>ReviewEngine</c>) — and if any of them disagrees, the human is pointed at one
+    /// file while the second position is written to another.
+    /// <para>
+    /// <see cref="PreFinalPassRebaseDisputeFile"/> is deliberately not one of the three: that
+    /// dispute is dispatched mid-run with no follow-up kind to key on at all, so it is chosen
+    /// where it happens rather than here.
+    /// </para>
+    /// </summary>
+    public static string FollowUpDisputeFile(string runDirectory, Features.Tasks.FollowUpKind followUpKind) =>
+        followUpKind == Features.Tasks.FollowUpKind.ReviewRequestedChanges
+            ? ChangesRequestedDisagreementFile(runDirectory)
+            : followUpKind == Features.Tasks.FollowUpKind.Rebase
+                ? RebaseConflictDisputeFile(runDirectory)
+                : ReviewThreadDisputeFile(runDirectory);
 
     /// <summary>
     /// Appends one dispute's closing position to the well-known path
