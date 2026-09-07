@@ -62,4 +62,12 @@ public sealed record TaskRevised(
     /// contract field here, and never inferred: dropping the edge leaves the blocked-by dependency
     /// itself untouched, because those are two separate declarations.
     /// </summary>
-    Optional<Guid?> StackedOnTaskId = default);
+    Optional<Guid?> StackedOnTaskId = default,
+    /// <summary>
+    /// <see cref="StackedOnTaskId"/>'s remote twin: absent leaves the edge alone, present with a
+    /// value declares this task stacked on that pull request on GitHub, present with null drops the
+    /// edge (task: a stacked child can stand on a pull request another install owns). Draft-only
+    /// like its twin, and mutually exclusive with it — both enforced by
+    /// <see cref="Handlers.TaskDecider.Revise"/>.
+    /// </summary>
+    Optional<int?> StackedOnPullRequestNumber = default);

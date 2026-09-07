@@ -123,12 +123,33 @@ public sealed class TaskListItem
     /// </summary>
     public Guid? StackedOnTaskId { get; set; }
     /// <summary>
+    /// The pull request on GitHub this task is stacked on, or null — mirrors
+    /// <see cref="TaskAggregate.StackedOnPullRequestNumber"/> (task: a stacked child can stand on a
+    /// pull request another install owns). This IS a key something queries by: the closeout
+    /// watcher's own remote-parent sweep finds the children to look at by it, because an
+    /// undispatched child has no run whose recorded base could give it away the way
+    /// <c>StackedParentWatch.IsStackedChild</c> recognises a delivered one.
+    /// </summary>
+    public int? StackedOnPullRequestNumber { get; set; }
+    /// <summary>The last state that pull request was observed in; Unknown when it never has been.</summary>
+    public RemoteParentState RemoteStackedParentState { get; set; } = RemoteParentState.Unknown;
+    /// <summary>The branch that pull request opens FROM, as last observed — what a fresh cut starts from.</summary>
+    public string RemoteStackedParentHeadBranch { get; set; } = string.Empty;
+    /// <summary>Why the remote parent needs a human rather than more patience, or null.</summary>
+    public string? RemoteStackedParentHoldReason { get; set; }
+    /// <summary>
     /// Blockers observed dead: they will never close out on their own. Oldest first, so the
     /// last entry is the newest observation — the one <see cref="DependencyFailureReason"/> carries.
     /// </summary>
     public List<Guid> DeadDependencies { get; set; } = [];
     /// <summary>Why the newest dead blocker died: what makes h9k status read this task as NeedsHuman.</summary>
     public string? DependencyFailureReason { get; set; }
+    /// <summary>
+    /// Why this Blocked task needs a human, whichever of the two holds produced it — the twin of
+    /// <see cref="TaskDetails.BlockingHoldReason"/>, so the board and the task surface read the
+    /// same one.
+    /// </summary>
+    public string? BlockingHoldReason => DependencyFailureReason ?? RemoteStackedParentHoldReason;
     /// <summary>
     /// What was recorded about the failure, so a Failed row on the board can say why rather
     /// than showing a bare word (Decisions Log #66). It rides here beside
@@ -178,6 +199,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt,
         BlockedBy = [.. @event.Data.BlockedBy ?? []],
         StackedOnTaskId = @event.Data.StackedOnTaskId,
+        StackedOnPullRequestNumber = @event.Data.StackedOnPullRequestNumber,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
         AddedAt = @event.Data.AddedAt,
         PreApproval = @event.Data.EffectivePreApproval,
@@ -214,6 +236,16 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
             view.StackedOnTaskId = @event.Data.StackedOnTaskId.Value;
         }
 
+        // Repointing the remote edge discards what was observed about the parent it no longer
+        // names, for the reason TaskAggregate.Apply(TaskRevised) gives.
+        if (@event.Data.StackedOnPullRequestNumber.HasValue)
+        {
+            view.StackedOnPullRequestNumber = @event.Data.StackedOnPullRequestNumber.Value;
+            view.RemoteStackedParentState = RemoteParentState.Unknown;
+            view.RemoteStackedParentHeadBranch = string.Empty;
+            view.RemoteStackedParentHoldReason = null;
+        }
+
         if (@event.Data.Type.HasValue)
         {
             view.Type = @event.Data.Type.Value ?? TaskType.Unknown;
@@ -240,7 +272,10 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
-        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Both halves of the hold, exactly as TaskAggregate.Apply(TaskAssigned) asks them.
+        view.State = view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view)
+            ? TaskState.Queued
+            : TaskState.Blocked;
     }
 
     public void Apply(IEvent<TaskUnassigned> @event, TaskListItem view)
@@ -277,9 +312,51 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
             view.DependencyFailureReason = SurvivingReason(view);
         }
 
-        if (view.UnmetDependencies.Count == 0)
+        if (view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view))
         {
             view.State = TaskState.Queued;
+        }
+    }
+
+    /// <summary>
+    /// The mirror of <see cref="TaskAggregate.AwaitsRemoteStackedParent"/>, asked at every one of
+    /// this row's Blocked -> Queued doors — and, at the observation door, in the Queued -> Blocked
+    /// direction too — so the board and the aggregate can never disagree about whether a stacked
+    /// child is free to dispatch.
+    /// </summary>
+    private static bool AwaitsRemoteStackedParent(TaskListItem view) =>
+        view.StackedOnPullRequestNumber is > 0 && !view.RemoteStackedParentState.ReleasesChild;
+
+    /// <summary>
+    /// One look at the pull request this task is stacked on (task: a stacked child can stand on a
+    /// pull request another install owns) — the row twin of
+    /// <see cref="TaskAggregate.Apply(Events.RemoteStackedParentObserved)"/>, carrying only what a
+    /// board row needs: the state, the head branch a fresh cut starts from, and the hold.
+    /// </summary>
+    public void Apply(IEvent<RemoteStackedParentObserved> @event, TaskListItem view)
+    {
+        if (view.StackedOnPullRequestNumber != @event.Data.PullRequestNumber)
+        {
+            return;
+        }
+
+        view.RemoteStackedParentState = @event.Data.State;
+        view.RemoteStackedParentHeadBranch = @event.Data.HeadBranch;
+        view.RemoteStackedParentHoldReason = RemoteStackedParentHold.ReasonFor(
+            @event.Data.State, @event.Data.PullRequestNumber);
+
+        // Both halves of the one door that swings both ways, exactly as the aggregate's own
+        // Apply(RemoteStackedParentObserved) swings it and for the reason spelled out there — and
+        // this row is the one the dispatcher's Queued query reads, so the half that takes a release
+        // back is what actually keeps an undispatched child off a dead parent.
+        if (view.State == TaskState.Blocked && view.UnmetDependencies.Count == 0
+            && !AwaitsRemoteStackedParent(view))
+        {
+            view.State = TaskState.Queued;
+        }
+        else if (view.State == TaskState.Queued && AwaitsRemoteStackedParent(view))
+        {
+            view.State = TaskState.Blocked;
         }
     }
 

@@ -138,12 +138,53 @@ public sealed class TaskDetails
     /// </summary>
     public Guid? StackedOnTaskId { get; set; }
     /// <summary>
+    /// The pull request on GitHub this task is stacked on, or null — mirrors
+    /// <see cref="TaskAggregate.StackedOnPullRequestNumber"/> (task: a stacked child can stand on a
+    /// pull request another install owns). Never set alongside <see cref="StackedOnTaskId"/>, and
+    /// deliberately NOT a member of <see cref="BlockedBy"/>: there is no local task to name.
+    /// </summary>
+    public int? StackedOnPullRequestNumber { get; set; }
+    /// <summary>The last state the closeout watcher's sweep observed that pull request in; Unknown when it never has.</summary>
+    public RemoteParentState RemoteStackedParentState { get; set; } = RemoteParentState.Unknown;
+    /// <summary>The branch that pull request opens FROM, as last observed — what this child's branch was cut from.</summary>
+    public string RemoteStackedParentHeadBranch { get; set; } = string.Empty;
+    /// <summary>That head branch's commit, as last observed; blank when none was reported.</summary>
+    public string RemoteStackedParentHeadCommit { get; set; } = string.Empty;
+    /// <summary>The branch that pull request opens INTO, as last observed.</summary>
+    public string RemoteStackedParentBaseBranch { get; set; } = string.Empty;
+    /// <summary>That pull request's own URL, as last observed; blank when none was reported.</summary>
+    public string RemoteStackedParentUrl { get; set; } = string.Empty;
+    /// <summary>
+    /// The issue or tracker item that pull request says it closes, in canonical
+    /// <c>provider:reference</c> form, or null when it names none — an ordinary shape, not a gap.
+    /// <c>h9k task show</c> names a local task carrying the same reference when one exists.
+    /// </summary>
+    public string? RemoteStackedParentWorkItem { get; set; }
+    /// <summary>
+    /// When the reading above was taken, or null when the parent has never been observed — when it
+    /// last CHANGED, not when the sweep last looked, since an unchanged look appends nothing
+    /// (mirrors <see cref="TaskAggregate.RemoteStackedParentObservedAt"/>).
+    /// </summary>
+    public DateTimeOffset? RemoteStackedParentObservedAt { get; set; }
+    /// <summary>What that look saw, in a sentence.</summary>
+    public string? RemoteStackedParentDetail { get; set; }
+    /// <summary>Why the remote parent needs a human rather than more patience, or null — mirrors <see cref="TaskAggregate.RemoteStackedParentHoldReason"/>.</summary>
+    public string? RemoteStackedParentHoldReason { get; set; }
+    /// <summary>
     /// Blockers observed dead: they will never close out on their own. Oldest first, so the
     /// last entry is the newest observation — the one <see cref="DependencyFailureReason"/> carries.
     /// </summary>
     public List<Guid> DeadDependencies { get; set; } = [];
     /// <summary>Why the newest dead blocker died — the reason h9k task show puts in front of the human.</summary>
     public string? DependencyFailureReason { get; set; }
+    /// <summary>
+    /// Why this Blocked task needs a human, whichever of the two holds produced it — a dead local
+    /// blocker or a stacked parent pull request that closed unmerged. One property so every
+    /// surface that renders a hold reads the same one and cannot show a dead parent for one form
+    /// and silence for the other. Null when nothing needs a human, which is every ordinarily
+    /// waiting task.
+    /// </summary>
+    public string? BlockingHoldReason => DependencyFailureReason ?? RemoteStackedParentHoldReason;
     /// <summary>
     /// What was recorded about each dead blocker, kept per dependency the way the aggregate
     /// keeps it, so this read model answers "which reason survives" from the same records and
@@ -328,6 +369,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt,
         BlockedBy = [.. @event.Data.BlockedBy ?? []],
         StackedOnTaskId = @event.Data.StackedOnTaskId,
+        StackedOnPullRequestNumber = @event.Data.StackedOnPullRequestNumber,
         AgentContext = @event.Data.AgentContext,
         Constraints = @event.Data.Constraints,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
@@ -389,6 +431,23 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         if (@event.Data.StackedOnTaskId.HasValue)
         {
             view.StackedOnTaskId = @event.Data.StackedOnTaskId.Value;
+        }
+
+        // Repointing the remote edge discards what was observed about the parent it no longer
+        // names, for the reason TaskAggregate.Apply(TaskRevised) gives: those facts describe a
+        // different pull request.
+        if (@event.Data.StackedOnPullRequestNumber.HasValue)
+        {
+            view.StackedOnPullRequestNumber = @event.Data.StackedOnPullRequestNumber.Value;
+            view.RemoteStackedParentState = RemoteParentState.Unknown;
+            view.RemoteStackedParentHeadBranch = string.Empty;
+            view.RemoteStackedParentHeadCommit = string.Empty;
+            view.RemoteStackedParentBaseBranch = string.Empty;
+            view.RemoteStackedParentUrl = string.Empty;
+            view.RemoteStackedParentWorkItem = null;
+            view.RemoteStackedParentObservedAt = null;
+            view.RemoteStackedParentDetail = null;
+            view.RemoteStackedParentHoldReason = null;
         }
 
         if (@event.Data.Type.HasValue)
@@ -458,7 +517,12 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.DeadDependencies = [];
         view.DeadDependencyReasons = [];
         view.DependencyFailureReason = null;
-        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // Both halves of the hold, exactly as TaskAggregate.Apply(TaskAssigned) asks them — and
+        // the remote observation is deliberately left standing while the dependency bookkeeping
+        // above is reset, for the reason that method's own comment gives.
+        view.State = view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view)
+            ? TaskState.Queued
+            : TaskState.Blocked;
     }
 
     public void Apply(IEvent<TaskUnassigned> @event, TaskDetails view)
@@ -495,9 +559,57 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
             view.DependencyFailureReason = SurvivingReason(view);
         }
 
-        if (view.UnmetDependencies.Count == 0)
+        if (view.UnmetDependencies.Count == 0 && !AwaitsRemoteStackedParent(view))
         {
             view.State = TaskState.Queued;
+        }
+    }
+
+    /// <summary>
+    /// The mirror of <see cref="TaskAggregate.AwaitsRemoteStackedParent"/>, asked at every one of
+    /// this view's three Blocked -> Queued doors — and, at the observation door, in the
+    /// Queued -> Blocked direction too — so the projection and the aggregate can never disagree
+    /// about whether a stacked child is free to dispatch.
+    /// </summary>
+    private static bool AwaitsRemoteStackedParent(TaskDetails view) =>
+        view.StackedOnPullRequestNumber is > 0 && !view.RemoteStackedParentState.ReleasesChild;
+
+    /// <summary>
+    /// One look at the pull request this task is stacked on (task: a stacked child can stand on a
+    /// pull request another install owns) — the projection twin of
+    /// <see cref="TaskAggregate.Apply(Events.RemoteStackedParentObserved)"/>, down to dropping an
+    /// observation of a pull request this task no longer declares.
+    /// </summary>
+    public void Apply(IEvent<RemoteStackedParentObserved> @event, TaskDetails view)
+    {
+        if (view.StackedOnPullRequestNumber != @event.Data.PullRequestNumber)
+        {
+            return;
+        }
+
+        view.RemoteStackedParentState = @event.Data.State;
+        view.RemoteStackedParentHeadBranch = @event.Data.HeadBranch;
+        view.RemoteStackedParentHeadCommit = @event.Data.HeadCommit;
+        view.RemoteStackedParentBaseBranch = @event.Data.BaseBranch;
+        view.RemoteStackedParentUrl = @event.Data.Url;
+        view.RemoteStackedParentWorkItem = @event.Data.LinkedWorkItem?.ToString();
+        view.RemoteStackedParentObservedAt = @event.Data.ObservedAt;
+        view.RemoteStackedParentDetail = @event.Data.Detail;
+        view.RemoteStackedParentHoldReason = RemoteStackedParentHold.ReasonFor(
+            @event.Data.State, @event.Data.PullRequestNumber);
+
+        // Both halves of the one door that swings both ways, exactly as the aggregate's own
+        // Apply(RemoteStackedParentObserved) swings it and for the reason spelled out there: a
+        // Queued child has no live run, so the release has not been spent — and taking it back is a
+        // run that never lands on the project's base carrying none of its parent's work.
+        if (view.State == TaskState.Blocked && view.UnmetDependencies.Count == 0
+            && !AwaitsRemoteStackedParent(view))
+        {
+            view.State = TaskState.Queued;
+        }
+        else if (view.State == TaskState.Queued && AwaitsRemoteStackedParent(view))
+        {
+            view.State = TaskState.Blocked;
         }
     }
 

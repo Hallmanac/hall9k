@@ -77,11 +77,22 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "include the parent there too if you pass both")]
         public string? StackedOn { get; init; }
 
+        [CommandOption("--stacked-on-pull-request <NUMBER>")]
+        [Description(
+            "Declare this task STACKED ON a pull request another install owns rather than on a task in "
+            + "this install's records (see h9k task add --stacked-on-pull-request for what the edge "
+            + "changes): the number as GitHub shows it (264 or #264). Carries no dependency edge — there "
+            + "is no local task to name — so nothing joins --blocked-by. Mutually exclusive with "
+            + "--stacked-on in one call, but it needs no --clear-stacked-on to replace one: declaring a "
+            + "parent replaces whatever this task stood on, across both forms")]
+        public string? StackedOnPullRequest { get; init; }
+
         [CommandOption("--clear-stacked-on")]
         [Description(
-            "Drop the stacked edge, leaving the task merely blocked by that task: its branch is cut "
-            + "from the base branch and its pull request targets the base branch again. The "
-            + "blocked-by dependency itself is untouched — clear that separately if you want it gone")]
+            "Drop the stacked edge, in whichever of its two forms this task holds: its branch is cut "
+            + "from the base branch and its pull request targets the base branch again. A local "
+            + "parent's blocked-by dependency itself is untouched — clear that separately if you want "
+            + "it gone")]
         public bool ClearStackedOn { get; init; }
 
         [CommandOption("--file <PATH>")]
@@ -166,6 +177,26 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 "--clear-stacked-on and --stacked-on say opposite things; pass one.");
         }
 
+        // Refused here rather than left to the decider, which would refuse it too: this command
+        // resolves --stacked-on against the task store first, so a mistyped fragment would come
+        // back as a not-found before the human was ever told the two options cannot travel
+        // together.
+        if (settings.StackedOn.IsNotBlank() && settings.StackedOnPullRequest.IsNotBlank())
+        {
+            throw new DomainValidationException(
+                "--stacked-on and --stacked-on-pull-request name two parents, and a child stands on one; "
+                + "pass one. Use --stacked-on-pull-request when the parent's run lives on somebody else's "
+                + "node.");
+        }
+
+        if (settings.ClearStackedOn && settings.StackedOnPullRequest.IsNotBlank())
+        {
+            throw new DomainValidationException(
+                "--clear-stacked-on and --stacked-on-pull-request say opposite things; pass one. Declaring a "
+                + "parent already replaces whatever this task was stacked on, in either form, so a swap "
+                + "needs only the new declaration.");
+        }
+
         if (settings.QueueFirst && settings.ClearQueueFirst)
         {
             throw new DomainValidationException(
@@ -186,6 +217,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         IReadOnlyList<string> criteria = settings.Criteria;
         IReadOnlyList<string> blockedBy = settings.BlockedBy;
         string? stackedOn = settings.StackedOn;
+        string? stackedOnPullRequest = settings.StackedOnPullRequest;
 
         if (settings.File.IsNotBlank())
         {
@@ -212,6 +244,17 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             if (!settings.ClearStackedOn)
             {
                 stackedOn ??= file.StackedOn;
+                stackedOnPullRequest ??= file.StackedOnPullRequest;
+            }
+
+            // The file can name both forms where the command line could not, and the same refusal
+            // applies: a child stands on one parent. Refused here, before either is resolved, for
+            // the reason the command-line guard above gives.
+            if (stackedOn.IsNotBlank() && stackedOnPullRequest.IsNotBlank())
+            {
+                throw new DomainValidationException(
+                    "stacked-on and stacked-on-pull-request name two parents, and a child stands on one; "
+                    + "declare one.");
             }
         }
 
@@ -235,9 +278,26 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         // it is actually missing, so a revision that changes nothing about the set still records
         // nothing about it.
         Optional<Guid?> stackedOnTaskId = Optional<Guid?>.None;
+        // Parsed before the clear below reads it, and never alongside one — the guards above
+        // already refused that pairing.
+        Optional<int?> stackedOnPullRequestNumber =
+            StackedPullRequestOption.Parse(stackedOnPullRequest) is { } declaredNumber
+                ? Optional<int?>.Of(declaredNumber)
+                : Optional<int?>.None;
         if (settings.ClearStackedOn)
         {
-            stackedOnTaskId = Optional<Guid?>.Of(null);
+            // Whichever form this task actually holds, so a clear on a remotely stacked child does
+            // not record a local edge it never had — and so a clear on an unstacked task still
+            // records something, which is what keeps `--clear-stacked-on` alone from tripping the
+            // decider's nothing-to-revise guard, exactly as it did before the second form existed.
+            if (task.IsStackedOnRemotePullRequest)
+            {
+                stackedOnPullRequestNumber = Optional<int?>.Of(null);
+            }
+            else
+            {
+                stackedOnTaskId = Optional<Guid?>.Of(null);
+            }
         }
         else if (stackedOn.IsNotBlank())
         {
@@ -295,7 +355,8 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 : Optional<string?>.None,
             settings.AcceptReducedReview,
             settings.ClearInteractiveMode,
-            stackedOnTaskId);
+            stackedOnTaskId,
+            stackedOnPullRequestNumber);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
@@ -492,6 +553,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         {
             yield return revised.StackedOnTaskId.Value is { } parentId
                 ? $"stacked on {TaskListCommand.ShortId(parentId)}"
+                : "stacked edge cleared";
+        }
+
+        if (revised.StackedOnPullRequestNumber.HasValue)
+        {
+            yield return revised.StackedOnPullRequestNumber.Value is { } parentNumber
+                ? $"stacked on pull request #{parentNumber}"
                 : "stacked edge cleared";
         }
 

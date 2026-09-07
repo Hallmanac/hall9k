@@ -79,6 +79,15 @@ public static class TaskDocumentRenderer
             document.AppendLine($"stacked-on: {DomainId.Short(stackedOnTaskId)}");
         }
 
+        // The other form of the same declaration (task: a stacked child can stand on a pull request
+        // another install owns), rendered under its own key rather than as a number under
+        // stacked-on's: a reader — and TaskFileParser, which reads this format back — has to be
+        // able to tell a task id from a pull request number without inferring it from the shape.
+        if (task.StackedOnPullRequestNumber is { } stackedOnPullRequest)
+        {
+            document.AppendLine($"stacked-on-pull-request: {stackedOnPullRequest}");
+        }
+
         if (task.ExternalReference.IsNotBlank())
         {
             document.AppendLine($"external-reference: {OneLine(task.ExternalReference)}");

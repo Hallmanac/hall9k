@@ -328,6 +328,94 @@ public sealed class TaskAggregate
         StackedOnTaskId is { } parentId && parentId == dependencyId;
 
     /// <summary>
+    /// The pull request this task is stacked on when its parent lives on GitHub rather than in this
+    /// install's records, or null when it is not stacked that way — which is every task's default
+    /// (task: a stacked child can stand on a pull request another install owns).
+    /// <see cref="StackedOnTaskId"/>'s alternative, never its companion: exactly one of the two can
+    /// be set, an invariant <see cref="Handlers.TaskDecider.VetStackedEdge"/> enforces rather than
+    /// repairs.
+    /// <para>
+    /// It carries no <see cref="BlockedBy"/> edge, and cannot: there is no local task to name, so
+    /// there is nothing for the publish-time cycle walk or the unmet-dependency bookkeeping to see.
+    /// What holds the child instead is <see cref="RemoteStackedParentState"/> — the last thing the
+    /// closeout watcher's sweep actually observed about that pull request.
+    /// </para>
+    /// </summary>
+    public int? StackedOnPullRequestNumber { get; private set; }
+
+    /// <summary>Whether this task's parent is a pull request on GitHub rather than a local task.</summary>
+    public bool IsStackedOnRemotePullRequest => StackedOnPullRequestNumber is > 0;
+
+    /// <summary>
+    /// The last state the sweep observed that pull request in, or <see cref="RemoteParentState.Unknown"/>
+    /// when it has never been looked at (or every look so far failed). Never a guess: an unobserved
+    /// parent reads as unknown, and the child waits.
+    /// </summary>
+    public RemoteParentState RemoteStackedParentState { get; private set; } = RemoteParentState.Unknown;
+
+    /// <summary>The branch that pull request opens FROM, as last observed — what this child's own branch is cut from.</summary>
+    public string RemoteStackedParentHeadBranch { get; private set; } = string.Empty;
+
+    /// <summary>That head branch's commit, as last observed; blank when none was reported.</summary>
+    public string RemoteStackedParentHeadCommit { get; private set; } = string.Empty;
+
+    /// <summary>The branch that pull request opens INTO, as last observed — read, never assumed to be the project's own.</summary>
+    public string RemoteStackedParentBaseBranch { get; private set; } = string.Empty;
+
+    /// <summary>That pull request's own URL, as last observed; blank when none was reported.</summary>
+    public string RemoteStackedParentUrl { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// The issue or tracker item that pull request says it closes, or null when it names none —
+    /// which is an ordinary shape, not a gap. <c>h9k task show</c> names a local task carrying the
+    /// same reference when one exists, and says nothing when none does.
+    /// </summary>
+    public ExternalReference? RemoteStackedParentWorkItem { get; private set; }
+
+    /// <summary>
+    /// When the reading above was taken, or null when the parent has never been observed at all.
+    /// The honest half of "last observed state" — and honest about its own limit: a sweep that
+    /// re-reads an unchanged pull request appends nothing
+    /// (<see cref="Events.RemoteStackedParentObserved"/>'s own doc), so this is when the reading
+    /// last CHANGED, not when the sweep last looked. A parent stable all afternoon carries this
+    /// morning's timestamp with nothing wrong.
+    /// </summary>
+    public DateTimeOffset? RemoteStackedParentObservedAt { get; private set; }
+
+    /// <summary>What that look saw, in a sentence — the log's account and the task surface's.</summary>
+    public string? RemoteStackedParentDetail { get; private set; }
+
+    /// <summary>
+    /// Why a human is needed rather than more patience, or null when nothing here needs one. Set
+    /// only where the parent pull request can no longer become a base this child builds on — it
+    /// closed unmerged — which is slice two's dead-parent rule one pull request over. A pull
+    /// request that simply is not open yet is ordinary waiting and sets nothing.
+    /// </summary>
+    public string? RemoteStackedParentHoldReason { get; private set; }
+
+    /// <summary>
+    /// Whether the declared remote parent still holds this task back — the remote half of what
+    /// <see cref="UnmetDependencies"/> answers for local blockers. False for every task that
+    /// declared no remote parent, which is the unchanged rule.
+    /// <para>
+    /// Asked at exactly three doors — <see cref="Apply(TaskAssigned)"/>,
+    /// <see cref="Apply(TaskDependencyCompleted)"/> and
+    /// <see cref="Apply(Events.RemoteStackedParentObserved)"/>, the last of which asks it in both
+    /// directions because it is the one door where the answer itself changes — and deliberately NOT
+    /// at the four give-the-claim-back doors that share their shape (<see cref="Apply(TaskRequeued)"/>,
+    /// <see cref="Apply(TaskReopened)"/>, <see cref="Apply(TaskHandedBack)"/>,
+    /// <see cref="Apply(TaskRetried)"/>). Those four restore a snapshot frozen at assignment and
+    /// never re-evaluate the parent, so asking a LIVE question there would be a stricter rule than
+    /// the local edge's, not parity with it — and it would land a follow-up reopened for an
+    /// unrelated cause (failing checks) in Blocked whenever the parent's pull request happened to
+    /// read absent. A remote parent that dies after the child has delivered is answered by
+    /// closeout's own ParentDead park, which is the designed path.
+    /// </para>
+    /// </summary>
+    public bool AwaitsRemoteStackedParent =>
+        IsStackedOnRemotePullRequest && !RemoteStackedParentState.ReleasesChild;
+
+    /// <summary>
     /// The subset of <see cref="BlockedBy"/> that had not reached true closeout when this task
     /// was assigned, minus each one since observed complete. Empty on a Queued task by
     /// construction: emptying it is what moves Blocked -> Queued.
@@ -475,6 +563,7 @@ public sealed class TaskAggregate
         StackedOnTaskId = @event.StackedOnTaskId;
         PreApproval = @event.EffectivePreApproval;
         Origin = @event.Origin;
+        StackedOnPullRequestNumber = @event.StackedOnPullRequestNumber;
 
         if (@event.StartsAsDraft)
         {
@@ -537,6 +626,17 @@ public sealed class TaskAggregate
         if (@event.StackedOnTaskId.HasValue)
         {
             StackedOnTaskId = @event.StackedOnTaskId.Value;
+        }
+
+        // The remote form of the same declaration, applied beside its twin and for the same reason
+        // it sits after BlockedBy. Repointing the edge discards what was observed about the parent
+        // that is no longer declared: the recorded state, head branch and hold all describe a
+        // DIFFERENT pull request, and carrying them onto the new one would let a child dispatch on
+        // its predecessor's Open (adversarial reading of the revise path).
+        if (@event.StackedOnPullRequestNumber.HasValue)
+        {
+            StackedOnPullRequestNumber = @event.StackedOnPullRequestNumber.Value;
+            ForgetRemoteStackedParentObservation();
         }
 
         if (@event.Type.HasValue)
@@ -616,7 +716,17 @@ public sealed class TaskAggregate
         // would let a stale acknowledgment silently cover a blocker nobody actually warned about
         // (task 45136b29, R7).
         _acknowledgedUnmetDependencyIds.Clear();
-        State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        // A declared remote parent that has not been observed open (or merged) lands the
+        // assignment Blocked exactly as an unmet local blocker does, so an assignment can never
+        // hand a stacked child to the dispatcher ahead of the pull request it stands on. What is
+        // deliberately NOT reset alongside the dependency bookkeeping above is the observation
+        // itself: the unmet set is a fact about this assignment and is recomputed per assignment,
+        // while what GitHub last said about that pull request is a fact about the world, and
+        // discarding it here would re-block a child whose parent is demonstrably open until the
+        // next sweep looked again.
+        State = _unmetDependencies.Count == 0 && !AwaitsRemoteStackedParent
+            ? TaskState.Queued
+            : TaskState.Blocked;
     }
 
     // Unassigning returns the task to the state it was assigned from, dependency bookkeeping
@@ -659,10 +769,98 @@ public sealed class TaskAggregate
                 : _deadDependencyReasons.GetValueOrDefault(_deadDependencies[^1]);
         }
 
-        if (_unmetDependencies.Count == 0)
+        // A remote stacked parent holds the task exactly as an unmet local blocker does, so the
+        // last local blocker clearing is not on its own enough to release one (task: a stacked
+        // child can stand on a pull request another install owns). The two halves are asked
+        // together here and in Apply(TaskAssigned) and Apply(RemoteStackedParentObserved), which
+        // are the only three places the Blocked -> Queued door exists.
+        if (_unmetDependencies.Count == 0 && !AwaitsRemoteStackedParent)
         {
             State = TaskState.Queued;
         }
+    }
+
+    /// <summary>
+    /// One look at the pull request this task is stacked on (task: a stacked child can stand on a
+    /// pull request another install owns). Recorded whatever the task's state — the surface says
+    /// "last observed" and means it, so a delivered child's record stays current too — while the
+    /// Blocked &lt;-> Queued door below is the one thing gated on state.
+    /// <para>
+    /// An observation naming a pull request this task no longer declares is dropped rather than
+    /// recorded: a revision can repoint the edge between a sweep's read and its append, and letting
+    /// the late write land would attribute another pull request's state to the declared parent.
+    /// </para>
+    /// </summary>
+    public void Apply(RemoteStackedParentObserved @event)
+    {
+        if (StackedOnPullRequestNumber != @event.PullRequestNumber)
+        {
+            return;
+        }
+
+        RemoteStackedParentState = @event.State;
+        RemoteStackedParentHeadBranch = @event.HeadBranch;
+        RemoteStackedParentHeadCommit = @event.HeadCommit;
+        RemoteStackedParentBaseBranch = @event.BaseBranch;
+        RemoteStackedParentUrl = @event.Url;
+        RemoteStackedParentWorkItem = @event.LinkedWorkItem;
+        RemoteStackedParentObservedAt = @event.ObservedAt;
+        RemoteStackedParentDetail = @event.Detail;
+
+        // Derived from the state through the one rule both projections also ask, rather than
+        // carried on the event: which observations need a human is a standing rule, not something
+        // the sweep saw (RemoteStackedParentHold's own doc).
+        RemoteStackedParentHoldReason = RemoteStackedParentHold.ReasonFor(
+            @event.State, @event.PullRequestNumber);
+
+        // The one door that swings both ways, because it is the one door where the answer can
+        // change under a task that is not moving. A release is the Blocked -> Queued half every
+        // other door also asks; the Queued -> Blocked half takes that release back when the same
+        // question turns the other way, and it is not symmetry for its own sake. A Queued task has
+        // no live run, so the release has not been spent: for a child that never dispatched a fresh
+        // cut is still ahead of it, and StackedBaseResolver.ResolveRemote answers every state but
+        // Open with the project's own base — a run carrying none of the parent's work, which is the
+        // hazard this whole feature exists to prevent. Blocked is where the platform holds work
+        // whose premise is in question, and with the hold reason recorded it is also what makes
+        // h9k status read a dead parent as NeedsHuman, the same shape a dead local blocker uses
+        // (log #22). Found undispatched-but-queued by the independent pre-PR review, cycle 1
+        // (adversarial lens): the parent closed unmerged while the child sat in the queue waiting
+        // for dispatch capacity, and nothing took the release back.
+        //
+        // A child BETWEEN runs (reopened, requeued, handed back, retried) sits Queued too, and it
+        // is re-blocked here as well, deliberately: its branch does hold the parent's work already,
+        // so nothing would be dropped by dispatching, but a follow-up on a parent that closed
+        // without merging is a lap spent on a pull request that has nowhere to merge — which is the
+        // same call closeout's own ParentDead park makes for its delivered sibling. This is not the
+        // live question the four give-back doors are documented for refusing: those ask on every
+        // give-back regardless of whether anything moved, while this fires only when an observation
+        // actually changed the answer.
+        if (State == TaskState.Blocked && _unmetDependencies.Count == 0 && !AwaitsRemoteStackedParent)
+        {
+            State = TaskState.Queued;
+        }
+        else if (State == TaskState.Queued && AwaitsRemoteStackedParent)
+        {
+            State = TaskState.Blocked;
+        }
+    }
+
+    /// <summary>
+    /// Drops everything recorded about a remote parent, because it describes a pull request this
+    /// task no longer declares. Never a way to say "unobserved" about a parent still declared: that
+    /// would be a guess dressed as a gap.
+    /// </summary>
+    private void ForgetRemoteStackedParentObservation()
+    {
+        RemoteStackedParentState = RemoteParentState.Unknown;
+        RemoteStackedParentHeadBranch = string.Empty;
+        RemoteStackedParentHeadCommit = string.Empty;
+        RemoteStackedParentBaseBranch = string.Empty;
+        RemoteStackedParentUrl = string.Empty;
+        RemoteStackedParentWorkItem = null;
+        RemoteStackedParentObservedAt = null;
+        RemoteStackedParentDetail = null;
+        RemoteStackedParentHoldReason = null;
     }
 
     // A dead blocker leaves the task Blocked on purpose: h9k status reads it as NeedsHuman
