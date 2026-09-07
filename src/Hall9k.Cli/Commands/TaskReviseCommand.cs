@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -297,6 +299,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
+        task.Apply(revised);
 
         string shortId = TaskListCommand.ShortId(taskId);
 
@@ -328,6 +331,9 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         }
 
         AnsiConsole.MarkupLine($"[blue]Draft {shortId} revised[/]: {string.Join(", ", Changed(revised))}.");
+        // After the confirmation, not before it: what changed here is the news, and the tracker
+        // write is what followed from it.
+        await RewriteRecordAsync(session, task, revised, context, cancellationToken);
         // The refusal path names the consequence (TaskDecider.Revise's own call into
         // ReviewStageCompositionValidation.VetInput); the accepted path has to name it too, or the
         // only operator who ever reads it is the one who tried the command without
@@ -347,6 +353,115 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         AnsiConsole.MarkupLine($"[dim]Next:[/] h9k task publish {shortId}");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// Rewrite the task record in this task's linked GitHub issue, so the issue keeps describing the
+    /// task it names (task: a published task's GitHub issue carries the whole task record). Only the
+    /// record section moves; the prose above it is a human's to keep, and the acceptance-criteria
+    /// checklist is regenerated only when this revision actually replaced the criteria.
+    /// <para>
+    /// Reported and swallowed like every other tracker write around a committed transaction: the
+    /// revision landed either way, and the write is idempotent — the next revise, or a republish,
+    /// writes the same record.
+    /// </para>
+    /// </summary>
+    private static async Task RewriteRecordAsync(
+        IQuerySession session,
+        TaskAggregate task,
+        TaskRevised revised,
+        BootstrapContext context,
+        CancellationToken cancellationToken)
+    {
+        if (task.ExternalReference is not { } reference || reference.Provider != WorkItemProvider.GitHub
+            || !TouchesTheRecord(revised))
+        {
+            return;
+        }
+
+        try
+        {
+            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+            if (project is null)
+            {
+                return;
+            }
+
+            NodeDetails? node = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
+            TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
+                session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
+                DateTimeOffset.UtcNow, revised.AcceptanceCriteria.HasValue,
+                cancellationToken: cancellationToken);
+            AnsiConsole.MarkupLine(DescribeRewrite(
+                outcome, task.Origin is not null, revised.AcceptanceCriteria.HasValue, project.Name,
+                reference.ToString()));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Note:[/] [dim]The revision landed, but rewriting the task record in "
+                + $"{reference.ToString().EscapeMarkup()} failed: {exception.Message.EscapeMarkup()} "
+                + "Nothing in the issue was changed; the next revise writes it.[/]");
+        }
+    }
+
+    /// <summary>
+    /// What to tell the operator about the record write — only ever the outcome
+    /// <see cref="TaskRecordPublication.WriteAsync"/> actually answered, never a write it refused.
+    /// <para>
+    /// <see cref="TaskRecordPublication.WriteOutcome.NotTracked"/> has exactly two causes once this
+    /// task is known to carry a GitHub reference, and both are permanent for this task rather than a
+    /// transient miss: the task is a MIRROR, whose issue belongs to the install that published it,
+    /// or the project does not track its backlog in GitHub issues. Each is named outright, because
+    /// the alternative — the confirmation this used to print unconditionally — told the operator
+    /// that a shared issue now reflects their revision when nothing was written and, in the mirror
+    /// case, never will be (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
+    /// <para>
+    /// <paramref name="criteriaChanged"/> is the same fact the writer is handed, and it is here for
+    /// the same reason the causes above are named: this revision regenerated the checklist ABOVE
+    /// the record whenever it replaced the criteria, so saying "everything above it is untouched"
+    /// there would describe a write that did not happen — and it is the sentence a human editing
+    /// that issue's prose reads to decide whether to go look (independent pre-PR review, cycle 1,
+    /// adversarial lens).
+    /// </para>
+    /// </summary>
+    internal static string DescribeRewrite(
+        TaskRecordPublication.WriteOutcome outcome,
+        bool mirror,
+        bool criteriaChanged,
+        string projectName,
+        string reference) =>
+        (outcome, mirror) switch
+        {
+            (TaskRecordPublication.WriteOutcome.Written, _) when criteriaChanged =>
+                $"[dim]  Task record rewritten in {reference.EscapeMarkup()}, and the acceptance-criteria "
+                + "checklist above it regenerated from the new criteria; the rest of the issue — every line "
+                + "that is neither the checklist nor the record — is untouched.[/]",
+            (TaskRecordPublication.WriteOutcome.Written, _) =>
+                $"[dim]  Task record rewritten in {reference.EscapeMarkup()}; everything above it in the "
+                + "issue is untouched.[/]",
+            (_, true) =>
+                $"[dim]  Nothing was written to {reference.EscapeMarkup()}: this copy was adopted from that "
+                + "issue's own task record, so the record there belongs to the install that published it — "
+                + "rewriting it from here would overwrite the origin's record with this local copy. The "
+                + "revision is yours and it landed; the issue keeps describing the origin's task.[/]",
+            _ =>
+                $"[dim]  Nothing was written to {reference.EscapeMarkup()}: "
+                + $"{projectName.EscapeMarkup()} does not track its backlog in GitHub issues, so hall9k "
+                + "leaves the linked issue's body alone — h9k project set "
+                + $"{projectName.EscapeMarkup()} --backlog github-issues to have it maintain the record.[/]",
+        };
+
+    /// <summary>
+    /// Whether this revision changed anything the task record carries. A queue-first marker, a
+    /// cleared interactive-mode flag, a stacked edge, a review stage composition — none of those are
+    /// in the record, and a revision touching only those buys a gh round trip that rewrites the
+    /// issue with byte-identical text.
+    /// </summary>
+    private static bool TouchesTheRecord(TaskRevised revised) =>
+        revised.Objective.HasValue || revised.AcceptanceCriteria.HasValue || revised.AgentContext.HasValue
+        || revised.BlockedBy.HasValue || revised.Type.HasValue || revised.Model.HasValue
+        || revised.EpicId.HasValue;
 
     /// <summary>What the revision actually touched, so the confirmation is a fact, not a shrug.</summary>
     internal static IEnumerable<string> Changed(TaskRevised revised)
