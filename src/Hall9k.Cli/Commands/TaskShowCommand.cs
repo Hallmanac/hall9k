@@ -1561,7 +1561,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// Whether true closeout closes this task's linked GitHub issue, and when (task: a task's
     /// linked GitHub issue is closed at true closeout under a configurable rule) — the effective
     /// value AND whether it was inherited from the project or set explicitly on this task, so an
-    /// operator does not have to resolve the task-over-project chain by hand.
+    /// operator does not have to resolve the task-over-project chain by hand. Without a task
+    /// override, the shown value can still be overturned by a never-close label the issue carries
+    /// at closeout time — this row cannot resolve that without a live GitHub read, so it names the
+    /// label list instead of rendering a value closeout might not actually honor.
     /// </summary>
     internal static string CloseLinkedIssueMarkup(TaskDetails details, ProjectDetails? project)
     {
@@ -1571,7 +1574,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         CloseLinkedIssueRule effective = project?.CloseLinkedIssue ?? CloseLinkedIssueRule.WhenAllTasksClose;
-        return $"{effective.Value.EscapeMarkup()} [dim](inherited from the project's close-linked-issue setting)[/]";
+        string labelNote = project?.NeverCloseLabels is { Count: > 0 } neverCloseLabels
+            ? $" [dim](never if the issue carries one of the project's never-close labels: "
+              + $"{string.Join(", ", neverCloseLabels).EscapeMarkup()})[/]"
+            : string.Empty;
+        return $"{effective.Value.EscapeMarkup()} [dim](inherited from the project's close-linked-issue setting)[/]{labelNote}";
     }
 
     /// <summary>

@@ -70,7 +70,14 @@ public sealed record CloseLinkedIssueRule
     public static implicit operator CloseLinkedIssueRule(string? value) =>
         value.IsBlank() ? WhenAllTasksClose : new CloseLinkedIssueRule(value);
 
-    /// <summary>Lenient mapping for a value already on the stream; an unrecognized rule reads as <see cref="Unknown"/>.</summary>
+    /// <summary>
+    /// Lenient mapping for the CLI's kebab-case spellings, used by <see cref="Parse"/> and
+    /// <see cref="ParseOverride"/> against command-line input only. This does NOT recognize the
+    /// PascalCase words this type actually persists on the stream (<c>OnCloseout</c>,
+    /// <c>WhenAllTasksClose</c>) — feeding one of those through here reads as <see cref="Unknown"/>,
+    /// unlike <see cref="ProjectPriority.FromInput"/>, whose persisted values happen to already be
+    /// lowercase single words.
+    /// </summary>
     public static CloseLinkedIssueRule FromInput(string? value) => value?.Trim().ToLowerInvariant() switch
     {
         "on-closeout" => OnCloseout,
