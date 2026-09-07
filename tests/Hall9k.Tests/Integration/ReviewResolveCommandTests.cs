@@ -354,6 +354,50 @@ public sealed class ReviewResolveCommandTests(PostgresFixture postgres) : IClass
     }
 
     /// <summary>
+    /// The same window, entered the other way: Ctrl+C after the reply posted and before the commit.
+    /// A cancellation used to be excluded from the arm above, so the operator got a bare
+    /// cancellation, no mention of the reply the reviewer had already read, and a still-parked run
+    /// that refuses a verdict without a reply choice — which makes the natural retry post the
+    /// identical reply a second time under their own login (independent pre-PR review, cycle 1,
+    /// adversarial finding). With nothing posted a cancellation still propagates untouched, which
+    /// is what the ordinary-park path relies on.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_after_the_reply_posted_still_names_it_rather_than_inviting_a_second_post()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId) = await SeedParkedDisagreementAsync(store, node, cts.Token);
+
+        // Cancelled from inside the fake gh, which is the one moment that is genuinely after the
+        // reply reached the reviewer and before the append could land — the same seam the racing
+        // writer above uses, carrying the other failure this window can produce.
+        RecordingProcessRunner gh = new(_ =>
+        {
+            cts.Cancel();
+            return new ProcessResult(0, "{}", string.Empty);
+        });
+
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => ReviewResolveCommand.ResolveAsync(
+            session, taskId,
+            new ReviewResolveCommand.Settings { MergeReady = true, PostReplyAsWritten = true },
+            new GitHubReviewReplies(gh.Runner), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>(
+            "a cancellation the operator cannot see the reply behind is the double-post this arm prevents"))
+            .WithMessage("*Already posted, and NOT recorded on the run: PRRT_abc*")
+            .WithMessage("*Do NOT re-run with a reply choice*");
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate run = (await query.Events.AggregateStreamAsync<RunAggregate>(
+            runId, token: CancellationToken.None))!;
+        run.State.Should().Be(RunState.ReviewParked, "the verdict never landed");
+        run.ParkedOnReviewDisagreement.Should().BeTrue("the park is still the implementer's to resolve");
+    }
+
+    /// <summary>
     /// The reply choices are refused on every other park: they name a reviewer's thread, and on an
     /// ordinary park there is no drafted reply and no disputed finding to point at.
     /// </summary>

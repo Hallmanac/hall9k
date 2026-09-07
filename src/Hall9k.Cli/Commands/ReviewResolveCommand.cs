@@ -341,8 +341,14 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         {
             await session.SaveChangesAsync(cancellationToken);
         }
+        // A cancellation is caught too once a reply has posted, and deliberately: Ctrl+C in this
+        // window leaves the reviewer already read and the run still parked, so an operator handed a
+        // bare cancellation re-runs the same reply choice and posts the identical reply a second
+        // time — the very double-post this arm exists to prevent (independent pre-PR review, cycle
+        // 1, adversarial finding). With nothing posted it still propagates untouched, so an
+        // ordinary Ctrl+C on an ordinary park closes the way Program.cs's own handler closes it.
         catch (Exception exception) when (exception is EventStreamUnexpectedMaxEventIdException
-            || (exception is not OperationCanceledException && repliesDirected.Any(r => r.PostedTarget is not null)))
+            || repliesDirected.Any(r => r.PostedTarget is not null))
         {
             // The append is one transaction, so a failure here records nothing — but any reply has
             // already reached the reviewer, and the retry advice cannot be given without saying so:
@@ -607,7 +613,12 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                     directed.Add(new ReplyOutcome(choice, named, task.PullRequestUrl));
                 }
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
+            // Cancellation propagates untouched while nothing has posted, and is reported like any
+            // other failure once something has: a multi-disagreement park cancelled part-way
+            // through leaves the earlier replies already read, and an operator not told so re-runs
+            // the same choice and posts them again — the sibling of the SaveChangesAsync window's
+            // own arm above (self-review, this task).
+            catch (Exception exception) when (exception is not OperationCanceledException || directed.Count > 0)
             {
                 string already = directed.Count == 0
                     ? "Nothing was posted."
