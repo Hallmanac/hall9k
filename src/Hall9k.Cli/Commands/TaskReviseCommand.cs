@@ -66,6 +66,22 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         [Description("Drop every dependency, so nothing blocks this task")]
         public bool ClearDependencies { get; init; }
 
+        [CommandOption("--stacked-on <TASK>")]
+        [Description(
+            "Declare this task STACKED ON that blocker rather than merely blocked by it (see "
+            + "h9k task add --stacked-on for what the edge changes): its id or an unambiguous "
+            + "fragment. Implies the dependency edge, so it needs no separate --blocked-by for the "
+            + "same task — but a --blocked-by passed in the same call replaces the whole set, so "
+            + "include the parent there too if you pass both")]
+        public string? StackedOn { get; init; }
+
+        [CommandOption("--clear-stacked-on")]
+        [Description(
+            "Drop the stacked edge, leaving the task merely blocked by that task: its branch is cut "
+            + "from the base branch and its pull request targets the base branch again. The "
+            + "blocked-by dependency itself is untouched — clear that separately if you want it gone")]
+        public bool ClearStackedOn { get; init; }
+
         [CommandOption("--file <PATH>")]
         [Description(
             "Take the revision from a task file (frontmatter + markdown body), the same format "
@@ -142,6 +158,12 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             throw new DomainValidationException("--clear-epic and --epic say opposite things; pass one.");
         }
 
+        if (settings.ClearStackedOn && settings.StackedOn.IsNotBlank())
+        {
+            throw new DomainValidationException(
+                "--clear-stacked-on and --stacked-on say opposite things; pass one.");
+        }
+
         if (settings.QueueFirst && settings.ClearQueueFirst)
         {
             throw new DomainValidationException(
@@ -161,6 +183,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         string? epic = settings.Epic;
         IReadOnlyList<string> criteria = settings.Criteria;
         IReadOnlyList<string> blockedBy = settings.BlockedBy;
+        string? stackedOn = settings.StackedOn;
 
         if (settings.File.IsNotBlank())
         {
@@ -181,6 +204,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             {
                 epic ??= file.Epic;
             }
+
+            // Same shape as --clear-epic above: an explicit clear on the command line is not
+            // quietly re-set by a file that still names a parent.
+            if (!settings.ClearStackedOn)
+            {
+                stackedOn ??= file.StackedOn;
+            }
         }
 
         using var store = CliStore.Open();
@@ -195,6 +225,31 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             : blockedBy.Count > 0
                 ? Optional<IReadOnlyList<Guid>>.Of(await ResolveAsync(session, blockedBy, cancellationToken))
                 : Optional<IReadOnlyList<Guid>>.None;
+
+        // A newly declared stacked edge implies its dependency edge, exactly as h9k task add's own
+        // option does — the invariant TaskDecider.VetStackedEdge enforces rather than repairs. The
+        // parent joins whichever set this revision leaves behind: the one --blocked-by just replaced
+        // when it was passed, or the task's existing set when it was not. Only then, and only when
+        // it is actually missing, so a revision that changes nothing about the set still records
+        // nothing about it.
+        Optional<Guid?> stackedOnTaskId = Optional<Guid?>.None;
+        if (settings.ClearStackedOn)
+        {
+            stackedOnTaskId = Optional<Guid?>.Of(null);
+        }
+        else if (stackedOn.IsNotBlank())
+        {
+            Guid parentId = await TaskIdResolver.ResolveAsync(session, stackedOn, cancellationToken);
+            stackedOnTaskId = Optional<Guid?>.Of(parentId);
+
+            IReadOnlyList<Guid> effectiveDependencies = dependencies.HasValue
+                ? dependencies.Value ?? []
+                : task.BlockedBy;
+            if (!effectiveDependencies.Contains(parentId))
+            {
+                dependencies = Optional<IReadOnlyList<Guid>>.Of([.. effectiveDependencies, parentId]);
+            }
+        }
 
         bool namesCurrentEpic = !settings.ClearEpic && epic.IsNotBlank() && NamesCurrentEpic(epic, task.EpicId);
         Optional<Guid?> epicId = settings.ClearEpic
@@ -237,7 +292,8 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 ? Optional<string?>.Of(composition)
                 : Optional<string?>.None,
             settings.AcceptReducedReview,
-            settings.ClearInteractiveMode);
+            settings.ClearInteractiveMode,
+            stackedOnTaskId);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
@@ -315,6 +371,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             yield return revised.BlockedBy.Value is { Count: > 0 } dependencies
                 ? $"{dependencies.Count} dependency(ies)"
                 : "dependencies cleared";
+        }
+
+        if (revised.StackedOnTaskId.HasValue)
+        {
+            yield return revised.StackedOnTaskId.Value is { } parentId
+                ? $"stacked on {TaskListCommand.ShortId(parentId)}"
+                : "stacked edge cleared";
         }
 
         if (revised.Type.HasValue)

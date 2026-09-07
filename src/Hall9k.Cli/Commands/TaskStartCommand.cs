@@ -406,7 +406,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // Printed only once the claim is actually committed: printing it earlier would leave a
         // lost optimistic-concurrency race (the catch above) showing a warning that implies the
         // start proceeded despite blockers when nothing was in fact committed (review, PR #192).
-        TaskWorkCommand.PrintUnmetDependencyWarning("Starting", task.Id, unmet, carriedForward);
+        TaskWorkCommand.PrintUnmetDependencyWarning("Starting", task.Id, unmet, carriedForward, task.StackedOnTaskId);
+
+        // The branch this claim's work sits on top of, resolved before the checkout and recorded
+        // on this run's own RunDispatched below — the same answer RunLauncher resolves for a
+        // headless dispatch, through the same resolver, because an interactive claim of a stacked
+        // task must cut from the same branch and target the same pull-request base the daemon
+        // would (task: a stacked pull-request edge exists as an explicit opt-in dependency).
+        StackedBase stackedBase = await StackedBaseResolver.ResolveAsync(
+            session, taskDetails, project, cancellationToken);
 
         Worktree worktree;
         bool resumesPreviousWork;
@@ -415,7 +423,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         {
             GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
             (worktree, resumesPreviousWork) = await TaskWorkCommand.CheckoutFreshOrRetryAsync(
-                worktrees, taskDetails, project, task.Id, runId, cancellationToken);
+                worktrees, taskDetails, project, task.Id, runId, stackedBase.BaseBranch, cancellationToken);
 
             string? existingTaskDirectory = project.HomeDirectory.HasValue
                 ? HomeEntryLookup.FindExisting(ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), task.Id)
@@ -444,7 +452,11 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 runId, task.Id, Guid.Empty, context.OwnerId, claimed.LeaseGeneration, claudeSessionId,
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
                 IsFollowUp: false, Model: model, RunDirectory: runDirectory, SessionName: sessionName,
-                ReviewStageComposition: reviewStageComposition));
+                ReviewStageComposition: reviewStageComposition,
+                // Blank whenever the resolved base IS the project's own, which is every ordinary
+                // task — the invariant RunDetails.StackedOnBranch reads, held identically here and
+                // in RunLauncher.
+                BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -533,7 +545,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 // out on its own — when one is dead it returns a full declarative sentence
                 // instead, and splicing that after a hardcoded "or" here left it dangling
                 // (adversarial review, cycle 1, on h9k task start).
-                + $"confirmed that is what you want. {TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmet)} "
+                + $"confirmed that is what you want. {TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmet, stackedOnTaskId: task.StackedOnTaskId)} "
                 + $"h9k task show {task.Id} for the full picture.");
         }
 
@@ -574,7 +586,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 + "The platform advises rather than refuses here: "
                 + $"h9k task start {task.Id} --acknowledge-unmet-dependencies to start it anyway, once you have "
                 + $"confirmed that is what you want. "
-                + $"{TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmetDependencies, alreadyAssigned: true)} "
+                + $"{TaskWorkCommand.DescribeUnmetDependencyAdvice(task.Id, unmetDependencies, alreadyAssigned: true, stackedOnTaskId: task.StackedOnTaskId)} "
                 + $"h9k task show {task.Id} for the full picture.");
         }
 

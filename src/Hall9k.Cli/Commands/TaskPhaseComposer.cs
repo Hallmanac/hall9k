@@ -380,6 +380,14 @@ internal static class TaskPhaseComposer
         // Blocked with nothing recorded as unmet is a record disagreeing with itself, so the
         // line says that rather than reporting a wait on zero things.
         { UnmetDependencies.Count: 0 } => "blocked, but no unmet dependency is recorded",
+        // The stacked arms sit ahead of the plain counts for the reason PublishedFacts' own twin
+        // states: "to close out" is the wrong bar for a stacked parent, which releases this task at
+        // its Delivered, and these two lines must not disagree about it.
+        _ when task.StackedOnTaskId is { } stackedParentId
+            && task.UnmetDependencies.Contains(stackedParentId) =>
+            task.UnmetDependencies.Count == 1
+                ? "waiting on its stacked parent to reach Delivered"
+                : $"waiting on {task.UnmetDependencies.Count} dependencies to clear (one stacked)",
         { UnmetDependencies.Count: 1 } => "waiting on 1 dependency to close out",
         _ => $"waiting on {task.UnmetDependencies.Count} dependencies to close out",
     };
@@ -413,7 +421,20 @@ internal static class TaskPhaseComposer
     /// own comment below already refuses to assert; Unknown reads the identical conservative
     /// way instead.
     /// </summary>
-    private static TaskPhase AwaitingReviewPhase(string pullRequest, RunDetails run) => run.ExternalReviewState.Value switch
+    private static TaskPhase AwaitingReviewPhase(string pullRequest, RunDetails run) =>
+        // Ahead of every Copilot reading below, for the same reason AttentionComposer's own stacked
+        // branch sits ahead of its two arms (task: the bar machinery treats an un-retargeted stacked
+        // PR as not at the bar): the phase line and the attention line under it must never disagree,
+        // and "awaiting human review" on a pull request nobody can merge yet is the disagreement.
+        run.StackedOnBranch is { } parentBranch
+            ? new TaskPhase(
+                $"watching {pullRequest} — stacked on {parentBranch}",
+                SessionLiveness.NotApplicable,
+                "its base is still the parent's branch; it retargets and replays when the parent merges")
+            : AwaitingReviewCopilotPhase(pullRequest, run);
+
+    /// <summary>The Copilot-observation readings, once the stacked check above has had its say.</summary>
+    private static TaskPhase AwaitingReviewCopilotPhase(string pullRequest, RunDetails run) => run.ExternalReviewState.Value switch
     {
         "Landed" => new TaskPhase($"watching {pullRequest} — Copilot review landed",
             SessionLiveness.NotApplicable, CopilotThreadsDetail(run)),

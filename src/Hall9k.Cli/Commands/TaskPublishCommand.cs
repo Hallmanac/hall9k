@@ -160,7 +160,12 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             // cycle 1 and 3). An open dependency no longer suppresses the hint (task 0ac72cb8-h9k):
             // h9k task work now warns and asks instead of refusing outright, so the hint just names
             // the flag that answers it (adversarial lens, cycle 1).
-            bool hasOpenDependency = graph.Resolve(task.BlockedBy).Any(dependency => !dependency.IsClosedOut);
+            // Read through StackedEdgeRules, not off IsClosedOut alone: a stacked parent already at
+            // Delivered no longer holds this task, so naming --acknowledge-unmet-dependencies for
+            // it would tell the human to acknowledge a dependency the dispatcher will not ask them
+            // about (task: a stacked pull-request edge exists as an explicit opt-in dependency).
+            bool hasOpenDependency = graph.Resolve(task.BlockedBy)
+                .Any(dependency => StackedEdgeRules.Blocks(task, dependency));
             string interactiveClaimHint = task.Type == TaskType.PrReview
                 ? string.Empty
                 : hasOpenDependency
@@ -173,7 +178,8 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         }
 
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
-        await TaskAssignCommand.AnnounceAsync(assigned, assignee, session, cancellationToken);
+        await TaskAssignCommand.AnnounceAsync(
+            assigned, assignee, session, cancellationToken, task.StackedOnTaskId);
 
         // The same claim-gate warning h9k task assign gives, since this is the same act (idea
         // 64c75e43) — and read here, at the very end, rather than beside the assignment above,

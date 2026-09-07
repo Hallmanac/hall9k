@@ -85,7 +85,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
 
-        await AnnounceAsync(assigned, owner, session, cancellationToken);
+        await AnnounceAsync(assigned, owner, session, cancellationToken, task.StackedOnTaskId);
         await ReportTrackerAsync(store, session, task, take, decision, cancellationToken);
         return ExitCodes.Ok;
     }
@@ -302,9 +302,16 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         return assigned;
     }
 
-    /// <summary>Says which of the two landings happened, and what the blocked one is waiting on.</summary>
+    /// <summary>
+    /// Says which of the two landings happened, and what the blocked one is waiting on.
+    /// <paramref name="stackedOnTaskId"/> is the task's own declared stacked edge, null on every
+    /// unstacked task: what decides whether a blocker listed below is met at its Delivered or only
+    /// at its merge, and therefore which sentence honestly describes what unblocks this task (task:
+    /// a stacked pull-request edge exists as an explicit opt-in dependency).
+    /// </summary>
     internal static async Task AnnounceAsync(
-        TaskAssigned assigned, OwnerDetails owner, IQuerySession session, CancellationToken cancellationToken)
+        TaskAssigned assigned, OwnerDetails owner, IQuerySession session, CancellationToken cancellationToken,
+        Guid? stackedOnTaskId = null)
     {
         string shortId = TaskListCommand.ShortId(assigned.Id);
         if (assigned.UnmetDependencies.Count == 0)
@@ -330,13 +337,19 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         foreach (TaskDependency dependency in unmet)
         {
             AnsiConsole.MarkupLine(
-                $"  {TaskStatusComposer.DependencyMark(dependency)} "
+                $"  {TaskStatusComposer.DependencyMark(dependency, stackedOnTaskId)} "
                 + $"[dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
                 + $"{TaskListCommand.Truncate(ExternalText.OneLine(dependency.Objective), 60).EscapeMarkup()} "
-                + $"({TaskStatusComposer.State(dependency).Markup})");
+                + $"({TaskStatusComposer.State(dependency).Markup})"
+                + (stackedOnTaskId == dependency.Id ? " [blue]— stacked on this[/]" : string.Empty));
         }
 
-        AnsiConsole.MarkupLine(
-            "[dim]It queues itself the moment the last one's pull request merges — nothing else to do.[/]");
+        // Which bar the last one has to clear is exactly what the stacked edge changes, so the
+        // closing line has to say which: a stacked parent releases this task at its Delivered, an
+        // ordinary blocker only at its merge.
+        AnsiConsole.MarkupLine(unmet.Any(dependency => stackedOnTaskId == dependency.Id)
+            ? "[dim]It queues itself the moment the last one clears — its stacked parent at Delivered "
+              + "(pull request open), any other blocker at its merge — nothing else to do.[/]"
+            : "[dim]It queues itself the moment the last one's pull request merges — nothing else to do.[/]");
     }
 }

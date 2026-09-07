@@ -250,9 +250,18 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         {
             IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
                 session, details.BlockedBy, cancellationToken);
-            hasOpenDependency = dependencies.Any(dependency => dependency.Blocks);
-            AnsiConsole.MarkupLine(
-                "\n[bold]Blocked by[/] [dim](met only at true closeout: the pull request merged)[/]");
+            hasOpenDependency = dependencies.Any(
+                dependency => StackedEdgeRules.Blocks(details.StackedOnTaskId, dependency));
+            // "Only at true closeout" is the whole rule for a plain edge (Decisions Log #34) and
+            // stays the whole sentence on a task that declared no stack. A stacked task carries
+            // exactly one edge that is met earlier, so keeping "only" there would contradict, in
+            // the same breath, the mark this same screen prints beside that parent two lines down
+            // ("waiting (stacked: met at Delivered)"). The exception is named as an exception
+            // rather than appended to a rule that claims there are none.
+            AnsiConsole.MarkupLine(details.StackedOnTaskId is null
+                ? "\n[bold]Blocked by[/] [dim](met only at true closeout: the pull request merged)[/]"
+                : "\n[bold]Blocked by[/] [dim](met at true closeout — the pull request merged — "
+                  + "except the stacked edge below, which is met at Delivered)[/]");
             // Each blocker is named in the lifecycle vocabulary, not the persisted one
             // (Decisions Log #66). This is the one screen that explains the true-closeout rule,
             // so printing the raw state here would show a pushed-but-unmerged blocker as Done
@@ -260,10 +269,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // the redesign exists to remove, on the screen least able to afford it.
             foreach (TaskDependency dependency in dependencies)
             {
+                bool isStackParent = details.StackedOnTaskId == dependency.Id;
                 AnsiConsole.MarkupLine(
-                    $"  {TaskStatusComposer.DependencyMark(dependency)} [dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
+                    $"  {TaskStatusComposer.DependencyMark(dependency, details.StackedOnTaskId)} "
+                    + $"[dim]{TaskListCommand.ShortId(dependency.Id)}[/] "
                     + $"{ExternalText.OneLineMarkup(dependency.Objective)} "
-                    + $"({TaskStatusComposer.State(dependency).Markup})");
+                    + $"({TaskStatusComposer.State(dependency).Markup})"
+                    + (isStackParent ? " [blue]— stacked on this[/]" : string.Empty));
             }
 
             // Recorded on the current claim's own TaskClaimed (task 8a56af78-h9k, extended by

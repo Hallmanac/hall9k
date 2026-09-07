@@ -312,9 +312,15 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         // while HEAD no longer points at the claim's branch, and counting HEAD there would read
         // the branch's real commits as zero and let this guard wave the orphaning through
         // (conformance review, cycle 3).
+        // run.BaseBranchOr, not project.BaseBranch, for the reason TaskDeliverCommand's own
+        // identical count states: a stacked child's branch would otherwise read its parent's
+        // commits as this claim's own and refuse a release of a claim nothing was done in.
+        string baseBranch = run.BaseBranchOr(project.BaseBranch);
         int commits = worktreeExists
-            ? await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken, headReference: run.Branch)
-            : await InteractiveWorktreeGit.CountBranchCommitsAsync(project.RepositoryPath, project.BaseBranch, cancellationToken, headReference: run.Branch);
+            ? await InteractiveWorktreeGit.CountBranchCommitsAsync(
+                run.WorktreePath, baseBranch, cancellationToken, headReference: run.Branch)
+            : await InteractiveWorktreeGit.CountBranchCommitsAsync(
+                project.RepositoryPath, baseBranch, cancellationToken, headReference: run.Branch);
         if (commits < 0)
         {
             // Never guessed at as empty (InteractiveWorktreeGit's own contract, mirrored by
@@ -339,7 +345,7 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 : $"h9k task handback {taskId} to hand the committed work to a headless agent, which will "
                   + "re-create the worktree from the branch.";
             throw new DomainConflictException(
-                $"Task {taskId}'s branch {run.Branch} holds {commits} commit(s) beyond {project.BaseBranch} — "
+                $"Task {taskId}'s branch {run.Branch} holds {commits} commit(s) beyond {baseBranch} — "
                 + "whether from this claim or one it resumed, the branch is not empty and release is only for "
                 + "a claim nothing has been done in yet. " + recovery);
         }

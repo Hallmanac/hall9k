@@ -194,7 +194,13 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // status clean either way) would otherwise have this count the wrong ref, report "N
         // commits to deliver" while pushing a branch that holds none, and hand PullRequestOpener
         // an empty branch to fail on (conformance review, cycle 3).
-        int commits = await InteractiveWorktreeGit.CountBranchCommitsAsync(run.WorktreePath, project.BaseBranch, cancellationToken, headReference: run.Branch);
+        // run.BaseBranchOr, not project.BaseBranch: a stacked child's branch is a delta against
+        // its parent's branch, so the project's base would count the parent's commits as this
+        // claim's own and report "N commits to deliver" for a branch that holds none of its own
+        // (task: a stacked pull-request edge exists as an explicit opt-in dependency).
+        int commits = await InteractiveWorktreeGit.CountBranchCommitsAsync(
+            run.WorktreePath, run.BaseBranchOr(project.BaseBranch), cancellationToken,
+            headReference: run.Branch);
         if (commits < 0)
         {
             // Never guessed at as "holds commits" (InteractiveWorktreeGit's own contract,
