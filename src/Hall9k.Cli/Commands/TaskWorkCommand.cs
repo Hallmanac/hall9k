@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
@@ -192,7 +193,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             ? await ReenterAsync(session, task, settings.Force, cancellationToken)
             : await ClaimAndCutAsync(
                 store, session, task, fence, context, claudeSessionId, sessionName,
-                settings.AcknowledgeUnmetDependencies, cancellationToken);
+                settings.AcknowledgeUnmetDependencies, trackerClaimGate: null, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -606,7 +607,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
     internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, bool CrossMachineNoticeShown, Guid? PreviousClaudeSessionId)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
-        Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, CancellationToken cancellationToken)
+        Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies,
+        TrackerClaimGate? trackerClaimGate, CancellationToken cancellationToken)
     {
         // Published is the atomic entry (task 688a1ccf-h9k): the dependency snapshot is loaded
         // here, before any other check, because it decides whether this claim is even possible.
@@ -684,6 +686,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 + $"h9k pr resolve {task.Id} to dispatch a headless follow-up instead.");
         }
 
+        // The claim gate (idea 64c75e43), read fresh here and refused with the identical sentence
+        // h9k task assign warns with: this door starts the work now, so a card the tracker says
+        // somebody else holds is a claim this install must not take. Read before anything is
+        // appended, and before any worktree exists, so a refusal leaves nothing behind. Exits 70
+        // through DomainBusinessRuleException — a standing project rule, not a bad command line.
+        TrackerAssignmentObserved? gateEvidence = await TrackerClaimCheck.RefuseOrEvidenceAsync(
+            store, task.Id, project, taskDetails.ExternalReference, trackerClaimGate, cancellationToken);
+
         Guid runId = DomainId.New();
         DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
 
@@ -721,15 +731,18 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             claimed = TaskDecider.ClaimInteractively(task, context.OwnerId, runId, claimedAt);
         }
 
-        long claimedVersion = fence.Version + (assigned is null ? 1 : 2);
-        if (assigned is null)
-        {
-            session.Events.Append(task.Id, expectedVersion: claimedVersion, claimed);
-        }
-        else
-        {
-            session.Events.Append(task.Id, expectedVersion: claimedVersion, assigned, claimed);
-        }
+        // The gate's own evidence rides in the same Append call, ahead of the claim it justified,
+        // so the expected version covers every event this transaction writes and the stream reads
+        // in the order the two things happened: what the tracker showed, then the claim it let
+        // through.
+        object[] events =
+        [
+            .. gateEvidence is null ? (object[])[] : [gateEvidence],
+            .. assigned is null ? (object[])[] : [assigned],
+            claimed,
+        ];
+        long claimedVersion = fence.Version + events.Length;
+        session.Events.Append(task.Id, expectedVersion: claimedVersion, events);
 
         // Deliberately no TaskLease: the claim is held by the human, not a process — no
         // liveness lease, no heartbeat reclaim (AGENTS.md).

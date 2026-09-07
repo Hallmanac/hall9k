@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -97,7 +98,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // which is a handback's redispatch back to the machine and passes false.
         return await RunDeliberateStartAsync(
             store, session, task, fence, context, settings.AcknowledgeUnmetDependencies, interactiveMode: true,
-            cancellationToken);
+            trackerClaimGate: null, cancellationToken);
     }
 
     /// <summary>
@@ -115,7 +116,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// </summary>
     internal static async Task<int> RunDeliberateStartAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
-        bool acknowledgeUnmetDependencies, bool interactiveMode, CancellationToken cancellationToken)
+        bool acknowledgeUnmetDependencies, bool interactiveMode, TrackerClaimGate? trackerClaimGate,
+        CancellationToken cancellationToken)
     {
         Guid taskId = task.Id;
 
@@ -134,7 +136,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         (Guid runId, string worktreePath, string branch, string runDirectory, bool resumesPreviousWork, AgentModel model) =
             await ClaimAndCutAsync(
                 store, session, task, fence, context, claudeSessionId, sessionName,
-                acknowledgeUnmetDependencies, interactiveMode, cancellationToken);
+                acknowledgeUnmetDependencies, interactiveMode, trackerClaimGate, cancellationToken);
 
         TaskDetails taskDetails = await session.LoadAsync<TaskDetails>(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -271,7 +273,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     internal static async Task<(Guid RunId, string WorktreePath, string Branch, string RunDirectory, bool ResumesPreviousWork, AgentModel Model)> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, TaskAggregate task, StreamState fence, BootstrapContext context,
         Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, bool interactiveMode,
-        CancellationToken cancellationToken)
+        TrackerClaimGate? trackerClaimGate, CancellationToken cancellationToken)
     {
         IReadOnlyList<TaskDependency>? dependencies = null;
         IReadOnlyList<TaskDependency>? unmetAtEntry = null;
@@ -347,6 +349,14 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 + $"h9k pr resolve {task.Id} to dispatch a headless follow-up instead.");
         }
 
+        // The claim gate (idea 64c75e43), read fresh and refused with the identical sentence
+        // h9k task assign warns with — h9k task work's own door, applied here for the same
+        // reason: this command starts the work now, so a card the tracker says somebody else
+        // holds is a claim this install must not take. Exits 70 through
+        // DomainBusinessRuleException: a standing project rule, not a bad command line.
+        TrackerAssignmentObserved? gateEvidence = await TrackerClaimCheck.RefuseOrEvidenceAsync(
+            store, task.Id, project, taskDetails.ExternalReference, trackerClaimGate, cancellationToken);
+
         Guid runId = DomainId.New();
         DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
 
@@ -372,15 +382,17 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 interactiveMode: interactiveMode);
         }
 
-        long claimedVersion = fence.Version + (assigned is null ? 1 : 2);
-        if (assigned is null)
-        {
-            session.Events.Append(task.Id, expectedVersion: claimedVersion, claimed);
-        }
-        else
-        {
-            session.Events.Append(task.Id, expectedVersion: claimedVersion, assigned, claimed);
-        }
+        // The gate's own evidence rides in the same Append call, ahead of the claim it justified,
+        // so the expected version covers every event this transaction writes — h9k task work's
+        // own claim composes its events the identical way.
+        object[] events =
+        [
+            .. gateEvidence is null ? (object[])[] : [gateEvidence],
+            .. assigned is null ? (object[])[] : [assigned],
+            claimed,
+        ];
+        long claimedVersion = fence.Version + events.Length;
+        session.Events.Append(task.Id, expectedVersion: claimedVersion, events);
 
         try
         {

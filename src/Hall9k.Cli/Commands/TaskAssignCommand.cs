@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -56,7 +58,34 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         await Doorbell.RingAsync($"task-assigned:{taskId}", cancellationToken);
 
         await AnnounceAsync(assigned, owner, session, cancellationToken);
+        await WarnIfTrackerHoldsAsync(store, session, task, trackerClaimGate: null, cancellationToken);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The claim gate, read after the assignment has landed and never allowed to refuse it (idea
+    /// 64c75e43): the tracker's assignment is the go signal, so assigning is still the right act
+    /// — it puts the task in the queue the gate lets it out of the moment the item is assigned.
+    /// Shared with <c>h9k task publish --assign</c>, which queues work the same way.
+    /// <para>
+    /// Best-effort about the project itself: a task whose project document has gone missing is a
+    /// record disagreeing with itself, and failing the assignment over it would be this command
+    /// failing for a reason that has nothing to do with what it was asked to do — the dispatcher's
+    /// own door reads the same gate again before anything claims.
+    /// </para>
+    /// </summary>
+    internal static async Task WarnIfTrackerHoldsAsync(
+        IDocumentStore store,
+        IQuerySession session,
+        TaskAggregate task,
+        TrackerClaimGate? trackerClaimGate,
+        CancellationToken cancellationToken)
+    {
+        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is { } project)
+        {
+            await TrackerClaimCheck.WarnAndRecordAsync(
+                store, task.Id, project, task.ExternalReference?.ToString(), trackerClaimGate, cancellationToken);
+        }
     }
 
     /// <summary>

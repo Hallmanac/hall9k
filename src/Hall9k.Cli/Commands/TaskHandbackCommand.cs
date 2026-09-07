@@ -278,7 +278,7 @@ public sealed class TaskHandbackCommand : Hall9kAsyncCommand<TaskHandbackCommand
             // to the machine, not straight back into the human's own arbitration.
             return await TaskStartCommand.RunDeliberateStartAsync(
                 store, session, nowTask, nowFence, context, acknowledgeUnmetDependencies: false,
-                interactiveMode: false, cancellationToken);
+                interactiveMode: false, trackerClaimGate: null, cancellationToken);
         }
 
         // TaskAggregate.Apply(TaskHandedBack) clears the claim but never touches

@@ -458,7 +458,7 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
                 await TaskWorkCommand.ClaimAndCutAsync(
                     store, session, task, fence, context, DomainId.New(),
                     SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                    acknowledgeUnmetDependencies: false, cts.Token);
+                    acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
             }
             finally
             {
@@ -545,7 +545,7 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
                 (runId, _, _, _, _, _, _) = await TaskWorkCommand.ClaimAndCutAsync(
                     store, session, task, fence, context, DomainId.New(),
                     SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                    acknowledgeUnmetDependencies: false, cts.Token);
+                    acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
             }
             finally
             {
@@ -637,7 +637,7 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
                 await TaskWorkCommand.ClaimAndCutAsync(
                     store, session, task, fence, context, DomainId.New(),
                     SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                    acknowledgeUnmetDependencies: false, cts.Token);
+                    acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
             }
             finally
             {
@@ -813,7 +813,7 @@ public sealed class TaskWorkClaimRefusalTests(PostgresFixture postgres) : IClass
             await TaskWorkCommand.ClaimAndCutAsync(
                 store, session, task, fence, context, DomainId.New(),
                 SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                acknowledgeUnmetDependencies, cancellationToken);
+                acknowledgeUnmetDependencies, trackerClaimGate: null, cancellationToken);
         }
         finally
         {
