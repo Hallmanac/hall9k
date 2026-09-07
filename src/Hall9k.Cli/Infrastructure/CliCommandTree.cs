@@ -115,8 +115,10 @@ public static class CliCommandTree
                     + "policy that tracks every published task (none, github-issues, jira) and its "
                     + "routing guidance, the branch-name template task branches are cut under, "
                     + "whether a pull request assigned to this install's own GitHub login auto-starts "
-                    + "a pr-review task and at what speed, and where the project lives on disk. Any "
-                    + "change that the home's generated AGENTS.md renders rewrites that file.")
+                    + "a pr-review task and at what speed, the claim gate that makes a linked card's "
+                    + "own tracker assignment the one act that hands out work, and where the project "
+                    + "lives on disk. Any change that the home's generated AGENTS.md renders rewrites "
+                    + "that file.")
                 .WithExample("project", "set", "hall9k", "--commit-style", "narrative")
                 .WithExample("project", "set", "hall9k", "--max-parallel-tasks", "1")
                 .WithExample("project", "set", "hall9k", "--max-parallel-tasks", "0")
@@ -129,6 +131,7 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--backlog", "github-issues")
                 .WithExample("project", "set", "hall9k", "--branch-template", "{key}-{slug}")
                 .WithExample("project", "set", "hall9k", "--auto-pr-review", "first")
+                .WithExample("project", "set", "hall9k", "--claim-gate", "tracker-assignee")
                 .WithExample(
                     "project", "set", "hall9k", "--review-stage-composition", "none", "--accept-reduced-review");
         });

@@ -1,4 +1,5 @@
 using System.Text;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 
@@ -180,6 +181,16 @@ public static class ProjectAgentsDocument
         document.AppendLine(project.JiraProjectKey.HasValue
             ? $"- Jira board: `{project.JiraProjectKey.Value}`"
             : "- Jira board: none bound");
+        // The claim gate is a fact a session working here has to know, not a preference: with it
+        // on, a task linked to a card does not dispatch on this install until the tracker says
+        // this install holds the card, and a session that does not know that reads a quiet queue
+        // as a broken one.
+        document.AppendLine(project.ClaimGate == ClaimGate.TrackerAssignee
+            ? "- Claim gate: `tracker-assignee` — a task linked to a Jira card or a GitHub issue is "
+              + "claimed on this install only while the tracker shows that item assigned to this "
+              + "install's own tracker identity. The tracker's assignment is the one act that hands "
+              + "out work; there is no override, and a tracker that cannot be read holds the claim."
+            : "- Claim gate: off — assignment inside Hall9k is the only claim rule");
         document.AppendLine();
 
         document.AppendLine("## Tools this project needs");
