@@ -119,7 +119,16 @@ phase boundaries — build done to review,
 review verdict to fix, fix to re-review, and gates to pull request — each hold as a park-shaped
 needs-you row until `h9k review proceed <id>` records the human's go; `h9k review resolve
 --merge-ready`/`--needs-fixes` still applies at these same boundaries, for a human who wants to
-redirect rather than merely approve. Agents dispatched under the flag end their sessions normally
+redirect rather than merely approve. At the review-verdict-to-fix boundary there is a fourth
+choice, on either side of the pull request (Decisions Log #148): `h9k review fixed <id>` records
+that the human did the fix by hand in the run's own worktree, pushes the branch when a pull
+request is already open, and re-enters the loop at the same fix-to-re-review boundary a completed
+fix session lands on — so the review agents check that fix the way they would check a fix
+session's, and no headless fix agent runs at all. It refuses over an uncommitted worktree and
+refuses an unmoved branch tip unless `--no-change "<why>"` states why, which is then carried into
+every later review pass as a dismissal the way a `--merge-ready` reason is. It spends no
+automatic fix budget and no cap a fix session consumes; the review cycle it opens counts exactly
+as one a fix session opens does. Agents dispatched under the flag end their sessions normally
 after reporting — nothing waits on a live process, and a boundary approved days later advances
 exactly as one approved in seconds. A task without the flag behaves byte-for-byte as the
 fire-and-forget pipeline always has: no default changes.
@@ -145,6 +154,14 @@ session SendMessage cannot reach (the session has since ended), the agent still 
 and logs each attempt individually through `h9k task log-interaction` — landed or not — rather than
 dropping it silently, and a failed send never blocks the agent from continuing its own work either
 way; nothing about the interactive-mode phase-boundary park changes in either case.
+
+A review pass's own end-of-phase report also names the choices the boundary its verdict lands the
+run at actually has, with the exact command for each — all four at the review-verdict-to-fix
+boundary, and at the gates-to-pull-request boundary the hands-off exit as well (`h9k task revise
+<id> --clear-interactive-mode`, then one `h9k review proceed`, after which the daemon shepherds
+the pull request unattended; an option, never the default). The starting prompt `h9k task work`
+prints teaches the operator's own session the same three sets, from the same source, so a session
+the operator is sitting at can offer the choices in words rather than sending them to these docs.
 
 ### A deliberate human kick-off
 
@@ -377,9 +394,9 @@ Depth: PLAN.md Decisions Log #135.
 
 ### Recovery
 
-`h9k task retry`, `h9k task resolve`, `h9k task abandon`, `h9k pr resolve`, and
-`h9k review resolve`, all human-only. `Failed` is a waypoint with exactly three exits, and none
-of them is automatic.
+`h9k task retry`, `h9k task resolve`, `h9k task abandon`, `h9k pr resolve`, `h9k review resolve`,
+and — on an interactive-mode task — `h9k review proceed` and `h9k review fixed`, all human-only.
+`Failed` is a waypoint with exactly three exits, and none of them is automatic.
 
 ### Configuration and policy
 
