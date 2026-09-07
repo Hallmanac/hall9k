@@ -280,8 +280,22 @@ public sealed class RunAggregate
     /// number while it is active and frozen at its conclusion once it is not.
     /// </summary>
     public int ReviewCycle { get; private set; }
-    /// <summary>Automatic fix sessions dispatched so far. A count for the record; the loop's bounds are the per-track cycle caps (log #63).</summary>
+    /// <summary>
+    /// Automatic fix sessions dispatched so far. A count for the record; the loop's bounds are the
+    /// per-track cycle caps (log #63). Deliberately never incremented by a human's own
+    /// <c>h9k review fixed</c> (task: a human at the wheel takes the fix role herself) — see
+    /// <see cref="HumanFixRounds"/>, which counts those separately so neither number ever
+    /// misreports who did the work.
+    /// </summary>
     public int ReviewFixRuns { get; private set; }
+    /// <summary>
+    /// Fixes the human applied by hand at interactive mode's review-verdict-to-fix boundary
+    /// (<c>h9k review fixed</c>, task: a human at the wheel takes the fix role herself), counted
+    /// apart from <see cref="ReviewFixRuns"/>. A count for the record on the same terms that one
+    /// is: nothing bounds the loop on it, and a human fix spends no automatic fix budget and no cap
+    /// a fix session consumes.
+    /// </summary>
+    public int HumanFixRounds { get; private set; }
     /// <summary>The current cycle's merged verdict across its lenses (log #59), not any single pass's.</summary>
     public ReviewVerdict LastReviewVerdict { get; private set; } = ReviewVerdict.Unknown;
     public ReviewPhase ReviewPhase { get; private set; } = ReviewPhase.None;
@@ -700,7 +714,11 @@ public sealed class RunAggregate
     /// <see cref="Apply(Events.ReviewFixDispatched)"/>) — one shot per boundary, so a task with
     /// <c>InteractiveModeEnabled</c> is asked again at the very next one rather than sailing
     /// through the rest of the run on a single approval (task: interactive mode becomes a
-    /// recorded property of the task).
+    /// recorded property of the task). A human's own fix
+    /// (<see cref="Apply(Events.ReviewHumanFixApplied)"/>, task: a human at the wheel takes the fix
+    /// role herself) consumes it on the same terms a dispatched fix session does: that fix IS the
+    /// answer at the review-verdict-to-fix boundary, so the fix-to-re-review boundary that follows
+    /// asks its own question rather than inheriting that approval.
     /// </summary>
     public bool InteractiveGateCleared { get; private set; }
 
@@ -1070,6 +1088,61 @@ public sealed class RunAggregate
         ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed
             ? ReviewPhase.Disputed
             : ReviewPhase.Reverify;
+    }
+
+    /// <summary>
+    /// The human fixed the cycle's findings by hand and handed the branch back for re-review
+    /// (<c>h9k review fixed</c>, task: a human at the wheel takes the fix role herself). This is
+    /// the one fix path with no session of its own on either side of it: the commits are already on
+    /// the branch, so there is nothing to await and nothing to clear — this event stands in for
+    /// <see cref="Apply(ReviewFixDispatched)"/> and <see cref="Apply(ReviewFixCompleted)"/>
+    /// together, landing the run on exactly the phase the second of those lands a
+    /// <see cref="ReviewFixOutcome.Fixed"/> outcome on.
+    /// <para>
+    /// What it deliberately does NOT do is everything a dispatched round does about budget and
+    /// escalation: <see cref="ReviewFixRuns"/> stays put (it counts sessions the platform
+    /// dispatched, and none was), and so does the repeat-findings escalation state
+    /// (<see cref="LastFixRoundFindingLocations"/>, <see cref="LastFixRoundCycle"/>,
+    /// <see cref="LastFixSessionEscalated"/>) — that comparison is against the most recent
+    /// AUTOMATED round by design (see <see cref="LastFixRoundFindingLocations"/>'s own doc), so
+    /// installing a human round as its previous side would escalate a later automated round
+    /// against locations no fix session was ever dispatched over, the same misreporting
+    /// <see cref="Apply(ReviewFixDispatched)"/> already refuses for a human's needs-fixes findings.
+    /// </para>
+    /// <para>
+    /// <see cref="FixDispatchedThisCycle"/>, by contrast, IS set, exactly as a dispatched round
+    /// sets it. It is not a budget: it is the record that this cycle's own tip moved after its
+    /// reviewers read it, and it is what keeps <c>ReviewEngine.MaySettleReason</c>'s
+    /// <c>NothingOwed</c> clause and <c>NeedsFullGateBeforeSettling</c> from letting those commits
+    /// reach the remote unread and ungated (Decisions Log #92 — nothing merges on scoped green
+    /// alone, whoever wrote the commits). This is the "counts exactly as one opened by a fix
+    /// session does" half of the same criterion whose other half is the untouched budget above.
+    /// </para>
+    /// </summary>
+    public void Apply(ReviewHumanFixApplied @event)
+    {
+        HumanFixRounds++;
+        // Consumed on the same terms Apply(ReviewFixCompleted) consumes them: the human answered
+        // the boundary these findings were parked at, so they must not ride into whatever the loop
+        // dispatches next as though nobody had acted on them.
+        PendingHumanFindings = null;
+        PendingHumanFindingsFromInteractiveGate = false;
+        // The review-verdict-to-fix boundary's own approval is spent by the fix, the same way
+        // Apply(ReviewFixDispatched) spends it the moment the session it bought dispatches — so the
+        // fix-to-re-review boundary below asks its own question rather than inheriting this one's
+        // answer.
+        InteractiveGateCleared = false;
+        _fixDispatchedThisCycle = true;
+        // Reverify, never Disputed: a human cannot dispute their own fix, and Reverify is the
+        // existing fix-to-re-review entry point — the gates run over those commits, then a fresh
+        // review pass reads them.
+        ReviewPhase = ReviewPhase.Reverify;
+        // Always true already except the one path that needs it stated, exactly as
+        // Apply(ReviewFixDispatched)'s own identical line documents: the park this resolves left
+        // State at ReviewParked, and nothing else here would move it off.
+        State = RunState.UnderReview;
+        ParkedIsInteractiveGate = false;
+        ParkedNeedsFixesOffersNoProgress = false;
     }
 
     public void Apply(PrReviewConformanceDispatched @event)

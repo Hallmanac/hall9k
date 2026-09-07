@@ -155,6 +155,12 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
     // lens).
     public void Apply(IEvent<ReviewBoundaryApproved> @event, RunListItem view) => view.State = RunState.UnderReview;
 
+    // The same transition for the same reason, on the fourth choice at that boundary (task: a
+    // human at the wheel takes the fix role herself): h9k review fixed resumes the loop off
+    // ReviewParked with no session of its own, so nothing else would move this row's State until
+    // the reverify gate's own events land.
+    public void Apply(IEvent<ReviewHumanFixApplied> @event, RunListItem view) => view.State = RunState.UnderReview;
+
     public void Apply(IEvent<ReviewParkResolved> @event, RunListItem view) => view.State = RunState.UnderReview;
 
     // Mirrors RunAggregate/RunDetails: a fix session redispatched over a budget park
