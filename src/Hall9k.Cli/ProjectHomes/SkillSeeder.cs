@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Infrastructure.Storage;
 
 namespace Hall9k.Cli.ProjectHomes;
@@ -313,7 +314,7 @@ public static class SkillSeeder
             // lean node or project orchestrator window) — every build or review agent reading
             // the ordinary skills/ tier has no use for a skill about writing orchestrator recipes,
             // so it is published there and only there, never duplicated into this canonical set.
-            if (name == Hall9k.Cli.Orchestrator.RecipeSkillPublisher.GeneratorSkillName)
+            if (name == RecipeSkillPublisher.GeneratorSkillName)
             {
                 continue;
             }
