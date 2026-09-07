@@ -129,9 +129,10 @@ h9k task publish <id> [--assign]                  # the readiness gate; --assign
 h9k task publish <id> --no-existing-item          # required if a tracking backlog policy finds no linked item yet and has no publication already pending
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
 h9k task publish <id> --pre-approved              # the owner stops being a synchronous gate at the pull request: the daemon rebase-merges once every real gate (CI, review decision, requested reviewers, threads) reads satisfied (Decisions Log #135)
+h9k task publish <id> --pre-approved after-human-review   # the same automatic merge, held until a human reviewer has actually been requested on the pull request AND every requested reviewer has approved the current head (Decisions Log #149)
 h9k task assign <id> [<owner>] [--take]           # the dispatch trigger — Queued, or Blocked on dependencies; --take also takes the linked card/issue for this install when nobody holds it, in a project whose claim gate is on (Decisions Log #143)
 h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
-h9k task set-pre-approved <id> on|off             # flip standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (the flag is part of the readiness contract set at publish) (Decisions Log #135)
+h9k task set-pre-approved <id> on|off|after-human-review   # set standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (pre-approval is part of the readiness contract set at publish). after-human-review waits for a requested human reviewer to approve the head; flipping it to on is the emergency path and merges on the next sweep. No reviewer is ever named here — reviewers are added in GitHub (Decisions Log #135, #149)
 h9k task unassign <id>                            # back to Published (refused while leased)
 h9k task draft <id>                               # Published back to Draft, so it can be revised
 ```
