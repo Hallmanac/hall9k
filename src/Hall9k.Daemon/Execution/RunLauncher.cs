@@ -446,10 +446,19 @@ public sealed class RunLauncher(
                                 runBaseBranch,
                                 task.StackReplayUpstreamCommit ?? string.Empty,
                                 task.StackReplayOntoCommit ?? string.Empty)
-                            : AgentPromptBuilder.BuildFollowUp(
-                                task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
-                                interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                                baseCommit: baseCommit);
+                            // A human's changes-requested review gets its own prompt rather than
+                            // the thread one (task: a changes-requested pull-request review from a
+                            // human becomes a fix lap): the findings are handed over, and a
+                            // disagreement is drafted for the implementer instead of posted.
+                            : task.FollowUpKind == FollowUpKind.ReviewRequestedChanges
+                                ? AgentPromptBuilder.BuildReviewRequestedChanges(
+                                    task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
+                                    interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
+                                    baseCommit: baseCommit)
+                                : AgentPromptBuilder.BuildFollowUp(
+                                    task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
+                                    interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
+                                    baseCommit: baseCommit);
             }
             else
             {

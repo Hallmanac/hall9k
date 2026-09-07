@@ -144,6 +144,156 @@ public static class ReviewResultParser
     private static string? Tag(Dictionary<string, string> tags, string key) =>
         tags.TryGetValue(key, out string? value) ? value : null;
 
+    /// <summary>The header line that opens one parked-disagreement block (task: a changes-requested pull-request review from a human becomes a fix lap).</summary>
+    public const string DisagreementMarker = "DISAGREEMENT:";
+
+    /// <summary>The sub-marker introducing what the reviewer asked for, in the session's own restatement.</summary>
+    public const string ReviewerAskedMarker = "REVIEWER ASKED:";
+
+    /// <summary>The sub-marker introducing the session's own position.</summary>
+    public const string DisagreementReasoningMarker = "MY REASONING:";
+
+    /// <summary>The sub-marker introducing the reply the session drafted for the implementer to send, edit, or drop.</summary>
+    public const string ProposedReplyMarker = "PROPOSED REPLY:";
+
+    /// <summary>
+    /// The disagreements a changes-requested fix lap parked rather than answering itself (task: a
+    /// changes-requested pull-request review from a human becomes a fix lap), in the order they
+    /// were written. A block runs from its <see cref="DisagreementMarker"/> header to the next
+    /// header, to the <c>RESOLUTION:</c> line, or to the <c>HANDOFF:</c> block — whichever comes
+    /// first.
+    /// <para>
+    /// Tolerant in the same way <see cref="ParseFindings"/> is, and for the same reason: this
+    /// parser never decides what honesty requires. A block missing a sub-marker yields a blank
+    /// field rather than a guess, and a block whose prose carries no sub-markers at all is read
+    /// whole as the session's reasoning — it plainly said something, and the only thing that
+    /// cannot be recovered is which half of it was which. What that costs is visible to the human
+    /// resolving the park, which is exactly who should be the one to notice.
+    /// </para>
+    /// <para>
+    /// Returns empty when the output carries no headers at all. That is not "the session agreed
+    /// with everything" — <c>ReviewFixOutcome.Disputed</c> is what says a disagreement exists, and
+    /// the park is recorded on the strength of that marker whether or not a single block here
+    /// parses.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<ReviewDisagreement> ParseDisagreements(string? summary)
+    {
+        if (summary.IsBlank())
+        {
+            return [];
+        }
+
+        List<ReviewDisagreement> disagreements = [];
+        List<string>? block = null;
+        foreach (string rawLine in summary.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            string trimmed = line.TrimStart();
+            bool opensBlock = trimmed.StartsWith(DisagreementMarker, StringComparison.OrdinalIgnoreCase);
+            bool endsBlocks = trimmed.StartsWith("RESOLUTION:", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("HANDOFF:", StringComparison.OrdinalIgnoreCase);
+            if (opensBlock || endsBlocks)
+            {
+                CloseDisagreement(disagreements, block);
+                block = opensBlock ? [trimmed] : null;
+                continue;
+            }
+
+            block?.Add(line);
+        }
+
+        CloseDisagreement(disagreements, block);
+        return disagreements;
+    }
+
+    private static void CloseDisagreement(List<ReviewDisagreement> disagreements, List<string>? block)
+    {
+        if (block is null)
+        {
+            return;
+        }
+
+        Dictionary<string, string> header = HeaderTags(block[0][DisagreementMarker.Length..]);
+        // The same three spellings ParseFindings accepts for a location, for the same reason: this
+        // is one contract written twice, and a session that reaches for the finding contract's own
+        // `file=` here should not lose its location for it.
+        string? location = Tag(header, "at") ?? Tag(header, "file") ?? Tag(header, "location");
+
+        // The same echoed-example guard <see cref="Close"/> applies to a finding, and it matters
+        // more here (self-review, this task): a session that quotes the contract before answering
+        // — the observed habit LastMarkerValue already tolerates for VERDICT — would otherwise
+        // park a run over a file no repository has, carrying a placeholder "proposed reply" that
+        // h9k review resolve would offer to send to a real reviewer.
+        if (location.IsNotBlank() && ReviewVerdictValidation.IsPlaceholderLocation(location))
+        {
+            return;
+        }
+
+        (string finding, string reasoning, string reply) = SplitDisagreementBody(block.Skip(1));
+        disagreements.Add(new ReviewDisagreement(
+            finding, reasoning, reply,
+            Location: location.IsBlank() ? null : location,
+            ThreadId: Tag(header, "thread"),
+            ReviewUrl: Tag(header, "review")));
+    }
+
+    /// <summary>
+    /// One block's prose split at its sub-markers. Text ahead of the first sub-marker is folded
+    /// into the reasoning: it is the session talking about its own position, and dropping it would
+    /// hide part of what the implementer is being asked to weigh.
+    /// </summary>
+    private static (string Finding, string Reasoning, string ProposedReply) SplitDisagreementBody(
+        IEnumerable<string> lines)
+    {
+        List<string> finding = [];
+        List<string> reasoning = [];
+        List<string> reply = [];
+        List<string> current = reasoning;
+        foreach (string line in lines)
+        {
+            string trimmed = line.TrimStart();
+            if (StartsSection(trimmed, ReviewerAskedMarker, out string remainder))
+            {
+                current = finding;
+            }
+            else if (StartsSection(trimmed, DisagreementReasoningMarker, out remainder))
+            {
+                current = reasoning;
+            }
+            else if (StartsSection(trimmed, ProposedReplyMarker, out remainder))
+            {
+                current = reply;
+            }
+            else
+            {
+                current.Add(line);
+                continue;
+            }
+
+            if (remainder.IsNotBlank())
+            {
+                current.Add(remainder);
+            }
+        }
+
+        return (Join(finding), Join(reasoning), Join(reply));
+
+        static bool StartsSection(string trimmed, string marker, out string remainder)
+        {
+            if (trimmed.StartsWith(marker, StringComparison.OrdinalIgnoreCase))
+            {
+                remainder = trimmed[marker.Length..].Trim();
+                return true;
+            }
+
+            remainder = string.Empty;
+            return false;
+        }
+
+        static string Join(List<string> lines) => string.Join('\n', lines).Trim();
+    }
+
     public static ReviewVerdict ParseVerdict(string? summary) =>
         LastMarkerValue(summary, "VERDICT:") switch
         {
