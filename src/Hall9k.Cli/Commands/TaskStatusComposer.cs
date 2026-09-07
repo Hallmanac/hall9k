@@ -1,3 +1,4 @@
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
@@ -5,6 +6,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Marten;
@@ -42,6 +44,13 @@ namespace Hall9k.Cli.Commands;
 /// h9k task list --project and h9k project show compose their rows from exactly this.
 /// </para>
 /// </param>
+/// <param name="TrackerHolds">
+/// Why this machine's own dispatch sweep last left a gated task Queued (idea 64c75e43), keyed by
+/// task id and freshness-gated exactly as <paramref name="Pressure"/> is. Absent for every task
+/// nothing is holding — which is the whole board on a project whose claim gate is off — so a row
+/// with no entry says nothing about a tracker rather than inventing a wait nobody observed
+/// (AGENTS.md, the never-guess rule).
+/// </param>
 internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, RunDetails> Runs,
     IReadOnlyDictionary<Guid, RunActivity> Activity,
@@ -52,6 +61,7 @@ internal sealed record TaskStatusContext(
     string MachineName,
     DispatchPressure? Pressure = null,
     IReadOnlyDictionary<Guid, int>? BudgetParkedRuns = null,
+    IReadOnlyDictionary<Guid, TrackerClaimHold>? TrackerHolds = null,
     int InteractiveClaimStaleAfterDays = OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
 
 /// <summary>
@@ -179,7 +189,51 @@ internal static class TaskStatusComposer
             Environment.MachineName,
             await DispatchPressure.ReadAsync(session, now, cancellationToken),
             BudgetParkedByProject(tasks, runs),
+            await ReadTrackerHoldsAsync(session, tasks, now, cancellationToken),
             operatingSettings.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
+    }
+
+    /// <summary>
+    /// Why this machine's own dispatch sweep last left each of these tasks Queued behind its
+    /// project's claim gate (idea 64c75e43), loaded by id for the tasks actually on screen rather
+    /// than swept whole — the same reasoning the run documents above are loaded by id.
+    /// <para>
+    /// Only holds this machine published are read, and only ones fresh enough to describe now
+    /// (<see cref="DispatchPressure.Freshness"/>). Another machine's node has its own tracker
+    /// identity, so its hold says nothing about whether the queue here is moving; and a hold left
+    /// behind by a daemon that has since stopped, or by a task that has since been claimed
+    /// elsewhere, would otherwise go on explaining a wait that has already ended.
+    /// </para>
+    /// <para>
+    /// Queried by task rather than loaded by key, because the key carries the node as well as the
+    /// task (<see cref="TrackerClaimHold.KeyFor"/>) and a reader knows only the machine it is on.
+    /// The newest per task wins for the reason <see cref="DispatchPressure.ReadAsync"/> orders its
+    /// own read that way: one machine re-registering as a new node leaves the retired node's row
+    /// behind under this same machine name, and there is nothing to be learned from a sweep that
+    /// node is no longer making.
+    /// </para>
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<Guid, TrackerClaimHold>> ReadTrackerHoldsAsync(
+        IQuerySession session,
+        IReadOnlyList<TaskListItem> tasks,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        Guid[] queued = [.. tasks.Where(task => task.State == TaskState.Queued).Select(task => task.Id)];
+        if (queued.Length == 0)
+        {
+            return new Dictionary<Guid, TrackerClaimHold>();
+        }
+
+        string machineName = Environment.MachineName;
+        return (await session.Query<TrackerClaimHold>()
+                .Where(hold => hold.MachineName == machineName && hold.TaskId.IsOneOf(queued))
+                .ToListAsync(cancellationToken))
+            .Where(hold => now - hold.ObservedAt <= DispatchPressure.Freshness)
+            .GroupBy(hold => hold.TaskId)
+            .ToDictionary(
+                holds => holds.Key,
+                holds => holds.OrderByDescending(hold => hold.ObservedAt).First());
     }
 
     /// <summary>
@@ -202,8 +256,9 @@ internal static class TaskStatusComposer
         // measured" alike, and every surface reading it then says nothing about slots rather
         // than inventing a contention nobody observed (AGENTS.md, the never-guess rule).
         QueueHold? held = QueueHold.For(task, project, context.Pressure);
+        TrackerClaimDecision? heldByTracker = HeldByTracker(task, context);
 
-        TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, held);
+        TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, held, heldByTracker);
         (bool stalled, string activity) = Silence(task, run, state, session, context, now);
         TaskAttention attention = AttentionComposer.Compose(
             task, run, state, phase, stalled, now,
@@ -221,7 +276,7 @@ internal static class TaskStatusComposer
             phase,
             attention,
             group,
-            PublishedFacts.Compose(task, state, held),
+            PublishedFacts.Compose(task, state, held, heldByTracker),
             project,
             task.Objective,
             task.Type.Value,
@@ -235,7 +290,8 @@ internal static class TaskStatusComposer
             task.DependencyFailureReason,
             held,
             task.AssignedAt,
-            task.QueuePriorityMarked);
+            task.QueuePriorityMarked,
+            heldByTracker is not null);
     }
 
     /// <summary>
@@ -252,6 +308,23 @@ internal static class TaskStatusComposer
                 && runs.GetValueOrDefault(runId)?.State == RunState.BudgetParked)
             .GroupBy(task => task.ProjectId)
             .ToDictionary(project => project.Key, project => project.Count());
+
+    /// <summary>
+    /// Whether this project's claim gate is what this task is waiting on (idea 64c75e43), read
+    /// off the measurement the dispatcher published rather than by asking the tracker here: a
+    /// board render must never make a network call, and the board and the dispatcher must not
+    /// disagree about why a queue is not moving. Null covers every task nothing is holding, which
+    /// includes the whole board on a project whose gate is off.
+    /// <para>
+    /// Gated on Queued for the same reason <see cref="QueueHold.For"/> is: a hold only ever
+    /// describes a task the dispatcher passed over, and a task that has since been claimed —
+    /// interactively, or on another machine — is not waiting for anything.
+    /// </para>
+    /// </summary>
+    private static TrackerClaimDecision? HeldByTracker(TaskListItem task, TaskStatusContext context) =>
+        task.State == TaskState.Queued && context.TrackerHolds?.GetValueOrDefault(task.Id) is { } hold
+            ? TrackerClaimDecision.FromHold(hold)
+            : null;
 
     /// <summary>
     /// What can honestly be said about the sessions a run has in flight — plural, because a

@@ -31,12 +31,19 @@ internal static class TaskPhaseComposer
     /// project's own cap (<see cref="QueueHold"/>, Decisions Log #64, #140) — or null when
     /// neither was measured to be full.
     /// </param>
+    /// <param name="heldByTracker">
+    /// The measurement that says a queued follow-up is waiting for its project's claim gate (idea
+    /// 64c75e43), or null when nothing is holding it that way. Named ahead of
+    /// <paramref name="held"/> where both apply, since a card somebody else holds is the
+    /// more specific cause and this line carries one.
+    /// </param>
     public static TaskPhase Compose(
         TaskListItem task,
         RunDetails? run,
         LifecycleState state,
         SessionLiveness session,
-        QueueHold? held = null)
+        QueueHold? held = null,
+        TrackerClaimDecision? heldByTracker = null)
     {
         if (state == LifecycleState.Working)
         {
@@ -44,7 +51,7 @@ internal static class TaskPhaseComposer
         }
 
         return state == LifecycleState.Delivered
-            ? Delivered(task, run, session, held)
+            ? Delivered(task, run, session, held, heldByTracker)
             : TaskPhase.None;
     }
 
@@ -275,7 +282,8 @@ internal static class TaskPhaseComposer
     /// but a human's merge.
     /// </summary>
     private static TaskPhase Delivered(
-        TaskListItem task, RunDetails? run, SessionLiveness session, QueueHold? held)
+        TaskListItem task, RunDetails? run, SessionLiveness session, QueueHold? held,
+        TrackerClaimDecision? heldByTracker)
     {
         string pullRequest = PullRequestLabel(task, run);
 
@@ -287,8 +295,12 @@ internal static class TaskPhaseComposer
         // never-guess rule).
         if (task.State == TaskState.Queued)
         {
+            // The claim gate is named ahead of the ceiling for the same reason PublishedFacts
+            // orders them that way: a reopened follow-up whose card the tracker says somebody else
+            // holds is not going to be claimed here whatever the ceiling does (idea 64c75e43), and
+            // this line has room for exactly one cause.
             return new TaskPhase($"follow-up queued for {pullRequest}", SessionLiveness.NotApplicable,
-                held?.ReasonLine ?? "not claimed yet");
+                heldByTracker?.ReasonLine ?? held?.ReasonLine ?? "not claimed yet");
         }
 
         // A reopened follow-up held by a dependency: nothing is dispatching it and no run is

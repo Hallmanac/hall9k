@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 
@@ -108,6 +109,7 @@ internal static class StatusFixtures
         DispatchPressure? pressure = null,
         int budgetParkedRuns = 0,
         IReadOnlyDictionary<Guid, int>? budgetParkedByProject = null,
+        TrackerClaimHold? trackerHold = null,
         int? interactiveClaimStaleAfterDays = null) =>
         TaskStatusComposer.Compose(
             task,
@@ -116,6 +118,11 @@ internal static class StatusFixtures
                 // The count is per project (backlog 40), and a test that only cares how many runs
                 // this row's own project is holding says the number and lets the fixture key it.
                 budgetParkedByProject ?? new Dictionary<Guid, int> { [task.ProjectId] = budgetParkedRuns },
+                // The hold is keyed by task id in the real context (idea 64c75e43); a test states
+                // the one hold it cares about and lets the fixture key it to this row.
+                trackerHold is null
+                    ? null
+                    : new Dictionary<Guid, TrackerClaimHold> { [task.Id] = trackerHold },
                 interactiveClaimStaleAfterDays),
             now ?? Now);
 
@@ -128,6 +135,7 @@ internal static class StatusFixtures
         IReadOnlyDictionary<int, SessionLiveness>? livenessByProcess = null,
         DispatchPressure? pressure = null,
         IReadOnlyDictionary<Guid, int>? budgetParkedRuns = null,
+        IReadOnlyDictionary<Guid, TrackerClaimHold>? trackerHolds = null,
         int? interactiveClaimStaleAfterDays = null)
     {
         Dictionary<Guid, RunDetails> runs = run is null ? [] : new Dictionary<Guid, RunDetails> { [run.Id] = run };
@@ -150,6 +158,7 @@ internal static class StatusFixtures
             ThisMachine,
             pressure,
             budgetParkedRuns,
+            trackerHolds,
             interactiveClaimStaleAfterDays
                 ?? Hall9k.Domain.Infrastructure.Persistence.OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
     }

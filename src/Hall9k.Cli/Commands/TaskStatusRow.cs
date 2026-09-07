@@ -58,7 +58,16 @@ internal sealed record TaskStatusRow(
     /// assignment age (task 45136b29, idea fcaded0b's R7 ruling) — what the queued section
     /// orders on ahead of <see cref="AssignedAt"/>, mirroring the dispatcher's own claim query.
     /// </summary>
-    bool QueuePriorityMarked = false)
+    bool QueuePriorityMarked = false,
+    /// <summary>
+    /// Queued behind this project's claim gate: the tracker does not show this task's linked item
+    /// assigned to this install's own tracker identity, or could not be read at all (idea
+    /// 64c75e43). Carried as its own flag for the same reason <see cref="WaitingForSlot"/> is —
+    /// the attention pane decides whether the queue is worth a section at all from it, without
+    /// reading a sentence back out of a display string. The sentence itself is already on the
+    /// row's second line, among the derived facts.
+    /// </summary>
+    bool WaitingForTracker = false)
 {
     /// <summary>
     /// A truncated objective still has to say something; below this the column is noise. A
