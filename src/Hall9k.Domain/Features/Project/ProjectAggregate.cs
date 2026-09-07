@@ -101,6 +101,12 @@ public sealed class ProjectAggregate
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
     public ClaimGate ClaimGate { get; private set; } = ClaimGate.Off;
+    /// <summary>
+    /// Whether true closeout closes this project's tasks' linked GitHub issues, and when (task: a
+    /// task's linked GitHub issue is closed at true closeout under a configurable rule);
+    /// <see cref="CloseLinkedIssueRule.WhenAllTasksClose"/> is what a new project starts with.
+    /// </summary>
+    public CloseLinkedIssueRule CloseLinkedIssue { get; private set; } = CloseLinkedIssueRule.WhenAllTasksClose;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -111,6 +117,10 @@ public sealed class ProjectAggregate
 
     private readonly List<LaunchText> _launchTexts = [];
     public IReadOnlyList<LaunchText> LaunchTexts => _launchTexts;
+
+    private readonly List<string> _neverCloseLabels = [];
+    /// <summary>A label list that forces <see cref="CloseLinkedIssueRule.Never"/> for an issue carrying any of them at closeout time.</summary>
+    public IReadOnlyList<string> NeverCloseLabels => _neverCloseLabels;
 
     public void Apply(ProjectRegistered @event)
     {
@@ -248,6 +258,17 @@ public sealed class ProjectAggregate
         {
             _launchTexts.Clear();
             _launchTexts.AddRange(@event.LaunchTexts.Value ?? []);
+        }
+
+        if (@event.CloseLinkedIssue.HasValue)
+        {
+            CloseLinkedIssue = @event.CloseLinkedIssue.Value ?? CloseLinkedIssueRule.WhenAllTasksClose;
+        }
+
+        if (@event.NeverCloseLabels.HasValue)
+        {
+            _neverCloseLabels.Clear();
+            _neverCloseLabels.AddRange(@event.NeverCloseLabels.Value ?? []);
         }
     }
 }
