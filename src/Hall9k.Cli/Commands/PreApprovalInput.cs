@@ -55,12 +55,10 @@ internal static class PreApprovalInput
         _ => $"the recorded pre-approval ({mode.Value}) is not one this build knows",
     };
 
-    /// <summary>How a mode reads as a word on a status or detail surface — the CLI's own spelling, the one a human types back.</summary>
-    public static string Word(PreApprovalMode mode) => mode.Value switch
-    {
-        "On" => "on",
-        "AfterHumanReview" => "after-human-review",
-        "Off" => "off",
-        _ => mode.Value,
-    };
+    /// <summary>
+    /// How a mode reads as a word on a status or detail surface — the CLI's own spelling, the one a
+    /// human types back. Delegates to <see cref="PreApprovalMode.Word"/>, which is where the
+    /// mapping lives now that the connectors need the same word for a published item's task record.
+    /// </summary>
+    public static string Word(PreApprovalMode mode) => mode.Word;
 }

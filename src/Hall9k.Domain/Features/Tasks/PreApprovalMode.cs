@@ -114,6 +114,23 @@ public sealed record PreApprovalMode
     };
 
     /// <summary>
+    /// The canonical spelling of this mode: the CLI's own word, the one a human types back, and
+    /// the exact input <see cref="FromInput"/> round-trips. Lives on the value object rather than
+    /// beside one surface because two projects need it — the CLI writes it to a terminal
+    /// (<c>PreApprovalInput.Word</c>) and the connectors write it into a published tracker item's
+    /// task record — and a three-way mapping kept in two places is a three-way mapping that
+    /// eventually disagrees with itself. An unrecognized mode answers with whatever was recorded,
+    /// so a surface names the unknown word rather than one of the three it might have been.
+    /// </summary>
+    public string Word => Value switch
+    {
+        "On" => "on",
+        "Off" => "off",
+        "AfterHumanReview" => "after-human-review",
+        _ => Value,
+    };
+
+    /// <summary>
     /// The mode a stream or document actually means: what was recorded, or — when nothing was
     /// (<see cref="Unknown"/>, or a JSON key that was simply absent) — the legacy boolean the
     /// same event or document carries. This is the whole of the migration: every event written

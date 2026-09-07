@@ -226,6 +226,55 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     }
 
     /// <summary>
+    /// Replace an issue's whole body — the one write behind the task record on a published issue
+    /// (task: a published task's GitHub issue carries the whole task record). The body handed in is
+    /// always one this platform composed from the body it just read
+    /// (<see cref="GitHubIssueBody.WithRecord"/>), never a body composed from nothing: a human's
+    /// edits to the prose above the record are theirs, and a blind overwrite would take them.
+    /// <para>
+    /// Written through a temp file rather than <c>--body</c>, the same idiom
+    /// <see cref="CreateAsync"/> uses for the same reason: an issue body carrying a whole task
+    /// record routinely runs past Windows' command-line limit, and a spawn that fails there is
+    /// reported as a missing gh install.
+    /// </para>
+    /// </summary>
+    public async Task UpdateBodyAsync(
+        ExternalReference reference, string body, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (!TryParseCanonical(reference.Reference, out string repository, out int number))
+        {
+            throw new DomainValidationException(
+                $"'{RelayedText.OneLine(reference.ToString())}' does not read as a github owner/repo#number "
+                + "reference, so there is no issue whose body could be rewritten.");
+        }
+
+        string bodyFile = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(bodyFile, body, cancellationToken);
+            List<string> arguments =
+            [
+                "issue", "edit", number.ToString(CultureInfo.InvariantCulture), "--repo", repository,
+                "--body-file", bodyFile,
+            ];
+            ProcessResult result = await RunGhAsync(
+                arguments, workingDirectory, cancellationToken,
+                onStoppedAnswering: exception => GhStoppedAnsweringOnBodyRewrite(
+                    exception, workingDirectory, repository, number));
+            if (result.ExitCode != 0)
+            {
+                throw new DomainValidationException(
+                    $"gh could not rewrite {repository}#{number}'s body: "
+                    + $"{RelayedText.OneLine(result.StandardError).Trim()}");
+            }
+        }
+        finally
+        {
+            File.Delete(bodyFile);
+        }
+    }
+
+    /// <summary>
     /// Who GitHub says holds one issue right now — the whole of the read a
     /// <c>tracker-assignee</c> claim gate makes (idea 64c75e43). Only the assignees field is
     /// asked for, so the one-time content snapshot the adoption took is untouched (Decisions Log
@@ -741,6 +790,21 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         + "by hand from that directory to see what it is waiting on. The comment is not retried "
         + $"automatically; check 'gh issue view {number} --repo {repository}' to see whether it "
         + "posted, and add it by hand if it did not.");
+
+    /// <summary>
+    /// The body-rewrite sibling of <see cref="GhStoppedAnsweringOnComment"/>. It says what was being
+    /// written rather than borrowing the comment wording, because the two are not recoverable the
+    /// same way: a comment that may or may not have posted is checked and re-added by hand, while a
+    /// body rewrite is idempotent — the record is composed from the body that was read, so running
+    /// it again lands the same text whether or not the first attempt got through.
+    /// </summary>
+    private static DomainValidationException GhStoppedAnsweringOnBodyRewrite(
+        TimeoutException exception, string workingDirectory, string repository, int number) => new(
+        $"{exception.Message} It was rewriting {repository}#{number}'s body from {workingDirectory}. "
+        + "gh stopping here is usually gh, or something gh started, waiting on input it cannot ask "
+        + "for — an unlocked keychain or a credential helper — so run 'gh auth status' by hand from "
+        + $"that directory to see what it is waiting on. Check 'gh issue view {number} --repo "
+        + $"{repository}' to see whether the rewrite landed; running it again is safe either way.");
 
     /// <summary>
     /// The create-flavoured sibling of <see cref="GhStoppedAnswering"/>, and a

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -155,7 +156,21 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         }
         else if (task.ExternalReference is null)
         {
-            await TrackInBacklogAsync(store, taskId, shortId, task, project, context.OwnerId, cancellationToken);
+            await TrackInBacklogAsync(
+                store, taskId, shortId, task, project, context, cancellationToken);
+        }
+        else
+        {
+            // A task adopted with --from-issue or linked by hand already carries the item this
+            // publish would otherwise have created, and it is exactly as much a published task as
+            // one the platform filed itself — so its issue gets the record too. Skipping it would
+            // leave the shape a second install is most likely to be looking at (an issue two
+            // installs already share) as the one shape that never carries a record. Called
+            // unconditionally: TaskRecordPublication.WriteAsync owns the whole rule about which
+            // tasks this install maintains a record for — a policy that tracks nothing, or a task
+            // that is a mirror of another install's, writes nothing.
+            await WriteRecordAsync(
+                store, taskId, shortId, project, context, criteriaChanged: false, cancellationToken);
         }
 
         if (assignee is null || assigned is null)
@@ -228,9 +243,10 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         string shortId,
         TaskAggregate task,
         ProjectDetails project,
-        Guid ownerId,
+        BootstrapContext context,
         CancellationToken cancellationToken)
     {
+        Guid ownerId = context.OwnerId;
         if (project.BacklogPolicy == BacklogPolicy.Jira)
         {
             // A task that already has a publication outstanding (h9k task push-to-jira, run by
@@ -371,6 +387,60 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
                 + $"linked {issue.Reference.ToString().EscapeMarkup()}.[/]"
             : $"[dim]  {project.Name.EscapeMarkup()} tracks its backlog in GitHub issues; task {shortId} "
                 + "already carried a reference by the time this landed.[/]");
+
+        // The record goes in after the link, never as part of the create body: the branch name it
+        // carries renders through the project's branch template, whose {key} token is this very
+        // issue's number (TaskRecordPublication's own doc has the fuller argument).
+        await WriteRecordAsync(store, taskId, shortId, project, context, criteriaChanged: false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Write the task record into the issue this task is tracked by, so a second install can adopt
+    /// the issue and get the whole task (task: a published task's GitHub issue carries the whole
+    /// task record). Reported and swallowed on failure, exactly like the create and link above it:
+    /// the task is published either way, and the record is idempotent — the next
+    /// <c>h9k task revise</c> writes it, and so does running publish again after a draft-back.
+    /// </summary>
+    private static async Task WriteRecordAsync(
+        DocumentStore store,
+        Guid taskId,
+        string shortId,
+        ProjectDetails project,
+        BootstrapContext context,
+        bool criteriaChanged,
+        CancellationToken cancellationToken)
+    {
+        await using IQuerySession session = store.QuerySession();
+        try
+        {
+            // Re-read rather than reusing the caller's aggregate: the link that just landed is what
+            // gives the record its issue to write into, and the caller's copy predates it.
+            TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, token: cancellationToken);
+            if (task is null)
+            {
+                return;
+            }
+
+            NodeDetails? node = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
+            TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
+                session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
+                DateTimeOffset.UtcNow, criteriaChanged, cancellationToken: cancellationToken);
+            if (outcome == TaskRecordPublication.WriteOutcome.Written && task.ExternalReference is { } issue)
+            {
+                AnsiConsole.MarkupLine(
+                    "[dim]  Task record written into the issue — a second install adopts the whole "
+                    + $"task with:[/] h9k task add --project {project.Name.EscapeMarkup()} --from-issue "
+                    + $"{issue.Key.EscapeMarkup()}");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Note:[/] [dim]Task {shortId} is published and linked, but writing the task "
+                + $"record into its issue failed: {exception.Message.EscapeMarkup()} Nothing above the "
+                + "record was touched; the next h9k task revise writes it.[/]");
+        }
     }
 
     /// <summary>
