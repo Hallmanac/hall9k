@@ -442,7 +442,7 @@ public sealed class RunLauncher(
                             baseCommit: baseCommit)
                         : isStackReplay
                             ? AgentPromptBuilder.BuildStackReplay(
-                                task, project, worktree.Branch, review.PullRequestUrl,
+                                task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                 runBaseBranch,
                                 task.StackReplayUpstreamCommit ?? string.Empty,
                                 task.StackReplayOntoCommit ?? string.Empty)

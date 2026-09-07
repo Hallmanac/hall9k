@@ -342,7 +342,7 @@ public sealed class StackedPromptTests
     {
         string prompt = AgentPromptBuilder.BuildStackReplay(
             SomeTask(), NarrativeProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
-            baseBranch: ParentBranch, upstreamCommit: "deadbee", ontoCommit: "cafe111");
+            CommitStyle.Narrative, baseBranch: ParentBranch, upstreamCommit: "deadbee", ontoCommit: "cafe111");
 
         prompt.Should().Contain("git rebase -i --autosquash cafe111");
         prompt.Should().NotContain($"--autosquash origin/{ParentBranch}");
@@ -353,7 +353,7 @@ public sealed class StackedPromptTests
     {
         string prompt = AgentPromptBuilder.BuildStackReplay(
             SomeTask(), NarrativeProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
-            baseBranch: "main", upstreamCommit: "deadbee", ontoCommit: "cafe111");
+            CommitStyle.Narrative, baseBranch: "main", upstreamCommit: "deadbee", ontoCommit: "cafe111");
 
         prompt.Should().Contain("git rebase -i --autosquash origin/main",
             "the pull request is retargeted onto the project's own base by then, and that ref only moves forward");
@@ -364,7 +364,7 @@ public sealed class StackedPromptTests
     {
         string prompt = AgentPromptBuilder.BuildStackReplay(
             SomeTask(), SomeProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
-            baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999");
+            CommitStyle.Narrative, baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999");
 
         prompt.Should().Contain("git rebase --onto ffff999 abc1234 task/child-slice-two",
             "the boundary is what drops the parent's commits instead of replaying them onto a base that holds them");
@@ -387,7 +387,7 @@ public sealed class StackedPromptTests
     {
         string prompt = AgentPromptBuilder.BuildStackReplay(
             SomeTask(), SomeProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
-            baseBranch: ParentBranch, upstreamCommit: "deadbee", ontoCommit: "cafe111");
+            CommitStyle.Narrative, baseBranch: ParentBranch, upstreamCommit: "deadbee", ontoCommit: "cafe111");
 
         prompt.Should().Contain("git rebase --onto cafe111 deadbee task/child-slice-two");
         prompt.Should().Contain(ParentBranch, "the branch is still named, so the session knows where it is landing");
@@ -401,11 +401,32 @@ public sealed class StackedPromptTests
 
         string prompt = AgentPromptBuilder.BuildStackReplay(
             SomeTask(), project, "task/child-slice-two", "https://github.com/x/y/pull/8",
-            baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999");
+            CommitStyle.Narrative, baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999");
 
         prompt.Should().Contain("re-run the project's verification gates",
             "the replay runs the gates even though no review cycle reads it");
         prompt.Should().Contain("dotnet build");
+    }
+
+    /// <summary>
+    /// A replay's gate-fix instruction speaks the project's own commit style, not a hard-coded one
+    /// (conformance review, cycle 6). The replay is the one follow-up nothing reviews, so a prompt
+    /// that told an append-style project the narrative rule would have a mechanical session rewrite
+    /// this branch's history against the convention the project declared — and say something false
+    /// about that project while doing it.
+    /// </summary>
+    [Fact]
+    public void A_replay_on_an_append_style_project_lands_its_gate_fix_as_its_own_commit()
+    {
+        string prompt = AgentPromptBuilder.BuildStackReplay(
+            SomeTask(), AppendProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
+            CommitStyle.Append, baseBranch: ParentBranch, upstreamCommit: "deadbee", ontoCommit: "cafe111");
+
+        prompt.Should().Contain("This project uses the append commit style");
+        prompt.Should().NotContain("narrative commit style",
+            "saying so of an append-style project is false of that project");
+        prompt.Should().NotContain("--autosquash",
+            "the append style lands the fix on top rather than folding it into an owning commit");
     }
 
     /// <summary>
@@ -509,6 +530,15 @@ public sealed class StackedPromptTests
         Name = "hall9k",
         BaseBranch = "main",
         CommitStyle = CommitStyle.Narrative,
+        VerifyCommands = [new VerifyCommand("build", "dotnet build")],
+    };
+
+    /// <summary>The same project with the other declared style, for the gate-fix instruction's other arm.</summary>
+    private static ProjectDetails AppendProject() => new()
+    {
+        Name = "hall9k",
+        BaseBranch = "main",
+        CommitStyle = CommitStyle.Append,
         VerifyCommands = [new VerifyCommand("build", "dotnet build")],
     };
 }
