@@ -268,6 +268,22 @@ public sealed class TaskDetails
     /// <summary>The epic this task belongs to, or null when ungrouped (Decisions Log #100).</summary>
     public Guid? EpicId { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.ReviewLapOpen"/> — a human reviewer's own lap is open on this pr-review task right now (Decisions Log #149).</summary>
+    public bool ReviewLapOpen { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.ReviewLapRunId"/> — the run the lap rides on, and the run its verdict appends <c>PrReviewDelivered</c> to.</summary>
+    public Guid? ReviewLapRunId { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.ReviewLapWorktreePath"/> — null when <c>--no-worktree</c> skipped the checkout.</summary>
+    public string? ReviewLapWorktreePath { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.ReviewerVerdict"/> — the verdict the reviewer submitted to GitHub, Unknown until one is.</summary>
+    public ReviewerVerdict ReviewerVerdict { get; set; } = ReviewerVerdict.Unknown;
+    /// <summary>The note that went out as the GitHub review's body, kept so <c>h9k task show</c> can say what was actually posted; null until a verdict lands.</summary>
+    public string? ReviewerVerdictNote { get; set; }
+    /// <summary>The pull request head the review was submitted against — the tree the verdict is an opinion about, which can have moved since.</summary>
+    public string? ReviewerVerdictHeadSha { get; set; }
+    /// <summary>What GitHub answered with when the review was submitted; null when the post succeeded carrying no URL to record.</summary>
+    public string? ReviewerVerdictReviewUrl { get; set; }
+    /// <summary>The line comments posted with a changes-requested review, verbatim; empty for an approval.</summary>
+    public List<string> ReviewerVerdictFindings { get; set; } = [];
 }
 
 public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, Guid>
@@ -529,6 +545,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        EndAnyOpenReviewLap(view);
         view.ResumesFromHandback = false;
         view.DependencyOverrideAcknowledged = false;
         view.DependencyOverrideCarriedForward = false;
@@ -584,6 +601,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryPending = false;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.CompletedAt;
+        EndAnyOpenReviewLap(view);
     }
 
     // ResolvedReason survives here on purpose (adversarial review, backlog 51 cycle 8): it is a
@@ -616,6 +634,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         // behind an open dependency (adversarial review, cycle 1, on h9k task start).
         view.CurrentRunId = view.State == TaskState.Blocked ? @event.Data.PreviousRunId : null;
         view.FinishedAt = null;
+        EndAnyOpenReviewLap(view);
     }
 
     public void Apply(IEvent<TaskFailed> @event, TaskDetails view)
@@ -630,6 +649,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskRetried> @event, TaskDetails view)
     {
         view.RetryBranch = @event.Data.Branch;
+        EndAnyOpenReviewLap(view);
         view.RetryReason = @event.Data.Reason;
         view.RetryReasonIsHandback = false;
         view.RetryPending = true;
@@ -650,6 +670,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskHandedBack> @event, TaskDetails view)
     {
         view.RetryBranch = @event.Data.Branch;
+        EndAnyOpenReviewLap(view);
         view.RetryReason = @event.Data.Reason;
         view.RetryReasonIsHandback = true;
         view.RetryPending = true;
@@ -685,6 +706,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryPending = false;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.ResolvedAt;
+        EndAnyOpenReviewLap(view);
     }
 
     // FailureReason survives here as well: abandoning a Failed task records the walk-away
@@ -704,6 +726,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.RetryPending = false;
         view.State = TaskState.Abandoned;
         view.FinishedAt = @event.Data.AbandonedAt;
+        EndAnyOpenReviewLap(view);
 
         // The publication request goes with them when no session has been dispatched, which is
         // the aggregate's rule and matters most here: this view is what the daemon's sweep
@@ -795,6 +818,38 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.UntrackedAttestedByOwnerId = null;
         ForgetSession(view);
     }
+
+    // Mirrors TaskAggregate.Apply(PullRequestReviewLapOpened): provenance only, no state change.
+    // ForgetSession is deliberately NOT called — the lap does not end whatever session the task
+    // already had recorded against it, and on the attach path (a machine review's parked run)
+    // there is nothing of the lap's own to record either way.
+    public void Apply(IEvent<PullRequestReviewLapOpened> @event, TaskDetails view)
+    {
+        view.ReviewLapOpen = true;
+        view.ReviewLapRunId = @event.Data.RunId;
+        view.ReviewLapWorktreePath = @event.Data.WorktreePath.IsNotBlank() ? @event.Data.WorktreePath : null;
+    }
+
+    public void Apply(IEvent<PullRequestReviewVerdictDelivered> @event, TaskDetails view)
+    {
+        view.ReviewLapOpen = false;
+        view.ReviewerVerdict = @event.Data.Verdict;
+        view.ReviewerVerdictNote = @event.Data.Note;
+        view.ReviewerVerdictHeadSha = @event.Data.HeadSha;
+        view.ReviewerVerdictReviewUrl = @event.Data.ReviewUrl;
+        view.ReviewerVerdictFindings = [.. @event.Data.Findings];
+    }
+
+    /// <summary>
+    /// Mirrors <c>TaskAggregate.EndAnyOpenReviewLap</c> — see that method for the whole reasoning.
+    /// This is the copy that matters operationally: <see cref="ReviewLapOpen"/> on this view is
+    /// what <c>RunSupervisor.AdoptOrphansAsync</c> reads to leave a reviewer's lap alone, so a
+    /// flag left standing here after the claim it rode on ended is what shielded a later,
+    /// automated run of the same task from adoption entirely (independent pre-PR review, cycle 1,
+    /// adversarial lens). <see cref="ReviewLapRunId"/> and <see cref="ReviewLapWorktreePath"/> are
+    /// left alone, as provenance of a lap that happened.
+    /// </summary>
+    private static void EndAnyOpenReviewLap(TaskDetails view) => view.ReviewLapOpen = false;
 
     // Requested, then zero or more auth failures, then finally a success or a terminal failure —
     // the same shape the aggregate applies (TaskAggregate.Apply(JiraWriteFailed)'s own comment

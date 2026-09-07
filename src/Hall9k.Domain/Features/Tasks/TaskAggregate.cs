@@ -371,6 +371,46 @@ public sealed class TaskAggregate
     public string? AutoPrReviewAssigneeLogin { get; private set; }
 
     /// <summary>
+    /// The run a human reviewer's own review lap is riding on (<c>h9k pr review</c>, Decisions
+    /// Log #149), or null when no lap has ever been opened on this task. Never cleared by
+    /// <see cref="Apply(Events.PullRequestReviewVerdictDelivered)"/>: the verdict ends the lap,
+    /// and the pair of facts a reader wants afterwards is "a lap ran, on this run, and it ended
+    /// with this verdict" — clearing the run would leave the verdict attributed to nothing.
+    /// <para>
+    /// <see cref="ReviewLapOpen"/> is the half that does close, and it is what the daemon's own
+    /// startup adoption reads: a lap-dispatched run has no agent process of its own to check for
+    /// liveness, so adoption must leave it alone rather than fail it as "dispatched but never
+    /// started".
+    /// </para>
+    /// </summary>
+    public Guid? ReviewLapRunId { get; private set; }
+
+    /// <summary>Whether a review lap is open right now — true from <see cref="Apply(Events.PullRequestReviewLapOpened)"/> until the reviewer's verdict lands.</summary>
+    public bool ReviewLapOpen { get; private set; }
+
+    /// <summary>
+    /// The read-only checkout THIS entry into the lap opened with, or null when it passed
+    /// <c>--no-worktree</c> and read no code locally at all. Provenance of what the reviewer
+    /// asked for, and deliberately never what anything releases:
+    /// <c>RunDetails.WorktreePath</c> is the single place a checkout is named for every consumer
+    /// that acts on one (<c>PrReviewEngine.FinalizeAsync</c>,
+    /// <c>RunLauncher.CleanUpPreviousPrReviewWorktreesAsync</c>). The two can therefore disagree
+    /// in exactly one direction, and harmlessly: a re-entry passing <c>--no-worktree</c> over a
+    /// run that does have a checkout nulls this while the run keeps naming it, so the checkout is
+    /// still released. The other direction cannot happen — <c>h9k pr review</c> refuses to cut a
+    /// checkout for a run that records none, precisely so nothing is ever left named only here.
+    /// </summary>
+    public string? ReviewLapWorktreePath { get; private set; }
+
+    /// <summary>
+    /// The verdict the reviewer submitted to GitHub at the end of their lap, or
+    /// <see cref="ReviewerVerdict.Unknown"/> when no lap has ever delivered one — including on
+    /// a pr-review task closed the older way, with <c>h9k review resolve --merge-ready</c> and
+    /// nothing posted to the pull request at all.
+    /// </summary>
+    public ReviewerVerdict ReviewerVerdict { get; private set; } = ReviewerVerdict.Unknown;
+
+    /// <summary>
     /// Blocker ids a human has already acknowledged as open and chosen to claim across anyway
     /// (<see cref="Handlers.TaskDecider.ClaimDeliberately"/>'s or
     /// <see cref="Handlers.TaskDecider.ClaimInteractively"/>'s own Blocked-entry branch,
@@ -680,6 +720,7 @@ public sealed class TaskAggregate
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
+        EndAnyOpenReviewLap();
         // A deliberate start-it-mine claim (h9k task start --acknowledge-unmet-dependencies) can
         // give the claim back while its dependency snapshot still names an open blocker — Claim
         // never clears _unmetDependencies, only Assign does — and Queued is only reachable with
@@ -730,6 +771,11 @@ public sealed class TaskAggregate
         // without this it would survive Done and misreport a finished task as still buying a
         // future dispatch turn (independent pre-PR review, cycle 1, adversarial lens).
         QueuePriorityMarked = false;
+        // Ordinarily already closed by the verdict that got the task here — but a pr-review task
+        // a reviewer opened a lap on and then closed the older way (h9k review resolve
+        // --merge-ready, no verdict posted) reaches Done with the flag still true, and h9k task
+        // show would report an open lap on a finished task.
+        EndAnyOpenReviewLap();
     }
 
     public void Apply(TaskReopened @event)
@@ -790,7 +836,32 @@ public sealed class TaskAggregate
         // the next claim (TaskClaimed) overwrites it with the follow-up's own fresh run id
         // moments later, same as every sibling event.
         CurrentRunId = State == TaskState.Blocked ? @event.PreviousRunId : null;
+        EndAnyOpenReviewLap();
     }
+
+    /// <summary>
+    /// Closes <see cref="ReviewLapOpen"/> wherever a task gives its claim back, because a lap
+    /// cannot outlive the claim it rides on: <c>h9k pr approve</c> / <c>h9k pr request-changes</c>
+    /// refuse a task with no <see cref="CurrentRunId"/> ("no run to record the verdict against"),
+    /// so once one of these events lands the verdict that would otherwise close the lap is
+    /// unreachable and the flag can only ever be wrong from then on.
+    /// <para>
+    /// The flag was previously cleared by <see cref="Apply(Events.PullRequestReviewVerdictDelivered)"/>
+    /// alone, which left exactly one honest way to leave a lap — <c>h9k task release</c>, accepted
+    /// because a lap's claim carries the interactive <see cref="Guid.Empty"/> sentinel — with the
+    /// flag stuck true forever. The daemon then read it on a LATER, automated run of the same task
+    /// and skipped that run's adoption as "a reviewer owns it": a dead agent never failed, a live
+    /// one never re-monitored, and the task Claimed indefinitely with no lease to expire
+    /// (independent pre-PR review, cycle 1, adversarial lens).
+    /// </para>
+    /// <para>
+    /// <see cref="ReviewLapRunId"/> and <see cref="ReviewLapWorktreePath"/> are deliberately left
+    /// alone, the same choice the verdict makes: they are provenance of a lap that happened, and
+    /// the pair a reader wants afterwards is "a lap ran, on this run" whether it ended in a
+    /// verdict or in the reviewer walking away.
+    /// </para>
+    /// </summary>
+    private void EndAnyOpenReviewLap() => ReviewLapOpen = false;
 
     /// <summary>
     /// Zeroes every automatic-closeout counter — the progress cap
@@ -830,6 +901,7 @@ public sealed class TaskAggregate
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
+        EndAnyOpenReviewLap();
         // The one explicit human act that clears interactive mode (design ruling R9): the task
         // goes back to the machine, headless from here, and every later boundary this run's
         // engines own goes back to advancing on its own.
@@ -862,6 +934,8 @@ public sealed class TaskAggregate
         // routing back through Apply(TaskClaimed), so a marker set earlier in its life would
         // otherwise survive it.
         QueuePriorityMarked = false;
+        // Same case as Apply(TaskCompleted): a lap left open on a task closed the older way.
+        EndAnyOpenReviewLap();
     }
 
     public void Apply(TaskRetried @event)
@@ -870,6 +944,7 @@ public sealed class TaskAggregate
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
+        EndAnyOpenReviewLap();
         // Same invariant Apply(TaskRequeued) restores: Retry runs from Failed, and a deliberately-
         // claimed Blocked task whose worktree cut failed can still carry an unmet dependency here.
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
@@ -967,6 +1042,24 @@ public sealed class TaskAggregate
     // TaskAbandoned (never this Apply) is what actually moves State when it concluded the task.
     public void Apply(PullRequestReviewAssignmentRecalled @event) => AutoPrReviewAssigneeLogin = null;
 
+    public void Apply(PullRequestReviewLapOpened @event)
+    {
+        ReviewLapOpen = true;
+        ReviewLapRunId = @event.RunId;
+        // Blank means --no-worktree skipped the checkout, which is an absence and is stored as
+        // one rather than as an empty path a caller might hand to `git worktree remove`.
+        ReviewLapWorktreePath = @event.WorktreePath.IsNotBlank() ? @event.WorktreePath : null;
+    }
+
+    // State is never touched here: the verdict is a GitHub review that already happened, and
+    // what moves this task to Done is the run's own PrReviewDelivered reaching PrReviewEngine's
+    // finalize — exactly as h9k review resolve --merge-ready already did before this feature.
+    public void Apply(PullRequestReviewVerdictDelivered @event)
+    {
+        ReviewLapOpen = false;
+        ReviewerVerdict = @event.Verdict;
+    }
+
     private void ClearPendingJiraWrite()
     {
         PendingJiraWriteId = null;
@@ -994,6 +1087,8 @@ public sealed class TaskAggregate
         // Same reasoning as Apply(TaskCompleted): a marker set earlier in this task's life is a
         // dead end here — Abandoned never reopens — so it must not survive to be read back.
         QueuePriorityMarked = false;
+        // Same case, and the same dead end: an abandoned task has no lap open on it.
+        EndAnyOpenReviewLap();
 
         // A publication nobody has started yet is one of those markers, for the reason
         // TaskDecider.RequestWorkItemPublication refuses to make one: filing a card for abandoned

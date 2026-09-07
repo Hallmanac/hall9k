@@ -47,6 +47,15 @@ public static class SessionRoleName
     /// <summary>An operator's own attached session (h9k task work) — held by the human, not a spawned agent.</summary>
     public const string InteractiveClaim = "interactive-claim";
 
+    /// <summary>
+    /// A human reviewer's own review lap over somebody else's pull request (<c>h9k pr review</c>,
+    /// Decisions Log #149) — held by the reviewer, not a spawned agent, the same way
+    /// <see cref="InteractiveClaim"/> is. Its own role rather than that one's because a lap never
+    /// builds anything: nothing it does reaches a branch, a pull request, or a merge, and a
+    /// reader of a session list should be able to tell the two apart at a glance.
+    /// </summary>
+    public const string ReviewLap = "review-lap";
+
     /// <summary>Condenses a fan-in of blocker handoffs into one context document (Decisions Log #36). Not part of the epic's named vocabulary; still named.</summary>
     public const string Synthesis = "synthesis";
 
