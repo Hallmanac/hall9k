@@ -756,6 +756,43 @@ public sealed class GitWorktreeManagerTests : IDisposable
     }
 
     /// <summary>
+    /// The nested checkout-lock wait inside <see cref="GitWorktreeManager.RefreshReadingCheckoutAsync"/>
+    /// must give up quickly rather than waiting anywhere near
+    /// <see cref="Hall9k.Connectors.Verification.AdHocGateRunner.CleanBaseCheckTimeoutCap"/>'s own
+    /// five minutes — that wait sits *inside* the outer repository lock this method already holds,
+    /// and the checkout lock's other holder is typically a clean-base comparison's own gate spawn
+    /// that can now run for up to VerifyGateTimeout, so pinning the repository lock for anywhere
+    /// near that long behind a best-effort refresh would block every other worktree operation on
+    /// the project for the same span, to reach an outcome ("skip the comparison, honestly") a fast
+    /// failure already reaches just as well (independent pre-PR review, cycle 1, adversarial lens,
+    /// medium).
+    /// </summary>
+    [Fact]
+    public async Task Refreshing_a_reading_checkout_gives_up_quickly_when_its_checkout_lock_is_already_held()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        string bare = Path.Combine(_root, "home", "repo", "project.git");
+        Git(_root, $"clone --bare \"{_originPath}\" \"{bare}\"");
+        Git(bare, "config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*");
+        Git(bare, "fetch origin");
+        string dev = Path.Combine(_root, "home", "repo", "dev");
+        Git(bare, $"worktree add \"{dev}\" main");
+
+        PushToOrigin("RULES.md", "# the card rules, as of today\n");
+
+        await using IAsyncDisposable checkoutLock = await _manager.AcquireCheckoutLockAsync(dev, cts.Token);
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        CheckoutRefresh refresh = await _manager.RefreshReadingCheckoutAsync(dev, "main", cts.Token);
+        stopwatch.Stop();
+
+        refresh.UpToDate.Should().BeFalse();
+        refresh.Detail.Should().Contain("checkout lock");
+        stopwatch.Elapsed.Should().BeLessThan(
+            TimeSpan.FromSeconds(30), "the nested wait must give up well under the old five-minute cap");
+    }
+
+    /// <summary>
     /// The same, for the ordinary clone a project registered before homes existed points at. Its
     /// repository is its own root rather than the <c>.git</c> directory inside it, so the lock
     /// taken here is the one every other method takes for the same repository.
