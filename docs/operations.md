@@ -567,6 +567,7 @@ h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet te
 h9k project set myproject --model claude-opus-5
 h9k project set myproject --commit-style narrative
 h9k project set myproject --max-parallel-tasks 2
+h9k project set myproject --priority high
 h9k project set myproject --skip-permissions true
 h9k project set myproject --link "api-conventions=https://…"
 h9k project set myproject --jira PROJ
@@ -619,6 +620,48 @@ value recorded under the old session-denominated `--max-parallel`, which nothing
 throttle a project on a number nobody chose under enforcement. `h9k project show` and
 `h9k project set` both name that retirement wherever a project still carries one, and such a
 project is uncapped until you set the new ceiling yourself.
+
+### Who gets the next free slot
+
+A cap says how many runs a project *may* hold. Which project actually receives a slot when
+several are ready is a separate question, and the answer is a **rotation** (Decisions Log #141):
+whichever eligible project has gone longest without a dispatch takes the next free slot, oldest
+task first within it. Eligible means ready work under every applicable limit — a project at its
+own cap, paused at 0, or with nothing assigned is skipped without consuming a turn. Nothing has to
+be configured for this, and on a single-project node it is exactly plain oldest-first.
+
+What it looks like on a node of two, with both projects holding queues: a stable one-and-one
+split, alternating, and a project reaches beyond one slot only when the other has nothing ready.
+On a node of one it is strict task-by-task alternation, so a lone task on project B queued behind
+a five-task wave on project A runs `A, B, A, A, A, A` — it cuts in at the first slot boundary
+rather than waiting out the wave.
+
+`--priority high` is **focus**: while that project has ready work it wins every free slot over
+every lower tier, and the moment its queue drains the others resume with no command from you.
+That self-release is the whole difference from a cap of 0:
+
+| | `--priority high` | `--max-parallel-tasks 0` |
+|---|---|---|
+| Means | drain this one first, then carry on | never run this one |
+| Ends | by itself, when the queue drains | only when you raise the cap |
+| Other projects | wait their turn | unaffected |
+
+`--priority low` is the mirror: a slot only when no higher tier has ready work, so a standing
+queue elsewhere can hold it indefinitely. `normal` is the default and the tier the rotation itself
+runs in; rotation applies *within* a tier. Like the cap, a tier lives on the project's own stream
+and lands on the next dispatch cycle with no restart.
+
+```bash
+h9k project set myproject --priority high     # focus: drain this one first, then release itself
+h9k project set myproject --priority default  # back into the rotation with everything else
+```
+
+**Nothing preempts.** Ordering decides only who receives the next *free* slot; a run already live
+always finishes, whatever you change mid-flight. And every claim says in one sentence why that
+project won — `longest unserved of 2 project(s) — last dispatched for at …`, `priority high
+outranks the rotation …`, or `the only project with ready work under every applicable limit` — so
+any dispatch decision can be reconstructed from the daemon log alone, the same way every deferral
+already names the limit holding it.
 
 `--verify` does more than record the gates: each one is run once, right there, against a clean
 checkout of the project's own base branch, before it is ever attached to the project. A gate that
