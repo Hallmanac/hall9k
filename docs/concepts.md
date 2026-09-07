@@ -207,17 +207,27 @@ What the edge changes, and nothing else does:
   moved out from under it has parent-owned defects graded as this pull request's own and fixed on
   the child's branch. Where nothing was ever recorded, they fall back to the parent's branch rather
   than inventing a boundary.
-- **It is never rebased onto its parent's branch mid-run.** The pre-final-pass rebase that keeps an
-  ordinary branch mergeable-on-arrival is skipped for a stacked child, for the same reason the
-  boundary below is a recorded commit — a plain merge-base rebase onto a force-pushed parent
-  replays the child's copies of the parent's commits against the parent's new ones. A parent that
-  moves is answered by the mechanical replay below, not by a rebase. Where a sweep cannot observe
-  the parent at all and GitHub reports the child conflicting anyway, the judgment session that
-  follow-up dispatches is told the same rule: replay from the recorded fork point with
-  `git rebase --onto`, and dispute rather than guess when no fork point was ever recorded. For the
-  same reason, every fixup-and-autosquash instruction a stacked child's follow-up carries names an
-  observed commit too, never `origin/<parent>` — a fold against a force-pushed parent would rewrite
-  its already-reviewed commits as the child's own authored history.
+- **It catches up to its parent's head at two checkpoints, and never on every push.** A parent that
+  reached `Delivered` keeps moving: its own closeout reopens it for unresolved threads and failing
+  checks, and each follow-up pushes again. A child that rebased on every one of those would spend
+  its run chasing a branch instead of building on it, so it catches up at two points chosen for
+  what reads the tree next — immediately before its own first review cycle, so its reviewers read a
+  true delta, and immediately before the mandatory final full pass, so nothing is pushed on a stale
+  base — and nowhere in between. Each catch-up is *mechanical*: the same `git rebase --onto` replay
+  the merged-parent case below uses, between the same two exact commits, followed by the full
+  build/test gate over the moved tip and **no review cycle** — the commits are the ones already
+  written, on a new base. It spends the child's own rebase budget, the same one the replays below
+  spend, and past that cap it parks for a human. What is *never* used is a plain merge-base
+  `git rebase origin/<parent>`, for the same reason the boundary below is a recorded commit: against
+  a force-pushed parent it replays the child's copies of the parent's commits against the parent's
+  new ones. A conflict is not something a mechanical catch-up resolves — the branch is restored to
+  its own tip and the run parks with the command it tried. Where a sweep cannot observe the parent
+  at all and GitHub reports the child conflicting anyway, the judgment session that follow-up
+  dispatches is told the same rule: replay from the recorded fork point with `git rebase --onto`,
+  and dispute rather than guess when no fork point was ever recorded. For the same reason, every
+  fixup-and-autosquash instruction a stacked child's follow-up carries names an observed commit too,
+  never `origin/<parent>` — a fold against a force-pushed parent would rewrite its already-reviewed
+  commits as the child's own authored history.
 - **It is not at the merge bar until it is retargeted.** The board never tells you "the merge is
   yours" about a pull request aimed at its parent's branch, and a pre-approved one is not
   auto-merged either.
@@ -245,6 +255,19 @@ What the edge changes, and nothing else does:
   move is a review lap folding fixes into its own commits and force-pushing, but a commit merely
   appended since the child was cut is the same observation and gets the same replay — so the
   recorded account says the head moved, never that it was rewritten, which nothing here observed.
+- **A parent that dies parks the child, wherever the child is.** Abandoned, ended `Failed`, or Done
+  having never delivered a pull request that can merge (its own closed unmerged, or it never opened
+  one) — its branch is one nothing further arrives on, so a child mid-run parks before its next
+  checkpoint rebase and a child with a pull request open parks instead of being retargeted. Either
+  way the park names which door the parent took and leaves the branch exactly as it was, because
+  what happens next is a decision: put the parent back on its feet (`h9k task retry` for one that
+  ended `Failed`, `h9k pr resolve` for one whose pull request closed unmerged) and hand the child
+  back, or abandon the child with its parent. What no resolve does is move a run onto a different
+  base — the base a run watches is frozen when it is dispatched and a claimed task's stacked edge
+  cannot be revised, so work that belongs on the project's base continues as a fresh, unstacked
+  task rather than in this run. It is the same "is this blocker dead" rule the board already uses
+  to hold a dependent visibly rather than unblock it silently, asked one bar lower for a stacked
+  edge.
 - **A parent that merged somewhere other than the base branch parks the child**, base untouched.
   That takes a human: the platform's own merge bar never merges a pull request still aimed at its
   parent's branch. There is no base the child can be moved onto mechanically from there without
