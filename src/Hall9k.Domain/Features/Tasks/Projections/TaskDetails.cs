@@ -109,6 +109,13 @@ public sealed class TaskDetails
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
     public List<Guid> UnmetDependencies { get; set; } = [];
     /// <summary>
+    /// The one blocker this task is stacked on, or null when it is stacked on nothing — mirrors
+    /// <see cref="TaskAggregate.StackedOnTaskId"/> (task: a stacked pull-request edge exists as an
+    /// explicit opt-in dependency). Always a member of <see cref="BlockedBy"/>. Null on every task
+    /// that never declared one, which is also how a document written before this key existed reads.
+    /// </summary>
+    public Guid? StackedOnTaskId { get; set; }
+    /// <summary>
     /// Blockers observed dead: they will never close out on their own. Oldest first, so the
     /// last entry is the newest observation — the one <see cref="DependencyFailureReason"/> carries.
     /// </summary>
@@ -179,6 +186,10 @@ public sealed class TaskDetails
     public FollowUpKind FollowUpKind { get; set; } = FollowUpKind.Unknown;
     /// <summary>See <see cref="TaskReopened.PullRequestHeadSha"/>'s own doc — mirrors <see cref="TaskAggregate.FollowUpPullRequestHeadSha"/>.</summary>
     public string? FollowUpPullRequestHeadSha { get; set; }
+    /// <summary>See <see cref="TaskReopened.StackReplayUpstreamCommit"/>'s own doc — mirrors <see cref="TaskAggregate.StackReplayUpstreamCommit"/>.</summary>
+    public string? StackReplayUpstreamCommit { get; set; }
+    /// <summary>See <see cref="TaskReopened.StackReplayOntoCommit"/>'s own doc — mirrors <see cref="TaskAggregate.StackReplayOntoCommit"/>.</summary>
+    public string? StackReplayOntoCommit { get; set; }
     public string? FollowUpReason { get; set; }
     public string? FailureReason { get; set; }
     /// <summary>
@@ -276,6 +287,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         // it queued on — the same reading the line above already makes of its owner.
         AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt,
         BlockedBy = [.. @event.Data.BlockedBy ?? []],
+        StackedOnTaskId = @event.Data.StackedOnTaskId,
         AgentContext = @event.Data.AgentContext,
         Constraints = @event.Data.Constraints,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
@@ -324,6 +336,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         if (@event.Data.BlockedBy.HasValue)
         {
             view.BlockedBy = [.. @event.Data.BlockedBy.Value ?? []];
+        }
+
+        if (@event.Data.StackedOnTaskId.HasValue)
+        {
+            view.StackedOnTaskId = @event.Data.StackedOnTaskId.Value;
         }
 
         if (@event.Data.Type.HasValue)
@@ -560,6 +577,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;
         view.FollowUpPullRequestHeadSha = null;
+        view.StackReplayUpstreamCommit = null;
+        view.StackReplayOntoCommit = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.RetryPending = false;
@@ -582,6 +601,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpBranch = @event.Data.Branch;
         view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
         view.FollowUpPullRequestHeadSha = @event.Data.PullRequestHeadSha;
+        view.StackReplayUpstreamCommit = @event.Data.StackReplayUpstreamCommit;
+        view.StackReplayOntoCommit = @event.Data.StackReplayOntoCommit;
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.DependencyOverrideAcknowledged = false;
@@ -657,6 +678,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;
         view.FollowUpPullRequestHeadSha = null;
+        view.StackReplayUpstreamCommit = null;
+        view.StackReplayOntoCommit = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.RetryPending = false;
@@ -674,6 +697,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.FollowUpBranch = null;
         view.FollowUpKind = FollowUpKind.Unknown;
         view.FollowUpPullRequestHeadSha = null;
+        view.StackReplayUpstreamCommit = null;
+        view.StackReplayOntoCommit = null;
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.RetryPending = false;

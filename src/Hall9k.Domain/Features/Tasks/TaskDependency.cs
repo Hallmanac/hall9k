@@ -75,6 +75,37 @@ public sealed record TaskDependency(
     public bool Blocks => !IsClosedOut;
 
     /// <summary>
+    /// Delivered in the display vocabulary (PLAN.md §16 #63): the task reached Done and has a pull
+    /// request of its own open — pushed, reviewed internally, branch largely settled, waiting only
+    /// on the merge. This is the bar a <em>stacked</em> dependent starts at rather than true
+    /// closeout (task: a stacked pull-request edge exists as an explicit opt-in dependency, slice
+    /// one), which is the whole point of the edge: the child builds on a branch that exists.
+    /// <para>
+    /// True closeout implies this and more, so <see cref="BlocksStackedChild"/> tests both rather
+    /// than only this: a parent that merged and had its branch deleted is past Delivered, not short
+    /// of it, and <see cref="IsClosedOut"/> is the only honest reading of that.
+    /// </para>
+    /// </summary>
+    public bool IsDelivered => State == TaskState.Done && PullRequestUrl.IsNotBlank();
+
+    /// <summary>
+    /// Whether this dependency still holds back a dependent <em>stacked on</em> it. Delivered is
+    /// enough: the parent's branch is pushed and its pull request open, which is everything a
+    /// stacked child needs to cut its own branch from and target its own pull request at.
+    /// </summary>
+    public bool BlocksStackedChild => !IsClosedOut && !IsDelivered;
+
+    /// <summary>
+    /// Whether this dependency can no longer reach even <em>Delivered</em>, so a dependent stacked
+    /// on it waits forever. Narrower than <see cref="IsDead"/> by exactly the arm a stacked edge
+    /// does not care about: a Done blocker whose merge observation will never arrive has still
+    /// delivered a branch and a pull request, and its stacked child has long since dispatched onto
+    /// them — reporting that as a dead blocker would park the child for a hold that never applied
+    /// to it. Failed and Abandoned are dead for either kind of edge.
+    /// </summary>
+    public bool IsDeadForStackedChild => State == TaskState.Failed || State == TaskState.Abandoned;
+
+    /// <summary>
     /// A Done task closes out when the closeout monitor observes its pull request merge. Most of
     /// the time that only happens while the run carrying the pull request is still in the
     /// pipeline — no run, or a run already terminal on some ending other than Completed, means

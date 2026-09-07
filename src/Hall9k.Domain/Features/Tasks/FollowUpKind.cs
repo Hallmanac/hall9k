@@ -7,8 +7,8 @@ namespace Hall9k.Domain.Features.Tasks;
 /// Why a done task was reopened for a follow-up run (PR closeout, Decisions Log #18/#22).
 /// The launcher selects the agent prompt from it: ReviewFeedback gets the
 /// resolve-review-threads prompt, FailingChecks gets the fix-the-CI prompt, Rebase gets the
-/// rebase-onto-main prompt (backlog 44). Unknown (including reopens recorded before this
-/// vocabulary existed) is treated as ReviewFeedback.
+/// rebase-onto-main prompt (backlog 44), StackReplay gets the mechanical stacked-replay prompt.
+/// Unknown (including reopens recorded before this vocabulary existed) is treated as ReviewFeedback.
 /// </summary>
 [JsonConverter(typeof(FollowUpKindJsonConverter))]
 public sealed record FollowUpKind
@@ -17,6 +17,18 @@ public sealed record FollowUpKind
     public static readonly FollowUpKind FailingChecks = new("FailingChecks");
     /// <summary>The pull request's branch conflicts with its base; the follow-up rebases it (backlog 44).</summary>
     public static readonly FollowUpKind Rebase = new("Rebase");
+
+    /// <summary>
+    /// A stacked child's parent branch moved — it merged (so the child's pull request was
+    /// retargeted onto the project's base branch) or it was force-pushed — and the follow-up
+    /// replays the child's own commits onto the new head (task: a stacked pull-request edge exists
+    /// as an explicit opt-in dependency). Mechanical by construction: the replay carries no new
+    /// intent, so the run is dispatched with <c>ReviewStageComposition.None</c> and no review cycle
+    /// ever reads it; the gates still run, and GitHub's own checks on the push are what judge the
+    /// result.
+    /// </summary>
+    public static readonly FollowUpKind StackReplay = new("StackReplay");
+
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly FollowUpKind Unknown = new("");
 

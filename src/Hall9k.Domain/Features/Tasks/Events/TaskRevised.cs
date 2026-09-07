@@ -54,4 +54,12 @@ public sealed record TaskRevised(
     /// has already reached Done with its pull request open — leaves neither door reachable.
     /// False never turns the flag on; only a claim carrying <c>TaskClaimed.InteractiveMode</c> does that.
     /// </summary>
-    bool ClearInteractiveMode = false);
+    bool ClearInteractiveMode = false,
+    /// <summary>
+    /// Absent leaves the stacked edge alone; present with a value declares this task stacked on
+    /// that blocker, present with null drops the edge back to a plain blocked-by (task: a stacked
+    /// pull-request edge exists as an explicit opt-in dependency). Draft-only like every other
+    /// contract field here, and never inferred: dropping the edge leaves the blocked-by dependency
+    /// itself untouched, because those are two separate declarations.
+    /// </summary>
+    Optional<Guid?> StackedOnTaskId = default);
