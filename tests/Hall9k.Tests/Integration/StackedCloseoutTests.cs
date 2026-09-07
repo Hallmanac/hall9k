@@ -798,7 +798,8 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
 
         if (preApproved)
         {
-            TaskPreApprovedSet set = TaskDecider.SetPreApproved(task, true, Now, ownerId, taskClosedOut: false);
+            TaskPreApprovedSet set = TaskDecider.SetPreApproved(
+                task, PreApprovalMode.On, Now, ownerId, taskClosedOut: false);
             task.Apply(set);
             taskEvents.Add(set);
         }

@@ -66,7 +66,11 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// (<c>PullRequestSnapshot.HumanReviewersAwaitingApproval</c>) — exactly who
 /// <c>PreApprovalMode.AfterHumanReview</c> is still waiting on, so the display names the same
 /// people the daemon's own gate is holding for rather than deriving a second, possibly different
-/// answer. Null on an observation recorded before this was collected.
+/// answer. An entry may be a requested TEAM, recorded <c>team:&lt;slug&gt;</c> exactly as
+/// <paramref name="OutstandingReviewerLogins"/> records one, since GitHub exposes no login for a
+/// team and inventing one would be a guess: the team is who was asked, and what clears it is a
+/// standing approval of the head from anybody. Null on an observation recorded before this was
+/// collected.
 /// </param>
 public sealed record ExternalReviewObserved(
     Guid Id,

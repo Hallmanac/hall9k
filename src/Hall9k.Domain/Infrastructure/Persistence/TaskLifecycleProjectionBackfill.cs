@@ -47,6 +47,15 @@ public static class TaskLifecycleProjectionBackfill
     /// all is indistinguishable from one an old document is merely missing.
     /// </para>
     /// <para>
+    /// <see cref="TaskListItem.PreApproval"/> / <see cref="TaskDetails.PreApproval"/> (task: the
+    /// people a pull request is waiting on are named, and pre-approval gains a mode that waits for
+    /// human review) is the newest marker. A document written before pre-approval became
+    /// three-valued carries only the boolean, which is why both projections resolve the mode
+    /// through <see cref="TaskListItem.EffectivePreApproval"/> rather than reading the field raw —
+    /// so the missing key is already read honestly, and this marker is what eventually retires
+    /// the fallback rather than what keeps the surfaces correct in the meantime.
+    /// </para>
+    /// <para>
     /// <see cref="TaskListItem.EpicId"/> and <see cref="TaskDetails.EpicId"/> (Decisions Log #100)
     /// deliberately have no marker here, unlike every field above: they are nullable and mean
     /// "no epic", which is exactly the truthful reading of an absent key on a document written
@@ -58,7 +67,8 @@ public static class TaskLifecycleProjectionBackfill
         "(not jsonb_exists(d.data, 'assignedOwnerId')"               // pre-lifecycle-split (log #34)
         + " or not jsonb_exists(d.data, 'deadDependencyReasons')"    // pre-blocker-recovery (log #61)
         + " or not jsonb_exists(d.data, 'assignedAt')"               // pre-concurrency-ceiling (log #64)
-        + " or not jsonb_exists(d.data, 'failureReason'))";          // pre-status-redesign (log #66)
+        + " or not jsonb_exists(d.data, 'failureReason')"            // pre-status-redesign (log #66)
+        + " or not jsonb_exists(d.data, 'preApproval'))";           // pre-three-valued pre-approval
 
     /// <summary>
     /// <see cref="StaleDocument"/>'s markers, plus the fields <see cref="TaskDetails"/> alone

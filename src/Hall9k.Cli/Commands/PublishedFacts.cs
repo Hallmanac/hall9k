@@ -1,4 +1,5 @@
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 
 namespace Hall9k.Cli.Commands;
@@ -26,8 +27,24 @@ internal static class PublishedFacts
     private const string QueuePriorityFact =
         "marked queue-first — takes the next free dispatch slot regardless of assignment age";
 
-    private const string PreApprovedFact =
-        "pre-approved — the daemon will merge its pull request on its own once GitHub's gates are satisfied";
+    /// <summary>
+    /// The pre-approval fact, one wording per automatic mode (task: the people a pull request is
+    /// waiting on are named, and pre-approval gains a mode that waits for human review): the two
+    /// modes promise different things about who has to speak before the merge, so a single sentence
+    /// for both would tell an after-human-review task's owner their pull request merges on GitHub's
+    /// gates alone. Off produces no fact at all — every caller already gates on
+    /// <see cref="PreApprovalMode.MergesAutomatically"/> — and an unrecognized mode says so rather
+    /// than being described as one of the two it might have been.
+    /// </summary>
+    private static string PreApprovedFact(PreApprovalMode mode) => mode.Value switch
+    {
+        "On" => "pre-approved — the daemon will merge its pull request on its own once GitHub's gates "
+            + "are satisfied",
+        "AfterHumanReview" => "pre-approved after-human-review — the daemon will merge its pull request on "
+            + "its own once GitHub's gates are satisfied AND every human reviewer requested on it has "
+            + "approved the current head",
+        _ => $"pre-approved, but the recorded mode ({mode.Value}) is not one this build knows",
+    };
 
     /// <summary>
     /// What a Published row is actually waiting for, oldest question first: whether a human has
@@ -85,11 +102,11 @@ internal static class PublishedFacts
             return
             [
                 .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
-                .. task.PreApproved
+                .. task.EffectivePreApproval.MergesAutomatically
                     && state != LifecycleState.Done
                     && state != LifecycleState.Draft
                     && state != LifecycleState.Archived
-                    ? (string[])[PreApprovedFact]
+                    ? (string[])[PreApprovedFact(task.EffectivePreApproval)]
                     : [],
             ];
         }
@@ -151,7 +168,9 @@ internal static class PublishedFacts
         [
             .. facts,
             .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
-            .. task.PreApproved ? (string[])[PreApprovedFact] : [],
+            .. task.EffectivePreApproval.MergesAutomatically
+                ? (string[])[PreApprovedFact(task.EffectivePreApproval)]
+                : [],
         ];
     }
 

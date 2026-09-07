@@ -932,14 +932,14 @@ public sealed class CloseoutEngine(
         // The owner's standing pre-approval (task: a task can be published pre-approved) only
         // ever reads as a green light here — after every obstruction above (conflicting, pending
         // or failing checks, unresolved threads, an errored review) has already had its own say.
-        // Reaching this line with task.PreApproved true is the "nothing else needs a human, and
-        // nothing else needs an agent" moment the feature exists for — unless this same sweep
+        // Reaching this line with pre-approval in either automatic mode is the "nothing else needs
+        // a human, and nothing else needs an agent" moment the feature exists for — unless this same sweep
         // just re-requested a countersign above: that request was issued against this exact
         // snapshot, so merging on the snapshot's now-stale "no outstanding reviewer" reading
         // would merge past the very review this sweep just asked for. The next sweep reads the
         // request as an outstanding reviewer and decides fresh (independent pre-PR review,
         // cycle 1, both lenses).
-        if (task.PreApproved && !reRequestedThisSweep)
+        if (task.PreApproval.MergesAutomatically && !reRequestedThisSweep)
         {
             return await TryAutoMergeAsync(
                 session, task, run, project, fence.Version, snapshot, now, cancellationToken);
@@ -966,6 +966,17 @@ public sealed class CloseoutEngine(
     /// next sweep. A requested Copilot review is the one case with a clock: it either lands (which
     /// flows into the ordinary thread-triage path above on ITS OWN next sweep) or, past the bounded
     /// settle window, parks with that reason instead of waiting forever (design ruling 2).
+    /// </para>
+    /// <para>
+    /// <see cref="PreApprovalMode.AfterHumanReview"/> adds two more gates behind those four (task:
+    /// the people a pull request is waiting on are named, and pre-approval gains a mode that waits
+    /// for human review): at least one human reviewer must have been requested on the pull request
+    /// at some point, and every requested reviewer must have approved the current head. They are
+    /// checked last because they are strictly narrower — a plain pre-approved task can merge before
+    /// any person has been asked at all, and closing that gap is the whole of the mode. Both are
+    /// visible waits with no clock, on the same design-ruling-3 terms as the human-approval wait
+    /// above: the owner adds a reviewer on GitHub, or flips the mode to
+    /// <see cref="PreApprovalMode.On"/>, and the next sweep decides fresh.
     /// </para>
     /// </summary>
     private async Task<InspectionOutcome> TryAutoMergeAsync(
@@ -1054,6 +1065,40 @@ public sealed class CloseoutEngine(
             // already recorded above), never nudged, never parked (design ruling 3): the owner
             // takes whatever social action they choose, on their own initiative.
             return InspectionOutcome.Inspected;
+        }
+
+        // The two extra gates PreApprovalMode.AfterHumanReview adds (task: the people a pull
+        // request is waiting on are named, and pre-approval gains a mode that waits for human
+        // review), checked last because they are strictly narrower than everything above: plain
+        // pre-approval can merge before any person has been brought into the loop at all, which is
+        // the gap this mode closes. Both are visible waits on design ruling 3's own terms, never
+        // parks — nothing is wrong, a person simply has not spoken yet, and the owner's two levers
+        // (add a reviewer on GitHub, or h9k task set-pre-approved on) both land on the next sweep.
+        //
+        // Hall9k requests no review of its own here, deliberately: reviewers are assigned in
+        // GitHub, by humans, and a platform that added one to satisfy its own gate would be
+        // approving its own work by proxy.
+        if (task.PreApproval.WaitsForHumanReview)
+        {
+            if (!snapshot.HasEverRequestedHumanReviewer)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: pre-approved after-human-review, but no human reviewer has ever been "
+                    + "requested on {Url} — waiting for the owner to add one, or to flip the mode with "
+                    + "h9k task set-pre-approved {TaskId} on",
+                    task.Id, task.PullRequestUrl, task.Id);
+                return InspectionOutcome.Inspected;
+            }
+
+            if (snapshot.HumanReviewersAwaitingApproval.Count > 0)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: pre-approved after-human-review, waiting on {Reviewers} to approve "
+                    + "{HeadCommit} on {Url}",
+                    task.Id, string.Join(", ", snapshot.HumanReviewersAwaitingApproval),
+                    snapshot.HeadCommit ?? "the current head", task.PullRequestUrl);
+                return InspectionOutcome.Inspected;
+            }
         }
 
         if (task.MechanicalResolutionAttempts >= _options.MaxMechanicalResolutionAttempts)

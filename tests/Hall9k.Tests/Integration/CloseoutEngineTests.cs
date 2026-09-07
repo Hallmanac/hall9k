@@ -179,6 +179,45 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             FailingChecks: [], HasPendingChecks: false, UnresolvedReviewThreadCount: 0,
             UnresolvedHumanThreadCount: 0, Reviewers: [], ErroredReview: null,
             CopilotReviewState: ExternalReviewState.None, CopilotReviewThreadCount: 0);
+
+        /// <summary>
+        /// A quiet pull request with a known head and a review history on it — what the
+        /// after-human-review merge gate actually reads (task: the people a pull request is
+        /// waiting on are named, and pre-approval gains a mode that waits for human review). The
+        /// head is named because an approval is only an approval OF a commit: leaving it null is
+        /// the "cannot tell" reading, which holds the gate rather than opening it.
+        /// </summary>
+        public static PullRequestSnapshot Reviewed(
+            IEnumerable<string> everRequested,
+            IEnumerable<PullRequestReviewer>? reviewers = null,
+            IEnumerable<string>? outstanding = null,
+            string head = ReviewedHead) =>
+            Quiet() with
+            {
+                HeadCommit = head,
+                RequestedHumanReviewerLogins = [.. everRequested],
+                Reviewers = [.. reviewers ?? []],
+                OutstandingReviewerLogins = [.. outstanding ?? []],
+            };
+
+        /// <summary>The head every <see cref="Reviewed"/> snapshot names, so a test's approvals and its merge call agree.</summary>
+        public const string ReviewedHead = "cafe123";
+
+        /// <summary>
+        /// One human reviewer whose standing verdict approves <see cref="ReviewedHead"/>. The head
+        /// appears twice because the two fields answer different questions — the commit their
+        /// latest review of any kind sits on, and the commit their standing verdict sits on — and
+        /// this reviewer's answers coincide.
+        /// </summary>
+        public static PullRequestReviewer Approved(string login) =>
+            new(login, ReviewerKind.Human, ReviewedHead, "APPROVED", ReviewedHead);
+
+        /// <summary>
+        /// One human reviewer who answered <see cref="ReviewedHead"/> without approving it: a
+        /// comment-only review is not a verdict, so it leaves no standing verdict at all.
+        /// </summary>
+        public static PullRequestReviewer Commented(string login) =>
+            new(login, ReviewerKind.Human, ReviewedHead);
     }
 
     /// <summary>
@@ -561,7 +600,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
-            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
 
         FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe123" } };
         CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
@@ -605,7 +644,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
-            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
 
         FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HasObservedChecks = false } };
         CloseoutEngine engine = NewEngine(
@@ -640,7 +679,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
-            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
 
         FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HasObservedChecks = false } };
         CloseoutEngine engine = NewEngine(
@@ -672,7 +711,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
-            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
 
         FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { ReviewThreadsTruncated = true } };
         CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
@@ -702,7 +741,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
-            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
 
         FakeInspector inspector = new()
         {
@@ -725,6 +764,231 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The first of after-human-review's two extra gates (task: the people a pull request is
+    /// waiting on are named, and pre-approval gains a mode that waits for human review): every
+    /// gate a plain pre-approved task merges on reads clean here, and it still does not merge,
+    /// because no human reviewer has ever been requested on the pull request. A visible wait with
+    /// no clock, not a park — the owner adds a reviewer, or flips the mode.
+    /// </summary>
+    [Fact]
+    public async Task An_after_human_review_task_holds_while_no_human_reviewer_has_been_requested()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.AfterHumanReview);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Reviewed(everRequested: []) };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(0,
+            "plain pre-approval would have merged this — waiting for a person to be asked at all is the "
+            + "whole of what this mode adds");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview);
+        run.ParkedReason.Should().BeNull("nothing is wrong; a person simply has not been asked yet");
+        run.ExternalHumanReviewEverRequested.Should().BeFalse(
+            "the observation is recorded so h9k task show and h9k status can say which gate is holding it");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "the task itself is untouched by the wait");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
+    /// The second gate clearing: the one reviewer who was requested has approved the current head,
+    /// so the daemon merges on its own exactly as plain pre-approval would.
+    /// </summary>
+    [Fact]
+    public async Task An_after_human_review_task_merges_once_its_one_requested_reviewer_approves()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.AfterHumanReview);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Reviewed(
+                everRequested: ["alice"], reviewers: [FakeInspector.Approved("alice")]),
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1));
+        inspector.MergeAttempts.Should().Be(1);
+        inspector.MergeAttemptedHeadCommits.Should().Equal([FakeInspector.ReviewedHead],
+            "the merge is told to match the head the approval itself was left on");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+        run.ExternalHumanReviewEverRequested.Should().BeTrue();
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+    }
+
+    /// <summary>
+    /// Two requested reviewers, one of them not yet satisfied — in either of the two shapes that
+    /// produces. A request still pending is refused by the gate every automatic merge already
+    /// checks; a request GitHub retired when its reviewer answered WITHOUT approving is the shape
+    /// only this mode catches, and the one a plain pre-approved task would have merged straight
+    /// past (a repository with no branch rule reports no reviewDecision at all, so a comment reads
+    /// as satisfied there).
+    /// </summary>
+    [Fact]
+    public async Task An_after_human_review_task_holds_while_one_of_two_requested_reviewers_is_outstanding()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.AfterHumanReview);
+
+        // Shape one: bob's request is still pending.
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Reviewed(
+                everRequested: ["alice", "bob"],
+                reviewers: [FakeInspector.Approved("alice")],
+                outstanding: ["bob"]),
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(0, "bob is still asked to look");
+
+        // Shape two: bob answered, but with a comment rather than an approval, so GitHub retired
+        // his pending request and every gate a plain pre-approved task reads is now clean.
+        inspector.Snapshot = FakeInspector.Reviewed(
+            everRequested: ["alice", "bob"],
+            reviewers: [FakeInspector.Approved("alice"), FakeInspector.Commented("bob")]);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(0, "a comment is not an approval of the head");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview);
+        run.ParkedReason.Should().BeNull();
+        run.ExternalHumanReviewersAwaitingApprovalLogins.Should().Equal(["bob"],
+            "the display names the same person the gate is holding for, never a second answer of its own");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
+    /// The same shape one step further out, where the only reviewer ever requested is a TEAM
+    /// (independent pre-PR review, cycle 1, both lenses). A member's comment-only review retires
+    /// GitHub's pending team request, so the outstanding-reviewer gate goes quiet and every gate a
+    /// plain pre-approved task reads is clean — and the slug itself can never carry an approval. So
+    /// the team's requirement is answered by a standing approval of the head from anybody: while
+    /// there is none, the merge waits and names the team; once a member approves, it merges.
+    /// </summary>
+    [Fact]
+    public async Task An_after_human_review_task_holds_while_a_requested_team_has_answered_without_approving()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.AfterHumanReview);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Reviewed(
+                everRequested: ["team:platform"], reviewers: [FakeInspector.Commented("member")]),
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(0, "nobody has approved the head the team was asked to look at");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            RunDetails held = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+            held.State.Should().Be(RunState.AwaitingReview);
+            held.ParkedReason.Should().BeNull("nothing is wrong; a person simply has not approved yet");
+            held.ExternalHumanReviewersAwaitingApprovalLogins.Should().Equal(["team:platform"],
+                "the display names the team, since it is who was asked and no login can be invented for it");
+        }
+
+        // The member approves, which is the only thing a team's request ever produces.
+        inspector.Snapshot = FakeInspector.Reviewed(
+            everRequested: ["team:platform"], reviewers: [FakeInspector.Approved("member")]);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.MergeAttempts.Should().Be(1, "a member's approval is what answers for the slug");
+
+        await using IQuerySession merged = store.QuerySession();
+        RunDetails run = (await merged.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+    }
+
+    /// <summary>
+    /// The emergency path (task: ... and pre-approval gains a mode that waits for human review):
+    /// the owner flips after-human-review to on, and the next sweep merges on GitHub's own gates
+    /// alone, with the reviewer wait gone rather than waived case by case.
+    /// </summary>
+    [Fact]
+    public async Task Flipping_after_human_review_to_on_merges_on_the_next_sweep()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.AfterHumanReview);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Reviewed(everRequested: []) };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+
+        await engine.PollOnceAsync(cts.Token);
+        inspector.MergeAttempts.Should().Be(0, "no reviewer has been requested, so the mode holds");
+
+        await using (IDocumentSession flip = store.LightweightSession())
+        {
+            TaskAggregate task = (await flip.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, token: cts.Token))!;
+            flip.Events.Append(taskId, TaskDecider.SetPreApproved(
+                task, PreApprovalMode.On, Now, node.OwnerId, taskClosedOut: false));
+            await flip.SaveChangesAsync(cts.Token);
+        }
+
+        CloseoutSweepResult afterFlip = await engine.PollOnceAsync(cts.Token);
+
+        afterFlip.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 1));
+        inspector.MergeAttempts.Should().Be(1, "GitHub's own gates read satisfied and nothing else is owed");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+    }
+
+    /// <summary>
     /// Exhausting the pre-approved task's own mechanical-resolution budget parks the run with an
     /// itemized reason, the same "matching the existing pr-resolve retry-budget pattern" shape
     /// the acceptance criteria call for (design ruling 6).
@@ -739,7 +1003,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
-            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
 
         FakeInspector inspector = new()
         {
@@ -779,7 +1043,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
-            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
 
         FakeInspector inspector = new()
         {
@@ -815,7 +1079,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
-            store, node, worktrees, repoPath, cts.Token, preApproved: true);
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
 
         FakeInspector inspector = new()
         {
@@ -2407,7 +2671,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true,
-            preApproved: true);
+            preApproval: PreApprovalMode.On);
         await EnableReviewRerequestAsync(store, node.OwnerId, onTheOwner: true, cts.Token);
 
         FakeInspector inspector = new()
@@ -3693,7 +3957,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         ExternalReference? externalReference = null,
         string? priorObstructionKey = null,
         string? priorObstructionSummary = null,
-        bool preApproved = false)
+        PreApprovalMode? preApproval = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -3716,10 +3980,10 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             ownerId, Now);
         List<object> taskEvents = [.. lifecycle];
 
-        if (preApproved)
+        if (preApproval is not null)
         {
             Hall9k.Domain.Features.Tasks.Events.TaskPreApprovedSet set =
-                TaskDecider.SetPreApproved(task, true, Now, ownerId, taskClosedOut: false);
+                TaskDecider.SetPreApproved(task, preApproval, Now, ownerId, taskClosedOut: false);
             task.Apply(set);
             taskEvents.Add(set);
         }

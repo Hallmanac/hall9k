@@ -50,7 +50,8 @@ internal static class StatusFixtures
         DateTimeOffset? assignedAt = null,
         Guid? claimedByNodeId = null,
         TaskType? type = null,
-        bool preApproved = false) => new()
+        bool preApproved = false,
+        PreApprovalMode? preApproval = null) => new()
         {
             Id = DomainId.New(),
             ProjectId = projectId ?? DomainId.New(),
@@ -62,7 +63,15 @@ internal static class StatusFixtures
             AddedAt = addedAt ?? Now,
             AssignedAt = assignedAt,
             ClaimedByNodeId = claimedByNodeId,
-            PreApproved = preApproved,
+            // Both, and deliberately: preApproved alone is the shape of a projection document
+            // written before the mode existed, which the composers read through
+            // TaskListItem.EffectivePreApproval, and preApproval is what one written today
+            // carries. A fixture that set only the mode would never exercise the fallback. The
+            // boolean is derived through the same mapping the projections themselves record
+            // (mode == On), so an after-human-review fixture carries the document a real one does:
+            // the mode set, and the legacy boolean withheld.
+            PreApproved = preApproved || (preApproval?.LegacyPreApproved ?? false),
+            PreApproval = preApproval ?? PreApprovalMode.Unknown,
         };
 
     /// <summary>

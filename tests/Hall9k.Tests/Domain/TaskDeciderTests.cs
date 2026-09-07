@@ -313,14 +313,114 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate preApprovedTask = DraftTask();
         TaskPublished published = TaskDecider.Publish(
-            preApprovedTask, TaskDependencyGraph.Empty, Now, Owner, preApproved: true);
+            preApprovedTask, TaskDependencyGraph.Empty, Now, Owner, preApproval: PreApprovalMode.On);
         published.PreApproved.Should().BeTrue();
+        published.EffectivePreApproval.Should().Be(PreApprovalMode.On);
         preApprovedTask.Apply(published);
-        preApprovedTask.PreApproved.Should().BeTrue();
+        preApprovedTask.PreApproval.Should().Be(PreApprovalMode.On);
 
         TaskAggregate unflagged = DraftTask();
         TaskPublished ordinaryPublish = TaskDecider.Publish(unflagged, TaskDependencyGraph.Empty, Now, Owner);
         ordinaryPublish.PreApproved.Should().BeFalse("an unflagged task's behaviour is entirely unchanged");
+        ordinaryPublish.EffectivePreApproval.Should().Be(PreApprovalMode.Off);
+    }
+
+    /// <summary>
+    /// The third value (task: the people a pull request is waiting on are named, and pre-approval
+    /// gains a mode that waits for human review). The legacy boolean rides along as
+    /// <c>mode == On</c>, so after-human-review records it FALSE: the only reader of that boolean
+    /// is a build older than the mode, which cannot carry out the human-review gate at all, and
+    /// telling it the task is plainly pre-approved would invite its own closeout to merge straight
+    /// past the gate the owner asked for (independent pre-PR review, cycle 1, adversarial lens).
+    /// Losing the pre-approval on such a build hands the merge back to the owner, which is the safe
+    /// direction; this build itself never reads the boolean when the mode is recorded.
+    /// </summary>
+    [Fact]
+    public void Publish_records_after_human_review_and_withholds_the_legacy_flag()
+    {
+        TaskAggregate task = DraftTask();
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, Now, Owner, preApproval: PreApprovalMode.AfterHumanReview);
+
+        published.EffectivePreApproval.Should().Be(PreApprovalMode.AfterHumanReview);
+        published.PreApproved.Should().BeFalse(
+            "the legacy boolean is mode == On — a build that cannot honour the human-review gate must "
+            + "not read this task as one it may merge itself");
+        task.Apply(published);
+        task.PreApproval.WaitsForHumanReview.Should().BeTrue();
+        task.PreApproval.MergesAutomatically.Should().BeTrue(
+            "this build reads the recorded mode, never the legacy boolean beside it");
+    }
+
+    /// <summary>
+    /// The same withholding on the after-publish door, so the two cannot drift: a stream where the
+    /// owner set after-human-review carries the mode and a false boolean, whichever event recorded
+    /// it.
+    /// </summary>
+    [Fact]
+    public void SetPreApproved_records_after_human_review_and_withholds_the_legacy_flag()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        TaskPreApprovedSet set = TaskDecider.SetPreApproved(
+            task, PreApprovalMode.AfterHumanReview, Now, Owner, taskClosedOut: false);
+
+        set.EffectivePreApproval.Should().Be(PreApprovalMode.AfterHumanReview);
+        set.PreApproved.Should().BeFalse("the same mapping the publish door records");
+        task.Apply(set);
+        task.PreApproval.WaitsForHumanReview.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The whole point of keeping the boolean: a stream written before the mode existed carries
+    /// only that, and both readers resolve it rather than reading the absent mode as off — which
+    /// would silently disarm every pre-approved task in an existing database.
+    /// </summary>
+    [Fact]
+    public void An_event_recorded_before_the_mode_existed_resolves_from_its_legacy_flag()
+    {
+        TaskPublished legacyPreApproved = new(DomainId.New(), Now, Owner, PreApproved: true);
+        TaskPublished legacyUnflagged = new(DomainId.New(), Now, Owner);
+        TaskPreApprovedSet legacySet = new(DomainId.New(), PreApproved: true, Now, Owner);
+
+        legacyPreApproved.EffectivePreApproval.Should().Be(PreApprovalMode.On);
+        legacyUnflagged.EffectivePreApproval.Should().Be(PreApprovalMode.Off);
+        legacySet.EffectivePreApproval.Should().Be(PreApprovalMode.On);
+    }
+
+    [Fact]
+    public void An_unrecognized_pre_approval_mode_is_refused_with_the_vocabulary_quoted()
+    {
+        TaskAggregate draft = DraftTask();
+        Action publish = () => TaskDecider.Publish(
+            draft, TaskDependencyGraph.Empty, Now, Owner, preApproval: "sometimes");
+
+        publish.Should().Throw<DomainValidationException>().WithMessage("*after-human-review*");
+
+        TaskAggregate claimed = ClaimedTask();
+        Action set = () => TaskDecider.SetPreApproved(claimed, "sometimes", Now, Owner, taskClosedOut: false);
+
+        set.Should().Throw<DomainValidationException>().WithMessage("*after-human-review*");
+    }
+
+    /// <summary>
+    /// The emergency path (task: ... and pre-approval gains a mode that waits for human review):
+    /// after-human-review to on is an ordinary set, so the next closeout sweep merges on GitHub's
+    /// own gates alone with no reviewer wait left to clear.
+    /// </summary>
+    [Fact]
+    public void SetPreApproved_flips_after_human_review_to_on_as_the_emergency_path()
+    {
+        TaskAggregate task = ClaimedTask();
+        task.Apply(TaskDecider.SetPreApproved(task, PreApprovalMode.AfterHumanReview, Now, Owner, taskClosedOut: false));
+        task.PreApproval.WaitsForHumanReview.Should().BeTrue();
+
+        task.Apply(TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false));
+
+        task.PreApproval.Should().Be(PreApprovalMode.On);
+        task.PreApproval.WaitsForHumanReview.Should().BeFalse("nothing is left waiting for a reviewer");
+        task.PreApproval.MergesAutomatically.Should().BeTrue();
     }
 
     [Fact]
@@ -328,10 +428,10 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = ClaimedTask();
 
-        TaskPreApprovedSet set = TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false);
+        TaskPreApprovedSet set = TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false);
         task.Apply(set);
 
-        task.PreApproved.Should().BeTrue(
+        task.PreApproval.MergesAutomatically.Should().BeTrue(
             "pre-approval is settable on any live non-terminal task, without the edit dance a "
             + "readiness-contract change would otherwise need");
     }
@@ -340,11 +440,11 @@ public sealed class TaskDeciderTests
     public void SetPreApproved_withdraws_pre_approval_when_flipped_back_off()
     {
         TaskAggregate task = ClaimedTask();
-        task.Apply(TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false));
+        task.Apply(TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false));
 
-        task.Apply(TaskDecider.SetPreApproved(task, false, Now, Owner, taskClosedOut: false));
+        task.Apply(TaskDecider.SetPreApproved(task, PreApprovalMode.Off, Now, Owner, taskClosedOut: false));
 
-        task.PreApproved.Should().BeFalse();
+        task.PreApproval.MergesAutomatically.Should().BeFalse();
     }
 
     /// <summary>
@@ -359,10 +459,10 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = DoneTask("https://github.com/acme/widgets/pull/9");
 
-        TaskPreApprovedSet set = TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false);
+        TaskPreApprovedSet set = TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false);
         task.Apply(set);
 
-        task.PreApproved.Should().BeTrue(
+        task.PreApproval.MergesAutomatically.Should().BeTrue(
             "the pull request is still open and closeout is still watching it — this is the live "
             + "window the flag exists to govern");
     }
@@ -372,7 +472,7 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = DoneTask("https://github.com/acme/widgets/pull/9");
 
-        Action act = () => TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: true);
+        Action act = () => TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: true);
 
         act.Should().Throw<DomainConflictException>().WithMessage("*merged*",
             "closeout already observed the merge — there is no future pull request left to govern");
@@ -384,7 +484,7 @@ public sealed class TaskDeciderTests
         TaskAggregate task = ClaimedTask();
         task.Apply(TaskDecider.Abandon(task, "no longer needed", Now, Owner));
 
-        Action act = () => TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false);
+        Action act = () => TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false);
 
         act.Should().Throw<DomainConflictException>().WithMessage("*Abandoned*");
     }
@@ -400,7 +500,7 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = DraftTask();
 
-        Action act = () => TaskDecider.SetPreApproved(task, true, Now, Owner, taskClosedOut: false);
+        Action act = () => TaskDecider.SetPreApproved(task, PreApprovalMode.On, Now, Owner, taskClosedOut: false);
 
         act.Should().Throw<DomainConflictException>().WithMessage("*publish*--pre-approved*");
     }

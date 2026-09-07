@@ -375,8 +375,8 @@ internal static class AttentionComposer
                 $"stacked on `{parentBranch}` and its pull request still targets that branch — nothing for "
                 + "you here until its parent merges, which retargets this one onto the base branch and "
                 + "replays it there automatically")
-            : task.PreApproved
-                ? PreApprovedAwaitingReviewAttention(run, now)
+            : task.EffectivePreApproval.MergesAutomatically
+                ? PreApprovedAwaitingReviewAttention(task, run, now)
                 : AwaitingReviewAttention(run);
 
     /// <summary>
@@ -384,15 +384,21 @@ internal static class AttentionComposer
     /// is exactly what this flag removes, so nothing here is ever <see cref="AttentionLevel.NeedsYou"/>
     /// — a required human approval or an outstanding requested reviewer is stated as a visible,
     /// self-resuming wait (design ruling 3), named plainly so the owner can take whatever social
-    /// action they choose on their own initiative; the platform itself never nudges. Age is
+    /// action they choose on their own initiative; the platform itself never nudges. "Named" is
+    /// literal since the people a pull request is waiting on became nameable: wherever the last
+    /// observation recorded logins, this says whose review the merge is waiting on rather than
+    /// "human approval", because the owner's only lever here is social and an anonymous wait does
+    /// not tell them who to talk to. Age is
     /// <see cref="RunDetails.PullRequestPushedAt"/> when this run's own opener call recorded one —
     /// the pull request's own opened/updated timestamp — falling back to the run's dispatch time for
     /// a stream recorded before that field existed, named honestly as "dispatched" rather than
     /// "open" so the fallback is never read as an observed fact it is not (independent pre-PR
     /// review, cycle 1, adversarial finding).
     /// </summary>
-    private static TaskAttention PreApprovedAwaitingReviewAttention(RunDetails run, DateTimeOffset now)
+    private static TaskAttention PreApprovedAwaitingReviewAttention(
+        TaskListItem task, RunDetails run, DateTimeOffset now)
     {
+        PreApprovalMode mode = task.EffectivePreApproval;
         List<string> waitingOn = [];
         // The daemon's own gate checks this ahead of everything else (CloseoutEngine's
         // HasPendingChecks short-circuit runs before the review-decision and outstanding-reviewer
@@ -409,18 +415,39 @@ internal static class AttentionComposer
             waitingOn.Add("copilot review");
         }
 
-        bool reviewDecisionSatisfied = run.ExternalReviewDecision is null or "APPROVED";
-        bool outstandingHumanReviewer = run.ExternalOutstandingHumanReviewerLogins.Count > 0;
-        if (!reviewDecisionSatisfied || outstandingHumanReviewer)
+        // Named rather than reported as an anonymous "human approval" wherever the last observation
+        // actually recorded who (task: the people a pull request is waiting on are named): the
+        // owner's only lever here is social, and "waiting on human approval" does not tell them who
+        // to talk to. The anonymous wording survives as the honest fallback for the one shape that
+        // has no login to name — a branch rule demanding a review nobody has been asked for yet.
+        // Which is exactly why the mode's own clause below can retire it: under after-human-review
+        // with reviewers recorded as awaiting approval, there IS somebody to name, and stating the
+        // same wait twice — once anonymously and once by login — is the doubling both clauses were
+        // corrected for (conformance review, cycle 1).
+        HumanReviewWait humanWait = ReadHumanReviewWait(run);
+        bool modeNamesSomebody = mode.WaitsForHumanReview
+            && run.ExternalHumanReviewEverRequested == true
+            && run.ExternalHumanReviewersAwaitingApprovalLogins.Count > 0;
+        waitingOn.AddRange(NamedHumanReviewWaits(humanWait, suppressAnonymousApproval: modeNamesSomebody));
+
+        // The after-human-review mode's own two gates (task: ... and pre-approval gains a mode that
+        // waits for human review), stated in the same list as everything else the merge is waiting
+        // on, because to the reader they are the same kind of fact. Both are the owner's to clear,
+        // and unlike the gates above them, the first one names how. It is handed the wait the line
+        // above was built from so it can avoid saying the same person twice.
+        if (mode.WaitsForHumanReview)
         {
-            waitingOn.Add("human approval");
+            waitingOn.AddRange(AfterHumanReviewWaits(task, run, humanWait));
         }
 
         if (waitingOn.Count == 0)
         {
             return new TaskAttention(
                 AttentionLevel.WaitingHandled,
-                "pre-approved — GitHub's own gates read satisfied; the daemon merges it on its own");
+                mode.WaitsForHumanReview
+                    ? "pre-approved after-human-review — GitHub's own gates read satisfied and every requested "
+                        + "reviewer has approved the current head; the daemon merges it on its own"
+                    : "pre-approved — GitHub's own gates read satisfied; the daemon merges it on its own");
         }
 
         // RunDetails carries no PR-opened timestamp on a stream recorded before
@@ -431,14 +458,221 @@ internal static class AttentionComposer
         bool openAgeObserved = run.PullRequestPushedAt is not null;
         string age = TaskStatusComposer.RelativeAge(now - (run.PullRequestPushedAt ?? run.DispatchedAt));
         string ageClause = openAgeObserved ? $"open {age}" : $"dispatched {age}";
+
+        // "Nothing for you to do here" is true of every wait on this list except one: under
+        // after-human-review with no reviewer ever requested, the merge waits indefinitely on an
+        // act only the owner can perform, and telling them there is nothing to do would be the
+        // sentence that leaves the pull request sitting forever. The level stays WaitingHandled
+        // either way (design ruling 3: nothing on a pre-approved task's arm is ever NeedsYou),
+        // because this wait is the owner's own standing instruction working as they asked.
+        // Deliberately not "that first item": the reviewer-request wait is appended last, after CI
+        // and Copilot, so naming it by position would be wrong the moment anything else is also
+        // outstanding. It names the act instead.
+        bool ownerMustAct = mode.WaitsForHumanReview && run.ExternalHumanReviewEverRequested == false;
+        string closing = ownerMustAct
+            ? " — it merges automatically once satisfied, but requesting a reviewer is yours to do; "
+                + "nothing here will do it for you"
+            : " — it merges automatically once satisfied; nothing for you to do here, though you may want "
+                + "to nudge a reviewer yourself";
         return new TaskAttention(
             AttentionLevel.WaitingHandled,
             $"pre-approved; waiting on {string.Join(" and ", waitingOn)} for the pull request "
-            + $"({ageClause}) — it merges automatically once satisfied; nothing for you to do here, "
-            + "though you may want to nudge a reviewer yourself");
+            + $"({ageClause}){closing}");
     }
 
-    private static TaskAttention AwaitingReviewAttention(RunDetails run) => run.ExternalReviewState.Value switch
+    /// <summary>
+    /// What the last observation says a human still owes this pull request — the one reading of
+    /// that question, shared by the pre-approved arm and the unflagged one so the two can never
+    /// disagree about whether a person is owed anything (task: the people a pull request is waiting
+    /// on are named). Only the grammar differs between them, which is why this carries the facts
+    /// rather than the sentence.
+    /// <para>
+    /// The three shapes are deliberately not mutually exclusive: a reviewer can have requested
+    /// changes while a second reviewer's request is still open, and a branch rule can demand an
+    /// approval nobody has been asked for at all. That last one is the shape with nobody to name,
+    /// and so is a <c>CHANGES_REQUESTED</c> verdict whose author the last observation did not
+    /// record — both state the fact without inventing a login for it, or a reason for its absence
+    /// (AGENTS.md, never guess at unobserved facts).
+    /// </para>
+    /// </summary>
+    private sealed record HumanReviewWait(
+        IReadOnlyList<string> Outstanding,
+        IReadOnlyList<string> ChangesRequestedBy,
+        bool ChangesRequested,
+        bool UnnamedApprovalRequired);
+
+    private static HumanReviewWait ReadHumanReviewWait(RunDetails run)
+    {
+        bool changesRequested = run.ExternalReviewDecision == "CHANGES_REQUESTED";
+        return new HumanReviewWait(
+            run.ExternalOutstandingHumanReviewerLogins,
+            changesRequested ? run.ExternalChangesRequestedByLogins : [],
+            changesRequested,
+            // REVIEW_REQUIRED (or any other unsatisfied verdict) with nobody requested: a branch
+            // rule wants an approval and no reviewer has been asked for one, so there is no login
+            // to name.
+            !changesRequested
+            && run.ExternalReviewDecision is not (null or "APPROVED")
+            && run.ExternalOutstandingHumanReviewerLogins.Count == 0);
+    }
+
+    /// <summary>
+    /// <see cref="ReadHumanReviewWait"/> phrased for the pre-approved arm, whose host sentence is
+    /// "waiting on X and Y for the pull request". Empty when nothing human is outstanding, which is
+    /// what restores that arm's original all-clear line rather than leaving a hedge behind.
+    /// <para>
+    /// <paramref name="suppressAnonymousApproval"/> drops the anonymous fallback clause when the
+    /// caller is about to name the same wait by login: "human approval" exists for the shape with
+    /// nobody to name, and it is not that shape once somebody is named.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> NamedHumanReviewWaits(
+        HumanReviewWait wait, bool suppressAnonymousApproval) =>
+        [
+            .. wait.Outstanding.Count > 0 ? (string[])[$"review from {Logins(wait.Outstanding)}"] : [],
+            .. wait.ChangesRequestedBy.Count > 0
+                ? (string[])[$"the changes {Logins(wait.ChangesRequestedBy)} requested"]
+                : wait.ChangesRequested ? (string[])["the changes requested on the pull request"] : [],
+            .. wait.UnnamedApprovalRequired && !suppressAnonymousApproval
+                ? (string[])["human approval"]
+                : [],
+        ];
+
+    /// <summary>
+    /// The two gates <see cref="PreApprovalMode.AfterHumanReview"/> adds on top of GitHub's own,
+    /// in the same voice as everything else the merge is waiting on. Empty once both are clear,
+    /// which is what lets the caller fall through to its own all-clear line.
+    /// <para>
+    /// Never observed is its own answer, not folded into "no reviewer requested": the merge holds
+    /// either way, but only one of the two is a fact about GitHub, and the remedy differs (add a
+    /// reviewer, versus wait for a sweep to look). Neither clause names the pull request itself,
+    /// because the caller's host sentence already ends in "for the pull request" and a clause that
+    /// named it too would double the phrase (conformance review, cycle 1).
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> AfterHumanReviewWaits(
+        TaskListItem task, RunDetails run, HumanReviewWait wait) =>
+        run.ExternalHumanReviewEverRequested switch
+        {
+            null =>
+            [
+                "a closeout sweep to observe whether a human review has been requested",
+            ],
+            false =>
+            [
+                "a human reviewer to be requested at all — you add one in GitHub, or switch this task to "
+                    + $"plain pre-approval with h9k task set-pre-approved {TaskListCommand.ShortId(task.Id)} on",
+            ],
+            true => AwaitingApprovalWaits(run, wait),
+        };
+
+    /// <summary>
+    /// Who the after-human-review gate is holding for, minus anyone the caller's own line has
+    /// already named. A reviewer whose request is still outstanding is, by construction, also
+    /// awaiting approval, and so is one whose verdict requests changes — both are already named by
+    /// <see cref="NamedHumanReviewWaits"/>, so repeating them here said the same login twice in one
+    /// sentence (conformance review, cycle 1). Empty when everyone left is already named, which is
+    /// correct rather than an all-clear: the caller's list is non-empty precisely because it named
+    /// them.
+    /// </summary>
+    private static IReadOnlyList<string> AwaitingApprovalWaits(RunDetails run, HumanReviewWait wait)
+    {
+        IReadOnlyList<string> unnamed =
+        [
+            .. run.ExternalHumanReviewersAwaitingApprovalLogins.Where(login =>
+                !wait.Outstanding.Contains(login, StringComparer.OrdinalIgnoreCase)
+                && !wait.ChangesRequestedBy.Contains(login, StringComparer.OrdinalIgnoreCase)),
+        ];
+
+        return unnamed.Count > 0 ? [$"approval of the current head from {Logins(unnamed)}"] : [];
+    }
+
+    /// <summary>One login, or several, in the backtick style the rest of these causes quote a branch or a ref in.</summary>
+    private static string Logins(IReadOnlyList<string> logins) =>
+        string.Join(", ", logins.Select(login => $"`{login}`"));
+
+    /// <summary>
+    /// The named-reviewer wait on the UNFLAGGED path (task: the people a pull request is waiting on
+    /// are named), which outranks every Copilot reading below it: while a requested human reviewer
+    /// is outstanding, or a review's verdict requests changes, "the merge is yours" is the wrong
+    /// sentence whatever Copilot has or has not done — it would hand the owner a merge that lands
+    /// past a review somebody is still owed. Null once nothing human is outstanding, which restores
+    /// the original wording exactly.
+    /// <para>
+    /// The level splits on whether the ball is actually in the owner's court, which is not the same
+    /// question as who owns the merge: an outstanding request is a handled wait (somebody was asked
+    /// and has not answered), a <see cref="AttentionLevel.NeedsYou"/> marker beside an "awaiting
+    /// review" sentence being exactly the word-versus-marker contradiction this file already
+    /// corrects elsewhere; a <c>CHANGES_REQUESTED</c> verdict that survived thread triage is
+    /// NeedsYou, because the reviewer has spoken and nothing in the platform will answer them.
+    /// </para>
+    /// </summary>
+    private static TaskAttention? NamedHumanReviewWaitAttention(RunDetails run)
+    {
+        HumanReviewWait wait = ReadHumanReviewWait(run);
+
+        // UnnamedApprovalRequired is deliberately NOT a wait on this path: a branch rule demanding
+        // an approval nobody has been asked for is exactly the state where the owner's own review
+        // and merge is the answer, so the original wording — which sends them to the pull request —
+        // is already right, and there is nobody to name anyway.
+        IReadOnlyList<string> outstanding = wait.Outstanding;
+        IReadOnlyList<string> changesRequestedBy = wait.ChangesRequestedBy;
+        if (outstanding.Count == 0 && !wait.ChangesRequested)
+        {
+            return null;
+        }
+
+        string cause = (outstanding.Count, changesRequestedBy.Count) switch
+        {
+            ( > 0, > 0) =>
+                $"awaiting review from {Logins(outstanding)} (request still outstanding) and "
+                + $"{Logins(changesRequestedBy)} (requested changes) — nudge them, or settle it on GitHub "
+                + "yourself by dismissing the review or withdrawing the request",
+            ( > 0, 0) when wait.ChangesRequested =>
+                $"awaiting review from {Logins(outstanding)}, whose request is still outstanding, and the "
+                + "review decision requests changes — the last observation does not name whose verdict "
+                + "that is, so read it on GitHub",
+            ( > 0, 0) =>
+                $"awaiting review from {Logins(outstanding)} — their review request is still outstanding, so "
+                + "this is not a settled merge yet; nudge them, or withdraw the request on GitHub",
+            (0, > 0) =>
+                $"awaiting review from {Logins(changesRequestedBy)} — their review requests changes, and that "
+                + "verdict stands until they look again; answer them, or dismiss the review on GitHub",
+            // CHANGES_REQUESTED with no author recorded. Several shapes reach here and the display
+            // cannot tell them apart, so it claims none of them: an observation from a build
+            // before the author was collected, a verdict whose review fell outside the capped
+            // verdict read, or one authored by an account the human filter excludes. The verdict
+            // is stated without a login, or a reason for its absence, being invented for it
+            // (AGENTS.md, never guess at unobserved facts; adversarial review, cycle 1).
+            _ =>
+                "awaiting review — the review decision requests changes, and the last observation does not "
+                + "name whose verdict that is; read it on GitHub",
+        };
+
+        // The caveat every arm below this one already carries, kept rather than dropped along with
+        // the wording it replaces: this cause pre-empts the "read its checks first" hedge, so on a
+        // row where the CI picture was still incomplete as of the last observation it has to carry
+        // that hedge itself, or a reader who settles the review side would merge on an unread CI
+        // result (the same defect the Landed and None arms below were each corrected for).
+        string checksCaveat = run.ExternalReviewChecksPending
+            ? "; its checks may still be reporting too"
+            : string.Empty;
+
+        // NeedsYou only when a verdict is actually waiting on the owner. An outstanding request is
+        // somebody else's turn — the same reading the Copilot arm below already gives its own
+        // pending request ("not the human's turn yet, so it renders waiting-but-handled rather than
+        // red"), and the same one the pre-approved arm gives this identical fact, so the two paths
+        // do not contradict each other about who is holding the merge. A CHANGES_REQUESTED verdict
+        // with the threads already resolved is the opposite: the reviewer HAS spoken, nothing in
+        // the platform will move it, and the owner is the one who answers them or dismisses it.
+        AttentionLevel level = wait.ChangesRequested ? AttentionLevel.NeedsYou : AttentionLevel.WaitingHandled;
+        return new TaskAttention(level, cause + checksCaveat, run.PullRequestUrl ?? string.Empty);
+    }
+
+    private static TaskAttention AwaitingReviewAttention(RunDetails run) =>
+        NamedHumanReviewWaitAttention(run) ?? CopilotAwaitingReviewAttention(run);
+
+    private static TaskAttention CopilotAwaitingReviewAttention(RunDetails run) => run.ExternalReviewState.Value switch
     {
         "RequestedPending" => new TaskAttention(AttentionLevel.WaitingHandled,
             "Copilot's review is requested but not submitted yet — nothing for you until it lands"),

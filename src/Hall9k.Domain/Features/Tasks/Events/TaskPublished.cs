@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Hall9k.Domain.Features.Tasks.Events;
 
 /// <summary>
@@ -37,6 +39,22 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// unflagged task's behaviour is entirely unchanged. Flippable afterward on any live non-terminal
 /// task via <c>h9k task set-pre-approved</c> (<see cref="TaskPreApprovedSet"/>) without the
 /// unassign-draft-revise-publish ceremony <see cref="TaskRevised"/> would otherwise require.
+/// <para>
+/// This is the legacy boolean now that pre-approval is three-valued: it is
+/// <see cref="PreApprovalMode.LegacyPreApproved"/> — <c>mode == On</c> — recorded so a build older
+/// than <paramref name="PreApproval"/> reads a stream this one wrote. After-human-review therefore
+/// reads as not pre-approved on such a build, which is the fail-closed direction and the whole
+/// reason the mapping is <c>== On</c> rather than <c>!= Off</c>: that build knows nothing of the
+/// human-review gate, so <c>true</c> would invite it to merge straight past one the owner asked
+/// for. Read through <see cref="EffectivePreApproval"/> rather than directly — on a stream written
+/// before the mode existed it is the only record of what the publisher chose.
+/// </para>
+/// </param>
+/// <param name="PreApproval">
+/// The three-valued mode the publisher actually gave (task: the people a pull request is waiting
+/// on are named, and pre-approval gains a mode that waits for human review) — off, on, or
+/// after-human-review. Null on every event written before the vocabulary existed, which is exactly
+/// the case <see cref="PreApprovalMode.Resolve"/> maps back onto <paramref name="PreApproved"/>.
 /// </param>
 public sealed record TaskPublished(
     Guid Id,
@@ -44,4 +62,14 @@ public sealed record TaskPublished(
     Guid PublishedByOwnerId,
     bool NoExistingItemAttested = false,
     bool UntrackedAttested = false,
-    bool PreApproved = false);
+    bool PreApproved = false,
+    PreApprovalMode? PreApproval = null)
+{
+    /// <summary>
+    /// What this event means, whichever build wrote it — the one home for the mode-from-boolean
+    /// mapping, shared with <see cref="TaskPreApprovedSet.EffectivePreApproval"/>. Deliberately not
+    /// serialized: the stream carries the facts that were recorded, never a derived one.
+    /// </summary>
+    [JsonIgnore]
+    public PreApprovalMode EffectivePreApproval => PreApprovalMode.Resolve(PreApproval, PreApproved);
+}

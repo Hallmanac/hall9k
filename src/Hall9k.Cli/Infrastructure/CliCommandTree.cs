@@ -679,7 +679,8 @@ public static class CliCommandTree
                 .WithExample("task", "publish", "28b19893", "--no-assign")
                 .WithExample("task", "publish", "28b19893", "--no-existing-item")
                 .WithExample("task", "publish", "28b19893", "--untracked")
-                .WithExample("task", "publish", "28b19893", "--pre-approved");
+                .WithExample("task", "publish", "28b19893", "--pre-approved")
+                .WithExample("task", "publish", "28b19893", "--pre-approved", "after-human-review");
             task.AddCommand<TaskAssignCommand>("assign")
                 .WithDescription(
                     "Assign a published task to an owner: the dispatch trigger, and the only way a task "
@@ -710,17 +711,25 @@ public static class CliCommandTree
                 .WithExample("task", "set-session-cap", "28b19893", "default");
             task.AddCommand<TaskSetPreApprovedCommand>("set-pre-approved")
                 .WithDescription(
-                    "Flip a task's standing pre-approval after publish (task: a task can be published "
+                    "Set a task's standing pre-approval after publish (task: a task can be published "
                     + "pre-approved) — settable on any live task whose pull request has not yet merged "
-                    + "(a Draft refuses too — the flag is part of the readiness contract set at publish), "
+                    + "(a Draft refuses too — pre-approval is part of the readiness contract set at publish), "
                     + "without the "
                     + "unassign/draft/revise/publish ceremony a readiness-contract change would otherwise "
-                    + "need. Once on, the daemon merges this task's pull request on its own, "
+                    + "need. Three values. 'on': the daemon merges this task's pull request on its own, "
                     + "deterministically, the moment GitHub's own gates read satisfied (CI green, the review "
-                    + "decision satisfied, no outstanding requested reviewer, every thread resolved) — every "
-                    + "existing human waypoint (Failed, a review park, a severity-bar failure, a cap trip) "
-                    + "still stops the pipeline exactly as it does unflagged.")
+                    + "decision satisfied, no outstanding requested reviewer, every thread resolved). "
+                    + "'after-human-review': the same merge, held until a human reviewer has actually been "
+                    + "requested on the pull request AND every requested reviewer has approved the current "
+                    + "head — so a task can start pre-approved and still wait for whoever you add as a "
+                    + "reviewer; with nobody requested it simply waits, and h9k status and h9k task show say "
+                    + "so. 'off': you are a synchronous gate at the pull request again. Reviewers are named in "
+                    + "GitHub, by you — hall9k stores no reviewer setting and requests no reviews. Flipping "
+                    + "after-human-review to on is the emergency path: the next sweep merges on GitHub's own "
+                    + "gates alone. Every existing human waypoint (Failed, a review park, a severity-bar "
+                    + "failure, a cap trip) still stops the pipeline exactly as it does unflagged.")
                 .WithExample("task", "set-pre-approved", "28b19893", "on")
+                .WithExample("task", "set-pre-approved", "28b19893", "after-human-review")
                 .WithExample("task", "set-pre-approved", "28b19893", "off");
             task.AddCommand<TaskUnassignCommand>("unassign")
                 .WithDescription(
