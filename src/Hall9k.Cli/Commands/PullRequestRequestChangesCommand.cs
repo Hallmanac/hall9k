@@ -24,7 +24,9 @@ namespace Hall9k.Cli.Commands;
 /// reviewer's, typed by them and run by them, so it is exactly the comment the rule reserves the
 /// first position for. Nothing here lets a session post on its own the ordinary way: the lap's
 /// own push guard denies <c>gh pr review</c>, <c>gh pr comment</c> and <c>gh api</c> — including
-/// the very endpoint this command posts through — see
+/// the very endpoint this command posts through — and this command itself, along with
+/// <c>h9k pr approve</c>, because a session that ran it would post under the reviewer's login
+/// exactly as a raw <c>gh api</c> call would and end their lap besides. See
 /// <c>ClaudeSettingsFile.ReviewLapDeniedTools</c>, whose own doc is honest about what a
 /// permission deny is and is not.
 /// </para>

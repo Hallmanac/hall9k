@@ -592,9 +592,12 @@ author's store.
 The lap's push guard is Claude Code's own `permissions.deny`, written both to the run's settings
 file and to `<worktree>/.claude/settings.local.json` so a session started in the checkout with no
 `--settings` flag is covered: `git push`, `gh pr review`, `gh pr comment`, `gh pr merge`,
-`gh pr close` and `gh api` are denied. `gh api` is in that list because it is the surface the
-others reach through — this platform's own poster uses `gh api .../pulls/<n>/reviews`, since
-`gh pr review` takes no line comments — and a lap loses nothing by it, because every read it makes
+`gh pr close`, `gh api`, `h9k pr approve` and `h9k pr request-changes` are denied. `gh api` is in
+that list because it is the surface the others reach through — this platform's own poster uses
+`gh api .../pulls/<n>/reviews`, since `gh pr review` takes no line comments — and the two verdict
+commands are in it because they ARE that poster: they reach the same endpoint under the reviewer's
+own login and finalize the task besides, so a session that ran one would post a verdict the
+reviewer never gave. A lap loses nothing by any of it, because every read it makes
 goes through `gh pr view` / `gh pr diff`. It is a session-level permission deny matched on the
 command as spelled, not a sandbox: it refuses the ordinary route to each of these, and a command
 spelled around the prefix does not match it. `git commit` is deliberately **not** — the checkout is detached with no

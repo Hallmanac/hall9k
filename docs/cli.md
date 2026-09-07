@@ -133,8 +133,9 @@ platform's own merged findings report when the automated review has already park
 briefing is deliberately factual — no test scenarios, no areas of concern, no suggested review
 order; the session offers all of that the moment you ask, and helps with local setup, running the
 suites, or writing end-to-end tests. It never commits to or pushes the pull request's branch (the
-session is denied `git push`, every `gh` write verb, and `gh api` — the endpoint they all reach,
-and the one this platform's own poster uses), and tests you write go to a branch of your own the
+session is denied `git push`, every `gh` write verb, `gh api` — the endpoint they all reach, and
+the one this platform's own poster uses — and the two verdict commands below, which are yours to
+run and not the session's), and tests you write go to a branch of your own the
 session offers to stack on the pull request.
 
 The lap **never ends on its own**. It ends when you run `h9k pr approve <task> --note "<text>"` or

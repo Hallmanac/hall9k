@@ -101,7 +101,7 @@ first-class interface, always, for every command:
   agent's reply under the same login. The honest long-term fix is node-signed authorship in the
   P2P identity layer (§16 #38-#58); until then, breaking this invariant breaks review handling
   (§16 #62). The one command that starts a thread, `h9k pr request-changes` (§16 #149), posts a
-  review a human typed and ran; a lap's push guard denies an agent every route to it.
+  review a human typed and ran; a lap's push guard denies an agent the ordinary route to it.
 - **Feedback reaches the platform only when a review is submitted.** GitHub hides an unsubmitted
   (`PENDING`) review's comments from the API entirely, so a reviewer part-way through a draft is
   invisible to the closeout monitor and to any agent reading the PR. Never read silence as "the
