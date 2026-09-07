@@ -110,6 +110,9 @@ reserve the edge for slices of one feature that are genuinely cohesive. Full beh
 
 ### Pull-request review
 
+`h9k task add --from-pr <number-or-url>` · `h9k pr review <number-or-url>` ·
+`h9k pr approve <task> --note "…"` · `h9k pr request-changes <task> --note "…" [--finding "…"]`
+
 `--from-pr` creates a read-only `pr-review` task: the node pulls the pull request into a detached
 worktree, runs an adversarial-weighted independent review over it (never a build or a fix), and
 parks a findings report for the owner to walk — `h9k review resolve <id> --merge-ready` once every
@@ -118,6 +121,33 @@ act on. Nothing is ever posted to the pull request without an explicit human go:
 `walk-pr-review-findings` skill is what walks the report and posts on direction, always under the
 owner's own login. The task completes without any merge ever being observed — there is no pull
 request of this task's own to merge.
+
+**Your own review lap, on top of that task** (PLAN.md §16 #149): `h9k pr review <number-or-url>`
+attaches to the `pr-review` task this node already holds for the pull request — auto-adopted from a
+GitHub reviewer assignment, or created by `--from-pr` — and adopts the pull request itself only when
+no live task exists. It reuses that task's read-only worktree (`--no-worktree` skips the checkout,
+for reviewing against a deployed environment) and prints a briefing to paste into a Claude Code
+session you start yourself: the stated objective and acceptance criteria when this node can read
+the authoring task, the surfaces touched with a blast-radius summary, what CI ran, and the
+platform's own merged findings report when the automated review has already parked one. The
+briefing is deliberately factual — no test scenarios, no areas of concern, no suggested review
+order; the session offers all of that the moment you ask, and helps with local setup, running the
+suites, or writing end-to-end tests. It never commits to or pushes the pull request's branch (the
+session is denied `git push`, every `gh` write verb, and `gh api` — the endpoint they all reach,
+and the one this platform's own poster uses), and tests you write go to a branch of your own the
+session offers to stack on the pull request.
+
+The lap **never ends on its own**. It ends when you run `h9k pr approve <task> --note "<text>"` or
+`h9k pr request-changes <task> --note "<text>" [--finding "<path:line: text>"]...`, each of which
+posts the GitHub review on the pull request's current head under your own login — the
+changes-requested one with every `--finding` as a line comment — records the verdict on the task,
+releases the worktree, and completes the task exactly as `h9k review resolve --merge-ready` does.
+The review is posted *before* anything is recorded, so a post that fails records nothing and you
+simply run the command again; GitHub rejects the whole review when a `--finding` names a line its
+diff does not contain, which means nothing gets posted until every line is one it accepts. These
+two commands replace the `review resolve` ceremony for somebody who is actually reviewing;
+`h9k review resolve <id> --merge-ready` remains the way to close a pr-review task out when the
+report was walked and nothing needs posting.
 
 A project can opt in to starting that same task automatically instead of waiting on `--from-pr`:
 `h9k project set <name> --auto-pr-review off|normal|first|now` (default `off`) has the daemon poll

@@ -295,6 +295,24 @@ been directed — `--needs-fixes` is refused outright, since there is no diff of
 a fix session to act on — and completion never observes a merge, because there is no pull request
 of this task's own to merge.
 
+`h9k pr review <number-or-url>` runs the reviewer's own lap on top of that same task (Decisions
+Log #149). It attaches to the `pr-review` task this node already holds for the pull request, or
+adopts the pull request through the same adoption when none exists, reuses that task's read-only
+worktree (`--no-worktree` skips it), and prints a briefing for a Claude Code session the reviewer
+starts themselves: the stated objective and acceptance criteria when this node can read the
+authoring task, the surfaces touched with a blast-radius summary, what CI ran, the merged findings
+report when one exists, and the author's own run's settlement, unclaimed residuals and rulings
+when this node can read them. Nothing is written to the author's store. The briefing volunteers no
+test scenarios, areas of concern or review order — the session gives those on request, and helps
+with local setup, the suites, or an end-to-end test — and the session is denied `git push`, every
+`gh` write verb and `gh api` (the endpoint they all reach), so tests the reviewer writes go to a
+branch of their own the session offers to stack on the pull request. The lap ends only when the reviewer runs
+`h9k pr approve <task> --note "…"` or
+`h9k pr request-changes <task> --note "…" [--finding "<path:line: text>"]…`, each of which posts
+the GitHub review on the pull request's current head under the reviewer's own login, records the
+verdict, and finalizes the task exactly as `h9k review resolve --merge-ready` does. The review is
+posted before anything is recorded, so a failed post records nothing at all.
+
 A project can opt in to starting that same `pr-review` task automatically: `h9k project set
 <name> --auto-pr-review off|normal|first|now` (default off) has the daemon poll GitHub, on the
 closeout monitor's own interval-with-backoff shape, for open pull requests in that project's repo
