@@ -504,6 +504,23 @@ The hall9k project itself completed this same move into its default home (backlo
 project's home at `~/.hall9k/projects/hall9k` is canonical, and this repository is that home's
 `repo/dev` worktree.
 
+### Orchestrator windows and their recipes
+
+A node or project orchestrator window is a lean, disposable terminal session that owns a piece of
+the platform (the machine, or one project's work) without implementing anything itself; the seam
+is one sentence, the node owns the resource and the project owns the work. `h9k install`,
+`h9k project add`, `h9k project init`, and a project-home render each write a tiny, always-
+overwritten `recipes/launch-anchor.md`; its own body is the only thing the platform ever renders,
+and it hands off to `recipes/orchestrator.md`, which the `orchestrator-recipe-generator` skill
+writes once per node or project and never has the platform overwrite (a re-run writes a `.new`
+file beside it instead). This task ships that skill as a first draft; a follow-on task, blocked by
+this one, completes its content. Launch text (the exact command an operator pastes to start a
+window) is a per-agent-CLI setting on the project or the node, shown and replaced with
+`h9k orchestrator launch-text show`/`set`, and `h9k orchestrator measure` runs a fixed one-turn
+probe and stamps the observed turn-one token cost onto that same record. `h9k orchestrator node`
+and `h9k orchestrator project [PROJECT]` print a window's daemon liveness, launch text, recipe and
+journal paths, and last-measured cost; neither one launches a session (Decisions Log #144).
+
 ### The help tree
 
 Every command carries a domain-language description and at least one worked example, enforced by
