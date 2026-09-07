@@ -369,6 +369,37 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// A reviewer's lap opened with <c>h9k pr review --no-worktree</c> (Decisions Log #149)
+    /// records no worktree, so finalize has nothing to release — and must not try. Both cleanups
+    /// would fail on it (<c>git worktree remove ""</c>, and an <c>update-ref -d</c> on a tracking
+    /// ref that was never fetched because no checkout ever happened), and both failures are
+    /// swallowed into warnings that read like a leaked worktree somebody then has to chase.
+    /// </summary>
+    [Fact]
+    public async Task Finalize_releases_nothing_for_a_run_that_never_had_a_checkout()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedDeliveredPrReviewRunAsync(
+            store, node, cts.Token, withoutWorktree: true);
+
+        NoOpWorktreeManager worktrees = new();
+        PrReviewEngine engine = NewEngine(store, new RefusingExecutor(), new FakeProcessManager(), worktrees);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        worktrees.Removed.Should().BeEmpty("nothing was ever checked out, so there is nothing to remove");
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate run = (await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token))!;
+        run.State.Should().Be(RunState.Completed, "the task still finalizes — only the cleanups are skipped");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Done");
+    }
+
+    /// <summary>
     /// The same fence again, at finalize: the owner already resolved the park (PrReviewDelivered
     /// on the stream), but a fresh generation reclaimed the task before the daemon's own resume
     /// got here.
@@ -451,15 +482,22 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
     /// <c>RunLauncher.LaunchAsync</c> hands off to <c>PrReviewEngine</c> once the adversarial
     /// lens (this run's own primary session) has been dispatched.
     /// </summary>
+    /// <param name="withoutWorktree">
+    /// Seeds the run with no recorded worktree — the shape a reviewer's own lap takes when it was
+    /// opened with <c>h9k pr review --no-worktree</c> (Decisions Log #149). Nothing was ever
+    /// checked out, so finalize has nothing to release.
+    /// </param>
     private async Task<(Guid TaskId, Guid RunId, string RunDirectory)> SeedClaimedPrReviewRunAsync(
-        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken, bool withoutWorktree = false)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
         Guid projectId = DomainId.New();
         Guid sessionId = DomainId.New();
         string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-pr-review-repo-{taskId:N}");
-        string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-pr-review-wt-{runId:N}");
+        string worktreePath = withoutWorktree
+            ? string.Empty
+            : Path.Combine(Path.GetTempPath(), $"hall9k-pr-review-wt-{runId:N}");
         string runDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-pr-review-run-{runId:N}");
         Directory.CreateDirectory(runDirectory);
 
@@ -489,9 +527,10 @@ public sealed class PrReviewEngineTests(PostgresFixture postgres) : IClassFixtur
 
     /// <summary>Extends <see cref="SeedClaimedPrReviewRunAsync"/> to a resolved park, ready for finalize.</summary>
     private async Task<(Guid TaskId, Guid RunId, string RunDirectory)> SeedDeliveredPrReviewRunAsync(
-        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken, bool withoutWorktree = false)
     {
-        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cancellationToken);
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(
+            store, node, cancellationToken, withoutWorktree);
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId,

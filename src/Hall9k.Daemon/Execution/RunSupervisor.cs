@@ -201,6 +201,31 @@ public sealed class RunSupervisor(
                 continue;
             }
 
+            // A human reviewer's own review lap (h9k pr review, Decisions Log #149) reaches here
+            // as a Dispatched sentinel run with no agent process of its own ever recorded —
+            // there is none: the lap is a briefing the reviewer pasted into a session they
+            // started themselves, exactly as an interactive claim's prompt-handoff default is
+            // (PLAN.md §16 #126). Without this, the "dispatched but never started" arm below
+            // would fail a lap a reviewer is sitting in the middle of, purely because the daemon
+            // restarted — and would delete the lease and the worktree they were reading in. An
+            // interactive BUILD claim never needs this exclusion, because its NodeId sentinel
+            // keeps it out of the ownNode filter entirely; a pr-review lap is deliberately
+            // widened INTO this sweep (SentinelPrReviewCandidatesAsync) so its verdict can be
+            // finalized, which is precisely what makes the exclusion necessary here instead.
+            // Keyed on the run as well as the flag: the flag alone shielded a LATER, automated
+            // run of the same task from adoption entirely — a dead agent never failed and a live
+            // one never re-monitored (independent pre-PR review, cycle 1, adversarial lens). That
+            // needed a stale flag to be reachable at all, which the claim-ending events no longer
+            // leave behind (TaskAggregate.EndAnyOpenReviewLap), so this is the second of the two
+            // fences rather than the only one.
+            if (owningTask.ReviewLapOpen && owningTask.ReviewLapRunId == run.Id)
+            {
+                logger.LogInformation(
+                    "Run {RunId} belongs to task {TaskId}'s open review lap — left alone; a reviewer owns it, not this daemon",
+                    run.Id, run.TaskId);
+                continue;
+            }
+
             if (run.ProcessId is null || run.ProcessStartedAt is null)
             {
                 await FailRunAsync(run.Id, run.TaskId, "Dispatched but never started before the daemon stopped.", cancellationToken);
@@ -301,14 +326,31 @@ public sealed class RunSupervisor(
     /// #103, #125) whose owning task is a pr-review task and whose own
     /// <see cref="RunDetails.DispatchingNodeId"/> names THIS node, in one of
     /// <paramref name="states"/>. The sentinel ordinarily means "a human owns this claim, not a
-    /// daemon" — but <c>h9k task work</c> and <c>h9k task start</c> both refuse a pr-review task
-    /// outright (<c>TaskWorkCommand.cs</c>, <c>TaskStartCommand.cs</c>: "it has no diff of its
-    /// own... it dispatches headlessly against the pull request instead"), so a pr-review task
-    /// was never a human's claim to begin with. The only caller that ever launches one under this
-    /// sentinel is this daemon's own auto-pr-review "now" speed (idea e5e98a33, PLAN.md §16 #128,
-    /// <c>AutoPrReviewEngine.CreateOneAsync</c>, via <c>RunLauncher.LaunchAsync</c> — the sole
-    /// caller that ever passes <see cref="Guid.Empty"/> to it), spawned in-process by whichever
-    /// node's daemon ran that sweep — recorded as that sweep's own <c>NodeContext.NodeId</c> on
+    /// daemon" — and for a pr-review task it means one of exactly two things, both of which this
+    /// sweep must see:
+    /// <list type="bullet">
+    /// <item>
+    /// This daemon's own auto-pr-review "now" speed (idea e5e98a33, PLAN.md §16 #128,
+    /// <c>AutoPrReviewEngine.CreateOneAsync</c>, via <c>RunLauncher.LaunchAsync</c>), which has a
+    /// real agent process behind it.
+    /// </item>
+    /// <item>
+    /// A human reviewer's own review lap (<c>h9k pr review</c>, §16 #149), which has none — it is
+    /// a briefing the reviewer pasted into a session they started themselves. That one IS a
+    /// human's claim, so the "dispatched but never started" arm in
+    /// <see cref="AdoptOrphansAsync"/> excludes it explicitly rather than failing it; the
+    /// exclusion is not optional bookkeeping, it is what keeps a daemon restart from deleting the
+    /// checkout a reviewer is reading in.
+    /// </item>
+    /// </list>
+    /// <c>h9k task work</c> and <c>h9k task start</c> do both refuse a pr-review task outright
+    /// (<c>TaskWorkCommand.cs</c>, <c>TaskStartCommand.cs</c>: "it has no diff of its own... it
+    /// dispatches headlessly against the pull request instead") — which is why this comment once
+    /// said a pr-review task was never a human's claim at all, true until <c>h9k pr review</c>
+    /// existed (independent pre-PR review, cycle 1, adversarial lens: the comment predated that
+    /// command, and reasoning from it would tell a maintainer every sentinel pr-review run has a
+    /// process to check for liveness). Either way the run is spawned or opened by whichever
+    /// node's daemon or reviewer produced it — recorded as that side's own <c>NodeContext.NodeId</c> on
     /// <see cref="Hall9k.Domain.Features.Run.Events.RunDispatched.DispatchingNodeId"/>, since
     /// <c>NodeId</c> itself carries only the ceiling-exempt sentinel and cannot say which physical
     /// daemon this is. Filtering on it here closes the gap neither the ordinary

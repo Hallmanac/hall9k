@@ -502,20 +502,36 @@ public sealed class PrReviewEngine(
     private async Task FinalizeAsync(
         Guid runId, Guid taskId, RunDetails run, TaskDetails task, ProjectDetails project, CancellationToken cancellationToken)
     {
-        try
+        // A run with no recorded worktree is a reviewer's own lap opened with h9k pr review
+        // --no-worktree (Decisions Log #149): no checkout was ever made, so no tracking ref was
+        // fetched either, and both cleanups below have nothing to act on. The run's own record is
+        // the only place a checkout is ever named — a lap deliberately cannot gain one it did not
+        // open with, precisely so this read stays the single source of truth for every consumer
+        // (this finalize, RunLauncher.CleanUpPreviousPrReviewWorktreesAsync, h9k task show) rather
+        // than each growing its own fallback (self-review, round one). Skipped rather than
+        // attempted-and-swallowed, because `git worktree remove ""` and `git update-ref -d` on a
+        // ref that was never created both fail, and a warning logged for a cleanup that was never
+        // needed reads as a leak that has to be chased (AGENTS.md: an honest absence beats a
+        // plausible-looking failure).
+        bool hasCheckout = run.WorktreePath.IsNotBlank();
+        if (hasCheckout)
         {
-            await worktrees.RemoveAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(exception, "Worktree removal failed for {Path} (safe to prune later)", run.WorktreePath);
+            try
+            {
+                await worktrees.RemoveAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception, "Worktree removal failed for {Path} (safe to prune later)", run.WorktreePath);
+            }
         }
 
         // run.Branch is "pr/<n>" for every pr-review run (CreatePrReviewCheckoutAsync's own
-        // Worktree.Branch) — the only record of which pull request this run's now-removed
-        // worktree was fetched against, and so the only way to name the tracking ref left
-        // behind in the bare clone (adversarial review, cycle 1: nothing else ever deletes it).
-        if (PullRequestNumberFromBranch(run.Branch) is { } pullRequestNumber)
+        // Worktree.Branch, and the lap's own RunDispatched records the identical name) — the only
+        // record of which pull request this run's now-removed worktree was fetched against, and
+        // so the only way to name the tracking ref left behind in the bare clone (adversarial
+        // review, cycle 1: nothing else ever deletes it).
+        if (hasCheckout && PullRequestNumberFromBranch(run.Branch) is { } pullRequestNumber)
         {
             try
             {

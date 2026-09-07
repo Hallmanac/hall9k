@@ -175,6 +175,78 @@ public sealed class TokenBudgetRetryEngineTests(PostgresFixture postgres) : ICla
             "the resumed session is still the pr-review task's own adversarial lens over the same foreign checkout");
     }
 
+    /// <summary>
+    /// A reviewer's own review lap (<c>h9k pr review</c>, Decisions Log #149) may attach to a
+    /// BudgetParked run deliberately — an exhausted token budget is the platform's problem, not a
+    /// reason to refuse the human who wants to review by hand — and it reuses that run's
+    /// worktree. So this sweep must not resume the automated review into the checkout the
+    /// reviewer is reading: two sessions would share one working tree, and the reviewer's later
+    /// verdict would have <c>PrReviewEngine.FinalizeAsync</c> delete it out from under the live
+    /// one. The claim's own state cannot say this — the task stays Claimed and keeps naming this
+    /// run for the lap's whole life — which is why the flag is read explicitly
+    /// (independent pre-PR review, cycle 1, conformance lens: adoption had this exclusion, this
+    /// sweep did not).
+    /// </summary>
+    [Fact]
+    public async Task A_budget_parked_run_a_reviewers_lap_is_attached_to_is_not_resumed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-budget-retry-lap-repo-{taskId:N}");
+        string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-budget-retry-lap-wt-{runId:N}");
+        string runDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-budget-retry-lap-run-{runId:N}");
+        Directory.CreateDirectory(runDirectory);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"budget-retry-lap-{taskId:N}", repositoryPath,
+                new Uri("https://github.com/acme/web"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Review pull request acme/web#44", ["the verdict is submitted"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#44"), Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(
+                taskId,
+                [
+                    .. lifecycle,
+                    claimed,
+                    new PullRequestReviewLapOpened(
+                        taskId, runId, worktreePath, "https://github.com/acme/web/pull/44", Now, node.OwnerId),
+                ]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(), worktreePath, "pr/44",
+                ExecutorMode.Subscription, Now, RunDirectory: runDirectory));
+            session.Events.Append(runId, new RunBudgetExhausted(runId, "usage limit reached", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        TokenBudgetRetryEngine engine = new(
+            store, node, new PrimarySessionResumer(executor), NewSupervisor(store, node), NullLogger<TokenBudgetRetryEngine>.Instance);
+
+        int retried = await engine.RetryParkedRunsAsync(cts.Token);
+
+        retried.Should().Be(0, "a reviewer owns this run's checkout for as long as their lap is open");
+        executor.Request.Should().BeNull("nothing was spawned into the worktree the reviewer is reading in");
+    }
+
     private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
     {
         FakeProcessManager processes = new();

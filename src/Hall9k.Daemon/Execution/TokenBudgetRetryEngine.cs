@@ -81,8 +81,11 @@ public sealed class TokenBudgetRetryEngine(
     /// applies for adoption and stranded-pipeline resumption, applied here for the retry sweep:
     /// every budget-parked run carrying the ceiling-exempt <see cref="Guid.Empty"/> whose own
     /// <see cref="RunDetails.DispatchingNodeId"/> names this node and whose owning task is a
-    /// pr-review task — the only caller that ever dispatches one under the sentinel
-    /// (<c>AutoPrReviewEngine.CreateOneAsync</c>'s "now" speed, via <c>RunLauncher.LaunchAsync</c>).
+    /// pr-review task — dispatched under that sentinel either by
+    /// <c>AutoPrReviewEngine.CreateOneAsync</c>'s "now" speed (via <c>RunLauncher.LaunchAsync</c>)
+    /// or by a reviewer's own review lap (<c>h9k pr review</c>, Decisions Log #149). Only the
+    /// first is ever retried: <see cref="RetryOneAsync"/> refuses a run an open lap is attached
+    /// to, for the collision its own comment describes.
     /// </summary>
     private static async Task<IReadOnlyList<RunDetails>> SentinelPrReviewCandidatesAsync(
         IQuerySession query, Guid nodeId, CancellationToken cancellationToken)
@@ -121,6 +124,28 @@ public sealed class TokenBudgetRetryEngine(
         {
             // The claim moved on — a human intervened, or a later generation took the task
             // — so there is nothing here left to resume.
+            return false;
+        }
+
+        if (task.ReviewLapOpen && task.ReviewLapRunId == run.Id)
+        {
+            // A human reviewer's own review lap is attached to this budget-parked run
+            // (h9k pr review, Decisions Log #149): the lap admits a BudgetParked run deliberately,
+            // because an exhausted token budget is the platform's problem and not a reason to
+            // refuse the human who wants to review by hand — and the lap reuses that run's
+            // worktree. Resuming the automated review here would put a second session in the
+            // checkout the reviewer is reading, and the reviewer's later verdict would then have
+            // PrReviewEngine.FinalizeAsync delete that worktree out from under it. The claim's
+            // own state cannot say this: the task is still Claimed and still names this run for
+            // the whole lap. RunSupervisor.AdoptOrphansAsync was taught the same exclusion for
+            // the same collision; this sweep was not (independent pre-PR review, cycle 1,
+            // conformance lens). Nothing is cleared here, and nothing needs to be: the reviewer's
+            // verdict moves the run to UnderReview for PrReviewEngine to finalize, and a lap
+            // abandoned instead (h9k task release) requeues the task, which the claim check above
+            // catches on the next sweep.
+            logger.LogInformation(
+                "Run {RunId} is budget-parked under task {TaskId}'s open review lap — not retried; a reviewer is reading in that checkout",
+                run.Id, run.TaskId);
             return false;
         }
 
