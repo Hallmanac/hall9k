@@ -365,6 +365,104 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     }
 
     /// <summary>
+    /// What GitHub says about one issue's own state right now — open or closed, and the labels it
+    /// carries — read fresh at closeout time so a configurable close-linked-issue rule (task: a
+    /// task's linked GitHub issue is closed at true closeout under a configurable rule) can decide
+    /// against the issue's actual, current labels rather than a stale one-time snapshot. Returns
+    /// rather than throws, the <see cref="ReadAssigneesAsync"/> shape: closeout must never fail or
+    /// retry on account of an issue it cannot read, so the caller decides what an unreadable
+    /// answer means (leave it alone) rather than unwinding a stack.
+    /// </summary>
+    public async Task<GitHubIssueCloseoutRead> ReadCloseoutStateAsync(
+        ExternalReference reference, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (!TryParseCanonical(reference.Reference, out string repository, out int number))
+        {
+            return GitHubIssueCloseoutRead.Unreadable(
+                $"'{RelayedText.OneLine(reference.ToString())}' does not read as a github owner/repo#number "
+                + "reference, so there is nothing to read.");
+        }
+
+        ProcessResult result;
+        try
+        {
+            result = await RunGhAsync(
+                [
+                    "issue", "view", number.ToString(CultureInfo.InvariantCulture),
+                    "--repo", repository, "--json", "state,labels",
+                ],
+                workingDirectory, cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            // gh never started, went quiet, or exited with its stderr held open — the same three
+            // outcomes ReadAssigneesAsync's own catch turns into "left alone" rather than a
+            // retryable classification, since this read's only caller has one remedy for all of
+            // them regardless (leave the issue open).
+            return GitHubIssueCloseoutRead.Unreadable(exception.Message);
+        }
+
+        if (result.ExitCode != 0)
+        {
+            return GitHubIssueCloseoutRead.Unreadable(
+                Explain(result.StandardError, repository, number, workingDirectory).Message);
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return GitHubIssueCloseoutRead.Unreadable(
+                    $"gh answered for {repository}#{number} with something that carries no issue state to "
+                    + $"read. Run the same gh command by hand from {workingDirectory} to see what answered.");
+            }
+
+            bool isOpen = WorkItemStatus.Parse(ReadString(document.RootElement, "state")).IsOpen;
+            List<string> labels = document.RootElement.TryGetProperty("labels", out JsonElement labelsElement)
+                && labelsElement.ValueKind == JsonValueKind.Array
+                ? [.. labelsElement.EnumerateArray().Select(label => ReadString(label, "name")).OfType<string>()]
+                : [];
+
+            return GitHubIssueCloseoutRead.Found(isOpen, labels);
+        }
+        catch (JsonException exception)
+        {
+            return GitHubIssueCloseoutRead.Unreadable(
+                $"gh answered for {repository}#{number} with something that is not JSON: "
+                + $"{RelayedText.OneLine(exception.Message)}. Run the same gh command by hand from "
+                + $"{workingDirectory} to see what answered.");
+        }
+    }
+
+    /// <summary>
+    /// Close one issue — the one write <see cref="CommentAsync"/>'s own doc says this platform
+    /// never made, until close-linked-issue (task: a task's linked GitHub issue is closed at true
+    /// closeout under a configurable rule) made it an explicit, opted-in exception: whether to
+    /// call this at all is decided entirely by the caller, from the project's or the task's own
+    /// recorded rule, before this method is ever invoked — it writes what it is told to write, the
+    /// same division <see cref="AddAssigneeAsync"/>'s own doc draws for the write behind it.
+    /// </summary>
+    public async Task CloseAsync(ExternalReference reference, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (!TryParseCanonical(reference.Reference, out string repository, out int number))
+        {
+            throw new DomainValidationException(
+                $"'{RelayedText.OneLine(reference.ToString())}' does not read as a github owner/repo#number "
+                + "reference, so there is no issue to close.");
+        }
+
+        ProcessResult result = await RunGhAsync(
+            ["issue", "close", number.ToString(CultureInfo.InvariantCulture), "--repo", repository],
+            workingDirectory, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw new DomainValidationException(
+                $"gh could not close {repository}#{number}: {RelayedText.OneLine(result.StandardError).Trim()}");
+        }
+    }
+
+    /// <summary>
     /// Put one login in an issue's assignee field, adding it rather than replacing whatever is
     /// there — the write behind <c>h9k task assign --take</c> (idea 64c75e43, Decisions Log #143).
     /// <c>--add-assignee</c> is the whole of the call: a GitHub issue's state, its labels and its
