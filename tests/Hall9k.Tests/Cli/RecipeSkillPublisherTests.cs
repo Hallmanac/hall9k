@@ -211,6 +211,88 @@ public sealed class RecipeSkillPublisherTests : IDisposable
         Directory.Exists(adapter).Should().BeFalse();
     }
 
+    [Fact]
+    public void Removing_the_node_adapter_also_removes_a_symlink_refusing_filesystems_copy_fallback()
+    {
+        // On Windows without Developer Mode, SkillSeeder.Point (which RecipeSkillPublisher's own
+        // Point mirrors) falls back to a real copy plus a CopyMarkerFile when CreateSymbolicLink
+        // is denied. Before this, RemoveNodeAdapter only ever checked for a symlink, so that
+        // marker-bearing copy — plainly platform-authored, not an operator's own — survived
+        // uninstall forever (independent pre-PR review, cycle 3, adversarial lens).
+        WriteSkill("Shipped by the platform.");
+        RecipeSkillPublisher.PublishCanonical(_source);
+        string adapter = Path.Combine(RecipeLibraryPaths.ClaudeSkillsDirectory, RecipeSkillPublisher.GeneratorSkillName);
+        Directory.CreateDirectory(adapter);
+        File.WriteAllText(Path.Combine(adapter, "SKILL.md"), "Shipped by the platform.");
+        File.WriteAllText(Path.Combine(adapter, SkillSeeder.CopyMarkerFile), string.Empty);
+        List<string> stillPresent = [];
+
+        RecipeSkillPublisher.RemoveNodeAdapter(stillPresent);
+
+        stillPresent.Should().BeEmpty();
+        Directory.Exists(adapter).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Removing_the_node_adapter_leaves_an_operators_own_real_directory_alone()
+    {
+        // A real directory with no CopyMarkerFile could only be an operator's own — never
+        // something Point itself wrote — and must never be swept just because it sits at the
+        // adapter's own path.
+        string adapter = Path.Combine(RecipeLibraryPaths.ClaudeSkillsDirectory, RecipeSkillPublisher.GeneratorSkillName);
+        Directory.CreateDirectory(adapter);
+        File.WriteAllText(Path.Combine(adapter, "SKILL.md"), "the operator's own skill");
+        List<string> stillPresent = [];
+
+        RecipeSkillPublisher.RemoveNodeAdapter(stillPresent);
+
+        stillPresent.Should().BeEmpty();
+        Directory.Exists(adapter).Should().BeTrue();
+        File.ReadAllText(Path.Combine(adapter, "SKILL.md")).Should().Be("the operator's own skill");
+    }
+
+    [Fact]
+    public void A_directory_that_cannot_be_deleted_keeps_a_manifest_entry_matching_what_survives()
+    {
+        // Before this fix, a failed Directory.Delete left the manifest holding the pre-deletion
+        // hash unconditionally, even though Directory.Delete(recursive: true) can remove files
+        // before hitting the one that is locked — a later pass would then see the surviving
+        // remainder no longer match that stale hash and misread it as an operator's own edit,
+        // leaving it behind forever (independent pre-PR review, cycle 3, adversarial lens).
+        WriteSkill("Shipped by the platform.");
+        RecipeSkillPublisher.PublishCanonical(_source);
+        string directory = Path.Combine(RecipeLibraryPaths.CanonicalDirectory, RecipeSkillPublisher.GeneratorSkillName);
+        List<string> stillPresent = [];
+
+        if (OperatingSystem.IsWindows())
+        {
+            using FileStream lockHandle = new(
+                Path.Combine(directory, "SKILL.md"), FileMode.Open, FileAccess.Read, FileShare.Read);
+
+            RecipeSkillPublisher.RemovePublished(stillPresent);
+        }
+        else
+        {
+            UnixFileMode original = File.GetUnixFileMode(directory);
+            File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            try
+            {
+                RecipeSkillPublisher.RemovePublished(stillPresent);
+            }
+            finally
+            {
+                File.SetUnixFileMode(directory, original);
+            }
+        }
+
+        stillPresent.Should().Contain(directory, "the delete failed — it must not be reported as removed");
+        File.Exists(RecipeLibraryPaths.PublishedManifest).Should().BeTrue(
+            "a manifest entry must survive so a retry can still tell this apart from an operator's own edit");
+        string[] manifestParts = File.ReadAllText(RecipeLibraryPaths.PublishedManifest).Split('\t', 2);
+        manifestParts[0].Should().Be(RecipeSkillPublisher.GeneratorSkillName);
+        Directory.Exists(directory).Should().BeTrue("the delete failed, so the directory itself must still be there");
+    }
+
     private void WriteSkill(string body)
     {
         string directory = Path.Combine(_source, RecipeSkillPublisher.GeneratorSkillName);

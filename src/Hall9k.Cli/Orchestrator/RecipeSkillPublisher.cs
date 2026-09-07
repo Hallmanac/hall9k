@@ -127,25 +127,39 @@ public static class RecipeSkillPublisher
     }
 
     /// <summary>
-    /// Removes the <see cref="SeedNode"/> adapter link at
+    /// Removes the <see cref="SeedNode"/> adapter at
     /// <c>~/.hall9k/.claude/skills/orchestrator-recipe-generator</c>, so <c>h9k uninstall</c>
-    /// does not leave a platform-authored symlink dangling once <see cref="RemovePublished"/>
-    /// deletes what it points at. Only ever touches a symlink — a real directory there could
-    /// only be an operator's own, and is left alone exactly like <see cref="Point"/> itself
-    /// would leave it (independent pre-PR review, cycle 1, both lenses: this adapter had no
-    /// removal counterpart at all before this).
+    /// does not leave a platform-authored symlink — or, on a symlink-refusing filesystem, the
+    /// platform-authored copy <see cref="Point"/> falls back to — dangling once
+    /// <see cref="RemovePublished"/> deletes what it points at. A real directory with no
+    /// <see cref="SkillSeeder.CopyMarkerFile"/> could only be an operator's own, and is left
+    /// alone exactly like <see cref="Point"/> itself would leave it (independent pre-PR review,
+    /// cycle 1, both lenses: this adapter had no removal counterpart at all before this; cycle 3,
+    /// adversarial lens: the symlink-only check left a Windows copy fallback, and its own
+    /// <c>CopyMarkerFile</c>, behind forever).
     /// </summary>
     public static void RemoveNodeAdapter(List<string> stillPresent)
     {
         string link = Path.Combine(RecipeLibraryPaths.ClaudeSkillsDirectory, GeneratorSkillName);
-        if (new DirectoryInfo(link).LinkTarget is null)
+        bool isSymlink = new DirectoryInfo(link).LinkTarget is not null;
+        bool isMarkedCopy = !isSymlink && Directory.Exists(link)
+            && File.Exists(Path.Combine(link, SkillSeeder.CopyMarkerFile));
+
+        if (!isSymlink && !isMarkedCopy)
         {
             return;
         }
 
         try
         {
-            SkillSeeder.Unlink(link);
+            if (isSymlink)
+            {
+                SkillSeeder.Unlink(link);
+            }
+            else
+            {
+                Directory.Delete(link, recursive: true);
+            }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -252,7 +266,23 @@ public static class RecipeSkillPublisher
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            // Re-hashed against what is actually left on disk, not the pre-deletion recordedHash:
+            // Directory.Delete(recursive: true) can remove some files before hitting a locked one,
+            // so the old hash no longer matches the partial remainder and a later pass would
+            // misread it as an operator's own edit and leave it behind forever — the identical
+            // failure SkillSeeder.RemovePublished re-hashes to avoid. The re-hash can itself hit
+            // the same locked file, so it falls back to recordedHash rather than throwing.
             stillPresent.Add(directory);
+            string survivingHash = TryComputeContentHash(directory) ?? recordedHash;
+            try
+            {
+                File.WriteAllText(RecipeLibraryPaths.PublishedManifest, $"{GeneratorSkillName}\t{survivingHash}");
+            }
+            catch (Exception writeException) when (writeException is IOException or UnauthorizedAccessException)
+            {
+                stillPresent.Add(RecipeLibraryPaths.PublishedManifest);
+            }
+
             return ([], true);
         }
 
