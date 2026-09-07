@@ -5,6 +5,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -16,6 +17,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
 using JasperFx;
+using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -116,6 +118,18 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
         child.StackReplaysDispatched.Should().Be(1);
         child.CloseoutAttempts.Should().Be(0,
             "a replay answers the parent moving, not an obstruction of the child's own");
+
+        // The reopen's own audit field describes the obstruction it actually recorded. A kind with
+        // no arm of its own in DescribeObstruction fell through to "the same 1 unresolved review
+        // thread(s)" over an identity that is a commit — a guess written into an audit field
+        // (conformance review, cycle 4).
+        IReadOnlyList<IEvent> childEvents = await query.Events.FetchStreamAsync(fixture.ChildTaskId, token: cts.Token);
+        TaskReopened reopen = childEvents.Select(recorded => recorded.Data).OfType<TaskReopened>().Last();
+        reopen.ObstructionSummary.Should()
+            .Contain("the parent branch having moved past what this branch was built on")
+            .And.Contain(fixture.ParentHeadCommit,
+                "the obstruction's mechanical identity IS the boundary commit, so its description names that "
+                + "rather than a review-thread count it has nothing to do with");
     }
 
     /// <summary>
@@ -212,6 +226,76 @@ public sealed class StackedCloseoutTests(PostgresFixture postgres) : IClassFixtu
             "the merge base of the child and the rewritten parent IS the base commit — the wrong answer");
         child.StackReplayOntoCommit.Should().Be(rewrittenParentHead,
             "the replay lands on the parent's freshly observed new head, as a commit rather than a ref");
+    }
+
+    /// <summary>
+    /// The recorded fork point is trusted only once git confirms the branch actually contains it
+    /// (adversarial review, cycle 4). For a replay run that field is a dispatch-time PREDICTION:
+    /// <c>RunLauncher</c> records the commit the replay was told to land on before the session has
+    /// performed the rebase, so a replay that ends without landing — its own prompt sanctions
+    /// <c>git rebase --abort</c> on a conflict it cannot honestly resolve, and the no-op push then
+    /// succeeds — leaves a fork point the branch never reached. Replaying from it would tell the
+    /// next mechanical session that the parent's own commits are this task's work, which is the
+    /// exact duplication the boundary exists to prevent, in a session no reviewer reads.
+    /// </summary>
+    [Fact]
+    public async Task A_recorded_fork_point_the_branch_never_landed_on_is_unobservable_rather_than_replayed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+        string rewrittenParentHead = ForcePushTheParent(fixture);
+
+        // The shape a replay that never landed leaves behind: the run's recorded fork point names
+        // the parent's new head, which the child's branch does not contain at all.
+        RunDetails predicted = new()
+        {
+            Id = fixture.ChildRunId,
+            TaskId = fixture.ChildTaskId,
+            Branch = fixture.ChildBranch,
+            BaseBranch = fixture.ParentBranch,
+            BaseCommit = rewrittenParentHead,
+        };
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(fixture.ProjectId, cts.Token))!;
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+
+        StackedParentObservation observation = await new StackedParentWatch(
+                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+            .ObserveAsync(query, project, child, predicted, cts.Token);
+
+        observation.Verdict.Should().Be(StackedParentVerdict.Unobservable,
+            "a boundary the branch never landed on is not an observation, and replaying from it would "
+            + "carry the parent's own work as this task's");
+        observation.Detail.Should().Contain("does not contain the fork point");
+        observation.BoundaryCommit.Should().BeEmpty("nothing was observed, so nothing is claimed");
+    }
+
+    /// <summary>
+    /// The sibling of the check above: a fork point the branch really does hold is still trusted,
+    /// so the containment check refuses a bad record without refusing every record.
+    /// </summary>
+    [Fact]
+    public async Task A_recorded_fork_point_the_branch_does_hold_is_still_the_replays_boundary()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+        string rewrittenParentHead = ForcePushTheParent(fixture);
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(fixture.ProjectId, cts.Token))!;
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+
+        StackedParentObservation observation = await new StackedParentWatch(
+                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+            .ObserveAsync(query, project, child, run, cts.Token);
+
+        observation.Verdict.Should().Be(StackedParentVerdict.ParentMoved);
+        observation.BoundaryCommit.Should().Be(fixture.ParentHeadCommit);
+        observation.OntoCommit.Should().Be(rewrittenParentHead);
     }
 
     /// <summary>

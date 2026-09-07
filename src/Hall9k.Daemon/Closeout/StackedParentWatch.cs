@@ -47,7 +47,8 @@ public enum StackedParentVerdict
 /// the replay's own <c>git rebase --onto</c>, which is what drops the parent's commits instead of
 /// replaying them onto a base that already holds them. The parent's own head where that head is
 /// still on the child's line (a merged parent that was never rewritten), and otherwise the child
-/// run's own recorded fork point (<c>RunDetails.BaseCommit</c>) — never <c>git merge-base</c>: see
+/// run's own recorded fork point (<c>RunDetails.BaseCommit</c>), once the child's branch is
+/// confirmed to contain it — never <c>git merge-base</c>: see
 /// <see cref="StackedParentWatch"/>'s own doc for the force-push case that proves merge-base wrong
 /// here. Blank on <see cref="StackedParentVerdict.Aligned"/> and
 /// <see cref="StackedParentVerdict.Unobservable"/>, where there is no replay to describe.
@@ -82,7 +83,10 @@ public sealed record StackedParentObservation(
 /// elapsed time or from the child's own age. The boundary the replay drops the parent's commits at
 /// is observed directly wherever git can still answer it — the parent's head, where that head is
 /// still contained in the child's branch — and falls back to the child run's own recorded fork
-/// point (<c>RunDetails.BaseCommit</c>) where it cannot, which is the force-pushed case. What it is
+/// point (<c>RunDetails.BaseCommit</c>) where it cannot — which is the force-pushed case, and which
+/// is trusted only once git confirms the child's branch actually contains that commit, because for a
+/// replay run the field is a dispatch-time prediction rather than an observation (see
+/// <see cref="ObserveAsync"/>'s own containment check). What it is
 /// never computed from is <c>git merge-base</c>, because that gets it
 /// wrong in exactly the case this watch exists for. A force-pushed parent rewrites the history the
 /// child shares with it, so the merge base of the child and the parent's NEW head collapses back to
@@ -252,6 +256,37 @@ public sealed class StackedParentWatch(
                 return StackedParentObservation.Unobservable(
                     $"{parentBranch} has moved, but this run recorded no fork point of its own, so the commit a "
                     + "replay would drop the parent's work at is unobserved rather than assumed");
+            }
+
+            // The record is checked against the branch before it is trusted (adversarial review,
+            // cycle 4). For a StackReplay run that field is a dispatch-time PREDICTION rather than
+            // an observation — RunLauncher records the commit the replay was told to land on as the
+            // new run's BaseCommit before the session has performed the rebase — so a replay that
+            // ends without landing (its own prompt sanctions `git rebase --abort` on a conflict it
+            // cannot honestly resolve, and the no-op push then succeeds) leaves a recorded fork
+            // point the branch never reached. Replaying from it would hand the next session a range
+            // that still contains the parent's own commits and tell it those are this task's work —
+            // the exact duplication this boundary exists to prevent, in a mechanical session no
+            // reviewer reads. Unobservable is the honest answer; the next sweep asks again, and a
+            // replay that does land makes the record true.
+            if (!childHoldsParentHead)
+            {
+                ProcessResult boundaryHeld = await git(
+                    "git",
+                    ["merge-base", "--is-ancestor", boundary, $"refs/heads/{childRun.Branch}"],
+                    repositoryPath,
+                    cancellationToken);
+                if (boundaryHeld.ExitCode != 0)
+                {
+                    return StackedParentObservation.Unobservable(
+                        boundaryHeld.ExitCode == 1
+                            ? $"{parentBranch} has moved, but {childRun.Branch} does not contain the fork point "
+                              + $"{Short(boundary)} this run recorded — a replay from a commit the branch never "
+                              + "landed on would carry the parent's own work as this task's, so the boundary is "
+                              + "unobserved rather than assumed"
+                            : $"git could not tell whether {childRun.Branch} contains the fork point "
+                              + $"{Short(boundary)} this run recorded: " + FirstLine(boundaryHeld.StandardError));
+                }
             }
             if (parentMerged)
             {

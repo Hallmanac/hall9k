@@ -2055,13 +2055,26 @@ public sealed class CloseoutEngine(
     private static string ObstructionKey(FollowUpKind kind, IReadOnlyList<string> identity) =>
         $"{kind.Value}:{string.Join('␟', identity.OrderBy(id => id, StringComparer.Ordinal))}";
 
-    /// <summary>The human-readable side of <see cref="ObstructionKey"/> — what a park message reads back as the obstruction that repeated.</summary>
+    /// <summary>
+    /// The human-readable side of <see cref="ObstructionKey"/> — what a park message reads back as
+    /// the obstruction that repeated, and what every reopen records as
+    /// <c>TaskReopened.ObstructionSummary</c>. A kind with no arm of its own would describe itself
+    /// as unresolved review threads over an identity that is nothing of the sort, which is a guess
+    /// written into an audit field (AGENTS.md's never-guess rule) — so every kind names its own
+    /// identity here: a replay's is the boundary commit the parent's work is dropped at
+    /// (conformance review, cycle 4).
+    /// </summary>
     private static string DescribeObstruction(FollowUpKind kind, IReadOnlyList<string> identity) =>
-        kind == FollowUpKind.FailingChecks
-            ? $"the failing check(s) {string.Join(", ", identity.OrderBy(id => id, StringComparer.Ordinal))}"
-            : kind == FollowUpKind.Rebase
-                ? "the pull request conflicting with its base branch"
-                : $"the same {identity.Count} unresolved review thread(s)";
+        kind switch
+        {
+            _ when kind == FollowUpKind.FailingChecks =>
+                $"the failing check(s) {string.Join(", ", identity.OrderBy(id => id, StringComparer.Ordinal))}",
+            _ when kind == FollowUpKind.Rebase => "the pull request conflicting with its base branch",
+            _ when kind == FollowUpKind.StackReplay =>
+                "the parent branch having moved past what this branch was built on "
+                + $"(boundary {string.Join(", ", identity)})",
+            _ => $"the same {identity.Count} unresolved review thread(s)",
+        };
 
     /// <summary>
     /// Whether something a human did on the pull request since the task's last automatic
