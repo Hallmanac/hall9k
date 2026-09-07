@@ -57,9 +57,14 @@ public static class AdHocGateRunner
     /// budget (task: the clean-base comparison can actually finish — origin incident
     /// 2026-09-05/06): <see cref="ComputeComparisonBudget"/> budgets that one off the gate's own
     /// recorded duration instead, since this fixed value alone could never fit a slow project's
-    /// full test suite. This constant survives there as the FLOOR <see cref="ComputeComparisonBudget"/>
-    /// never budgets below, and — on both sides of the split — as the budget a caller is willing
-    /// to wait to *acquire* the checkout lock before giving up on the comparison rather than
+    /// full test suite. This constant survives there as <see cref="ComputeComparisonBudget"/>'s own
+    /// starting point when no duration has been recorded yet (or the recorded one is small) — not a
+    /// floor it never budgets below, since the caller's own <c>verifyGateTimeout</c> can still clamp
+    /// the result under it (a project configured with <c>VerifyGateTimeout</c> under five minutes
+    /// gets exactly that shorter budget; the test
+    /// <c>An_inconclusive_comparison_is_retried_on_the_next_run</c> relies on this). It also
+    /// survives — on both sides of the split — as the budget a caller is
+    /// willing to wait to *acquire* the checkout lock before giving up on the comparison rather than
     /// blocking indefinitely behind whichever other caller is already holding it; that acquisition
     /// wait stays fixed even where the gate's own run below it does not, since an unbounded wait
     /// would defer the run's own real failure for as long as the other holder runs.
