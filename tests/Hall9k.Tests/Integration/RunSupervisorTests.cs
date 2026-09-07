@@ -338,6 +338,12 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             session.Events.Append(taskId, requeued, reclaimed);
             session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
 
+            // "/tmp/wt-test-live" is left non-existent for the same reason
+            // SeedClaimedTaskAsync's own "/tmp/wt-test" is (see that method's doc): this task
+            // still carries the unregistered project id SeedClaimedTaskAsync seeded above, so
+            // nothing along AdoptOrphansAsync's path here ever loads real ProjectDetails and
+            // reaches a spawn into this worktree — the live run stays a still-sleeping fake
+            // agent for the whole test, never far enough along to try.
             session.Events.StartStream<RunAggregate>(liveRunId, new RunDispatched(
                 liveRunId, taskId, node.NodeId, node.OwnerId, 2, DomainId.New(),
                 "/tmp/wt-test-live", "task/test-live", ExecutorMode.Subscription, Now));
@@ -809,6 +815,12 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, .. reopen, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
 
+        // "/tmp/wt-test" is deliberately never created: this task's project id (above) is never
+        // registered, so ReviewEngine.LoadContextAsync always finds no ProjectDetails and bails
+        // out before ever spawning a real agent into this path — unlike
+        // SeedClaimedTaskWithProjectAsync's own worktree, which a registered project lets the
+        // review loop actually reach (see that method's own doc for the race that forces it to
+        // be a real directory).
         session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
             runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
             "/tmp/wt-test", "task/test", ExecutorMode.Subscription, Now, IsFollowUp: asFollowUp));
@@ -823,6 +835,22 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     /// <c>ProjectDetails</c> back. The error-result retry path does (<c>PrimarySessionResumer</c>
     /// needs the project's own <c>SkipPermissions</c>), so this variant registers a real project
     /// first and points the task at it.
+    /// <para>
+    /// A registered project also means <c>ReviewEngine.LoadContextAsync</c> can build a real
+    /// <c>ReviewContext</c> once the primary session completes clean — where
+    /// <see cref="SeedClaimedTaskAsync"/>'s unregistered project makes it bail out first. From
+    /// there the review loop reaches a real agent spawn (<c>ClaudeExecutor</c> via
+    /// <c>UnixProcessManager.Spawn</c>), and unlike every git call this file's own gates make
+    /// (all wrapped in a try/catch that degrades a missing directory to "unobservable"), that
+    /// spawn's own <c>Process.Start</c> throws outright when its working directory does not
+    /// exist. Origin incident (PR #235/#236, 2026-09-05): that throw raced
+    /// A_primary_sessions_error_result_is_retried_once_and_then_succeeds's own post-retry
+    /// assertions on Ubuntu CI, landing "Review loop failed: ... No such file or directory" and
+    /// a task Failed under a test that never meant to exercise the review loop at all — confirmed
+    /// by timing this worktree existing (safe for 2+ seconds) against it missing (fails within
+    /// 100-250ms, well inside this method's callers' own assertion window). The worktree is
+    /// therefore a real, task-unique temp directory, not just a plausible-looking path.
+    /// </para>
     /// </summary>
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskWithProjectAsync(
         DocumentStore store, CancellationToken cancellationToken)
@@ -833,6 +861,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
         string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-session-error-retry-repo-{taskId:N}");
+        string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-session-error-retry-worktree-{taskId:N}");
+        Directory.CreateDirectory(worktreePath);
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectRegistered registered = ProjectDecider.Register(
@@ -851,7 +881,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
             runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
-            "/tmp/wt-test", "task/test", ExecutorMode.Subscription, Now));
+            worktreePath, "task/test", ExecutorMode.Subscription, Now));
         await session.SaveChangesAsync(cancellationToken);
 
         return (node, taskId, runId);
