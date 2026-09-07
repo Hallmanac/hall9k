@@ -2434,8 +2434,24 @@ public sealed class CloseoutEngine(
             return false;
         }
 
+        if (observation.Verdict == StackedParentVerdict.ParentMergedElsewhere)
+        {
+            // The one verdict that is neither "nothing to do" nor "a replay is owed": the parent
+            // merged somewhere other than the project's base, so there is no base this child can be
+            // moved onto mechanically without losing work (the verdict's own doc). Parked rather
+            // than left to the next sweep, because nothing about it will change on its own — and
+            // parked BEFORE any retarget, like every other park on this path.
+            await ParkAsync(
+                session, run,
+                $"This is a stacked pull request and {observation.Detail}. Retarget and rebase it by hand — "
+                + "onto the branch its parent merged into, or onto the project's base once that branch's own "
+                + "pull request has merged — then hand it back with h9k pr resolve.",
+                now, cancellationToken);
+            return true;
+        }
+
         // Everything past here is ParentMerged or ParentMoved: the parent's branch moved out from
-        // under this child, and a replay is owed. Written as two early returns above rather than a
+        // under this child, and a replay is owed. Written as three early returns above rather than a
         // switch precisely so that reading is explicit — a switch statement's silent fall-through
         // would route a verdict added later into the replay path by default.
 
