@@ -703,6 +703,89 @@ public sealed class PullRequestReviewLapTests : IClassFixture<PostgresFixture>, 
         (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*Pass --project*");
     }
 
+    /// <summary>
+    /// The race the lap's two stream fences exist for (independent pre-PR review, cycle 1,
+    /// adversarial lens): the admission check reads the run as parked, the checkout then takes a
+    /// git fetch, and in that window the daemon's token-budget retry sweep reads
+    /// <c>ReviewLapOpen == false</c> — the lap's own event has not committed yet — and resumes
+    /// the automated session into the very checkout the reviewer is about to be handed. The cut
+    /// is the only place a test can stand inside that window, so the daemon's append is made from
+    /// there. Nothing of the lap may be recorded on the way out, which is what makes re-running
+    /// the command the whole remedy.
+    /// </summary>
+    [Fact]
+    public async Task A_run_that_moved_while_the_lap_was_being_prepared_refuses_and_records_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedParkedPrReviewTaskAsync(store, node, findingsReport: null, cts.Token);
+
+        // A pruned checkout is what sends the lap through the re-cut — the slow half, and the one
+        // whose window this is about.
+        Directory.Delete(seeded.WorktreePath, recursive: true);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        worktrees.WhileCuttingTheCheckout = async () =>
+        {
+            await using IDocumentSession daemon = store.LightweightSession();
+            daemon.Events.Append(seeded.RunId, new RunResumed(seeded.RunId, 4242, Now, Now, "resumed-review"));
+            await daemon.SaveChangesAsync(cts.Token);
+        };
+
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => PullRequestReviewCommand.RunAsync(
+            store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = seeded.ProjectName },
+            ScriptedGh(), worktrees, cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*moved while this lap was being prepared*");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(seeded.TaskId, cts.Token))!;
+        details.ReviewLapOpen.Should().BeFalse(
+            "a lap recorded over a run a live agent session was just resumed in would shield that run from "
+            + "adoption and hand the reviewer a checkout being overwritten under them");
+        details.ReviewLapRunId.Should().BeNull("nothing of the lap was recorded at all");
+    }
+
+    /// <summary>
+    /// The other fence: the task stream's own version, carried as the lap record's expected
+    /// version, so two laps opening on the same pull request at once cannot both believe they
+    /// opened one. The first one's own <c>PullRequestReviewLapOpened</c> is what the second one
+    /// loses to.
+    /// </summary>
+    [Fact]
+    public async Task A_task_that_changed_while_the_lap_was_being_prepared_refuses_and_records_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedParkedPrReviewTaskAsync(store, node, findingsReport: null, cts.Token);
+
+        Directory.Delete(seeded.WorktreePath, recursive: true);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        worktrees.WhileCuttingTheCheckout = async () =>
+        {
+            await using IDocumentSession other = store.LightweightSession();
+            other.Events.Append(seeded.TaskId, new PullRequestReviewLapOpened(
+                seeded.TaskId, seeded.RunId, "somewhere-else", string.Empty, Now, node.OwnerId));
+            await other.SaveChangesAsync(cts.Token);
+        };
+
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => PullRequestReviewCommand.RunAsync(
+            store, session, new PullRequestReviewCommand.Settings { PullRequest = "42", Project = seeded.ProjectName },
+            ScriptedGh(), worktrees, cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*changed while this lap was being prepared*");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(seeded.TaskId, cts.Token))!;
+        details.ReviewLapWorktreePath.Should().Be(
+            "somewhere-else", "the lap that got there first is the one on the task, undisturbed");
+    }
+
     private DocumentStore NewStore() => DocumentStore.For(opts =>
     {
         opts.Connection(postgres.ConnectionString);
@@ -764,20 +847,32 @@ public sealed class PullRequestReviewLapTests : IClassFixture<PostgresFixture>, 
     {
         public List<int> PrReviewCheckouts { get; } = [];
 
+        /// <summary>
+        /// Run while a checkout is being cut — the window the daemon's own sweeps can act in, and
+        /// the only place a test can stand inside it (the cut is where a real lap spends a git
+        /// fetch).
+        /// </summary>
+        public Func<Task>? WhileCuttingTheCheckout { get; set; }
+
         public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("a review lap never cuts a branch of its own");
 
         public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("a review lap never checks out an existing branch");
 
-        public Task<Worktree> CreatePrReviewCheckoutAsync(
+        public async Task<Worktree> CreatePrReviewCheckoutAsync(
             PrReviewWorktreeRequest request, CancellationToken cancellationToken)
         {
             PrReviewCheckouts.Add(request.PullRequestNumber);
+            if (WhileCuttingTheCheckout is { } interference)
+            {
+                await interference();
+            }
+
             string path = Path.Combine(Path.GetTempPath(), $"hall9k-lap-wt-{request.RunId:N}");
             Directory.CreateDirectory(path);
             scratch.Add(path);
-            return Task.FromResult(new Worktree(path, $"pr/{request.PullRequestNumber}", "refs/remotes/origin/pr-review/42"));
+            return new Worktree(path, $"pr/{request.PullRequestNumber}", "refs/remotes/origin/pr-review/42");
         }
 
         public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>

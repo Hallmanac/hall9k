@@ -116,27 +116,28 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         ExternalReference reference = new(WorkItemProvider.GitHubPullRequest, $"{pullRequest.Repository}#{pullRequest.Number}");
         TaskListItem? existing = await FindLiveTaskAsync(session, reference, cancellationToken);
 
-        Guid taskId;
-        Guid runId;
-        string worktreePath;
+        LapAttachment attachment;
         if (existing is null)
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]No live task holds {reference.Reference} on this node — adopting the pull request now, the same way h9k task add --from-pr does.[/]");
-            (taskId, runId, worktreePath) = await AdoptAndClaimAsync(
+            attachment = await AdoptAndClaimAsync(
                 store, session, project, context, pullRequest, reference, settings.NoWorktree, processRunner, worktrees, cancellationToken);
         }
         else
         {
-            (taskId, runId, worktreePath) = await AttachAsync(
+            attachment = await AttachAsync(
                 store, session, project, context, pullRequest, existing, settings.NoWorktree, worktrees,
                 cancellationToken);
         }
 
         // Appended after the worktree exists, not before: WorktreePath is the fact this event
         // carries, and a lap whose checkout failed must not leave a record claiming one is there.
-        await RecordLapOpenedAsync(store, taskId, runId, worktreePath, pullRequest, context, cancellationToken);
+        await RecordLapOpenedAsync(store, attachment, pullRequest, context, cancellationToken);
 
+        Guid taskId = attachment.TaskId;
+        Guid runId = attachment.RunId;
+        string worktreePath = attachment.WorktreePath;
         ReviewLapBriefing briefing = await ComposeBriefingAsync(
             session, project, taskId, runId, worktreePath, pullRequest, cancellationToken);
         string prompt = ReviewLapPromptBuilder.Build(briefing);
@@ -148,6 +149,38 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         PrintHandoff(taskId, worktreePath, settingsFile, guard, prompt);
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// What the lap attached to, and the two stream versions its opening record is fenced
+    /// against. The versions are the fix for a check-then-act race the first cut of this command
+    /// had on both sides (independent pre-PR review, cycle 1, adversarial lens): admitting a
+    /// BudgetParked or ReviewParked run and then spending a possible git fetch in
+    /// <see cref="ReuseOrRecutCheckoutAsync"/> left a window in which the daemon's own token-budget
+    /// retry sweep (<c>TokenBudgetRetryEngine.RetryOneAsync</c>) read <c>ReviewLapOpen == false</c>
+    /// — the event had not committed yet — and resumed the automated session into the very
+    /// checkout the reviewer was about to be handed, or startup adoption failed the lap's own
+    /// freshly-dispatched sentinel run as "dispatched but never started".
+    /// <para>
+    /// <see cref="RunVersion"/> is the run stream's version the admission decision was made
+    /// against, re-checked immediately before the record: every one of those daemon actions
+    /// appends to the run stream (<c>RunResumed</c>, <c>RunFailed</c>), so a moved version is how
+    /// this side finds out it lost, while nothing of the lap has been recorded yet.
+    /// <see cref="TaskVersion"/> is the task stream's, carried as the append's own expected
+    /// version so a second lap, a release, or a retry racing the same task loses at the database
+    /// rather than both sides believing they opened the lap.
+    /// </para>
+    /// <para>
+    /// What this does NOT do, stated so nothing downstream reads it as more: neither daemon sweep
+    /// reserves anything before it acts, so a sweep that read the flag before this record
+    /// committed and spawns after it still collides. That residual window is the sweep's own
+    /// read-to-spawn gap, milliseconds against the seconds-to-a-minute the fetch used to leave
+    /// open, and closing it outright means a reserve-before-spawn protocol in the shared
+    /// budget-retry path that every run type would pay for. The sweeps re-read the flag as late
+    /// as they can instead.
+    /// </para>
+    /// </summary>
+    private sealed record LapAttachment(
+        Guid TaskId, Guid RunId, string WorktreePath, long TaskVersion, long RunVersion);
 
     /// <summary>
     /// <c>--project</c>, or the only registered project when there is exactly one. Never a guess
@@ -247,7 +280,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// live agent process reading that same worktree, and a second session in it double-books the
     /// checkout the way every other command in this surface already refuses to.
     /// </summary>
-    private static async Task<(Guid TaskId, Guid RunId, string WorktreePath)> AttachAsync(
+    private static async Task<LapAttachment> AttachAsync(
         DocumentStore store, IDocumentSession session, ProjectDetails project, BootstrapContext context,
         PullRequestSurface pullRequest, TaskListItem existing, bool noWorktree,
         IWorktreeManager worktrees, CancellationToken cancellationToken)
@@ -269,6 +302,16 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
 
         if (task.CurrentRunId is { } existingRunId)
         {
+            // The run stream's version FIRST, before the projection and before every state check
+            // below reads it: it is the version this admission is decided against and the one
+            // RecordLapOpenedAsync re-checks, so it has to be no newer than the state that decided
+            // (LapAttachment's own doc has the race). A projection load after it can only be as
+            // new or newer, and newer means the record refuses — which is the safe direction.
+            StreamState runFence = await session.Events.FetchStreamStateAsync(existingRunId, cancellationToken)
+                ?? throw new DomainConflictException(
+                    $"Task {task.Id} names run {existingRunId} but that run has no stream — nothing was ever "
+                    + $"dispatched under it. h9k task retry {task.Id} to dispatch a fresh review, then open "
+                    + "the lap again.");
             RunDetails run = await session.LoadAsync<RunDetails>(existingRunId, cancellationToken)
                 ?? throw new DomainConflictException(
                     $"Task {task.Id} names run {existingRunId} but that run has no record — the automated "
@@ -286,14 +329,15 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 AnsiConsole.MarkupLineInterpolated(
                     $"[dim]Re-entering the review lap already open on task {task.Id} (run {existingRunId}).[/]");
             }
-            else if (await IsLapRunWithNoLapRecordedAsync(session, existingRunId, run, cancellationToken))
+            else if (await IsLapRunWithNoLapRecordedAsync(session, existingRunId, runFence.Version, run, cancellationToken))
             {
                 AnsiConsole.MarkupLineInterpolated(
                     $"[dim]Run {existingRunId} is a review lap of this node's own whose opening never finished — re-opening the lap on it rather than cutting a second one.[/]");
             }
             else
             {
-                await RefuseUnattachableRunAsync(session, task.Id, existingRunId, run, cancellationToken);
+                await RefuseUnattachableRunAsync(
+                    session, task.Id, existingRunId, runFence.Version, run, cancellationToken);
                 AnsiConsole.MarkupLineInterpolated(
                     $"[dim]Attached to task {task.Id}'s existing pr-review run {existingRunId}.[/]");
             }
@@ -302,7 +346,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 ? string.Empty
                 : await ReuseOrRecutCheckoutAsync(
                     project, task.Id, existingRunId, run, pullRequest, worktrees, cancellationToken);
-            return (task.Id, existingRunId, reused);
+            return new LapAttachment(task.Id, existingRunId, reused, fence.Version, runFence.Version);
         }
 
         return await ClaimAndCutAsync(
@@ -327,7 +371,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// </para>
     /// </summary>
     private static async Task<bool> IsLapRunWithNoLapRecordedAsync(
-        IQuerySession session, Guid runId, RunDetails run, CancellationToken cancellationToken)
+        IQuerySession session, Guid runId, long runVersion, RunDetails run, CancellationToken cancellationToken)
     {
         if (run.State != RunState.Dispatched
             || !run.SessionName.EndsWith("-" + SessionRoleName.ReviewLap, StringComparison.Ordinal))
@@ -335,7 +379,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             return false;
         }
 
-        return await session.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken)
+        return await session.Events.AggregateStreamAsync<RunAggregate>(
+                runId, version: runVersion, token: cancellationToken)
             is not { PrReviewDelivered: true };
     }
 
@@ -356,7 +401,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// </para>
     /// </summary>
     private static async Task RefuseUnattachableRunAsync(
-        IQuerySession session, Guid taskId, Guid runId, RunDetails run, CancellationToken cancellationToken)
+        IQuerySession session, Guid taskId, Guid runId, long runVersion, RunDetails run,
+        CancellationToken cancellationToken)
     {
         if (run.State == RunState.ReviewParked || run.State == RunState.BudgetParked)
         {
@@ -364,7 +410,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         }
 
         bool delivered = run.State == RunState.UnderReview
-            && await session.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken)
+            && await session.Events.AggregateStreamAsync<RunAggregate>(
+                    runId, version: runVersion, token: cancellationToken)
                 is { PrReviewDelivered: true };
         string because = run.State switch
         {
@@ -439,7 +486,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// to mean.
     /// </para>
     /// </summary>
-    private static async Task<(Guid TaskId, Guid RunId, string WorktreePath)> AdoptAndClaimAsync(
+    private static async Task<LapAttachment> AdoptAndClaimAsync(
         DocumentStore store, IDocumentSession session, ProjectDetails project, BootstrapContext context,
         PullRequestSurface pullRequest, ExternalReference reference, bool noWorktree, ProcessRunner processRunner, IWorktreeManager worktrees,
         CancellationToken cancellationToken)
@@ -506,9 +553,10 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         // Counted rather than written as a literal: the version the claim landed at is what
         // CutAndDispatchAsync's recovery fences on, and a fifth event added to this chain later
         // would silently make a hardcoded number name the wrong one.
-        return (taskId, runId, await CutAndDispatchAsync(
+        (string adoptedWorktree, long adoptedRunVersion) = await CutAndDispatchAsync(
             store, project, context, pullRequest, taskId, runId, claimed.LeaseGeneration, lifecycle.Length,
-            noWorktree, worktrees, cancellationToken));
+            noWorktree, worktrees, cancellationToken);
+        return new LapAttachment(taskId, runId, adoptedWorktree, lifecycle.Length, adoptedRunVersion);
     }
 
     /// <summary>
@@ -517,7 +565,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// in one <c>Append</c> under one expected version, so a dispatcher racing this loses at the
     /// database rather than half-claiming.
     /// </summary>
-    private static async Task<(Guid TaskId, Guid RunId, string WorktreePath)> ClaimAndCutAsync(
+    private static async Task<LapAttachment> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, ProjectDetails project, BootstrapContext context,
         PullRequestSurface pullRequest, TaskAggregate task, StreamState fence, bool noWorktree, IWorktreeManager worktrees,
         CancellationToken cancellationToken)
@@ -566,8 +614,10 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         }
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Claimed pr-review task {task.Id} for this lap.[/]");
-        return (task.Id, runId, await CutAndDispatchAsync(
-            store, project, context, pullRequest, task.Id, runId, claimed.LeaseGeneration, claimedVersion, noWorktree, worktrees, cancellationToken));
+        (string cutWorktree, long cutRunVersion) = await CutAndDispatchAsync(
+            store, project, context, pullRequest, task.Id, runId, claimed.LeaseGeneration, claimedVersion,
+            noWorktree, worktrees, cancellationToken);
+        return new LapAttachment(task.Id, runId, cutWorktree, claimedVersion, cutRunVersion);
     }
 
     /// <summary>
@@ -591,7 +641,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// record of which pull request this run was for.
     /// </para>
     /// </summary>
-    private static async Task<string> CutAndDispatchAsync(
+    private static async Task<(string WorktreePath, long RunVersion)> CutAndDispatchAsync(
         DocumentStore store, ProjectDetails project, BootstrapContext context, PullRequestSurface pullRequest,
         Guid taskId, Guid runId, int leaseGeneration, long claimedVersion, bool noWorktree, IWorktreeManager worktrees,
         CancellationToken cancellationToken)
@@ -646,7 +696,12 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 BaseBranch: string.Empty,
                 BaseCommit: string.Empty));
             await session.SaveChangesAsync(cancellationToken);
-            return worktreePath;
+
+            // Version 1: this dispatch is the stream's only event, and it is what
+            // RecordLapOpenedAsync re-checks — so startup adoption failing this sentinel run as
+            // "dispatched but never started" between here and the record is caught rather than
+            // recorded over (LapAttachment's own doc).
+            return (worktreePath, 1);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -670,15 +725,55 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         }
     }
 
+    /// <summary>
+    /// The lap's own record, fenced on both streams the admission was decided against
+    /// (<see cref="LapAttachment"/> has the race this closes and the residual it does not).
+    /// Both refusals leave NOTHING recorded, which is what makes re-running the command the whole
+    /// remedy.
+    /// </summary>
     private static async Task RecordLapOpenedAsync(
-        DocumentStore store, Guid taskId, Guid runId, string worktreePath, PullRequestSurface pullRequest,
+        DocumentStore store, LapAttachment attachment, PullRequestSurface pullRequest,
         BootstrapContext context, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(taskId, new PullRequestReviewLapOpened(
-            taskId, runId, worktreePath, pullRequest.Url?.ToString() ?? string.Empty,
-            DateTimeOffset.UtcNow, context.OwnerId));
-        await session.SaveChangesAsync(cancellationToken);
+        StreamState runNow = await session.Events.FetchStreamStateAsync(attachment.RunId, cancellationToken)
+            ?? throw new DomainConflictException(
+                $"Run {attachment.RunId}'s stream disappeared while this lap was being prepared, so nothing "
+                + $"of the lap was recorded. h9k task show {attachment.TaskId} to see where the task stands.");
+        if (runNow.Version != attachment.RunVersion)
+        {
+            // The daemon acted on this run while the checkout was being prepared: the
+            // token-budget retry sweep resuming the automated review (RunResumed), or startup
+            // adoption failing a lap-owned sentinel run (RunFailed). Refused rather than recorded
+            // over, because the alternative is a lap whose briefing quotes a findings report a
+            // live agent session is at that moment overwriting in the same checkout, and a
+            // verdict later posted to GitHub that this platform then cannot record.
+            throw new DomainConflictException(
+                $"Task {attachment.TaskId}'s run {attachment.RunId} moved while this lap was being prepared "
+                + $"(version {attachment.RunVersion} -> {runNow.Version}) — the daemon acted on it, most "
+                + "likely a token-budget retry resuming the automated review into that same checkout, or "
+                + "startup adoption failing the run. NOTHING of this lap was recorded, and nothing was "
+                + $"posted anywhere. h9k task show {attachment.TaskId} to see where it stands, then open the "
+                + "lap again once the automated review parks its report (a checkout re-fetched for this "
+                + "attempt is released by the next pr-review run on the task, which cleans up every previous "
+                + "run's checkout before it cuts its own).");
+        }
+
+        session.Events.Append(
+            attachment.TaskId, expectedVersion: attachment.TaskVersion + 1, new PullRequestReviewLapOpened(
+                attachment.TaskId, attachment.RunId, attachment.WorktreePath,
+                pullRequest.Url?.ToString() ?? string.Empty, DateTimeOffset.UtcNow, context.OwnerId));
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Task {attachment.TaskId} changed while this lap was being prepared — a second lap on the "
+                + "same pull request, or a release or retry of the task. NOTHING of this lap was recorded. "
+                + $"h9k task show {attachment.TaskId} to see where it stands, then open the lap again.");
+        }
     }
 
     /// <summary>

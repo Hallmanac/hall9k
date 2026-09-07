@@ -127,7 +127,7 @@ public sealed class TokenBudgetRetryEngine(
             return false;
         }
 
-        if (task.ReviewLapOpen && task.ReviewLapRunId == run.Id)
+        if (IsUnderOpenReviewLap(task, run))
         {
             // A human reviewer's own review lap is attached to this budget-parked run
             // (h9k pr review, Decisions Log #149): the lap admits a BudgetParked run deliberately,
@@ -151,6 +151,23 @@ public sealed class TokenBudgetRetryEngine(
 
         RunAggregate aggregate = await session.Events.AggregateStreamAsync<RunAggregate>(run.Id, token: cancellationToken)
             ?? throw new InvalidOperationException($"Run {run.Id} is budget-parked with no stream to resume.");
+
+        // Re-read as late as it can be, immediately before the irreversible half: everything
+        // above this line is reads, and a lap opening concurrently commits its
+        // PullRequestReviewLapOpened at some point during them (h9k pr review's own
+        // RecordLapOpenedAsync, whose LapAttachment doc has the other side of this race). The
+        // check above is the cheap reject that avoids loading the aggregate at all; this one is
+        // the one that matters, and it narrows what is left of the window to this method's own
+        // read-to-spawn gap. TaskDetails is an inline projection, so a committed lap is visible
+        // here the moment it commits.
+        TaskDetails? taskNow = await session.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
+        if (taskNow is not null && IsUnderOpenReviewLap(taskNow, run))
+        {
+            logger.LogInformation(
+                "Run {RunId}: task {TaskId}'s review lap opened while this retry was being prepared — not retried",
+                run.Id, run.TaskId);
+            return false;
+        }
         if (aggregate.ReviewPhase != ReviewPhase.None)
         {
             // The park caught a review pass or the fix session, not the primary agent: the
@@ -192,4 +209,14 @@ public sealed class TokenBudgetRetryEngine(
             return false;
         }
     }
+
+    /// <summary>
+    /// Keyed on the run as well as the flag, the same pair <c>RunSupervisor.AdoptOrphansAsync</c>
+    /// reads: a flag alone would shield a LATER, automated run of the same task from this sweep on
+    /// the strength of a lap that ended (independent pre-PR review, cycle 1, adversarial lens).
+    /// One method rather than two copies of the predicate, because it is asked twice — once
+    /// cheaply on entry, once immediately before the resume.
+    /// </summary>
+    private static bool IsUnderOpenReviewLap(TaskDetails task, RunDetails run) =>
+        task.ReviewLapOpen && task.ReviewLapRunId == run.Id;
 }
