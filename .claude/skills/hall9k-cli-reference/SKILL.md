@@ -27,6 +27,7 @@ h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub review
 h9k project set <name> --max-parallel-tasks <N|default>   # this project's own ceiling in TASK RUNS, enforced by the dispatcher: a ceiling never a reservation, 0 pauses the project (held even on an idle node, and nothing but a human raises it), 'default' clears it so the node ceiling alone decides; takes effect next dispatch cycle, no restart. --max-parallel is a quiet alias; the old session-denominated value it used to record is retired, not converted (Decisions Log #140)
 h9k project set <name> --priority high|normal|low|default   # which tier this project's ready work competes in for a FREE dispatch slot. Default normal, and free slots rotate: the eligible project longest unserved wins the next one, oldest task first within it (nothing to set on a single-project node). 'high' is focus — wins every free slot over lower tiers while it has ready work and RELEASES ITSELF when its queue drains, which is the opposite of the sticky --max-parallel-tasks 0 pause. 'default' is the clearing word, restoring normal. Nothing preempts; every claim logs why that project won (Decisions Log #141)
 h9k project set <name> --claim-gate off|tracker-assignee   # a task linked to a Jira card or GitHub issue is claimed on this install only while the tracker shows that item assigned to this install's own identity; default off (Decisions Log #142)
+h9k project set <name> --close-linked-issue on-closeout|never|when-all-tasks-close|default   # whether true closeout closes a task's linked GitHub issue, and when; default when-all-tasks-close waits for every task linked to the same issue to close out or be abandoned, decided fresh at the last one — a task overrides it at publish/revise, --never-close-labels forces never for a labeled issue, Jira untouched (Decisions Log #154)
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
@@ -490,7 +491,27 @@ at publish, rather than refused — `push-to-jira` remains the manual retry once
 the identical observation gate an agent's does. A task adopted with `--from-issue` or `--from-jira`
 already carries its reference, so the pre-publish gate never fires and publishing it creates
 nothing a second time. Closeout comments a merged pull request onto a linked GitHub issue exactly
-as it does a linked Jira card — never a transition, same reasoning as above.
+as it does a linked Jira card — the Jira card is never transitioned, and a GitHub issue is closed
+only under the configurable rule below; without one, closing is exactly as it always was: never.
+
+**A task's linked GitHub issue can close at true closeout, under a configurable rule** (task: a
+task's linked GitHub issue is closed at true closeout under a configurable rule, Decisions Log
+#154). `h9k project set <project> --close-linked-issue on-closeout|never|when-all-tasks-close`
+(default `when-all-tasks-close`) decides whether the merge note closeout posts also closes the
+issue: `on-closeout` closes it in the same step as the note, every time; `never` posts the note
+only; `when-all-tasks-close` posts the note every time and closes the issue only once every task
+linked to it has itself reached true closeout or been abandoned, decided fresh at the last one —
+the default needs no configuration for the common one-task-one-issue case, since it closes
+immediately when there is nothing to wait for. `h9k task publish --close-linked-issue` / `h9k
+task revise --close-linked-issue` overrides it per task (`default` clears the override, deferring
+to the project's setting live); `h9k project set <project> --never-close-labels epic,prd,adr`
+forces `never` for an issue carrying any of those labels regardless of the project default. When
+several tasks link one issue, the decision at the last one to close scans every linked task's own
+recorded rule: an explicit `never` anywhere keeps it open, otherwise an explicit close-flavoured
+override anywhere closes it, otherwise the label list and then the project default apply — one
+override on one sibling is enough to decide the whole issue, and recency plays no part. Abandoning
+a task never closes its issue and posts no note. `h9k task show` renders the effective rule and
+whether it is inherited or set explicitly.
 
 **A project can make the tracker's own assignment the one act that hands out work** (Decisions
 Log #142, idea 64c75e43). `h9k project set <project> --claim-gate off|tracker-assignee` — default

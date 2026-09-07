@@ -407,7 +407,8 @@ project-level review-cycle-cap overrides, the review stage composition (`--revie
 below), the branch-name template (`--branch-template`,
 [below](#branch-naming)), the auto-pr-review speed (`--auto-pr-review
 off|normal|first|now`, [above](#pull-request-review)), the claim gate (`--claim-gate
-off|tracker-assignee`, [above](#the-claim-gate)), and the home's location live.
+off|tracker-assignee`, [above](#the-claim-gate)), the close-linked-issue rule (`--close-linked-issue
+on-closeout|never|when-all-tasks-close`, [below](#closing-a-linked-issue)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
@@ -555,6 +556,31 @@ that section afterwards, leaving a human's own edits to the issue's prose alone.
 is read as a comma-separated label list under `github-issues`. `jira` is agent-mediated (below);
 `none` is today's default, unchanged behavior. A task adopted with `--from-issue`/`--from-jira`
 already carries its reference, so the gate never fires for it.
+
+### Closing a linked issue
+
+`h9k project set --close-linked-issue on-closeout|never|when-all-tasks-close|default` ·
+`h9k project set --never-close-labels <LABEL,LABEL,...>` ·
+`h9k task publish --close-linked-issue …` · `h9k task revise --close-linked-issue …`
+
+When a task's pull request merges, closeout always comments the linked GitHub issue with the
+merge note. Whether it also closes the issue is a configurable rule, because an issue is not
+always one unit of work — an epic, a PRD, an ADR, or an issue split into several tasks needs the
+issue left open even though one task covering it just merged. `on-closeout` closes the issue in
+the same step as the merge note, every time; `never` posts the note and never closes it;
+`when-all-tasks-close` (the default) posts the note every time and closes the issue only once
+every task linked to it has itself reached true closeout or been abandoned, decided fresh at the
+last one. A task overrides the project's default with `--close-linked-issue` at `h9k task publish`
+or `h9k task revise`; `default` clears the override. `--never-close-labels` forces `never` for an
+issue carrying any of the listed labels, regardless of the project's own default — but a task's
+own explicit override still wins over the label. When several tasks link the same issue, the
+final decision at the last one to close is made across every linked task's own recorded rule: an
+explicit `never` on any of them keeps the issue open, otherwise an explicit `on-closeout` or
+`when-all-tasks-close` on any of them closes it, otherwise the label list and then the project
+default apply — so a single override on one sibling is enough to decide the outcome for the whole
+issue. `h9k task show` renders the effective value and whether it is inherited or set explicitly.
+Jira is untouched: a card's merge comment behaviour does not change, and the card is never
+transitioned or closed.
 
 ### Jira
 
