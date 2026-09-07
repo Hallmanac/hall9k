@@ -10,6 +10,20 @@ namespace Hall9k.Domain.Features.Tasks;
 /// — so Draft, Published, Queued, Claimed/Running and AwaitingReview dependencies all block
 /// by the same rule, and a Done task whose pull request is still open still blocks.
 /// </summary>
+/// <param name="ProjectId">
+/// The project this dependency belongs to. Carried because one rule needs it: a stacked edge is
+/// only honourable within a single project, since the child's worktree is cut from the parent's
+/// branch in the child project's own repository, and a branch in another project's repository is
+/// not there to cut from (independent pre-PR review, cycle 1, adversarial lens). A plain
+/// blocked-by across projects is harmless by comparison — it never reads the blocker's branch —
+/// which is why this is read for the stacked edge alone.
+/// <para>
+/// <see cref="Guid.Empty"/> means the snapshot's producer recorded no project, and every reader
+/// treats that as unknown rather than as a project that differs (AGENTS.md's never-guess rule):
+/// <c>TaskDecider.Publish</c> refuses a cross-project stacked edge only on an observed mismatch.
+/// <c>TaskDependencyQuery</c> — the one production producer — always records it.
+/// </para>
+/// </param>
 /// <param name="CurrentRunState">
 /// The state of the run the dependency currently hangs on, or null when it has none: what
 /// says whether a merge observation can still arrive. Null is the honest answer for "no run
@@ -54,7 +68,8 @@ public sealed record TaskDependency(
     TaskType Type,
     IReadOnlyList<Guid> BlockedBy,
     int? RunPullRequestNumber = null,
-    string? RunFailureReason = null)
+    string? RunFailureReason = null,
+    Guid ProjectId = default)
 {
     /// <summary>
     /// This blocker can no longer reach true closeout, so anything waiting behind it waits

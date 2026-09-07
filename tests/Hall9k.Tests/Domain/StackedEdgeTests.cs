@@ -121,6 +121,55 @@ public sealed class StackedEdgeTests
     }
 
     /// <summary>
+    /// A stacked child is cut from its parent's branch in its OWN project's repository, so a parent
+    /// in another project has nothing there to cut from. Refused here rather than left to fail the
+    /// task at dispatch with a raw could-not-resolve-start-point git error that never names the edge
+    /// (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void Publishing_refuses_a_stack_on_a_parent_in_another_project()
+    {
+        Guid parentId = DomainId.New();
+        Guid projectId = DomainId.New();
+        TaskAggregate task = new();
+        task.Apply(AddedInProject(projectId, blockedBy: [parentId], stackedOn: parentId));
+        TaskDependencyGraph graph = new([
+            Dependency(
+                TaskState.Done, RunState.AwaitingReview, closedOut: false, PullRequest, id: parentId,
+                projectId: DomainId.New()),
+        ]);
+
+        Action publish = () => TaskDecider.Publish(task, graph, DateTimeOffset.UtcNow, Owner);
+
+        publish.Should().Throw<DomainBusinessRuleException>()
+            .WithMessage("*belongs to a different project*")
+            .WithMessage("*--clear-stacked-on*");
+    }
+
+    /// <summary>
+    /// The same edge inside one project is the ordinary case and publishes — and a plain
+    /// cross-project blocked-by is untouched by the rule above, since nothing ever reads a plain
+    /// blocker's branch.
+    /// </summary>
+    [Fact]
+    public void Publishing_accepts_a_stack_on_a_parent_in_the_same_project()
+    {
+        Guid parentId = DomainId.New();
+        Guid projectId = DomainId.New();
+        TaskAggregate task = new();
+        task.Apply(AddedInProject(projectId, blockedBy: [parentId], stackedOn: parentId));
+        TaskDependencyGraph graph = new([
+            Dependency(
+                TaskState.Done, RunState.AwaitingReview, closedOut: false, PullRequest, id: parentId,
+                projectId: projectId),
+        ]);
+
+        Action publish = () => TaskDecider.Publish(task, graph, DateTimeOffset.UtcNow, Owner);
+
+        publish.Should().NotThrow();
+    }
+
+    /// <summary>
     /// The whole point of the edge: the child starts at the parent's Delivered — pull request open,
     /// internal review complete, branch largely settled — rather than at its merge.
     /// </summary>
@@ -488,7 +537,17 @@ public sealed class StackedEdgeTests
 
     private static TaskDependency Dependency(
         TaskState state, RunState? currentRunState, bool closedOut, string? pullRequestUrl = null,
-        Guid? id = null) =>
+        Guid? id = null, Guid projectId = default) =>
         new(id ?? DomainId.New(), "The parent slice", state, closedOut, currentRunState, pullRequestUrl,
-            TaskType.Feature, []);
+            TaskType.Feature, [], ProjectId: projectId);
+
+    /// <summary>
+    /// <see cref="Added"/>, but in a named project rather than a fresh one per task — what the
+    /// cross-project stacked-edge tests need, since the whole question there is whether the parent's
+    /// project matches this task's.
+    /// </summary>
+    private static TaskAdded AddedInProject(Guid projectId, IReadOnlyList<Guid> blockedBy, Guid? stackedOn) =>
+        TaskDecider.Add(
+            DomainId.New(), projectId, "Slice two of one idea", ["It works"], TaskType.Feature, null, null, null,
+            DateTimeOffset.UtcNow, Owner, blockedBy: blockedBy, stackedOnTaskId: stackedOn);
 }

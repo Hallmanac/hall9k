@@ -82,9 +82,9 @@ public static class TaskDecider
     /// option into the blocked-by set for the caller, so reaching this refusal means the two were
     /// declared apart and disagree. And a pr-review task is refused as the child, since it has no
     /// branch or pull request of its own to stack (the same reason
-    /// <see cref="Reopen"/> refuses the type): whether the <em>parent</em> is a pr-review task
-    /// needs the dependency graph, so that half is checked at <see cref="Publish"/>, where the
-    /// graph is already loaded.
+    /// <see cref="Reopen"/> refuses the type): whether the <em>parent</em> is a pr-review task, and
+    /// whether it even belongs to this task's own project, both need the dependency graph, so those
+    /// halves are checked at <see cref="Publish"/>, where the graph is already loaded.
     /// </para>
     /// <para>
     /// Public for the same reason <see cref="VetModel"/> is: <c>h9k task add</c> prompts a human for
@@ -265,23 +265,49 @@ public static class TaskDecider
                 "(the option replaces the whole set) or --clear-dependencies.");
         }
 
-        // The half of the stacked-edge contract only the graph can answer (task: a stacked
-        // pull-request edge exists as an explicit opt-in dependency). TaskDecider.Add and Revise
-        // already refused a pr-review CHILD from the task's own fields; whether the PARENT is one
-        // needs the dependency it names to be loaded, and this is the first gate that has it.
+        // The two halves of the stacked-edge contract only the graph can answer (task: a stacked
+        // pull-request edge exists as an explicit opt-in dependency) — what the PARENT is, and
+        // where it lives. TaskDecider.Add and Revise already refused a pr-review CHILD from the
+        // task's own fields; both questions here need the dependency it names to be loaded, and
+        // this is the first gate that has it.
         // A pr-review parent never opens a pull request of its own (AGENTS.md: it "never writes to
         // the pull request or the remote in any form"), so there would be no branch to cut the
         // child from and no pull request to target — the child would sit Blocked until the review
         // task's own Done, then cut from a branch that does not exist.
         if (task.StackedOnTaskId is { } stackedOnId
-            && graph.Node(stackedOnId) is { } parent
-            && parent.Type == TaskType.PrReview)
+            && graph.Node(stackedOnId) is { } parent)
         {
-            throw new DomainBusinessRuleException(
-                $"Task {task.Id} is stacked on {parent.Describe()}, which is a pull-request review — it "
-                + "never opens a pull request or pushes a branch of its own, so there is nothing there to "
-                + $"stack on. Drop the stacked edge with h9k task revise {task.Id} --clear-stacked-on "
-                + "(the blocked-by dependency itself is untouched).");
+            if (parent.Type == TaskType.PrReview)
+            {
+                throw new DomainBusinessRuleException(
+                    $"Task {task.Id} is stacked on {parent.Describe()}, which is a pull-request review — it "
+                    + "never opens a pull request or pushes a branch of its own, so there is nothing there to "
+                    + $"stack on. Drop the stacked edge with h9k task revise {task.Id} --clear-stacked-on "
+                    + "(the blocked-by dependency itself is untouched).");
+            }
+
+            // The other half only the graph can answer (independent pre-PR review, cycle 1,
+            // adversarial lens). A stacked child's worktree is cut from the parent's branch in the
+            // CHILD's own repository, and a branch that exists only in another project's repository
+            // is not there to cut from — so a cross-project edge vetted clean, published, and then
+            // failed the task at dispatch with a raw could-not-resolve-start-point git error that
+            // never named the edge, against this platform's own rule that a refusal quotes the rule
+            // the caller broke. Refused here rather than at dispatch, and only for the stacked
+            // edge: a plain cross-project blocked-by never reads the blocker's branch and stays
+            // harmless. A parent whose id resolves to no known task at all is already refused by
+            // the missing-dependency check above, so reaching here means the parent is real. An
+            // OBSERVED mismatch only: a snapshot that recorded no project at all reads as unknown
+            // rather than as a different one (TaskDependency.ProjectId's own doc).
+            if (parent.ProjectId != Guid.Empty && parent.ProjectId != task.ProjectId)
+            {
+                throw new DomainBusinessRuleException(
+                    $"Task {task.Id} is stacked on {parent.Describe()}, which belongs to a different project — "
+                    + "a stacked child is cut from its parent's branch in its own project's repository, and "
+                    + "that branch does not exist there. Drop the stacked edge with "
+                    + $"h9k task revise {task.Id} --clear-stacked-on (the blocked-by dependency itself is "
+                    + "untouched, and it stays harmless across projects: nothing ever reads a plain blocker's "
+                    + "branch).");
+            }
         }
 
         // Drafts may transiently hold a cycle while a graph is authored; publishing is where
