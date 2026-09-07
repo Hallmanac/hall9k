@@ -14,12 +14,18 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Flips a task's standing pre-approval after publish (task: a task can be published
+/// Sets a task's standing pre-approval after publish (task: a task can be published
 /// pre-approved) — settable on any live task whose pull request has not yet merged, without the
 /// unassign/draft/revise/publish ceremony a readiness-contract change would otherwise need. A
-/// Draft refuses too: <see cref="TaskDecider.SetPreApproved"/>'s own doc explains why (the flag
+/// Draft refuses too: <see cref="TaskDecider.SetPreApproved"/>'s own doc explains why (pre-approval
 /// is part of the readiness contract set at publish, and an ordinary publish that omits
 /// --pre-approved would silently clobber a value set here first).
+/// <para>
+/// Three-valued since the mode that waits for human review landed (task: the people a pull request
+/// is waiting on are named, and pre-approval gains a mode that waits for human review), which also
+/// makes this the emergency door: after-human-review to on merges on the next closeout sweep if
+/// GitHub's own gates read satisfied, without waiting for a reviewer who is not coming.
+/// </para>
 /// </summary>
 public sealed class TaskSetPreApprovedCommand : Hall9kAsyncCommand<TaskSetPreApprovedCommand.Settings>
 {
@@ -29,21 +35,17 @@ public sealed class TaskSetPreApprovedCommand : Hall9kAsyncCommand<TaskSetPreApp
         [Description("Task id (full, or an unambiguous fragment)")]
         public string Id { get; init; } = string.Empty;
 
-        [CommandArgument(1, "<on|off>")]
+        [CommandArgument(1, "<on|off|after-human-review>")]
         [Description(
-            "on/true to give standing pre-approval, off/false to withdraw it — the owner becomes a "
-            + "synchronous gate at the pull request again the moment this lands")]
+            "on/true to give standing pre-approval — the daemon merges once GitHub's own gates read "
+            + "satisfied; off/false to withdraw it, and the owner becomes a synchronous gate at the pull "
+            + "request again the moment this lands; after-human-review to merge on those same gates but "
+            + "only once a human reviewer has actually been requested on the pull request and every "
+            + "requested reviewer has approved the current head. Add the reviewers you want in GitHub — "
+            + "hall9k stores no reviewer setting and requests no reviews. Flipping after-human-review to on "
+            + "is the emergency path: the next sweep merges on GitHub's own gates alone")]
         public string Value { get; init; } = string.Empty;
     }
-
-    private static bool ParseValue(string raw, Guid taskId) => raw.Trim().ToLowerInvariant() switch
-    {
-        "true" or "on" or "yes" => true,
-        "false" or "off" or "no" => false,
-        _ => throw new DomainValidationException(
-            $"'{raw}' is not on/true or off/false (task {taskId}) — pass one of those to set or withdraw "
-            + "this task's pre-approval."),
-    };
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
@@ -54,7 +56,10 @@ public sealed class TaskSetPreApprovedCommand : Hall9kAsyncCommand<TaskSetPreApp
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
-        bool preApproved = ParseValue(settings.Value, taskId);
+        // Passed through unvetted: TaskDecider.SetPreApproved refuses an unrecognized mode with the
+        // whole vocabulary quoted, which is the one message an agent can self-correct from — a
+        // parse here would have to duplicate it to say anything as useful.
+        PreApprovalMode requested = settings.Value;
 
         // The same "task is Done and its current run reached RunState.Completed" test
         // TaskDependencyQuery.IsClosedOut uses for true closeout — the aggregate alone cannot
@@ -65,14 +70,15 @@ public sealed class TaskSetPreApprovedCommand : Hall9kAsyncCommand<TaskSetPreApp
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         TaskPreApprovedSet set = TaskDecider.SetPreApproved(
-            task, preApproved, DateTimeOffset.UtcNow, context.OwnerId, taskClosedOut);
+            task, requested, DateTimeOffset.UtcNow, context.OwnerId, taskClosedOut);
         session.Events.Append(taskId, set);
         await session.SaveChangesAsync(cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
-        AnsiConsole.MarkupLine(preApproved
-            ? $"[green]Task {shortId} is now pre-approved[/] — the daemon merges its pull request on its own "
-                + "once GitHub's own gates are satisfied; every human waypoint (Failed, a review park, a "
+        PreApprovalMode landed = set.EffectivePreApproval;
+        AnsiConsole.MarkupLine(landed.MergesAutomatically
+            ? $"[green]Task {shortId} is now pre-approved ({PreApprovalInput.Word(landed)})[/] — "
+                + $"{PreApprovalInput.Describe(landed)}; every human waypoint (Failed, a review park, a "
                 + "cap trip) still stops it exactly as before."
             : $"[green]Task {shortId} is no longer pre-approved[/] — the owner is a synchronous gate at its "
                 + "pull request again.");

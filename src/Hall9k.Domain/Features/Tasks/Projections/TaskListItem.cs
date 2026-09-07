@@ -53,11 +53,27 @@ public sealed class TaskListItem
     /// </summary>
     public bool QueuePriorityMarked { get; set; }
     /// <summary>
-    /// The owner's standing pre-approval, mirrored from <see cref="TaskAggregate.PreApproved"/>
-    /// (task: a task can be published pre-approved) — what <see cref="PublishedFacts"/> and
-    /// <see cref="AttentionComposer"/> read to render it on the board.
+    /// The owner's standing pre-approval as a plain boolean — <see cref="PreApprovalMode.LegacyPreApproved"/>
+    /// (<c>mode == On</c>), kept for the same reason the events keep it: it is the only record a
+    /// document written before the mode existed carries, and <see cref="EffectivePreApproval"/>
+    /// falls back to it. Read that property, not this one.
     /// </summary>
     public bool PreApproved { get; set; }
+    /// <summary>
+    /// The owner's standing pre-approval mode, mirrored from <see cref="TaskAggregate.PreApproval"/>
+    /// (task: the people a pull request is waiting on are named, and pre-approval gains a mode that
+    /// waits for human review). <see cref="PreApprovalMode.Unknown"/> on a document written before
+    /// the mode existed, which is what <see cref="EffectivePreApproval"/> resolves.
+    /// </summary>
+    public PreApprovalMode PreApproval { get; set; } = PreApprovalMode.Unknown;
+    /// <summary>
+    /// The pre-approval this row actually means — what <see cref="PublishedFacts"/> and
+    /// <see cref="AttentionComposer"/> read to render it on the board. Resolved rather than read
+    /// straight off <see cref="PreApproval"/> so a document last written before the mode existed
+    /// still renders the truth its stream recorded, without waiting on
+    /// <c>TaskLifecycleProjectionBackfill</c> to come round to it.
+    /// </summary>
+    public PreApprovalMode EffectivePreApproval => PreApprovalMode.Resolve(PreApproval, PreApproved);
     /// <summary>
     /// Mirrors <see cref="TaskAggregate.AutoPrReviewAssigneeLogin"/>: the login this task's own
     /// auto-created reviewer assignment currently believes is requested, or null when none is on
@@ -169,10 +185,15 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskPublished> @event, TaskListItem view)
     {
         view.State = TaskState.Published;
-        view.PreApproved = @event.Data.PreApproved;
+        view.PreApproval = @event.Data.EffectivePreApproval;
+        view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
     }
 
-    public void Apply(IEvent<TaskPreApprovedSet> @event, TaskListItem view) => view.PreApproved = @event.Data.PreApproved;
+    public void Apply(IEvent<TaskPreApprovedSet> @event, TaskListItem view)
+    {
+        view.PreApproval = @event.Data.EffectivePreApproval;
+        view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
+    }
 
     public void Apply(IEvent<TaskRevised> @event, TaskListItem view)
     {

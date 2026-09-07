@@ -544,7 +544,9 @@ public sealed class AttentionSurfaceTests
         TaskStatusRow waitingOnReviewer = StatusFixtures.Compose(preApproved, outstandingHumanReviewer);
 
         waitingOnReviewer.Attention.NeedsYou.Should().BeFalse();
-        waitingOnReviewer.Attention.Cause.Should().Contain("human approval");
+        waitingOnReviewer.Attention.Cause.Should().Contain("review from `teammate`",
+            "an outstanding reviewer is named now that the last observation records who (task: the "
+            + "people a pull request is waiting on are named)");
 
         RunDetails clean = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         TaskStatusRow gatesSatisfied = StatusFixtures.Compose(preApproved, clean);
@@ -608,6 +610,293 @@ public sealed class AttentionSurfaceTests
         row.Attention.Cause.Should().NotContain("gates read satisfied",
             "CI is still reporting, so nothing has actually merged and nothing is guaranteed to");
         row.Attention.Cause.Should().Contain("CI checks");
+    }
+
+    /// <summary>
+    /// One outstanding reviewer, named, on both paths (task: the people a pull request is waiting
+    /// on are named). "Waiting on human approval" told the owner nothing they could act on: their
+    /// only lever here is social, and a social lever needs a name.
+    /// </summary>
+    [Fact]
+    public void One_outstanding_human_reviewer_is_named_on_both_paths()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/30";
+        RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 30);
+        run.ExternalOutstandingReviewerLogins = ["alice"];
+        run.ExternalOutstandingHumanReviewerLogins = ["alice"];
+
+        TaskStatusRow preApproved = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproval: PreApprovalMode.On), run);
+
+        preApproved.Attention.Level.Should().Be(AttentionLevel.WaitingHandled,
+            "pre-approval removed the owner as a synchronous gate; this stays a waiting state");
+        preApproved.Attention.Cause.Should().Contain("review from `alice`");
+        preApproved.Attention.Cause.Should().NotContain("needs you");
+
+        TaskStatusRow unflagged = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), run);
+
+        unflagged.Attention.Cause.Should().Contain("awaiting review from `alice`");
+        unflagged.Attention.Cause.Should().NotContain("the merge is yours",
+            "the merge is not the owner's while a requested reviewer is still outstanding");
+        unflagged.Attention.Level.Should().Be(AttentionLevel.WaitingHandled,
+            "somebody was asked and has not answered, so it is not the owner's turn — the same reading "
+            + "the Copilot arm already gives its own pending request, and pairing an 'awaiting review' "
+            + "sentence with a red needs-you marker would be the word-versus-marker contradiction");
+    }
+
+    /// <summary>
+    /// The named wait pre-empts the Copilot arms below it, which is what drops "the merge is yours"
+    /// — so it has to carry the checks-pending hedge those arms carry, or a reader who settles the
+    /// review side would merge against a CI result nobody has read (the same correction the Landed
+    /// and None arms each already took).
+    /// </summary>
+    [Fact]
+    public void A_named_review_wait_still_says_the_checks_may_be_reporting()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 35);
+        run.ExternalOutstandingReviewerLogins = ["alice"];
+        run.ExternalOutstandingHumanReviewerLogins = ["alice"];
+        run.ExternalReviewChecksPending = true;
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/35"), run);
+
+        row.Attention.Cause.Should().Contain("awaiting review from `alice`");
+        row.Attention.Cause.Should().Contain("checks may still be reporting");
+    }
+
+    /// <summary>
+    /// The other half of the level split: a CHANGES_REQUESTED verdict that survived thread triage
+    /// IS the owner's turn — the reviewer has spoken, and nothing in the platform will answer them.
+    /// </summary>
+    [Fact]
+    public void Changes_requested_with_nobody_outstanding_is_the_owners_turn()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 36);
+        run.ExternalReviewDecision = "CHANGES_REQUESTED";
+        run.ExternalChangesRequestedByLogins = ["carol"];
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/36"), run);
+
+        row.Attention.Level.Should().Be(AttentionLevel.NeedsYou);
+        row.Attention.Cause.Should().Contain("awaiting review from `carol`");
+    }
+
+    [Fact]
+    public void Two_outstanding_human_reviewers_are_both_named()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/31";
+        RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 31);
+        run.ExternalOutstandingReviewerLogins = ["alice", "bob"];
+        run.ExternalOutstandingHumanReviewerLogins = ["alice", "bob"];
+
+        TaskStatusRow preApproved = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproval: PreApprovalMode.On), run);
+
+        preApproved.Attention.Cause.Should().Contain("review from `alice`, `bob`");
+
+        TaskStatusRow unflagged = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), run);
+
+        unflagged.Attention.Cause.Should().Contain("awaiting review from `alice`, `bob`");
+        unflagged.Attention.Cause.Should().NotContain("the merge is yours");
+        unflagged.Attention.Level.Should().Be(AttentionLevel.WaitingHandled);
+    }
+
+    /// <summary>
+    /// GitHub's <c>reviewDecision</c> is a verdict about the pull request and says nothing on its
+    /// own about whose verdict it is, so the login that requested changes is named beside it —
+    /// and when the last observation did not record that author, the verdict is stated without a
+    /// login, or a reason for its absence, being invented for it (AGENTS.md, never guess at
+    /// unobserved facts).
+    /// </summary>
+    [Fact]
+    public void Changes_requested_names_the_login_that_requested_them()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/32";
+        RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 32);
+        run.ExternalReviewDecision = "CHANGES_REQUESTED";
+        run.ExternalChangesRequestedByLogins = ["carol"];
+
+        TaskStatusRow preApproved = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproval: PreApprovalMode.On), run);
+
+        preApproved.Attention.Level.Should().Be(AttentionLevel.WaitingHandled);
+        preApproved.Attention.Cause.Should().Contain("the changes `carol` requested");
+        preApproved.Attention.Cause.Should().NotContain("human approval",
+            "the anonymous wording is the fallback for a verdict with nobody to name, not this");
+
+        TaskStatusRow unflagged = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), run);
+
+        unflagged.Attention.Cause.Should().Contain("awaiting review from `carol`");
+        unflagged.Attention.Cause.Should().NotContain("the merge is yours");
+
+        RunDetails authorNotRecorded = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 32);
+        authorNotRecorded.ExternalReviewDecision = "CHANGES_REQUESTED";
+
+        TaskStatusRow unnamed = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), authorNotRecorded);
+
+        unnamed.Attention.Cause.Should().Contain("does not name whose verdict");
+        unnamed.Attention.Cause.Should().NotContain("the merge is yours");
+    }
+
+    /// <summary>
+    /// The other half of the contract: with nothing human outstanding, both paths read exactly as
+    /// they did before anybody was nameable. A hedge left behind on a quiet pull request would be
+    /// the same defect in the other direction.
+    /// </summary>
+    [Fact]
+    public void No_outstanding_human_reviewer_restores_the_original_wording_on_both_paths()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/33";
+        RunDetails quiet = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 33);
+        quiet.ExternalReviewState = ExternalReviewState.None;
+
+        TaskStatusRow unflagged = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), quiet);
+
+        unflagged.Attention.NeedsYou.Should().BeTrue();
+        unflagged.Attention.Cause.Should().Contain("no external review activity recorded");
+        unflagged.Attention.Cause.Should().Contain("the merge is yours");
+        unflagged.Attention.Cause.Should().NotContain("awaiting review from");
+
+        TaskStatusRow preApproved = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproval: PreApprovalMode.On), quiet);
+
+        preApproved.Attention.Cause.Should().Be(
+            "pre-approved — GitHub's own gates read satisfied; the daemon merges it on its own");
+
+        // Copilot outstanding is not a person: the daemon's own gate never counts it as one, so
+        // neither path may name it as a human review the merge is waiting on.
+        RunDetails copilotOnly = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 33);
+        copilotOnly.ExternalReviewState = ExternalReviewState.None;
+        copilotOnly.ExternalOutstandingReviewerLogins = ["copilot-pull-request-reviewer"];
+
+        TaskStatusRow copilotRow = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), copilotOnly);
+
+        copilotRow.Attention.Cause.Should().Contain("the merge is yours");
+        copilotRow.Attention.Cause.Should().NotContain("awaiting review from");
+    }
+
+    /// <summary>
+    /// The after-human-review mode's own two gates on the board (task: ... and pre-approval gains
+    /// a mode that waits for human review). Three readings, never two: never observed, observed as
+    /// nobody-asked, and observed with somebody asked who has not approved the head. The middle
+    /// one is the only one that names the owner as the person who acts, because it is the only one
+    /// where they can.
+    /// </summary>
+    [Fact]
+    public void After_human_review_says_which_of_its_two_gates_is_holding_the_merge()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/34";
+        TaskListItem task = StatusFixtures.Task(
+            TaskState.Done, runId, pullRequest, preApproval: PreApprovalMode.AfterHumanReview);
+
+        RunDetails notObserved = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 34);
+        TaskStatusRow unobserved = StatusFixtures.Compose(task, notObserved);
+
+        unobserved.Attention.Level.Should().Be(AttentionLevel.WaitingHandled);
+        unobserved.Attention.Cause.Should().Contain("a closeout sweep to observe whether a human review");
+
+        RunDetails nobodyAsked = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 34);
+        nobodyAsked.ExternalHumanReviewEverRequested = false;
+        TaskStatusRow waitingForAReviewer = StatusFixtures.Compose(task, nobodyAsked);
+
+        waitingForAReviewer.Attention.Level.Should().Be(AttentionLevel.WaitingHandled,
+            "the mode is the owner's own standing instruction, so it is a wait, not a park or a nudge");
+        waitingForAReviewer.Attention.Cause.Should().Contain("a human reviewer to be requested at all");
+        waitingForAReviewer.Attention.Cause.Should().Contain(
+            $"h9k task set-pre-approved {TaskListCommand.ShortId(task.Id)} on",
+            "the owner is the one who adds a reviewer or flips the mode, so the line says how");
+        waitingForAReviewer.Attention.Cause.Should().NotContain("nothing for you to do here",
+            "this is the one wait on that list only the owner can clear — telling them otherwise is "
+            + "the sentence that leaves the pull request sitting forever");
+
+        RunDetails asked = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 34);
+        asked.ExternalHumanReviewEverRequested = true;
+        asked.ExternalHumanReviewersAwaitingApprovalLogins = ["alice"];
+        TaskStatusRow waitingForApproval = StatusFixtures.Compose(task, asked);
+
+        waitingForApproval.Attention.Cause.Should().Contain("approval of the current head from `alice`");
+
+        // A reviewer whose request is still outstanding is, by construction, also awaiting
+        // approval, so the two lists overlap and the line has to name them once rather than twice
+        // (conformance review, cycle 1). Someone awaiting approval who is NOT outstanding — the
+        // reviewer GitHub retired the request for when they answered without approving — is still
+        // named by the second clause, which is the only place they appear at all.
+        RunDetails overlapping = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 34);
+        overlapping.ExternalHumanReviewEverRequested = true;
+        overlapping.ExternalOutstandingHumanReviewerLogins = ["alice"];
+        overlapping.ExternalHumanReviewersAwaitingApprovalLogins = ["alice"];
+        TaskStatusRow namedOnce = StatusFixtures.Compose(task, overlapping);
+
+        namedOnce.Attention.Cause.Should().Contain("review from `alice`");
+        namedOnce.Attention.Cause.Should().NotContain("approval of the current head",
+            "alice is already named as the person the review is waiting on, and saying her again in a "
+            + "second clause of the same sentence names one person twice");
+
+        overlapping.ExternalHumanReviewersAwaitingApprovalLogins = ["alice", "bob"];
+        TaskStatusRow bothNamed = StatusFixtures.Compose(task, overlapping);
+
+        bothNamed.Attention.Cause.Should().Contain("review from `alice`");
+        bothNamed.Attention.Cause.Should().Contain("approval of the current head from `bob`");
+        bothNamed.Attention.Cause.Should().NotContain("`alice`, `bob`",
+            "only bob is left to name by the second clause");
+
+        // The same overlap through the other clause: a reviewer whose verdict requests changes has
+        // not approved the head either, so they are in both lists and named once.
+        RunDetails blocked = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 34);
+        blocked.ExternalHumanReviewEverRequested = true;
+        blocked.ExternalReviewDecision = "CHANGES_REQUESTED";
+        blocked.ExternalChangesRequestedByLogins = ["carol"];
+        blocked.ExternalHumanReviewersAwaitingApprovalLogins = ["carol"];
+        TaskStatusRow blockedRow = StatusFixtures.Compose(task, blocked);
+
+        blockedRow.Attention.Cause.Should().Contain("the changes `carol` requested");
+        blockedRow.Attention.Cause.Should().NotContain("approval of the current head",
+            "carol's verdict is already the named wait; her missing approval is the same fact");
+
+        // A branch rule wanting an approval with nobody outstanding is the shape the anonymous
+        // "human approval" wording exists for — but under this mode somebody IS named, so the
+        // fallback is retired rather than stated beside the named clause.
+        RunDetails ruleAndName = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 34);
+        ruleAndName.ExternalHumanReviewEverRequested = true;
+        ruleAndName.ExternalReviewDecision = "REVIEW_REQUIRED";
+        ruleAndName.ExternalHumanReviewersAwaitingApprovalLogins = ["dave"];
+        TaskStatusRow namedNotAnonymous = StatusFixtures.Compose(task, ruleAndName);
+
+        namedNotAnonymous.Attention.Cause.Should().Contain("approval of the current head from `dave`");
+        namedNotAnonymous.Attention.Cause.Should().NotContain("human approval",
+            "the anonymous fallback is for a wait with nobody to name, and dave is named");
+
+        RunDetails approved = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 34);
+        approved.ExternalHumanReviewEverRequested = true;
+        TaskStatusRow clear = StatusFixtures.Compose(task, approved);
+
+        clear.Attention.Cause.Should().Be(
+            "pre-approved after-human-review — GitHub's own gates read satisfied and every requested "
+            + "reviewer has approved the current head; the daemon merges it on its own");
     }
 
     /// <summary>

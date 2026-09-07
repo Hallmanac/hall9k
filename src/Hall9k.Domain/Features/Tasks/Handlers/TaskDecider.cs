@@ -226,7 +226,7 @@ public static class TaskDecider
         BacklogPolicy? backlogPolicy = null,
         bool noExistingItemAttested = false,
         bool untracked = false,
-        bool preApproved = false)
+        PreApprovalMode? preApproval = null)
     {
         if (task.State != TaskState.Draft)
         {
@@ -406,8 +406,40 @@ public static class TaskDecider
         // here the only never-asked state left standing is ExternalReference already set.
         bool noExistingItemRecorded = needsExistingItemCheck && noExistingItemAttested;
         bool untrackedRecorded = needsExistingItemCheck && untracked;
+
+        // An unrecognized mode is refused rather than read as off: the publisher typed something,
+        // and silently publishing without the pre-approval they asked for would be the worst of
+        // the three answers. Null (nothing passed at all) is the ordinary Off default.
+        PreApprovalMode preApprovalRecorded = VetPreApprovalMode(preApproval, task.Id);
         return new TaskPublished(
-            task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded, preApproved);
+            task.Id, publishedAt, publishedByOwnerId, noExistingItemRecorded, untrackedRecorded,
+            preApprovalRecorded.LegacyPreApproved, preApprovalRecorded);
+    }
+
+    /// <summary>
+    /// Maps a caller's pre-approval input onto the closed three-valued vocabulary, refusing
+    /// anything outside it with the vocabulary quoted (task: the people a pull request is waiting
+    /// on are named, and pre-approval gains a mode that waits for human review). Null means
+    /// nothing was passed, which is <see cref="PreApprovalMode.Off"/> — the default publish.
+    /// Shared by <see cref="Publish"/> and <see cref="SetPreApproved"/> so the two doors onto the
+    /// same fact cannot drift apart on what they accept.
+    /// </summary>
+    public static PreApprovalMode VetPreApprovalMode(PreApprovalMode? mode, Guid taskId)
+    {
+        if (mode is null)
+        {
+            return PreApprovalMode.Off;
+        }
+
+        PreApprovalMode chosen = PreApprovalMode.FromInput(mode);
+        return chosen != PreApprovalMode.Unknown
+            ? chosen
+            : throw new DomainValidationException(
+                $"'{mode.Value}' is not a pre-approval mode (task {taskId}) — pass off, on, or "
+                + "after-human-review. off leaves you a synchronous gate at the pull request; on merges "
+                + "as soon as GitHub's own gates read satisfied; after-human-review merges only once a "
+                + "human reviewer has been requested on the pull request and every requested reviewer "
+                + "has approved the current head.");
     }
 
     /// <summary>
@@ -427,13 +459,20 @@ public static class TaskDecider
     /// the task (independent pre-PR review, cycle 1, both lenses: the previous guard refused Done
     /// unconditionally and made the flag unreachable for the one window it matters). And a Draft
     /// refuses too — not for the same reason, but because <see cref="Publish"/> unconditionally
-    /// records <see cref="TaskPublished.PreApproved"/> (defaulting false, passed straight through
+    /// records <see cref="TaskPublished.PreApproval"/> (defaulting off, passed straight through
     /// with no clamp of its own — unlike <see cref="TaskPublished.UntrackedAttested"/>, which is
     /// gated on the backlog-policy check) the moment the draft is published: a value
-    /// set here on a still-Draft task would otherwise be silently clobbered back to false by an
-    /// ordinary <c>h9k task publish</c> that forgot to repeat <c>--pre-approved</c>. The flag is
+    /// set here on a still-Draft task would otherwise be silently clobbered back to off by an
+    /// ordinary <c>h9k task publish</c> that forgot to repeat <c>--pre-approved</c>. Pre-approval is
     /// part of the readiness contract at the moment of publish (the acceptance criteria's own
-    /// framing); this command is only for flipping it afterward.
+    /// framing); this command is only for changing it afterward.
+    /// <para>
+    /// Three-valued since the mode that waits for human review landed (task: the people a pull
+    /// request is waiting on are named, and pre-approval gains a mode that waits for human review),
+    /// and this is also the emergency door: flipping <see cref="PreApprovalMode.AfterHumanReview"/>
+    /// to <see cref="PreApprovalMode.On"/> lets the next closeout sweep merge on GitHub's own gates
+    /// alone, without waiting for a reviewer who is not coming.
+    /// </para>
     /// </summary>
     /// <param name="taskClosedOut">
     /// Whether this task's pull request has actually merged (closeout observed the merge), the
@@ -443,7 +482,7 @@ public static class TaskDecider
     /// closeout; a caller with no run to check (task never reached Done) passes false.
     /// </param>
     public static TaskPreApprovedSet SetPreApproved(
-        TaskAggregate task, bool preApproved, DateTimeOffset setAt, Guid setByOwnerId, bool taskClosedOut)
+        TaskAggregate task, PreApprovalMode preApproval, DateTimeOffset setAt, Guid setByOwnerId, bool taskClosedOut)
     {
         if (task.State == TaskState.Abandoned)
         {
@@ -467,7 +506,8 @@ public static class TaskDecider
                 + "silently overwritten by an ordinary publish that omits the flag.");
         }
 
-        return new TaskPreApprovedSet(task.Id, preApproved, setAt, setByOwnerId);
+        PreApprovalMode chosen = VetPreApprovalMode(preApproval, task.Id);
+        return new TaskPreApprovedSet(task.Id, chosen.LegacyPreApproved, setAt, setByOwnerId, chosen);
     }
 
     /// <summary>

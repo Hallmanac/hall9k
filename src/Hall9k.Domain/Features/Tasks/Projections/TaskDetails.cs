@@ -75,10 +75,26 @@ public sealed class TaskDetails
     /// <summary>Who made it (see <see cref="Events.TaskPublished.PublishedByOwnerId"/>).</summary>
     public Guid? UntrackedAttestedByOwnerId { get; set; }
     /// <summary>
-    /// The owner's standing pre-approval (task: a task can be published pre-approved) — see
-    /// <see cref="TaskAggregate.PreApproved"/>'s own doc for what it does.
+    /// The owner's standing pre-approval as a plain boolean — <see cref="PreApprovalMode.LegacyPreApproved"/>
+    /// (<c>mode == On</c>), kept only so <see cref="EffectivePreApproval"/> has something to fall
+    /// back on for a document written before the mode existed, and so a build that predates the
+    /// mode reads this document without being told after-human-review is a merge it may perform.
+    /// Read that property, not this one.
     /// </summary>
     public bool PreApproved { get; set; }
+    /// <summary>
+    /// The owner's standing pre-approval mode (task: the people a pull request is waiting on are
+    /// named, and pre-approval gains a mode that waits for human review) — see
+    /// <see cref="TaskAggregate.PreApproval"/>'s own doc for what each value does.
+    /// <see cref="PreApprovalMode.Unknown"/> on a document written before the mode existed.
+    /// </summary>
+    public PreApprovalMode PreApproval { get; set; } = PreApprovalMode.Unknown;
+    /// <summary>
+    /// The pre-approval this task actually has — resolved rather than read straight off
+    /// <see cref="PreApproval"/>, for the same reason as its
+    /// <see cref="TaskListItem.EffectivePreApproval"/> twin.
+    /// </summary>
+    public PreApprovalMode EffectivePreApproval => PreApprovalMode.Resolve(PreApproval, PreApproved);
     /// <summary>The write hall9k has outstanding against Jira for this task, or null when none is (Brian's design, 2026-08-28).</summary>
     public Guid? PendingJiraWriteId { get; set; }
     /// <summary>Which of create, update, or comment the outstanding write is.</summary>
@@ -325,10 +341,15 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.UntrackedAttested = @event.Data.UntrackedAttested;
         view.UntrackedAttestedAt = @event.Data.UntrackedAttested ? @event.Data.PublishedAt : null;
         view.UntrackedAttestedByOwnerId = @event.Data.UntrackedAttested ? @event.Data.PublishedByOwnerId : null;
-        view.PreApproved = @event.Data.PreApproved;
+        view.PreApproval = @event.Data.EffectivePreApproval;
+        view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
     }
 
-    public void Apply(IEvent<TaskPreApprovedSet> @event, TaskDetails view) => view.PreApproved = @event.Data.PreApproved;
+    public void Apply(IEvent<TaskPreApprovedSet> @event, TaskDetails view)
+    {
+        view.PreApproval = @event.Data.EffectivePreApproval;
+        view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
+    }
 
     // Absent means "left alone": a revision that reworded the objective must not also claim
     // the criteria were retyped identically.

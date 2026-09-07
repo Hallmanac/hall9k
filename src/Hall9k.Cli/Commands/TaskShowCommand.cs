@@ -86,14 +86,22 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // closeout answer to gate on, so it falls back to the raw state's own Draft/Abandoned
         // checks rather than guessing.
         bool trueCloseout = row is not null && row.State == LifecycleState.Done;
-        if (details.PreApproved
+        if (details.EffectivePreApproval.MergesAutomatically
             && details.State != TaskState.Draft
             && details.State != TaskState.Abandoned
             && !trueCloseout)
         {
             header.AddRow("Pre-approved",
-                "[green]yes[/] [dim]— the daemon merges this task's pull request on its own once GitHub's own "
-                + "gates are satisfied (h9k task set-pre-approved to change)[/]");
+                $"[green]{PreApprovalInput.Word(details.EffectivePreApproval).EscapeMarkup()}[/] [dim]— "
+                + $"{PreApprovalInput.Describe(details.EffectivePreApproval)} (h9k task set-pre-approved to "
+                + "change)[/]");
+
+            // Its own row rather than a second line inside the one above, matching every other
+            // fact on this table: one row, one fact.
+            if (await HumanReviewRequestedMarkupAsync(session, details, cancellationToken) is { } humanReview)
+            {
+                header.AddRow("Human review", humanReview);
+            }
         }
 
         // One row per cap actually overridden (task: the review cycle caps become settable at
@@ -1256,6 +1264,44 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
               + $"{ExternalText.OneLineMarkup(details.PendingJiraWriteFailureReason ?? "the registered Jira connection needs attention")}[/]"
             : $"[yellow]{details.PendingJiraWriteOperation.Value.EscapeMarkup()}[/]{target} "
               + "[dim]— recorded, executing[/]";
+    }
+
+    /// <summary>
+    /// Under <see cref="PreApprovalMode.AfterHumanReview"/> only: whether a human review has
+    /// actually been requested on the pull request yet (task: the people a pull request is waiting
+    /// on are named, and pre-approval gains a mode that waits for human review). Null in every
+    /// other mode, which is what keeps the row off a screen it would say nothing on.
+    /// <para>
+    /// It earns a row because it is the one gate nothing else here answers and the one an owner
+    /// most often has to act on: the mode holds the merge indefinitely until somebody is asked, so
+    /// naming the mode and stopping there would leave the reader guessing whether it waits on a
+    /// reviewer or on them. Three readings, never two — not observed at all (no closeout sweep has
+    /// recorded one, or the stream predates the field) is stated as unobserved rather than folded
+    /// into "not requested": the merge holds either way, but only one of the two is a fact about
+    /// GitHub (AGENTS.md, never guess at unobserved facts). Reads the task's own current run, which
+    /// is the run whose pull request this mode governs.
+    /// </para>
+    /// </summary>
+    private static async Task<string?> HumanReviewRequestedMarkupAsync(
+        IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
+    {
+        if (!details.EffectivePreApproval.WaitsForHumanReview)
+        {
+            return null;
+        }
+
+        RunDetails? run = details.CurrentRunId is { } currentRunId
+            ? await session.LoadAsync<RunDetails>(currentRunId, cancellationToken)
+            : null;
+
+        return run?.ExternalHumanReviewEverRequested switch
+        {
+            true => "[green]requested[/] [dim]— a human review has been asked for on the pull request[/]",
+            false => "[yellow]not requested yet[/] [dim]— nothing merges until you add a reviewer in "
+                + "GitHub, or switch this to on with h9k task set-pre-approved "
+                + $"{TaskListCommand.ShortId(details.Id)} on[/]",
+            null => "[dim]not observed — no closeout sweep has read this pull request's reviewers yet[/]",
+        };
     }
 
     /// <summary>

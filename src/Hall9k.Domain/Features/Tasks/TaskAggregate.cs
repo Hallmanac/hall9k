@@ -68,17 +68,21 @@ public sealed class TaskAggregate
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
 
     /// <summary>
-    /// The owner's standing pre-approval (task: a task can be published pre-approved): once true,
-    /// the daemon merges this task's pull request on its own, deterministically, the moment
-    /// GitHub's own gates read satisfied — CI green, the review decision satisfied, no outstanding
-    /// requested reviewer, every review thread resolved, and no follow-up live or queued. Every
-    /// existing human waypoint (Failed, a review park, a severity-bar failure, a cap trip) still
-    /// stops the pipeline exactly as it does for an unflagged task; this flag only removes the
-    /// owner as a SYNCHRONOUS gate at the pull request, never any of those. Set at publish
-    /// (<see cref="Events.TaskPublished.PreApproved"/>), defaulting false, and flippable
-    /// afterward on any live non-terminal task via <see cref="Events.TaskPreApprovedSet"/>.
+    /// The owner's standing pre-approval (task: a task can be published pre-approved), three-valued
+    /// since the mode that waits for human review landed. Anything other than
+    /// <see cref="PreApprovalMode.Off"/> means the daemon merges this task's pull request on its
+    /// own, deterministically, the moment GitHub's own gates read satisfied — CI green, the review
+    /// decision satisfied, no outstanding requested reviewer, every review thread resolved, and no
+    /// follow-up live or queued — with <see cref="PreApprovalMode.AfterHumanReview"/> holding one
+    /// gate longer: until a human reviewer has actually been requested and every requested reviewer
+    /// has approved the current head. Every existing human waypoint (Failed, a review park, a
+    /// severity-bar failure, a cap trip) still stops the pipeline exactly as it does for an
+    /// unflagged task; pre-approval only removes the owner as a SYNCHRONOUS gate at the pull
+    /// request, never any of those. Set at publish
+    /// (<see cref="Events.TaskPublished.PreApproval"/>), defaulting off, and flippable afterward on
+    /// any live non-terminal task via <see cref="Events.TaskPreApprovedSet"/>.
     /// </summary>
-    public bool PreApproved { get; private set; }
+    public PreApprovalMode PreApproval { get; private set; } = PreApprovalMode.Off;
 
     /// <summary>
     /// This pre-approved task's own mechanical-resolution budget spend — see
@@ -471,10 +475,10 @@ public sealed class TaskAggregate
     public void Apply(TaskPublished @event)
     {
         State = TaskState.Published;
-        PreApproved = @event.PreApproved;
+        PreApproval = @event.EffectivePreApproval;
     }
 
-    public void Apply(TaskPreApprovedSet @event) => PreApproved = @event.PreApproved;
+    public void Apply(TaskPreApprovedSet @event) => PreApproval = @event.EffectivePreApproval;
 
     public void Apply(TaskMechanicalResolutionAttempted @event) => MechanicalResolutionAttempts++;
 

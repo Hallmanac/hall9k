@@ -167,7 +167,10 @@ public sealed class RunDetails
     /// The ever-requested human reviewers whose standing verdict is not an approval of the pull
     /// request's current head, as last observed — exactly who the after-human-review merge gate is
     /// still waiting on, recorded so the display names the same people the daemon's own gate holds
-    /// for. Display only, same reasoning as <see cref="ExternalReviewDecision"/>.
+    /// for. An entry may be a requested TEAM (<c>team:&lt;slug&gt;</c>), which GitHub exposes by
+    /// slug and no login; it is the team that was asked, and a standing approval of the head from
+    /// anybody is what clears it. Display only, same reasoning as
+    /// <see cref="ExternalReviewDecision"/>.
     /// </summary>
     public List<string> ExternalHumanReviewersAwaitingApprovalLogins { get; set; } = [];
     /// <summary>
