@@ -62,6 +62,26 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// still has alive. Guid.Empty only on a stream written before this field existed; every dispatch
 /// since carries the real dispatching node — equal to NodeId itself for an ordinary (non-sentinel)
 /// dispatch, since that is the one node making the call there too.
+/// BaseBranch is the branch THIS run's work sits on top of: the branch its worktree was cut from,
+/// the branch its diff and review packet are computed against, and the branch its pull request
+/// targets. Empty means "the project's own base branch", which is every ordinary run and every
+/// stream written before this field existed — so nothing about the unstacked case changes, and
+/// nothing here needs a backfill. It differs only for a stacked child (task: a stacked pull-request
+/// edge exists as an explicit opt-in dependency), where it names the parent's branch until the
+/// parent merges and the child is retargeted. Resolved once, here, exactly as WorktreePath and
+/// Model are, so the branch the worktree was cut from, the range the reviewers read, and the base
+/// `gh pr create` is given can never disagree — and frozen, so a parent branch that moves after
+/// dispatch produces a retarget or a replay rather than silently reinterpreting a run in flight.
+/// BaseCommit is <see cref="BaseBranch"/> resolved to a commit — this branch's fork point, observed
+/// at the moment it was true: the start point a fresh cut resolved
+/// (<c>Worktree.StartPointCommit</c>), carried forward unchanged by a follow-up that resumes the
+/// branch (resuming does not move a fork point), and replaced by the commit a stacked replay is
+/// dispatched to land on. It exists because a ref cannot recover this: a force-pushed parent
+/// rewrites the history the child shares with it, so <c>git merge-base</c> collapses to the base
+/// branch and a replay from there re-applies the parent's old commit against its new one. Empty
+/// when nothing was observed — a resumed branch whose predecessor recorded none, an unreadable
+/// rev-parse, or a stream written before this field — and the replay refuses to dispatch on an
+/// empty one rather than inventing a boundary (AGENTS.md's never-guess rule).
 /// </summary>
 public sealed record RunDispatched(
     Guid Id,
@@ -81,4 +101,6 @@ public sealed record RunDispatched(
     string SessionName = "",
     ReviewStageComposition? ReviewStageComposition = null,
     Guid DispatchingNodeId = default,
-    string? OpeningReviewSinceSha = null);
+    string? OpeningReviewSinceSha = null,
+    string BaseBranch = "",
+    string BaseCommit = "");

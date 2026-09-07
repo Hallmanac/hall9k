@@ -17,7 +17,7 @@ namespace Hall9k.Domain.Features.Run;
 /// mine dispatch, the mid-run interaction rules, the escape-hatch logging invariant) key their
 /// own behavior off exactly these strings: <see cref="Build"/>, <see cref="Fix"/>,
 /// <see cref="ReviewConformance"/>, <see cref="ReviewAdversarial"/>, <see cref="ReviewVerify"/>,
-/// <see cref="Rebase"/>, <see cref="Checks"/>, <see cref="CardPublication"/>, and
+/// <see cref="Rebase"/>, <see cref="Checks"/>, <see cref="StackReplay"/>, <see cref="CardPublication"/>, and
 /// <see cref="InteractiveClaim"/>. A role outside that list (<see cref="Synthesis"/>) still gets
 /// a name — every dispatched session does — just not one the interaction rules key on yet.
 /// </para>
@@ -32,6 +32,14 @@ public static class SessionRoleName
 
     /// <summary>A follow-up dispatched to fix failing pull-request checks.</summary>
     public const string Checks = "checks";
+
+    /// <summary>
+    /// A stacked child's mechanical replay onto a moved parent head or onto the project's base
+    /// after the parent merged (task: a stacked pull-request edge exists as an explicit opt-in
+    /// dependency). Distinct from <see cref="Rebase"/>, which resolves a conflict with judgment:
+    /// this one carries no new intent, runs the gates, and never enters a review cycle.
+    /// </summary>
+    public const string StackReplay = "stack-replay";
 
     /// <summary>Composes a task up as a card in an external tracker (Decisions Log #102).</summary>
     public const string CardPublication = "card-publication";
