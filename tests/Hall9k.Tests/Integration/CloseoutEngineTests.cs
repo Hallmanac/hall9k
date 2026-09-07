@@ -3876,6 +3876,49 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// Under on-closeout, when the close write itself fails (gh rejects it, a permissions error,
+    /// a transient network failure), the merge note must say so honestly rather than claim a
+    /// closure that never happened — the close is attempted before the comment is composed for
+    /// exactly this reason (independent pre-PR review, cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task A_failed_close_leaves_the_merge_note_saying_the_issue_was_not_closed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#7"));
+        Guid projectId = await ProjectIdAsync(store, taskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.OnCloseout, null, cts.Token);
+
+        RecordingProcessRunner github = new(arguments => arguments.Contains("close")
+            ? new ProcessResult(1, string.Empty, "HTTP 403: Resource not accessible by integration")
+            : arguments.Contains("view")
+                ? new ProcessResult(0, """{"state":"OPEN","labels":[]}""", string.Empty)
+                : new ProcessResult(0, string.Empty, string.Empty));
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
+
+        github.Calls.Should().ContainSingle(call => call.Arguments.Contains("close"),
+            "the close is still attempted even though it will fail");
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) commentCall =
+            github.Calls.Should().ContainSingle(call => call.Arguments.Contains("comment")).Subject;
+        string body = commentCall.Arguments[^1];
+        body.Should().NotContain("was closed alongside", "the close failed, so the note must not claim it happened");
+        body.Should().Contain(
+            "does not change this item's status",
+            "a failed close falls back to the same wording an unclosed merge always gets");
+    }
+
+    /// <summary>
     /// Under never, closeout posts the merge note and never closes the issue — the right choice
     /// for an epic, a PRD, or an ADR (task: a task's linked GitHub issue is closed at true
     /// closeout under a configurable rule).
