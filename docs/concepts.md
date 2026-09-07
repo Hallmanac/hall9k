@@ -172,6 +172,42 @@ blockers handed down" section a dispatched agent reads.
 
 Depth: [TASK-MODEL.md §2.3 and §3.2](../TASK-MODEL.md), Decisions Log #34, #36, #61.
 
+### Stacked pull requests
+
+One dependency edge behaves differently, and only when a human explicitly says so.
+`h9k task add --stacked-on <parent>` (or `h9k task revise --stacked-on`, `--clear-stacked-on`)
+declares the task **stacked on** that blocker rather than merely blocked by it. The tool never
+infers a stack from an ordinary `--blocked-by`: the edge is reserved for slices of one feature
+that are genuinely cohesive, and the declaration is always the human's.
+
+What the edge changes, and nothing else does:
+
+- **It dispatches at the parent's `Delivered`, not its merge.** Pull request open, internal review
+  done, branch settled — that is everything a stacked child needs.
+- **Its branch is cut from the parent's branch head**, not from the base branch, and **its pull
+  request opens against the parent's branch**, which is what forms the stack on GitHub.
+- **Its diff, review packet, self-review hunt and end-of-work recompose are all computed against
+  the parent's branch**, so its reviewers read the child's own delta rather than the parent's
+  already-reviewed work alongside it.
+- **It is not at the merge bar until it is retargeted.** The board never tells you "the merge is
+  yours" about a pull request aimed at its parent's branch, and a pre-approved one is not
+  auto-merged either.
+- **When the parent merges, the daemon retargets the child onto the base branch** and dispatches a
+  *mechanical replay*: one `git rebase --onto`, between two exact commits — the fork point the
+  child's run recorded when its branch was cut, and the freshly observed commit it lands on. That
+  boundary drops the parent's now-duplicated commits (the project rebase-merges, so they land on
+  the base under new shas). It is a recorded fact rather than a `git merge-base`, because a
+  force-pushed parent rewrites the shared history and merge-base then gives the wrong answer. The
+  replay runs the gates and triggers **no review cycle** — nothing new entered the branch, so there
+  is nothing for a reviewer to have an opinion about.
+- **A parent force-push while the child is Delivered dispatches the same replay** onto the parent's
+  new head, bounded by the child's own rebase budget (`MaxStackReplayRuns`). Past that cap the
+  child parks for a human, which is the honest signal that the two branches are not converging.
+
+A plain `--blocked-by` task behaves exactly as it always has.
+
+Depth: Decisions Log #144.
+
 ## Runs
 
 A **run** is one attempt at a task. It carries its own event stream, its own worktree, its own

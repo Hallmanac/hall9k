@@ -133,6 +133,12 @@ any unambiguous fragment from either end of the full id.
 $ h9k task revise 2088f4fc --criteria "…" --blocked-by 81d8bca0
 ```
 
+`--stacked-on` declares a stronger edge for slices of one feature: the task dispatches as soon as
+its parent is Delivered, builds on the parent's branch, and opens its pull request against it —
+a GitHub stack the platform retargets and replays for you when the parent merges. It is never
+inferred from a plain `--blocked-by`
+([concepts.md](docs/concepts.md#stacked-pull-requests)).
+
 Refinement ends when the contract is honest: an outcome-phrased objective and criteria a
 reviewer could actually check. A published task is immutable; the edit-after-the-fact path is
 `unassign`, `draft`, `revise`, `publish`, `assign`, each step an explicit act.

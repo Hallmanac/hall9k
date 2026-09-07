@@ -88,11 +88,24 @@ that moment and never re-checked. Acceptance criteria are never read out of a de
 them with `--criteria` or at the prompt.
 
 `--file task.md` reads a whole task from a markdown file: a minimal `---` frontmatter block
-(project, type, objective, criteria, an optional model, optional blocked-by, optional epic)
+(project, type, objective, criteria, an optional model, optional blocked-by, optional stacked-on,
+optional epic)
 followed by a body that becomes the agent context. It is deliberately not YAML, since a handful
 of known keys does not warrant the dependency. The numbered [`backlog/`](../backlog) files are
 written in that format; the `IDEA-` notes beside them are earlier-stage prose with no
 frontmatter, so they are read and authored from rather than fed to `--file`.
+
+### Stacked pull requests
+
+`--stacked-on <parent>` on `h9k task add` — or `--stacked-on` / `--clear-stacked-on` on
+`h9k task revise` — declares this task **stacked on** that blocker rather than merely blocked by
+it. The option implies the `--blocked-by` edge, so the parent needs naming only once. A stacked
+task dispatches at its parent's `Delivered` rather than its merge, cuts its branch from the
+parent's branch head, opens its pull request against that branch, reviews and recomposes against
+it, is kept off the merge bar until the parent merges, and is then retargeted onto the base branch
+and mechanically replayed there. The tool never infers a stack from an ordinary `--blocked-by`;
+reserve the edge for slices of one feature that are genuinely cohesive. Full behaviour:
+[concepts.md](concepts.md#stacked-pull-requests).
 
 ### Pull-request review
 
