@@ -111,6 +111,41 @@ GitHub for open pull requests in that project's repo requesting this install's o
 mint, publish, and start a `pr-review` task at the chosen speed the moment GitHub reports the
 assignment.
 
+### The claim gate
+
+Every teammate runs their own install against their own database, so a Jira card or a GitHub
+issue is the only record two machines share. `h9k project set <name> --claim-gate
+off|tracker-assignee` (default `off`, the platform's original behaviour byte-for-byte) makes that
+shared record the one act that hands out work: with `tracker-assignee`, a task linked to a card
+or an issue is claimed on this install only while the tracker shows that item assigned to this
+install's own tracker identity, so two teammates' installs cannot both run the same card.
+
+The identity is read from the tracker, never typed and never matched by email or display name:
+for Jira it is the `accountId` `/rest/api/2/myself` answers, captured at `h9k connection add
+jira` and recorded on the connection (a connection registered before that read it live on first
+use); for GitHub it is the login `gh` is authenticated as, read live on every check and
+deliberately never stored, so a machine that re-authenticates as somebody else stops matching
+immediately. Each check reads the item's assignee field and nothing else, so the one-time content
+snapshot a task's adoption took is untouched. A GitHub issue may carry several assignees, and
+being among them passes.
+
+Every claim door re-checks. The dispatcher leaves a refused task Queued and says why once per
+episode in the daemon log; `h9k task work` and `h9k task start` refuse with the same wording and
+exit 70. `h9k task assign` warns on stderr — naming who holds the item, or that nobody does, with
+its link — and assigns anyway, because the tracker is the go signal and the task is meant to wait
+in the queue until it turns green. A queued task's own line on `h9k status`, `h9k task show` and
+`h9k project show` says it is waiting for the tracker to show the item assigned to you, and names
+the current holder when there is one. A task with no linked item, an untracked one, and a
+`pr-review` task are all untouched: a pull request's own assignment is already auto-pr-review's
+signal.
+
+The gate never writes to the tracker and has no override flag. A tracker this install cannot read
+holds the claim rather than releasing it — a gate that exists to stop two installs running the
+same card must not let both through when the shared record goes dark — and the hold quotes the
+tracker's own error and says what ends it: renew the connection's token with the command printed,
+restore the connection, or wait out the outage, told apart so the remedy is never a guess. A held
+task is re-read no more often than every three minutes rather than on every five-second sweep.
+
 ### Epics: naming a family of tasks
 
 `h9k epic add | list | show | link-jira | close`
@@ -246,7 +281,8 @@ none|github-issues|jira`) and its routing guidance, the review re-request policy
 project-level review-cycle-cap overrides, the review stage composition (`--review-stage-composition`,
 below), the branch-name template (`--branch-template`,
 [below](#branch-naming)), the auto-pr-review speed (`--auto-pr-review
-off|normal|first|now`, [above](#pull-request-review)), and the home's location live.
+off|normal|first|now`, [above](#pull-request-review)), the claim gate (`--claim-gate
+off|tracker-assignee`, [above](#the-claim-gate)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 

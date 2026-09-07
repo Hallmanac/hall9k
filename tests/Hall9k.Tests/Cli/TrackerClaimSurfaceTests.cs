@@ -11,7 +11,7 @@ using Xunit;
 namespace Hall9k.Tests.Cli;
 
 /// <summary>
-/// How a claim gate's hold reads on the board (idea 64c75e43, Decisions Log #140). The sentences
+/// How a claim gate's hold reads on the board (idea 64c75e43, Decisions Log #142). The sentences
 /// live in one record on purpose — the dispatcher composes them from a read it just made, and the
 /// CLI composes them from the measurement the dispatcher published — so what is pinned here is
 /// that both directions produce the same words, and that a row says nothing about a tracker

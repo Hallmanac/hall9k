@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Connectors;
 
 /// <summary>
 /// The one read a <c>tracker-assignee</c> claim gate makes, against recorded tracker answers
-/// rather than a live tenant (idea 64c75e43, Decisions Log #140). Three things are pinned here and
+/// rather than a live tenant (idea 64c75e43, Decisions Log #142). Three things are pinned here and
 /// nowhere else, because they are what the gate's whole behaviour rests on: exactly which field is
 /// asked for (nothing else about the item may be re-read, or the one-time content snapshot rule
 /// stops holding — Decisions Log #60), what "assigned to me" is matched on, and whether a failure
