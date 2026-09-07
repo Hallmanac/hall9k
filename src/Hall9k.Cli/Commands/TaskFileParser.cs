@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Cli.Commands;
@@ -19,17 +20,28 @@ public sealed record TaskFileContent(
     string? StackedOn = null);
 
 /// <summary>
-/// Parses the h9k task file format: a minimal frontmatter block (project, type, objective,
+/// Parses the h9k task file format: a <c>---</c> frontmatter block (project, type, objective,
 /// criteria as "- " items, optional model, optional blocked-by as "- " items, optional stacked-on,
-/// optional epic)
-/// followed by a markdown body that becomes the agent context. Deliberately not YAML, since a
-/// handful of known keys don't warrant a dependency.
+/// optional epic) followed by a markdown body that becomes the agent context.
+/// <para>
+/// The reading is <see cref="FrontmatterYaml"/>'s: the forgiving line-oriented document grammar the
+/// format has always had, with every value read as a real YAML scalar — so a double-quoted
+/// objective or criterion is stored without its quote characters, and a <c>|</c> block scalar
+/// arrives as the multi-line text it denotes. The task record on a published issue reads through
+/// exactly the same parser, which is what makes it true that the record is "the same shape --file
+/// accepts" rather than a second shape that happens to look similar.
+/// </para>
+/// <para>
+/// <c>context</c> is accepted as a frontmatter key as well as a markdown body, because the record
+/// carries the agent context as a block scalar (a fenced YAML block has nowhere to put a markdown
+/// body). The body wins when a file somehow carries both: it is the form a human types.
+/// </para>
 /// </summary>
 public static class TaskFileParser
 {
     public static TaskFileContent Parse(string content)
     {
-        string[] lines = content.ReplaceLineEndings("\n").Split('\n');
+        string[] lines = (content ?? string.Empty).ReplaceLineEndings("\n").Split('\n');
         if (lines.Length == 0 || lines[0].Trim() != "---")
         {
             throw new DomainValidationException(
@@ -37,77 +49,16 @@ public static class TaskFileParser
                 + "an optional model, and optional blocked-by dependencies).");
         }
 
-        string? project = null;
-        string? type = null;
-        string? objective = null;
-        string? model = null;
-        string? epic = null;
-        string? stackedOn = null;
-        List<string> criteria = [];
-        List<string> blockedBy = [];
-        List<string>? list = null;
-        int bodyStart = lines.Length;
-
-        for (int i = 1; i < lines.Length; i++)
-        {
-            string line = lines[i];
-            if (line.Trim() == "---")
-            {
-                bodyStart = i + 1;
-                break;
-            }
-
-            if (list is not null && line.TrimStart().StartsWith("- ", StringComparison.Ordinal))
-            {
-                list.Add(line.TrimStart()[2..].Trim());
-                continue;
-            }
-
-            list = null;
-            int separator = line.IndexOf(':');
-            if (separator < 0)
-            {
-                continue;
-            }
-
-            string key = line[..separator].Trim().ToLowerInvariant();
-            string value = line[(separator + 1)..].Trim();
-            switch (key)
-            {
-                case "project":
-                    project = value;
-                    break;
-                case "type":
-                    type = value;
-                    break;
-                case "objective":
-                    objective = value;
-                    break;
-                case "model":
-                    model = value;
-                    break;
-                case "epic":
-                    epic = value;
-                    break;
-                case "stacked-on":
-                case "stackedon":
-                    stackedOn = value;
-                    break;
-                case "criteria":
-                    list = criteria;
-                    break;
-                case "blocked-by":
-                case "blockedby":
-                    list = blockedBy;
-                    // An inline "blocked-by: a, b" is as natural as the list form; take both.
-                    blockedBy.AddRange(value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-                    break;
-            }
-        }
-
-        string body = string.Join('\n', lines.Skip(bodyStart)).Trim();
+        Frontmatter parsed = FrontmatterYaml.Parse(content);
         return new TaskFileContent(
-            project, type, objective, criteria, body.IsBlank() ? null : body, model, blockedBy, epic,
-            stackedOn.IsBlank() ? null : stackedOn);
+            parsed.Scalar("project"),
+            parsed.Scalar("type"),
+            parsed.Scalar("objective"),
+            [.. parsed.List("criteria").Where(criterion => criterion.IsNotBlank())],
+            parsed.Body ?? parsed.Scalar("context"),
+            parsed.Scalar("model"),
+            [.. parsed.ListOrInline("blocked-by").Concat(parsed.ListOrInline("blockedby"))],
+            parsed.Scalar("epic"),
+            parsed.Scalar("stacked-on") ?? parsed.Scalar("stackedon"));
     }
 }

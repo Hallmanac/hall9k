@@ -106,9 +106,12 @@ public static class TaskDocumentRenderer
     }
 
     /// <summary>
-    /// A frontmatter scalar reduced to one line: the file format has no quoting or escaping
-    /// (<c>TaskFileParser</c> takes everything after the first colon verbatim), so a value with an
-    /// embedded newline would silently truncate the field that follows it.
+    /// A frontmatter scalar reduced to one line. This renderer writes plain scalars only — it never
+    /// quotes and never opens a block scalar — so a value with an embedded newline would silently
+    /// truncate the field that follows it. <c>TaskFileParser</c> reads a quoted or block scalar
+    /// perfectly well now, and could be written to; that is deliberately not done here, because a
+    /// task.md is a document a human reads and edits by hand, and a plain scalar is the form that
+    /// stays legible.
     /// </summary>
     private static string OneLine(string value) => value.ReplaceLineEndings(" ").Trim();
 }
