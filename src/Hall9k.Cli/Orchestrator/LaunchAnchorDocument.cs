@@ -37,13 +37,14 @@ public static class LaunchAnchorDocument
         This file is appended to this window's system prompt on every launch (`--append-system-prompt-file`).
         Keep it in mind that it is paid for on every turn one, so it carries a hand-off and nothing else.
 
-        1. Look in the `recipes/` directory here for a `.new` file beside each recipe file there
-           (`recipes/orchestrator.md.new`, `recipes/settings.json.new`, and so on: one per file
-           the generator regenerated). For each one found: compare it against the file it sits
-           beside, report to the human what changed and what would be lost by adopting it, and ask
-           whether to adopt it (rename it over the current file, keeping a dated `.prev` copy of
-           what it replaced), keep the current file untouched, or merge the two by hand. Never
-           adopt silently.
+        1. Look in the `recipes/` directory here for a `.new` file beside each file the generator
+           itself writes (`recipes/orchestrator.md.new`, and so on: one per generator-written file
+           a re-run regenerated). This never includes `settings.json` or this anchor itself —
+           both are platform-owned and always overwritten outright, never given a `.new` sibling.
+           For each `.new` file found: compare it against the file it sits beside, report to the
+           human what changed and what would be lost by adopting it, and ask whether to adopt it
+           (rename it over the current file, keeping a dated `.prev` copy of what it replaced),
+           keep the current file untouched, or merge the two by hand. Never adopt silently.
         2. Read `recipes/orchestrator.md` in this same directory and follow it. That file, not
            this one, is the actual recipe: what this window is, its start-up sequence, and how it
            spawns scoped sessions.
