@@ -43,6 +43,15 @@ public sealed class RunDetails
     public string RunDirectory { get; set; } = string.Empty;
     /// <summary>The pull request's base branch as read at dispatch, for a pr-review run only. See <see cref="RunDispatched"/>'s own doc for why.</summary>
     public string? PrReviewBaseRefName { get; set; }
+    /// <summary>
+    /// The branch this run's work sits on top of — its worktree's start point, its diff and review
+    /// range, and the base its pull request targets. Blank for every run based on the project's own
+    /// base branch, which is all of them but a stacked child's (task: a stacked pull-request edge
+    /// exists as an explicit opt-in dependency). Read through <see cref="BaseBranchOr"/>.
+    /// </summary>
+    public string BaseBranch { get; set; } = string.Empty;
+    /// <summary>See <see cref="Events.RunDispatched"/>'s own doc — this branch's fork point as observed, blank when nothing was.</summary>
+    public string BaseCommit { get; set; } = string.Empty;
     public string ExecutorMode { get; set; } = string.Empty;
     /// <summary>The model the build session was spawned on (Decisions Log #33); Unknown for runs dispatched before the chain existed.</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
@@ -155,6 +164,12 @@ public sealed class RunDetails
     public DateTimeOffset? LastAutoMergeAttemptedAt { get; set; }
     /// <summary>Whether closeout's mechanical rebase-before-reopen fast path last applied cleanly and pushed; null until one is attempted.</summary>
     public bool? LastMechanicalRebaseSucceeded { get; set; }
+    /// <summary>Whether the last stacked retarget attempt actually moved the pull request's base; null until one is tried. See <see cref="Events.StackedPullRequestRetargeted"/>.</summary>
+    public bool? LastStackedRetargetSucceeded { get; set; }
+    /// <summary>What that retarget attempt did, or why it could not — the sentence h9k task show reads back.</summary>
+    public string? LastStackedRetargetDetail { get; set; }
+    /// <summary>When the last stacked retarget was attempted; null until one is.</summary>
+    public DateTimeOffset? LastStackedRetargetAt { get; set; }
     /// <summary>What the last mechanical rebase attempt actually did or why it fell back — see <see cref="Events.PullRequestMechanicalRebaseAttempted"/>.</summary>
     public string? LastMechanicalRebaseDetail { get; set; }
     /// <summary>The branch's new head after the last mechanical rebase's clean push; null on a fallback.</summary>
@@ -508,6 +523,42 @@ public sealed class RunDetails
     /// run.
     /// </summary>
     public UncommittedWorkRecoveryRecord? UncommittedWorkRecovery { get; set; }
+
+    /// <summary>
+    /// This run's base branch, resolving blank to <paramref name="projectBaseBranch"/> — the
+    /// mirror of <see cref="RunAggregate.BaseBranchOr"/>, and the only way <see cref="BaseBranch"/>
+    /// should be read: blank means "the project's own", never an empty ref to hand git.
+    /// </summary>
+    public string BaseBranchOr(string projectBaseBranch) =>
+        BaseBranch.IsNotBlank() ? BaseBranch : projectBaseBranch;
+
+    /// <summary>
+    /// The parent branch this run's pull request is still stacked on, or null when it targets the
+    /// project's own base branch — which is every ordinary run, and a stacked child from the moment
+    /// closeout retargets it (task: a stacked pull-request edge exists as an explicit opt-in
+    /// dependency).
+    /// <para>
+    /// Blank-means-the-project's-own is <see cref="BaseBranch"/>'s own invariant, held at both
+    /// ends: <c>RunLauncher</c> records blank whenever the resolved base equals the project's, and
+    /// <see cref="Events.StackedPullRequestRetargeted"/>'s apply clears it back to blank rather
+    /// than writing the project's base into it. That invariant is what lets a caller holding no
+    /// <c>ProjectDetails</c> — the CLI's own attention and phase composers — read the same answer
+    /// the daemon reads, without threading the project through every surface that renders a row.
+    /// </para>
+    /// </summary>
+    public string? StackedOnBranch => BaseBranch.IsNotBlank() ? BaseBranch : null;
+
+    /// <summary>
+    /// Whether this run's pull request is still aimed somewhere other than the project's own base
+    /// branch — the mechanical reading of "a stacked child whose parent has not merged yet", and
+    /// the one gate that keeps such a pull request away from the merge bar (task: the bar machinery
+    /// treats an un-retargeted stacked PR as not at the bar). The project comparison is
+    /// belt-and-braces over <see cref="StackedOnBranch"/>'s own invariant: a pull request a human
+    /// retargeted by hand, or a project whose base branch was changed under a live run, can leave a
+    /// recorded base that happens to equal the project's, and there is nothing stacked about that.
+    /// </summary>
+    public bool AwaitsStackedRetarget(string projectBaseBranch) =>
+        StackedOnBranch is { } stacked && stacked != projectBaseBranch;
 }
 
 /// <summary>One retry <see cref="RunDetailsProjection.Apply(IEvent{RunSessionErrorRetried}, RunDetails)"/> recorded on <see cref="RunDetails.SessionErrorRetries"/>.</summary>
@@ -552,6 +603,8 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             ? @event.Data.RunDirectory
             : RunPaths.GlobalDirectory(@event.Data.Id),
         PrReviewBaseRefName = @event.Data.PrReviewBaseRefName,
+        BaseBranch = @event.Data.BaseBranch,
+        BaseCommit = @event.Data.BaseCommit,
         ExecutorMode = @event.Data.ExecutorMode,
         Model = @event.Data.Model ?? AgentModel.Unknown,
         ReviewStageComposition = @event.Data.ReviewStageComposition ?? ReviewStageComposition.FullPipeline,
@@ -952,6 +1005,19 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.LastMechanicalRebaseDetail = @event.Data.Detail;
         view.LastMechanicalRebasePushedCommit = @event.Data.PushedCommit;
         view.LastMechanicalRebaseAt = @event.Data.AttemptedAt;
+    }
+
+    // Informational only — see RunAggregate.Apply(StackedPullRequestRetargeted), including why
+    // BaseBranch is cleared only on a successful attempt and cleared to blank rather than written.
+    public void Apply(IEvent<StackedPullRequestRetargeted> @event, RunDetails view)
+    {
+        view.LastStackedRetargetSucceeded = @event.Data.Succeeded;
+        view.LastStackedRetargetDetail = @event.Data.Detail;
+        view.LastStackedRetargetAt = @event.Data.RetargetedAt;
+        if (@event.Data.Succeeded)
+        {
+            view.BaseBranch = string.Empty;
+        }
     }
 
     // Informational only — see RunAggregate.Apply(RunRebasedOntoBase). The pre-final-pass check
