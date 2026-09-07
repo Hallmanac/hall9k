@@ -204,6 +204,44 @@ public static class CliCommandTree
                 .WithExample("pr", "resolve", "28b19893")
                 .WithExample("pr", "resolve", "28b19893", "--checks")
                 .WithExample("pr", "resolve", "28b19893", "--rebase");
+            pullRequest.AddCommand<PullRequestReviewCommand>("review")
+                .WithDescription(
+                    "Run YOUR own review lap on a pull request (PLAN.md log #149). Attaches to the pr-review "
+                    + "task this node already holds for it — auto-adopted from a GitHub reviewer assignment, "
+                    + "or created by h9k task add --from-pr — and adopts the pull request itself only when no "
+                    + "live task exists. Reuses that task's read-only, detached checkout of the pull request's "
+                    + "head (--no-worktree skips it, for reviewing against a deployed environment) and prints "
+                    + "a briefing to paste into a Claude Code session you start yourself: the stated objective "
+                    + "and acceptance criteria when this node can read the authoring task, the surfaces touched "
+                    + "with a blast-radius summary, what CI ran, and the platform's own merged findings report "
+                    + "when the automated review has already parked one. The briefing is factual and offers no "
+                    + "test scenarios or areas of concern — the session gives those the moment you ask, and "
+                    + "helps with local setup, running the suites, or writing end-to-end tests. It never "
+                    + "commits to or pushes the pull request's branch, and git push is denied for the session "
+                    + "outright. The lap never ends on its own: h9k pr approve or h9k pr request-changes ends it.")
+                .WithExample("pr", "review", "42")
+                .WithExample("pr", "review", "https://github.com/Hallmanac/hall9k/pull/42")
+                .WithExample("pr", "review", "42", "--no-worktree");
+            pullRequest.AddCommand<PullRequestApproveCommand>("approve")
+                .WithDescription(
+                    "End your review lap with an approval: posts an APPROVE review on the pull request's "
+                    + "CURRENT head with --note as its body, under your own GitHub login. Records the verdict "
+                    + "on the pr-review task, then finalizes it exactly as h9k review resolve --merge-ready "
+                    + "does — worktree released, task Done, no merge ever observed. The review is posted "
+                    + "before anything is recorded, so a post that fails records nothing and you simply run "
+                    + "the command again.")
+                .WithExample("pr", "approve", "28b19893", "--note", "\"Reads clean; the lease fence is the right shape.\"");
+            pullRequest.AddCommand<PullRequestRequestChangesCommand>("request-changes")
+                .WithDescription(
+                    "End your review lap by asking for changes: posts a REQUEST_CHANGES review on the pull "
+                    + "request's CURRENT head with --note as its body and every --finding as a line comment, "
+                    + "under your own GitHub login. Records the verdict and finalizes the pr-review task the "
+                    + "same way h9k pr approve does. GitHub rejects the whole review when a finding names a "
+                    + "line the diff does not contain, so nothing is posted and nothing recorded until every "
+                    + "line is one it accepts.")
+                .WithExample(
+                    "pr", "request-changes", "28b19893", "--note", "\"Two real defects.\"",
+                    "--finding", "\"src/Hall9k.Cli/Program.cs:42: this swallows the cancellation\"");
         });
 
         config.AddBranch("review", review =>
