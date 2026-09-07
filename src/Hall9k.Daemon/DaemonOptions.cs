@@ -141,6 +141,24 @@ public sealed class DaemonOptions
     public int MaxAutomaticCloseoutRuns { get; set; } = 6;
 
     /// <summary>
+    /// The rebase budget for a stacked child (task: a stacked pull-request edge exists as an
+    /// explicit opt-in dependency): how many mechanical replays onto a moved parent head — or onto
+    /// the project's base branch once the parent merged — one child may be dispatched before it
+    /// parks for a human. Counted on <c>TaskAggregate.StackReplaysDispatched</c> and reset by a
+    /// manual h9k pr resolve, exactly like <see cref="MaxAutomaticCloseoutRuns"/>.
+    /// <para>
+    /// Its own budget rather than a share of the lifetime ceiling, for the reason
+    /// <c>StackReplaysDispatched</c> states: a replay answers the parent moving, not an obstruction
+    /// of the child's own, so spending the child's review budget on it would punish the child for
+    /// its parent's activity. Higher than the lifetime ceiling on purpose — a parent branch under
+    /// active review legitimately moves several times, once per review lap it takes, and every one
+    /// of those is a replay this child owes. Past the cap the child parks with the reason, which is
+    /// the honest signal that the two branches are not converging on their own.
+    /// </para>
+    /// </summary>
+    public int MaxStackReplayRuns { get; set; } = 12;
+
+    /// <summary>
     /// Consecutive automatic closeout laps the monitor may spend on the SAME obstruction —
     /// the same failing check name, or the exact same set of unresolved review-thread ids —
     /// before it parks (backlog 45, origin incident: task 18's flat budget of 2 was spent on

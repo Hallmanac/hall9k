@@ -198,8 +198,10 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())),
             processes, Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
         RefusingInspector inspector = new();
+        RefusingWorktreeManager closeoutWorktrees = new();
         CloseoutEngine closeout = new(
-            store, node, new DaemonConnection(postgres.ConnectionString), inspector, new RefusingWorktreeManager(),
+            store, node, new DaemonConnection(postgres.ConnectionString), inspector, closeoutWorktrees,
+            new StackedParentWatch(closeoutWorktrees, NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         return new RunLauncher(
@@ -231,6 +233,10 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
 
         public Task MergeAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("Not reached by these tests.");
+
+        public Task RetargetAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
             CancellationToken cancellationToken) => throw new InvalidOperationException("Not reached by these tests.");
     }
 

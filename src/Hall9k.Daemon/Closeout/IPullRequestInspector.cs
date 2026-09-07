@@ -135,8 +135,9 @@ public sealed record ErroredReview(string Reviewer, string Url);
 /// <para>
 /// BaseRefName is the pull request's actual base branch name, as GitHub reports it — never
 /// assumed to be the project's own configured base branch. A human can retarget a pull request's
-/// base on GitHub itself (the stacked-PR shape AGENTS.md documents as current practice here), and
-/// when they do, GitHub's own <see cref="IsConflicting"/> read is against that retargeted base,
+/// base on GitHub itself, and this platform now retargets one itself when a stacked child's parent
+/// merges (Decisions Log #144). Either way, GitHub's own <see cref="IsConflicting"/> read is
+/// against that retargeted base,
 /// not against <c>project.BaseBranch</c>: the closeout engine's mechanical rebase fast path reads
 /// this field before ever fetching or rebasing, specifically so it never force-pushes a rebase
 /// onto the wrong base (independent pre-PR review, cycle 1, adversarial lens). Null when the
@@ -289,5 +290,22 @@ public interface IPullRequestInspector
     /// </summary>
     Task MergeAsync(
         string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Moves a pull request's base branch — the one provider write a stacked child needs (task: a
+    /// stacked pull-request edge exists as an explicit opt-in dependency), used once, when the
+    /// child's parent merges and the child must be retargeted off the parent's now-gone branch onto
+    /// <paramref name="baseBranch"/>. Throws on any failure, the same convention
+    /// <see cref="MergeAsync"/> and <see cref="RerequestReviewAsync"/> already use; the caller
+    /// records the failure and the next sweep tries again.
+    /// <para>
+    /// Idempotent by the provider's own behaviour: GitHub accepts a base a pull request is already
+    /// set to. That is what makes a retry safe after a lost fence race, where the record of the
+    /// first successful retarget rolls back but the retarget itself does not.
+    /// </para>
+    /// </summary>
+    Task RetargetAsync(
+        string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
         CancellationToken cancellationToken);
 }

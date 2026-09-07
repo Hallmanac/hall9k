@@ -159,6 +159,10 @@ builder.Services.AddSingleton<ProcessRunner>(_ => ExternalProcess.Runner);
 // already uses — registered here, generically, so CloseoutEngine's and JiraWriteRetryEngine's own
 // Jira writes are testable against a fake HTTP response instead of a real tenant.
 builder.Services.AddSingleton<JiraRequester>(_ => JiraHttp.Requester);
+// Reads the parent branch a stacked child's pull request is built on (task: a stacked pull-request
+// edge exists as an explicit opt-in dependency) — its own seam so CloseoutEngine's stacked path is
+// testable against an observation rather than a real repository.
+builder.Services.AddSingleton<StackedParentWatch>();
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();

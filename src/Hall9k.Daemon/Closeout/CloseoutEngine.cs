@@ -89,6 +89,7 @@ public sealed class CloseoutEngine(
     DaemonConnection connection,
     IPullRequestInspector inspector,
     IWorktreeManager worktrees,
+    StackedParentWatch stackedParents,
     ProcessRunner processRunner,
     JiraRequester jiraRequester,
     IOptions<DaemonOptions> options,
@@ -782,6 +783,25 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
+        // Checked ahead of the conflict read, and therefore ahead of checks and threads too
+        // (task: a stacked pull-request edge exists as an explicit opt-in dependency). A stacked
+        // child whose parent branch has moved is the strictly earlier fact: GitHub will often
+        // report the child CONFLICTING as a consequence, and the mechanical rebase below already
+        // refuses to act on a pull request whose base is not the project's own — so without this
+        // check first, the correct operation (a replay onto the parent's new head, or onto the
+        // project's base once the parent merged) would never be reached, and the child would take
+        // a full review lap for a conflict that is not its own to resolve.
+        //
+        // The cheap local test runs first and covers every ordinary run: only a pull request whose
+        // recorded base is not the project's own can be a stacked child at all, so nothing here
+        // costs an unstacked pull request a single git or provider call.
+        if (StackedParentWatch.IsStackedChild(run, project)
+            && await TryReplayStackedChildAsync(
+                session, task, run, project, fence.Version, snapshot, now, cancellationToken))
+        {
+            return InspectionOutcome.Inspected;
+        }
+
         // Checked ahead of checks and review threads, deliberately (backlog 44, origin PR
         // 26): a conflicting branch makes both of those readings moot — CI ran against a
         // diff that is about to be superseded by a rebase, and a review thread answers a
@@ -798,13 +818,14 @@ public sealed class CloseoutEngine(
             //
             // GitHub's own CONFLICTING read is against the pull request's ACTUAL base, which a
             // human can retarget away from project.BaseBranch on GitHub itself (the stacked-PR
-            // shape AGENTS.md documents as current practice). Rebasing onto project.BaseBranch in
-            // that case would not address what GitHub reads as conflicting, could still "make
-            // progress" and force-push (the no-progress guard below only catches the narrower case
-            // where the branch already contains origin/<base>'s tip), and would silently rewrite
-            // the branch onto a base it was never meant to be on — so the mechanical attempt is
-            // skipped outright, without ever fetching or rebasing, whenever GitHub reports a base
-            // other than the project's own (independent pre-PR review, cycle 1, adversarial lens).
+            // shape this platform now declares explicitly, Decisions Log #144). Rebasing onto
+            // project.BaseBranch in that case would not address what GitHub reads as conflicting,
+            // could still "make progress" and force-push (the no-progress guard below only catches
+            // the narrower case where the branch already contains origin/<base>'s tip), and would
+            // silently rewrite the branch onto a base it was never meant to be on — so the
+            // mechanical attempt is skipped outright, without ever fetching or rebasing, whenever
+            // GitHub reports a base other than the project's own (independent pre-PR review,
+            // cycle 1, adversarial lens).
             // BaseRefName null (a provider read that predates this field) proceeds exactly as
             // before rather than guessing at a mismatch that was never observed.
             MechanicalRebaseOutcome mechanical =
@@ -844,7 +865,8 @@ public sealed class CloseoutEngine(
                 // Rebase is excluded from the opening-cycle review scope seed (Brian's 2026-09-04
                 // triage ruling governs that path unchanged): the follow-up's own job is resolving
                 // the conflict, not a diff a reviewer would read against a prior push.
-                now, pullRequestHeadSha: null, cancellationToken);
+                now, pullRequestHeadSha: null, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
+                cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -867,7 +889,8 @@ public sealed class CloseoutEngine(
                 // The pull request head this sweep just observed — the follow-up's own opening
                 // Discovery cycle seeds its diff instruction from it (task: a lap reviews only what
                 // it changed), so the reviewer reads the fix rather than the whole branch again.
-                now, snapshot.HeadCommit, cancellationToken);
+                now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
+                cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -883,7 +906,8 @@ public sealed class CloseoutEngine(
                 DescribeUnresolvedThreads(snapshot),
                 // Same reasoning as the FailingChecks branch above: seed the follow-up's own
                 // opening Discovery cycle from the pull request head this sweep just observed.
-                now, snapshot.HeadCommit, cancellationToken);
+                now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
+                cancellationToken);
             return InspectionOutcome.Inspected;
         }
 
@@ -951,6 +975,23 @@ public sealed class CloseoutEngine(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        // A stacked child cannot merge before its parent (task: a stacked pull-request edge exists
+        // as an explicit opt-in dependency). Reaching this line means the check that owns the
+        // stacked path above found the child still aligned with a parent that has NOT merged — an
+        // un-retargeted pull request, aimed at the parent's branch. Merging it there would land the
+        // child's commits on the parent's branch, which is not a merge into anything this project
+        // ships from. A visible wait rather than a park, on exactly the design-ruling-3 terms this
+        // method already applies to an outstanding human reviewer: nothing is wrong, something is
+        // simply owed first, and the retarget that clears it is a sweep away.
+        if (StackedParentWatch.IsStackedChild(run, project))
+        {
+            logger.LogInformation(
+                "Task {TaskId}: pre-approved, but its pull request is still stacked on {ParentBranch} rather "
+                + "than {BaseBranch} — not at the merge bar until its parent merges and it is retargeted",
+                task.Id, run.BaseBranch, project.BaseBranch);
+            return InspectionOutcome.Inspected;
+        }
+
         if (!snapshot.HasObservedChecks)
         {
             DateTimeOffset lastPush = LastHeadPushObservedAt(run);
@@ -2095,6 +2136,14 @@ public sealed class CloseoutEngine(
         return reviewer is null || ReviewersBehindTheHead(snapshot).Any(candidate => candidate.Login == login);
     }
 
+    /// <summary>
+    /// <paramref name="stackReplayUpstreamCommit"/> and <paramref name="stackReplayOntoCommit"/> are
+    /// set only for <see cref="FollowUpKind.StackReplay"/>, where they are the two commits the
+    /// replay rebases between (<c>TaskReopened.StackReplayUpstreamCommit</c> and its own doc's
+    /// twin); every other kind passes null for both, explicitly rather than by default, because
+    /// <c>CancellationToken</c> comes last (AGENTS.md) and an optional parameter cannot sit in
+    /// front of it.
+    /// </summary>
     private async Task DispatchFollowUpOrParkAsync(
         IDocumentSession session,
         TaskAggregate task,
@@ -2106,6 +2155,8 @@ public sealed class CloseoutEngine(
         string reason,
         DateTimeOffset now,
         string? pullRequestHeadSha,
+        string? stackReplayUpstreamCommit,
+        string? stackReplayOntoCommit,
         CancellationToken cancellationToken)
     {
         // TaskAggregate.Apply(TaskReopened) never clears _unmetDependencies (only Assign does),
@@ -2194,7 +2245,9 @@ public sealed class CloseoutEngine(
             obstructionSummary: obstructionSummary,
             knownHumanReviewThreadIds: snapshot.HumanThreadIds,
             knownPendingReviewRequestLogins: snapshot.PendingReviewers,
-            pullRequestHeadSha: pullRequestHeadSha));
+            pullRequestHeadSha: pullRequestHeadSha,
+            stackReplayUpstreamCommit: stackReplayUpstreamCommit,
+            stackReplayOntoCommit: stackReplayOntoCommit));
 
         // The reopen hands the pull request to a successor, so this run's watch ends
         // with it — retire it in the same transaction (TASK-MODEL.md §2.2). A lost race
@@ -2217,6 +2270,185 @@ public sealed class CloseoutEngine(
             "Task {TaskId} reopened automatically ({Kind}, lifetime {Attempt}/{Max}, obstruction lap {Lap}/{LapMax}{Grant}): {Reason}",
             task.Id, kind.Value, automaticActionsSpent + 1, _options.MaxAutomaticCloseoutRuns,
             lapsIfDispatched, _options.MaxCloseoutLapsPerObstruction, humanGranted ? " human-granted" : "", reason);
+    }
+
+    /// <summary>
+    /// One sweep's decision about a stacked child whose pull request still targets its parent's
+    /// branch (task: a stacked pull-request edge exists as an explicit opt-in dependency). Returns
+    /// true when this sweep acted — retargeted, dispatched a replay, or parked — which ends the
+    /// inspection here: everything below this call site (the conflict read, CI, review threads)
+    /// describes a diff a replay is about to supersede. Returns false when the child is still built
+    /// on its parent's current head, or when nothing could be observed, and the ordinary inspection
+    /// carries on unchanged.
+    /// <para>
+    /// Two triggers, one action. The parent's pull request merged: the child's own pull request is
+    /// retargeted onto the project's base branch, and a replay drops the parent's now-duplicated
+    /// commits (the project rebase-merges, so the parent's work is on the base under new SHAs). Or
+    /// the parent's branch was force-pushed: the base stays where it is and only the replay is
+    /// owed, onto the parent's new head. Both are the same mechanical operation with a different
+    /// <c>--onto</c>, which is why they share one follow-up kind and one budget.
+    /// </para>
+    /// <para>
+    /// Two budgets bound this path, deliberately asymmetrically. The rebase budget below is the
+    /// one a replay <em>spends</em> (<c>TaskAggregate.StackReplaysDispatched</c>), and a replay
+    /// spends nothing else — see that field's own doc for why charging the child's review budget
+    /// for its parent's activity would be wrong. But the lifetime automatic-closeout ceiling
+    /// <see cref="DispatchFollowUpOrParkAsync"/> checks still <em>applies</em>: it is the true
+    /// runaway backstop that only <c>h9k pr resolve</c> lifts (Decisions Log #80), and a child that
+    /// has already spent six automatic laps of its own AND whose parent will not stop moving is
+    /// exactly the case that wants a human, whichever counter names it. Free to spend, still
+    /// subject to the backstop.
+    /// </para>
+    /// <para>
+    /// A retarget that fails dispatches nothing. The record says so (<see cref="StackedPullRequestRetargeted"/>
+    /// carries <c>Succeeded: false</c>) and the next sweep tries again, which is right: replaying
+    /// onto the project's base while the pull request is still aimed at a deleted branch would
+    /// leave a pull request nobody can merge and nothing left to explain it. The reverse order — a
+    /// successful retarget whose reopen then loses the fence race — is safe by construction: the
+    /// rollback takes the retarget record with it, so the next sweep reads the base as unchanged and
+    /// simply retargets again, and <c>gh pr edit --base</c> on an already-retargeted pull request
+    /// succeeds.
+    /// </para>
+    /// </summary>
+    private async Task<bool> TryReplayStackedChildAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        RunDetails run,
+        ProjectDetails project,
+        long fenceVersion,
+        PullRequestSnapshot snapshot,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        StackedParentObservation observation = await stackedParents.ObserveAsync(
+            session, project, task, run, cancellationToken);
+
+        if (observation.Verdict == StackedParentVerdict.Aligned)
+        {
+            return false;
+        }
+
+        if (observation.Verdict == StackedParentVerdict.Unobservable)
+        {
+            // Nothing learned, so nothing claimed and nothing spent. Returning false — letting the
+            // ordinary inspection carry on — is deliberate rather than a bail-out: a stacked child
+            // with failing checks or unresolved threads still owes those answers, and refusing to
+            // look at them because one git call failed would strand the pull request on a transient.
+            logger.LogInformation(
+                "Task {TaskId}: stacked child not evaluated this sweep — {Detail}", task.Id, observation.Detail);
+            return false;
+        }
+
+        // Everything past here is ParentMerged or ParentMoved: the parent's branch moved out from
+        // under this child, and a replay is owed. Written as two early returns above rather than a
+        // switch precisely so that reading is explicit — a switch statement's silent fall-through
+        // would route a verdict added later into the replay path by default.
+
+        // The rebase budget (DaemonOptions.MaxStackReplayRuns). Checked before the retarget, not
+        // after: a child already past its cap must not have its pull request moved and then be
+        // parked with the replay undone — the human would inherit a branch aimed at the project's
+        // base still carrying the parent's duplicated commits, with no dispatch coming to fix it.
+        // Parking with the base untouched leaves a coherent stack for them to finish by hand.
+        if (task.StackReplaysDispatched >= _options.MaxStackReplayRuns)
+        {
+            await ParkAsync(
+                session, run,
+                $"This is a stacked pull request and {observation.Detail}. Its rebase budget is spent "
+                + $"({task.StackReplaysDispatched}/{_options.MaxStackReplayRuns} replay(s)) — the parent branch has "
+                + "kept moving faster than this branch can follow it. Rebase and retarget this pull request by "
+                + "hand, or grant another attempt with h9k pr resolve.",
+                now, cancellationToken);
+            return true;
+        }
+
+        if (observation.Verdict == StackedParentVerdict.ParentMerged)
+        {
+            StackedRetargetOutcome retarget = await TryRetargetStackedChildAsync(
+                run, project, observation.ParentBranch, cancellationToken);
+            session.Events.Append(run.Id, new StackedPullRequestRetargeted(
+                run.Id, observation.ParentBranch, project.BaseBranch, observation.BoundaryCommit,
+                retarget.Succeeded, retarget.Detail, now));
+
+            if (!retarget.Succeeded)
+            {
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogWarning(
+                    "Task {TaskId}: could not retarget stacked pull request {Url} from {ParentBranch} onto "
+                    + "{BaseBranch} — {Detail}; no replay dispatched, the next sweep tries again",
+                    task.Id, task.PullRequestUrl, observation.ParentBranch, project.BaseBranch, retarget.Detail);
+                return true;
+            }
+
+            logger.LogInformation(
+                "Task {TaskId}: stacked pull request {Url} retargeted from {ParentBranch} onto {BaseBranch}",
+                task.Id, task.PullRequestUrl, observation.ParentBranch, project.BaseBranch);
+        }
+
+        await DispatchFollowUpOrParkAsync(
+            session, task, run, fenceVersion,
+            FollowUpKind.StackReplay,
+            // The boundary is the obstruction's identity: a parent head this child has already been
+            // replayed off is the same obstruction, and a parent that moved again is mechanically a
+            // new one — the identical reading ObstructionKey's own doc gives a conflict's head
+            // commit. The per-obstruction cap is not what bounds this path (the rebase budget above
+            // is), but recording an honest identity keeps a park message truthful about what
+            // repeated.
+            [observation.BoundaryCommit],
+            snapshot,
+            $"This is a stacked pull request and {observation.Detail}. The replay is mechanical — the "
+            + "same commits onto a new base, no new intent — so it runs the gates and no review cycle.",
+            // No opening-review scope seed: a replay dispatches with ReviewStageComposition.None, so
+            // there is no Discovery cycle for a since-sha to scope (RunLauncher forces that
+            // composition for this kind).
+            now, pullRequestHeadSha: null,
+            stackReplayUpstreamCommit: observation.BoundaryCommit,
+            stackReplayOntoCommit: observation.OntoCommit,
+            cancellationToken);
+        return true;
+    }
+
+    /// <summary>What one retarget attempt did — the same shape as <see cref="MechanicalRebaseOutcome"/>, for the same reason.</summary>
+    private readonly record struct StackedRetargetOutcome(bool Succeeded, string Detail);
+
+    /// <summary>
+    /// Moves the child pull request's base from the parent's branch onto the project's own, through
+    /// the provider seam every other write in this engine goes through
+    /// (<see cref="IPullRequestInspector.RetargetAsync"/>) — the one provider write this whole
+    /// feature makes. Runs against the project's repository rather than the run's retained
+    /// worktree, which can be gone by now. A failure of any kind comes back as a plain, checkable
+    /// reason rather than an exception: the caller records it and the next sweep tries again.
+    /// </summary>
+    private async Task<StackedRetargetOutcome> TryRetargetStackedChildAsync(
+        RunDetails run, ProjectDetails project, string parentBranch, CancellationToken cancellationToken)
+    {
+        // Both halves of the pull request's identity, checked here rather than assumed from the
+        // caller's own guard: InspectAndActAsync verified the TASK's url and this RUN's number,
+        // which come from the same PullRequestOpened event but are not the same field — and a
+        // null-forgiving `!` on the url would turn a missing one into an NRE the catch below
+        // records as a failure, which is a retarget that never progresses instead of a refusal
+        // that says why (AGENTS.md's own rule about `!` where nothing guarantees non-null).
+        if (run.PullRequestNumber is not > 0 || run.PullRequestUrl is not { } pullRequestUrl)
+        {
+            return new StackedRetargetOutcome(
+                false, "this run records no pull request of its own, so there is nothing to retarget");
+        }
+
+        try
+        {
+            await inspector.RetargetAsync(
+                project.RepositoryPath, pullRequestUrl, run.PullRequestNumber.Value, project.BaseBranch,
+                cancellationToken);
+            return new StackedRetargetOutcome(true, $"retargeted from {parentBranch} onto {project.BaseBranch}");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Every provider write on this seam throws on failure (IPullRequestInspector's own
+            // convention), and this one is caught rather than left to escape for the same reason
+            // the mechanical rebase catches its own: an escape would skip the record this outcome
+            // exists to produce and abandon the rest of this run's inspection.
+            return new StackedRetargetOutcome(
+                false, $"retargeting onto {project.BaseBranch} failed: {FirstLine(exception.Message)}");
+        }
     }
 
     /// <summary>What the mechanical rebase attempt actually did, for the caller to record and act on.</summary>

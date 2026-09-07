@@ -74,6 +74,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task MergeAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
             CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task RetargetAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
+            CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     /// <summary>The ordinary case: a pull request that is still open, so dispatch proceeds.</summary>
@@ -97,6 +101,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         public Task MergeAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task RetargetAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
             CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
@@ -1187,6 +1195,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     private CloseoutEngine NewCloseoutEngine(
         DocumentStore store, NodeContext node, IPullRequestInspector inspector, IWorktreeManager worktrees) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
+            new StackedParentWatch(worktrees, NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
 
