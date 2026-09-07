@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -461,6 +462,10 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
     /// A write that the provider itself refuses can still land partway through several replies;
     /// that throws with the accepted targets named and records nothing, leaving the park
     /// unresolved so the operator can finish by hand and then resolve with <c>--post-nothing</c>.
+    /// A write that fails without ever being observed — gh's output pipe held past the drain
+    /// grace, the deadline expiring, a Ctrl+C mid-call — says so in those words instead
+    /// (<see cref="CertaintyOf"/>): "nothing was posted" is a claim, and only a refusal gh
+    /// actually reported earns it.
     /// </para>
     /// <para>
     /// The caller holds the other half of that contract: it calls this only after its own last
@@ -593,6 +598,11 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         List<ReplyOutcome> directed = [];
         foreach ((ReviewDisagreement disagreement, string body) in planned)
         {
+            // Where this one write is aimed, captured BEFORE it is attempted, because a write that
+            // failed ambiguously is exactly the one whose target the operator has to go and look at
+            // — and `directed` cannot supply it, holding by construction only the writes that
+            // returned.
+            string target = disagreement.ThreadId.IsNotBlank() ? disagreement.ThreadId : task.PullRequestUrl;
             try
             {
                 if (disagreement.ThreadId.IsNotBlank())
@@ -613,26 +623,93 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                     directed.Add(new ReplyOutcome(choice, named, task.PullRequestUrl));
                 }
             }
-            // Cancellation propagates untouched while nothing has posted, and is reported like any
-            // other failure once something has: a multi-disagreement park cancelled part-way
-            // through leaves the earlier replies already read, and an operator not told so re-runs
-            // the same choice and posts them again — the sibling of the SaveChangesAsync window's
-            // own arm above (self-review, this task).
-            catch (Exception exception) when (exception is not OperationCanceledException || directed.Count > 0)
+            // Every failure is caught here, cancellation included, and no longer only once an
+            // earlier reply has posted: the only awaits inside this try ARE the provider writes, so
+            // a Ctrl+C arriving here landed with gh mid-call rather than before it — ExternalProcess
+            // kills the tree, but the mutation may already have committed, and an operator handed a
+            // bare cancellation re-runs the same choice and the reviewer hears it twice. The
+            // sibling of the SaveChangesAsync window's own arm above (self-review, this task;
+            // extended to the in-flight window by independent pre-PR review, cycle 1, adversarial
+            // lens).
+            catch (Exception exception)
             {
+                // What the failure itself proves about THIS write, which is not always "nothing
+                // happened". Claiming it was would steer the operator into posting the identical
+                // reply a second time under their own login — both the double-post this whole
+                // ordering exists to prevent and, in the exit-0 case, a flat contradiction of an
+                // observed fact (AGENTS.md: never guess at unobserved facts).
+                PostCertainty certainty = CertaintyOf(exception);
+                string thisOne = certainty switch
+                {
+                    PostCertainty.Posted =>
+                        $"This reply DID reach the reviewer at {target} — gh exited 0, so GitHub accepted "
+                        + "the write and only its answer was lost — and it is NOT recorded on the run.",
+                    PostCertainty.MaybePosted =>
+                        $"This reply MAY have reached the reviewer at {target}: the call was cut short "
+                        + "before gh's answer was read, so whether GitHub accepted it was never observed.",
+                    _ => "Nothing was posted.",
+                };
                 string already = directed.Count == 0
-                    ? "Nothing was posted."
-                    : "Already posted, and NOT recorded on the run: "
+                    ? ""
+                    : " Earlier replies already posted, and NOT recorded on the run: "
                         + $"{string.Join(", ", directed.Select(reply => reply.PostedTarget))}.";
+                // A reply that reached the reviewer, or may have, makes "finish by hand" the wrong
+                // first move: the same words the SaveChangesAsync arm uses, for the same reason.
+                string advice = certainty == PostCertainty.NotPosted && directed.Count == 0
+                    ? "Finish by hand if the reviewer is owed a reply, then resolve with --post-nothing."
+                    : "Do NOT re-run with a reply choice — the reviewer would hear the same thing twice. "
+                        + "Read the pull request, reply by hand only where it shows the reviewer was not "
+                        + "answered, then resolve with --post-nothing.";
                 throw new DomainConflictException(
                     $"Posting the reply for task {task.Id} failed, so the park is left unresolved rather than "
-                    + $"recorded as answered. {already} {exception.Message} Finish by hand if the reviewer is "
-                    + "owed a reply, then resolve with --post-nothing.");
+                    + $"recorded as answered. {thisOne}{already} {exception.Message} {advice}");
             }
         }
 
         return directed;
     }
+
+    /// <summary>
+    /// How much a failed provider write actually says about whether the reply reached the reviewer.
+    /// An enum rather than a value object because it is an in-process outcome that is never
+    /// persisted (AGENTS.md: enums only for those).
+    /// </summary>
+    private enum PostCertainty
+    {
+        /// <summary>gh itself refused the write, so the reviewer read nothing.</summary>
+        NotPosted,
+
+        /// <summary>Nobody observed either outcome — the reply may be live on the pull request.</summary>
+        MaybePosted,
+
+        /// <summary>gh exited 0, so GitHub accepted the mutation; only its answer was never read.</summary>
+        Posted,
+    }
+
+    /// <summary>
+    /// Reads a failed post's exception for what it proves, the same way every other caller whose
+    /// tool call has an externally-visible effect reads
+    /// <see cref="ProcessOutputStuckException.ExitCode"/> (that type's own doc comment;
+    /// <c>PullRequestOpener.PushBranchAsync</c>, <c>CloseoutEngine</c>, and <c>ReviewEngine</c>
+    /// all draw the same distinction).
+    /// <para>
+    /// The stuck-output arms come first because <see cref="ProcessOutputStuckException"/> IS a
+    /// <see cref="TimeoutException"/>, and the two say opposite things: it carries an observed exit
+    /// code, so 0 means GitHub accepted the reply and anything else means gh refused it, while a
+    /// plain timeout or a cancellation carries no exit code at all and so proves nothing either
+    /// way. Everything else — gh answering non-zero, GitHub answering a mutation with an
+    /// <c>errors</c> array and mutating nothing, the operating system refusing the spawn — is an
+    /// observed refusal, which is why the default is <see cref="PostCertainty.NotPosted"/> rather
+    /// than the cautious answer.
+    /// </para>
+    /// </summary>
+    private static PostCertainty CertaintyOf(Exception exception) => exception switch
+    {
+        ProcessOutputStuckException { ExitCode: 0 } => PostCertainty.Posted,
+        ProcessOutputStuckException => PostCertainty.NotPosted,
+        TimeoutException or OperationCanceledException => PostCertainty.MaybePosted,
+        _ => PostCertainty.NotPosted,
+    };
 
     /// <summary>
     /// A pr-review task's own verdict shape: there is no diff of this task's own to fix or

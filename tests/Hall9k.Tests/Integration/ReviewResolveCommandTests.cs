@@ -306,6 +306,140 @@ public sealed class ReviewResolveCommandTests(PostgresFixture postgres) : IClass
     }
 
     /// <summary>
+    /// The post seam one layer down from the arms above: gh exited 0 — so GitHub accepted the
+    /// mutation and the reply is live under the operator's login — but a spawned helper held its
+    /// output pipe past <c>ExternalProcess.DrainGrace</c>, so <c>ExternalProcess</c> threw instead
+    /// of returning. The refusal used to read "Nothing was posted. … Finish by hand if the reviewer
+    /// is owed a reply", which contradicts an observed exit code and steers the operator into
+    /// posting the identical reply a second time — the double-post this whole ordering exists to
+    /// prevent (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_post_whose_output_stuck_after_gh_exited_zero_says_the_reply_did_reach_the_reviewer()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId) = await SeedParkedDisagreementAsync(store, node, cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.ExitedButOutputStuck(0);
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => ReviewResolveCommand.ResolveAsync(
+            session, taskId,
+            new ReviewResolveCommand.Settings { MergeReady = true, PostReplyAsWritten = true },
+            new GitHubReviewReplies(gh.Runner), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*DID reach the reviewer at PRRT_abc*")
+            .WithMessage("*Do NOT re-run with a reply choice*")
+            .Which.Message.Should().NotContain(
+                "Nothing was posted",
+                "gh's own exit code says otherwise, and this path's whole job is not to guess at "
+                + "unobserved facts");
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate run = (await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked, "the verdict never landed");
+        run.ParkedOnReviewDisagreement.Should().BeTrue("the park is still the implementer's to resolve");
+    }
+
+    /// <summary>
+    /// The same seam with gh's exit code saying the opposite: it exited non-zero, so the write was
+    /// refused and nothing reached the reviewer, however stuck its output was afterwards. The
+    /// certainty read is the exit code, not the exception type — <c>ProcessOutputStuckException</c>
+    /// carries both answers.
+    /// </summary>
+    [Fact]
+    public async Task A_post_whose_output_stuck_after_gh_failed_still_says_nothing_was_posted()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId) = await SeedParkedDisagreementAsync(store, node, cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.ExitedButOutputStuck(1);
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => ReviewResolveCommand.ResolveAsync(
+            session, taskId,
+            new ReviewResolveCommand.Settings { MergeReady = true, PostReplyAsWritten = true },
+            new GitHubReviewReplies(gh.Runner), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*Nothing was posted.*")
+            .WithMessage("*Finish by hand if the reviewer is owed a reply*");
+    }
+
+    /// <summary>
+    /// The deadline expiring mid-post: gh never answered, so whether GitHub accepted the reply was
+    /// never observed. Neither "posted" nor "nothing was posted" is a fact here, and the honest
+    /// label is the one the operator can act on — go and read the pull request (AGENTS.md: never
+    /// guess at unobserved facts).
+    /// </summary>
+    [Fact]
+    public async Task A_post_that_timed_out_mid_flight_says_the_reply_may_have_reached_the_reviewer()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId) = await SeedParkedDisagreementAsync(store, node, cts.Token);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.NeverAnswering();
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => ReviewResolveCommand.ResolveAsync(
+            session, taskId,
+            new ReviewResolveCommand.Settings { MergeReady = true, PostReplyAsWritten = true },
+            new GitHubReviewReplies(gh.Runner), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>())
+            .WithMessage("*MAY have reached the reviewer at PRRT_abc*")
+            .WithMessage("*Do NOT re-run with a reply choice*")
+            .Which.Message.Should().NotContain("Nothing was posted");
+    }
+
+    /// <summary>
+    /// Ctrl+C while gh is mid-call, with nothing posted yet: <c>ExternalProcess</c> kills the tree,
+    /// but the mutation may already have committed on GitHub's side. This used to propagate as a
+    /// bare cancellation — no mention that a post was in flight — so the operator's natural re-run
+    /// with the same reply choice could post the identical reply a second time. Distinct from the
+    /// cancellation test further down, which cancels AFTER a confirmed post and fails in the
+    /// SaveChangesAsync window (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_while_the_post_was_in_flight_says_the_reply_may_have_reached_the_reviewer()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId) = await SeedParkedDisagreementAsync(store, node, cts.Token);
+
+        // Cancelled and thrown from inside the fake gh, which is how the real seam reports it: the
+        // caller's token is what ExternalProcess's own catch checks first, and a cancelled one
+        // there rethrows the cancellation rather than naming a deadline.
+        RecordingProcessRunner gh = new(() =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+
+        await using IDocumentSession session = store.LightweightSession();
+        Func<Task> act = () => ReviewResolveCommand.ResolveAsync(
+            session, taskId,
+            new ReviewResolveCommand.Settings { MergeReady = true, PostReplyAsWritten = true },
+            new GitHubReviewReplies(gh.Runner), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainConflictException>(
+            "a bare cancellation tells the operator nothing about the post that was in flight"))
+            .WithMessage("*MAY have reached the reviewer at PRRT_abc*")
+            .WithMessage("*Do NOT re-run with a reply choice*");
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate run = (await query.Events.AggregateStreamAsync<RunAggregate>(
+            runId, token: CancellationToken.None))!;
+        run.State.Should().Be(RunState.ReviewParked, "the verdict never landed");
+        run.ParkedOnReviewDisagreement.Should().BeTrue("the park is still the implementer's to resolve");
+    }
+
+    /// <summary>
     /// The one window left between the post and the commit: the reply reaches the reviewer and the
     /// run stream moves under the resolve before its fenced append can land. Nothing is recorded —
     /// but the refusal has to SAY the reply was posted, because the operator's next move is the
