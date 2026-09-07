@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -50,6 +51,24 @@ public sealed class OrchestratorLaunchTextResolutionTests
     }
 
     [Fact]
+    public void Setting_a_blank_cli_throws()
+    {
+        Action act = () => OrchestratorLaunchTextResolution.WithText([], "  ", "some line");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("A launch-text entry needs a CLI name.");
+    }
+
+    [Fact]
+    public void Setting_blank_text_throws()
+    {
+        Action act = () => OrchestratorLaunchTextResolution.WithText([], "claude-code", "  ");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("The launch text for 'claude-code' cannot be blank.");
+    }
+
+    [Fact]
     public void ResolveStored_returns_null_when_nothing_was_ever_set_even_for_claude_code()
     {
         // Unlike Resolve, this must never fall back to the computed default: h9k orchestrator
@@ -74,12 +93,38 @@ public sealed class OrchestratorLaunchTextResolutionTests
         LaunchText measured = stored[0];
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        IReadOnlyList<LaunchText> updated = OrchestratorLaunchTextResolution.WithMeasurement(stored, measured, 21437, now);
+        IReadOnlyList<LaunchText> updated = OrchestratorLaunchTextResolution.WithMeasurement(stored, measured, 21437, now, out bool applied);
 
+        applied.Should().BeTrue();
         LaunchText claudeCode = updated.Single(entry => entry.Cli == "claude-code");
         claudeCode.Text.Should().Be("the line");
         claudeCode.MeasuredTurnOneTokens.Should().Be(21437);
         claudeCode.MeasuredAt.Should().Be(now);
         updated.Should().Contain(entry => entry.Cli == "codex" && entry.Text == "a different line");
+    }
+
+    [Fact]
+    public void Measuring_discards_the_result_when_the_text_changed_underneath_the_probe()
+    {
+        LaunchText measured = new("claude-code", "the line that was probed");
+        LaunchText[] freshlyReloaded = [measured with { Text = "a line set while the probe ran" }];
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        IReadOnlyList<LaunchText> updated = OrchestratorLaunchTextResolution.WithMeasurement(freshlyReloaded, measured, 21437, now, out bool applied);
+
+        applied.Should().BeFalse("a concurrent launch-text set replaced the line this measurement was taken against");
+        updated.Should().BeEquivalentTo(freshlyReloaded, "the concurrent edit must not be reverted by a stale measurement");
+    }
+
+    [Fact]
+    public void Measuring_discards_the_result_when_the_entry_was_removed_underneath_the_probe()
+    {
+        LaunchText measured = new("claude-code", "the line that was probed");
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        IReadOnlyList<LaunchText> updated = OrchestratorLaunchTextResolution.WithMeasurement([], measured, 21437, now, out bool applied);
+
+        applied.Should().BeFalse();
+        updated.Should().BeEmpty();
     }
 }

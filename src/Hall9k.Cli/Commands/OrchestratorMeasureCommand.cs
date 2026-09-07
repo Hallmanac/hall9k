@@ -72,9 +72,19 @@ public sealed class OrchestratorMeasureCommand : Hall9kAsyncCommand<Orchestrator
             // blocked for up to OrchestratorMeasureProbe's own timeout, and building the write
             // from the stale, pre-probe project.LaunchTexts would silently revert any
             // launch-text set that landed on this project while the probe was running
-            // (independent pre-PR review, cycle 3, adversarial lens).
+            // (independent pre-PR review, cycle 3, adversarial lens). WithMeasurement itself
+            // checks that the reloaded entry's text still matches what was probed, so a
+            // concurrent set for this exact CLI (not just some other CLI) is caught too
+            // (independent pre-PR review, cycle 1, both lenses).
             ProjectAggregate current = (await session.Events.AggregateStreamAsync<ProjectAggregate>(details.Id, token: cancellationToken))!;
-            IReadOnlyList<LaunchText> updated = OrchestratorLaunchTextResolution.WithMeasurement(current.LaunchTexts, resolved, tokens, measuredAt);
+            IReadOnlyList<LaunchText> updated = OrchestratorLaunchTextResolution.WithMeasurement(current.LaunchTexts, resolved, tokens, measuredAt, out bool applied);
+            if (!applied)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Measured {tokens} tokens, but '{settings.Cli}' changed on project '{details.Name}' while the probe ran — the measurement was discarded. Run measure again to record it against the current text.[/]");
+                return ExitCodes.Ok;
+            }
+
             BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
             ProjectSettingsChanged changed = ProjectDecider.ChangeSettings(
                 current,
@@ -102,10 +112,21 @@ public sealed class OrchestratorMeasureCommand : Hall9kAsyncCommand<Orchestrator
         int nodeTokens = await OrchestratorMeasureProbe.RunAsync(
             OrchestratorRecipeContext.NodeWorkingDirectory, AnchorPathIn(nodeResolved.Text), SettingsPathIn(nodeResolved.Text), cancellationToken);
 
+        // Re-read fresh for the same reason as the project branch above: the probe just blocked
+        // for up to OrchestratorMeasureProbe's own timeout, and WithMeasurement itself refuses to
+        // stamp the result if a concurrent launch-text set changed this CLI's text underneath it.
+        bool nodeApplied = false;
         await PlatformConfigFile.WriteOperatingSettingsAsync(
             operating => operating.LaunchTexts =
-                [.. OrchestratorLaunchTextResolution.WithMeasurement(operating.LaunchTexts ?? [], nodeResolved, nodeTokens, measuredAt)],
+                [.. OrchestratorLaunchTextResolution.WithMeasurement(operating.LaunchTexts ?? [], nodeResolved, nodeTokens, measuredAt, out nodeApplied)],
             cancellationToken);
+
+        if (!nodeApplied)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Measured {nodeTokens} tokens, but '{settings.Cli}' changed on this node while the probe ran — the measurement was discarded. Run measure again to record it against the current text.[/]");
+            return ExitCodes.Ok;
+        }
 
         AnsiConsole.MarkupLineInterpolated(
             $"[green]Measured '{settings.Cli}' on this node: {nodeTokens} tokens ({measuredAt:yyyy-MM-dd}).[/]");
