@@ -85,6 +85,13 @@ one sentence: the node owns the resource, the project owns the work.
 
 ### Finish
 
-Run `h9k orchestrator measure`, write the number into each recipe's header, and print the launch
-line for the human from `launch-text show`. Say what you discovered that the contract did not anticipate; that is feedback for
-the skill itself.
+`h9k orchestrator measure` refuses to run against a line nothing ever asked to store — that
+guard exists so a bare probe cannot freeze the computed default into `config.json`/the project's
+own stream ahead of a later release's own flag changes. On a fresh node or project (the state this
+skill always runs in) `launch-text show --cli <name>` is printing that computed default, not a
+stored one, so measure it explicitly first: run
+`h9k orchestrator launch-text set --cli <name> "<line launch-text show just printed>"` (add
+`--project <name>` in project mode) for each CLI you found installed, then
+`h9k orchestrator measure --cli <name>` (same `--project` flag). Write the number into each
+recipe's header, and print the launch line for the human from `launch-text show`. Say what you
+discovered that the contract did not anticipate; that is feedback for the skill itself.

@@ -38,41 +38,51 @@ public sealed class OrchestratorLaunchTextShowCommand : Hall9kAsyncCommand<Orche
             using var store = CliStore.Open();
             await using IQuerySession session = store.QuerySession();
             ProjectDetails project = await ProjectResolver.ResolveAsync(session, projectArg, cancellationToken);
+            bool stored = OrchestratorLaunchTextResolution.ResolveStored(project.LaunchTexts, settings.Cli) is not null;
             Print(
                 settings.Cli,
                 OrchestratorLaunchTextResolution.Resolve(
                     project.LaunchTexts,
                     settings.Cli,
                     OrchestratorRecipeContext.ProjectWorkingDirectory(project),
-                    OrchestratorRecipeContext.ProjectOpeningMessage(project.Name)));
+                    OrchestratorRecipeContext.ProjectOpeningMessage(project.Name)),
+                stored,
+                $" --project {project.Name.EscapeMarkup()}");
             return ExitCodes.Ok;
         }
 
         OperatingSettings operatingSettings = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+        bool nodeStored = OrchestratorLaunchTextResolution.ResolveStored(operatingSettings.LaunchTexts ?? [], settings.Cli) is not null;
         Print(
             settings.Cli,
             OrchestratorLaunchTextResolution.Resolve(
                 operatingSettings.LaunchTexts ?? [],
                 settings.Cli,
                 OrchestratorRecipeContext.NodeWorkingDirectory,
-                OrchestratorRecipeContext.NodeOpeningMessage));
+                OrchestratorRecipeContext.NodeOpeningMessage),
+            nodeStored,
+            string.Empty);
         return ExitCodes.Ok;
     }
 
-    private static void Print(string cli, LaunchText? resolved)
+    private static void Print(string cli, LaunchText? resolved, bool stored, string scopeSuffix)
     {
         string escapedCli = cli.EscapeMarkup();
         if (resolved is null)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]No launch text recorded for '{escapedCli}', and nothing computes a default for it.[/] "
-                + $"Set one: h9k orchestrator launch-text set --cli {escapedCli} \"<command>\"");
+                + $"Set one: h9k orchestrator launch-text set --cli {escapedCli} \"<command>\"{scopeSuffix}");
             return;
         }
 
         AnsiConsole.WriteLine(resolved.Text);
         AnsiConsole.MarkupLine(resolved is { MeasuredTurnOneTokens: { } tokens, MeasuredAt: { } at }
             ? $"[dim]Last measured: {tokens} tokens on {at:yyyy-MM-dd}.[/]"
-            : $"[dim]Last measured: not measured. Measure it: h9k orchestrator measure --cli {escapedCli}[/]");
+            : stored
+                ? $"[dim]Last measured: not measured. Measure it: h9k orchestrator measure --cli {escapedCli}{scopeSuffix}[/]"
+                : "[dim]Last measured: not measured. This is the computed default, not a stored setting — "
+                    + $"h9k orchestrator measure refuses to run against it until it is set: h9k orchestrator "
+                    + $"launch-text set --cli {escapedCli} \"<the line above>\"{scopeSuffix}[/]");
     }
 }
