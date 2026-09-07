@@ -291,7 +291,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
     /// own comparison budgets off, rather than the fixed <see cref="AdHocGateRunner.CleanBaseCheckTimeoutCap"/>
     /// alone (independent pre-PR review, cycle 1, adversarial lens, low: this project's own 11-12
     /// minute test gate timed out against that fixed cap on this path exactly the way it used to on
-    /// the daemon's, before #144). Deliberately NOT wired to the daemon's own
+    /// the daemon's, before #145). Deliberately NOT wired to the daemon's own
     /// <see cref="Hall9k.Domain.Features.Run.Documents.CleanBaseGateVerdict"/> cache, though: an
     /// operator-attended, on-demand check answers a different question from a
     /// headless run's own repeated one, and growing this path to read and write that cache too is
@@ -370,7 +370,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 // Budgeted off the gate's own most recently recorded wall-clock duration on this
                 // node, not the fixed cap alone — the identical reasoning
                 // VerificationRunner.DescribeCleanBaseComparisonAsync's own budget documents (task:
-                // the clean-base comparison can actually finish, PLAN.md §16 #144): a fixed
+                // the clean-base comparison can actually finish, PLAN.md §16 #145): a fixed
                 // five-minute cap this project's own 11-12 minute test gate could never meet timed
                 // out on this CLI path exactly as it used to on the daemon's (independent pre-PR
                 // review, cycle 1, adversarial lens, low).
