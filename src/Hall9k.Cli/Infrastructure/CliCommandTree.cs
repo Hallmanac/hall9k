@@ -133,6 +133,8 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--branch-template", "{key}-{slug}")
                 .WithExample("project", "set", "hall9k", "--auto-pr-review", "first")
                 .WithExample("project", "set", "hall9k", "--claim-gate", "tracker-assignee")
+                .WithExample("project", "set", "hall9k", "--close-linked-issue", "never")
+                .WithExample("project", "set", "hall9k", "--never-close-labels", "epic,adr")
                 .WithExample(
                     "project", "set", "hall9k", "--review-stage-composition", "none", "--accept-reduced-review");
         });
@@ -655,6 +657,8 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--review-stage-composition", "default")
                 .WithExample("task", "revise", "28b19893", "--stacked-on-pull-request", "264")
                 .WithExample("task", "revise", "28b19893", "--clear-stacked-on")
+                .WithExample("task", "revise", "28b19893", "--close-linked-issue", "on-closeout")
+                .WithExample("task", "revise", "28b19893", "--close-linked-issue", "default")
                 .WithExample("task", "revise", "28b19893", "--clear-interactive-mode");
             task.AddCommand<TaskSetReviewCapsCommand>("set-review-caps")
                 .WithDescription(
@@ -697,7 +701,8 @@ public static class CliCommandTree
                 .WithExample("task", "publish", "28b19893", "--no-existing-item")
                 .WithExample("task", "publish", "28b19893", "--untracked")
                 .WithExample("task", "publish", "28b19893", "--pre-approved")
-                .WithExample("task", "publish", "28b19893", "--pre-approved", "after-human-review");
+                .WithExample("task", "publish", "28b19893", "--pre-approved", "after-human-review")
+                .WithExample("task", "publish", "28b19893", "--close-linked-issue", "on-closeout");
             task.AddCommand<TaskAssignCommand>("assign")
                 .WithDescription(
                     "Assign a published task to an owner: the dispatch trigger, and the only way a task "
