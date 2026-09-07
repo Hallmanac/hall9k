@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Run.Queries;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -233,7 +234,8 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             // command here would make "checked, and it passes on clean base" indistinguishable
             // from "the check never happened" — the unobserved-as-observed conflation this
             // whole feature exists to prevent.
-            CleanBaseComparisonResult comparison = await DescribeCleanBaseComparisonAsync(project, gate, cancellationToken);
+            CleanBaseComparisonResult comparison =
+                await DescribeCleanBaseComparisonAsync(session, run.NodeId, project, gate, cancellationToken);
             if (comparison.Outcome == CleanBaseComparisonOutcome.NotAttempted)
             {
                 AnsiConsole.MarkupLineInterpolated($"[dim]{comparison.Detail}[/]");
@@ -283,9 +285,22 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
     /// than gating whether a comparison is made at all — the gate command genuinely did run and
     /// exit with a real code either way (independent pre-PR review, cycle 1, both lenses, sweeping
     /// the identical shape found in VerificationRunner's own version of this method).
+    /// <para>
+    /// The gate spawn's own budget is derived from the gate's own most recently recorded duration on
+    /// this node, the identical <see cref="AdHocGateRunner.ComputeComparisonBudget"/> the daemon's
+    /// own comparison budgets off, rather than the fixed <see cref="AdHocGateRunner.CleanBaseCheckTimeoutCap"/>
+    /// alone (independent pre-PR review, cycle 1, adversarial lens, low: this project's own 11-12
+    /// minute test gate timed out against that fixed cap on this path exactly the way it used to on
+    /// the daemon's, before #144). Deliberately NOT wired to the daemon's own
+    /// <see cref="Hall9k.Domain.Features.Run.Documents.CleanBaseGateVerdict"/> cache, though: an
+    /// operator-attended, on-demand check answers a different question from a
+    /// headless run's own repeated one, and growing this path to read and write that cache too is
+    /// left for a later task rather than folded into this one (independent pre-PR review, cycle 1,
+    /// conformance lens — routed away as its own follow-up).
+    /// </para>
     /// </summary>
     private static async Task<CleanBaseComparisonResult> DescribeCleanBaseComparisonAsync(
-        ProjectDetails project, VerifyCommand gate, CancellationToken cancellationToken)
+        IQuerySession session, Guid nodeId, ProjectDetails project, VerifyCommand gate, CancellationToken cancellationToken)
     {
         try
         {
@@ -352,8 +367,18 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
 
             await using (gateLock)
             {
+                // Budgeted off the gate's own most recently recorded wall-clock duration on this
+                // node, not the fixed cap alone — the identical reasoning
+                // VerificationRunner.DescribeCleanBaseComparisonAsync's own budget documents (task:
+                // the clean-base comparison can actually finish, PLAN.md §16 #144): a fixed
+                // five-minute cap this project's own 11-12 minute test gate could never meet timed
+                // out on this CLI path exactly as it used to on the daemon's (independent pre-PR
+                // review, cycle 1, adversarial lens, low).
+                TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
+                    session, project.Id, nodeId, gate.Name, cancellationToken);
+                TimeSpan comparisonTimeout = AdHocGateRunner.ComputeComparisonBudget(recentDuration, GateTimeout);
                 GateCheckResult result = await AdHocGateRunner.RunAsync(
-                    checkout, gate.Command, AdHocGateRunner.CleanBaseCheckTimeoutCap, cancellationToken);
+                    checkout, gate.Command, comparisonTimeout, cancellationToken);
                 switch (result.Outcome)
                 {
                     case GateCheckOutcome.Inconclusive:
