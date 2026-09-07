@@ -18,6 +18,21 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     // cross-process lock below is what actually serializes the two.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _repositoryLocks = new();
 
+    /// <summary>
+    /// How long <see cref="RefreshReadingCheckoutAsync"/>'s own nested checkout-lock acquisition
+    /// waits before giving up on the fast-forward — deliberately much shorter than
+    /// <see cref="AdHocGateRunner.CleanBaseCheckTimeoutCap"/>, and not derived from it, because this
+    /// wait sits *inside* the repository lock that method already holds (independent pre-PR review,
+    /// cycle 1, adversarial lens, medium): the checkout lock's other holder is typically a
+    /// clean-base comparison's own gate spawn, budgeted off the gate's own recorded duration and
+    /// able to run for up to VerifyGateTimeout (30 minutes by default), so waiting the full five
+    /// minutes of CleanBaseCheckTimeoutCap here would still pin the repository lock — and every
+    /// other CreateAsync/CheckoutExistingAsync/RemoveAsync/PruneAsync on the project — for that
+    /// whole span to reach the identical "skip the comparison, honestly" outcome a much shorter wait
+    /// already reaches.
+    /// </summary>
+    private static readonly TimeSpan CheckoutLockWaitDuringRefresh = TimeSpan.FromSeconds(5);
+
     public async Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken)
     {
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
@@ -252,21 +267,20 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             // above, and re-entering a non-reentrant SemaphoreSlim on the exact same instance is a
             // guaranteed self-deadlock, not exclusion.
             //
-            // The wait to acquire it is bounded to AdHocGateRunner.CleanBaseCheckTimeoutCap, the
-            // identical budget DescribeCleanBaseComparisonAsync/TaskVerifyCommand/ProjectSetCommand
-            // already bound their own checkout-lock acquisition to (that constant's own doc comment
-            // names this method as the fourth site sharing the budget). Left unbounded, this wait
-            // sits *inside* the repository lock acquired above, and the checkout lock it waits on
-            // can now be held for as long as a clean-base comparison's own gate run takes —
-            // VerifyGateTimeout, not the old fixed five-minute cap this branch replaced. An
-            // unbounded wait here would pin the repository lock (in-process and cross-process) for
-            // that whole span, blocking every other CreateAsync/CheckoutExistingAsync/RemoveAsync/
-            // PruneAsync on the project — including the daemon's own dispatch loop — behind a
-            // best-effort refresh (independent pre-PR review, cycle 5, conformance and adversarial
-            // lenses, high). Timing out here means only that this refresh cannot confirm the
-            // checkout is current right now; the caller already treats !UpToDate as "skip the
-            // comparison, honestly", the same outcome every other unobservable case in this method
-            // reaches.
+            // The wait to acquire it is bounded to CheckoutLockWaitDuringRefresh — deliberately NOT
+            // AdHocGateRunner.CleanBaseCheckTimeoutCap, even though every other checkout-lock waiter
+            // in the codebase uses that constant (independent pre-PR review, cycle 1, adversarial
+            // lens, medium): this wait sits *inside* the repository lock acquired above, and the
+            // checkout lock's other holder is typically a clean-base comparison's own gate spawn,
+            // now budgeted off the gate's own recorded duration rather than a fixed cap, so it can
+            // run for up to VerifyGateTimeout (30 minutes by default) — pinning CleanBaseCheckTimeoutCap's
+            // own five minutes here would still block the repository lock, and with it every other
+            // CreateAsync/CheckoutExistingAsync/RemoveAsync/PruneAsync on the project (including the
+            // daemon's own dispatch loop), for five minutes to reach the exact same outcome a much
+            // shorter wait already reaches: timing out here means only that this refresh cannot
+            // confirm the checkout is current right now, and the caller already treats !UpToDate as
+            // "skip the comparison, honestly" — the same honest skip whether this wait was five
+            // seconds or five minutes, so only the shorter one is worth paying for.
             string fullCheckoutPath = Path.GetFullPath(checkoutPath);
             IAsyncDisposable? checkoutLock;
             if (fullCheckoutPath == repositoryPath)
@@ -277,7 +291,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             {
                 using CancellationTokenSource lockBudget =
                     CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                lockBudget.CancelAfter(AdHocGateRunner.CleanBaseCheckTimeoutCap);
+                lockBudget.CancelAfter(CheckoutLockWaitDuringRefresh);
                 try
                 {
                     checkoutLock = await AcquireCheckoutLockCoreAsync(fullCheckoutPath, lockBudget.Token);
@@ -287,7 +301,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                     return new CheckoutRefresh(
                         UpToDate: false,
                         "could not acquire its checkout lock within "
-                        + $"{AdHocGateRunner.CleanBaseCheckTimeoutCap.TotalMinutes:0} minutes, so whether it "
+                        + $"{CheckoutLockWaitDuringRefresh.TotalSeconds:0} seconds, so whether it "
                         + "holds current code is unobserved");
                 }
             }
