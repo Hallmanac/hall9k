@@ -188,16 +188,28 @@ What the edge changes, and nothing else does:
   request opens against the parent's branch**, which is what forms the stack on GitHub.
 - **Its diff, review packet, self-review hunt and end-of-work recompose are all computed against
   the parent's branch**, so its reviewers read the child's own delta rather than the parent's
-  already-reviewed work alongside it.
+  already-reviewed work alongside it. The build session's own recompose and self-review range name
+  the recorded fork point as a *commit*, not the parent branch as a ref: a parent that force-pushes
+  a review lap mid-session moves that ref, and a recompose reset to the resulting merge base would
+  rewrite the parent's commits as the child's own history.
+- **It is never rebased onto its parent's branch mid-run.** The pre-final-pass rebase that keeps an
+  ordinary branch mergeable-on-arrival is skipped for a stacked child, for the same reason the
+  boundary below is a recorded commit — a plain merge-base rebase onto a force-pushed parent
+  replays the child's copies of the parent's commits against the parent's new ones. A parent that
+  moves is answered by the mechanical replay below, not by a rebase.
 - **It is not at the merge bar until it is retargeted.** The board never tells you "the merge is
   yours" about a pull request aimed at its parent's branch, and a pre-approved one is not
   auto-merged either.
 - **When the parent merges, the daemon retargets the child onto the base branch** and dispatches a
-  *mechanical replay*: one `git rebase --onto`, between two exact commits — the fork point the
-  child's run recorded when its branch was cut, and the freshly observed commit it lands on. That
+  *mechanical replay*: one `git rebase --onto`, between two exact commits — the boundary everything
+  at or before which belongs to the parent, and the freshly observed commit it lands on. That
   boundary drops the parent's now-duplicated commits (the project rebase-merges, so they land on
-  the base under new shas). It is a recorded fact rather than a `git merge-base`, because a
-  force-pushed parent rewrites the shared history and merge-base then gives the wrong answer. The
+  the base under new shas). It is the parent's own head where the child's branch still contains it
+  (observed directly), and the fork point the child's run recorded at its cut where it does not —
+  never a `git merge-base`, because a force-pushed parent rewrites the shared history and merge-base
+  then gives the wrong answer. Nothing moves the pull request's base unless the replay is actually
+  going to be dispatched: if the child is out of budget or otherwise owed a park, it parks with the
+  stack left intact rather than aimed at the base with the replay undone. The
   replay runs the gates and triggers **no review cycle** — nothing new entered the branch, so there
   is nothing for a reviewer to have an opinion about.
 - **A parent force-push while the child is Delivered dispatches the same replay** onto the parent's

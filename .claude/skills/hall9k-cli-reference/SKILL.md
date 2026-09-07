@@ -164,12 +164,14 @@ its pull request opens **against the parent's branch**, forming a GitHub stack; 
 packet, self-review hunt and end-of-work recompose are all computed against the parent's branch, so
 its reviewers read the child's own delta; it is **not at the merge bar** while its pull request is
 still aimed at the parent (the board never says "the merge is yours" and a pre-approved child is
-not auto-merged); and when the parent merges — or force-pushes — the daemon retargets the child
-onto the base branch and dispatches a **mechanical replay** (one `git rebase --onto` between two
-exact commits — the fork point the child's run recorded at its cut, and the freshly observed commit
-it lands on — then the gates, and no review cycle at all, since nothing new entered the branch; the
-boundary is recorded rather than derived from `git merge-base`, which a force-pushed parent makes
-wrong).
+not auto-merged); and when the parent's branch moves out from under it the daemon dispatches a
+**mechanical replay** (one `git rebase --onto` between two exact commits — the boundary everything
+at or before which is the parent's, and the freshly observed commit it lands on — then the gates,
+and no review cycle at all, since nothing new entered the branch; the boundary is observed or
+recorded, never derived from `git merge-base`, which a force-pushed parent makes wrong). A **merged**
+parent additionally retargets the child's pull request onto the project's base branch, since the
+parent's branch is going away; a **force-pushed** parent does not — the base stays the parent's
+branch and only the replay is owed.
 The replay is bounded by the child's own rebase budget (`DaemonOptions.MaxStackReplayRuns`,
 default 12, separate from the lifetime closeout ceiling so a busy parent cannot spend the child's
 review budget); past the cap the child parks with the reason. Reserve the edge for slices of one
