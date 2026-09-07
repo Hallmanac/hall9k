@@ -1456,6 +1456,26 @@ public sealed partial class VerificationRunner(
                 return null;
             }
 
+            // Never cached, never reported as an observation of the base branch: an environmental
+            // hiccup in the comparison's own gate run (a dropped Postgres connection, Testcontainers
+            // failing to bring a container up, MSB4166) says nothing about whether main itself is
+            // broken, and AdHocGateRunner's own doc comment is explicit that it carries no
+            // infrastructure classification or retry of its own — this method is the caller that
+            // has to supply it. Without this check, a single flaky infrastructure failure would be
+            // persisted as a conclusive CleanBaseGateVerdict with basePasses: false and replayed
+            // verbatim on every later run against this base commit, telling a human "main is broken"
+            // on the strength of one bad environment, not one bad commit (independent pre-PR review,
+            // cycle 5, adversarial lens, medium). This is the identical classifier
+            // VerificationRunner's own RunGateAsync already applies to the run's own real gate above.
+            if (GateInfrastructureFailureClassifier.IsInfrastructureFailure(result.OutputTail))
+            {
+                logger.LogInformation(
+                    "Run {RunId}: the clean-base comparison for gate '{Gate}' hit an infrastructure " +
+                    "failure, not a real result, and was not recorded — {Detail}",
+                    runId, gate.Name, result.OutputTail);
+                return null;
+            }
+
             string checkoutDescription = CheckoutCleanliness.DescribeCheckoutForComparison(checkout, project.BaseBranch, uncleanNote);
             string note = baseCommitSha is null
                 ? $"Gate '{gate.Name}' also fails when run against {checkoutDescription}: {result.OutputTail}"
