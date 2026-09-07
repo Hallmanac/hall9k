@@ -80,4 +80,86 @@ public static class ClaudeSettingsFile
         long maxMilliseconds = defaultMilliseconds * 2;
         return $$$"""{"includeCoAuthoredBy": false, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}}""";
     }
+
+    /// <summary>
+    /// A review lap's own settings (<c>h9k pr review</c>, Decisions Log #149): everything
+    /// <see cref="Build"/> imposes, plus the push guard. A lap reads somebody else's pull request
+    /// in a checkout it does not own, so the one thing a session in it must never be able to do
+    /// is write to that pull request or to its remote — and a rule in the prompt is a request,
+    /// while a <c>permissions.deny</c> entry is refused by Claude Code's own permission engine
+    /// before the tool runs.
+    /// <para>
+    /// <b>Why deny is the mechanism and a git hook is not.</b> The obvious guard is a
+    /// <c>pre-push</c> hook in the review worktree, and it cannot be installed there: git resolves
+    /// hooks from the clone's single shared hooks directory, so a hook written for this one
+    /// worktree fires for every other worktree of the same clone — including the build sessions
+    /// whose pushes the daemon legitimately makes. Making it per-worktree means enabling
+    /// <c>extensions.worktreeConfig</c>, which changes how <c>core.bare</c> is read on the bare
+    /// clone this platform's worktrees hang off, repository-wide, to serve one temporary checkout.
+    /// The session-level deny costs nothing and is scoped to exactly the session it is for.
+    /// </para>
+    /// <para>
+    /// <c>git commit</c> is deliberately NOT denied. The lap's checkout is detached with no local
+    /// branch, so a commit there moves nothing, and the reviewer's own end-to-end tests have to be
+    /// committable somewhere — denying commit outright would block the one kind of writing a lap
+    /// is explicitly for. What is denied is every way the work leaves this machine: the push
+    /// itself, and the GitHub write surfaces that would let a session post a review, a comment or
+    /// a merge the reviewer never ran (the verdict travels through <c>h9k pr approve</c> /
+    /// <c>h9k pr request-changes</c> under the reviewer's own login, which is the only thing that
+    /// makes it theirs).
+    /// </para>
+    /// </summary>
+    public static string BuildForReviewLap(TimeSpan commandTimeout)
+    {
+        long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
+        long maxMilliseconds = defaultMilliseconds * 2;
+        string deny = string.Join(", ", ReviewLapDeniedTools.Select(tool => $"\"{tool}\""));
+        return $$$"""{"includeCoAuthoredBy": false, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}, "permissions": {"deny": [{{{deny}}}]}}""";
+    }
+
+    /// <summary>
+    /// The exact rules <see cref="BuildForReviewLap"/> denies. Public so the lap's own guard file
+    /// in the worktree and the guard the run directory's settings file carries are built from one
+    /// list rather than two that can drift — and so a test can assert the list itself rather than
+    /// a substring of rendered JSON.
+    /// <para>
+    /// <c>git push</c> is matched on the subcommand rather than on the whole command line, so it
+    /// catches every form of it, including one with the remote and refspec spelled out. The
+    /// <c>gh</c> rules name the four write verbs that reach a pull request; a read
+    /// (<c>gh pr view</c>, <c>gh pr diff</c>) is untouched, because reading the pull request is
+    /// most of what a lap does.
+    /// </para>
+    /// <para>
+    /// <c>gh api</c> is denied alongside them, and it is the rule this list was first written
+    /// without (independent pre-PR review, cycle 1, both lenses). It is not a fifth write verb —
+    /// it is the write surface this list's whole point reaches through:
+    /// <c>GitHubPullRequestSurface.PostReviewAsync</c>, this platform's own poster, uses
+    /// <c>gh api .../pulls/&lt;n&gt;/reviews</c> precisely because <c>gh pr review</c> takes no
+    /// line comments — so a session denied the four verbs could still post a review, or start a
+    /// thread with <c>gh api .../issues/&lt;n&gt;/comments</c>, under the reviewer's own login
+    /// (AGENTS.md's never-start-a-review-thread rule, origin incident 2026-08-20). Denying the
+    /// whole subcommand costs a lap nothing, because every read it makes goes through
+    /// <c>gh pr view</c> / <c>gh pr diff</c>.
+    /// </para>
+    /// <para>
+    /// What this list is, stated plainly so nothing downstream describes it as more: a
+    /// session-level permission deny, matched by Claude Code's own engine on the command as it is
+    /// spelled. It refuses the ordinary way to reach each of these, which is what a session
+    /// actually reaches for — and it is not a sandbox, because a command spelled around the
+    /// prefix (<c>git -C &lt;path&gt; push</c>) does not match it, and
+    /// <c>--dangerously-skip-permissions</c> voids the whole engine (which is why the lap's own
+    /// handoff never prints that flag, unlike <c>h9k task work</c>'s, whose project setting can
+    /// ask for it). The honest enforcement story stays node-signed authorship in the P2P identity
+    /// layer (PLAN.md §16 #38-#58).
+    /// </para>
+    /// </summary>
+    public static readonly IReadOnlyList<string> ReviewLapDeniedTools =
+    [
+        "Bash(git push:*)",
+        "Bash(gh pr review:*)",
+        "Bash(gh pr comment:*)",
+        "Bash(gh pr merge:*)",
+        "Bash(gh pr close:*)",
+        "Bash(gh api:*)",
+    ];
 }
