@@ -134,7 +134,9 @@ briefing is deliberately factual — no test scenarios, no areas of concern, no 
 order; the session offers all of that the moment you ask, and helps with local setup, running the
 suites, or writing end-to-end tests. It never commits to or pushes the pull request's branch (the
 session is denied `git push`; every `gh pr` write verb, `update-branch` and `edit` included, so
-neither the branch nor the description moves under your login; `gh api`, the endpoint they all
+neither the branch nor the description moves under your login; every `gh issue` write verb too,
+since issues and pull requests share one number space and one resource, so `gh issue comment` on
+the pull request's number would comment on the pull request; `gh api`, the endpoint they all
 reach and the one this platform's own poster uses; and the two verdict commands below, which are
 yours to run and not the session's), and tests you write go to a branch of your own the
 session offers to stack on the pull request.
