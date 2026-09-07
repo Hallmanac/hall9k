@@ -15,6 +15,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Tasks.Rendering;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -169,6 +170,23 @@ public sealed class RunLauncher(
                 await CleanUpPreviousPrReviewWorktreesAsync(taskId, project, cancellationToken);
             }
 
+            // The branch this run's work sits on top of, resolved once here and frozen on
+            // RunDispatched below (task: a stacked pull-request edge exists as an explicit opt-in
+            // dependency). Every downstream consumer — the worktree's start point, the diff range
+            // the reviewers read, `gh pr create --base`, the pre-final-pass rebase — reads the
+            // recorded value rather than project.BaseBranch, so the four can never disagree about
+            // which branch this pull request is a delta against. A pr-review run is excluded: its
+            // checkout is a detached, branch-less read of a foreign pull request whose own base is
+            // already recorded separately as PrReviewBaseRefName.
+            StackedBase stackedBase = isPrReview
+                ? new StackedBase(project.BaseBranch, null, "a pr-review run has no base of its own to stack")
+                : await StackedBaseResolver.ResolveAsync(session, task, project, cancellationToken);
+            if (stackedBase.IsStacked)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: run {RunId} is {Reason}", taskId, runId, stackedBase.Reason);
+            }
+
             (Worktree worktree, bool resumesPreviousWork) = isPrReview
                 ? (await worktrees.CreatePrReviewCheckoutAsync(
                     new PrReviewWorktreeRequest(project.RepositoryPath, prReviewFacts!.Number, taskId, runId),
@@ -177,7 +195,8 @@ public sealed class RunLauncher(
                     ? (await worktrees.CheckoutExistingAsync(
                         new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
                         cancellationToken), true)
-                    : await CheckoutFreshOrRetryAsync(task, project, taskId, runId, cancellationToken);
+                    : await CheckoutFreshOrRetryAsync(
+                        task, project, stackedBase.BaseBranch, taskId, runId, cancellationToken);
 
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
@@ -207,10 +226,25 @@ public sealed class RunLauncher(
             // lenses) is the only value that is ever actually true of a pr-review run — recording
             // anything else would repeat the exact "h9k task show states a pipeline shape the run
             // never honors" defect for a project- or node-wide override instead of a task one.
+            // A stacked replay is mechanical by construction (FollowUpKind.StackReplay's own doc):
+            // git replaying commits that already passed review onto a moved base is not new
+            // intent, so no reviewer reads it — the composition is forced to None here, the same
+            // way a pr-review run's is forced to FullPipeline, rather than left to the task/
+            // project/node chain that has no idea which follow-up kind this is. ReviewStageComposition
+            // .None still runs the gates and still rebases before settling, which is exactly the
+            // "runs the gates, triggers no review cycle" this follow-up owes.
+            //
+            // Deliberately NOT routed through ReviewStageCompositionValidation's acknowledgment
+            // gate: that gate exists so a HUMAN cannot silently waive Decisions Log #92's
+            // review guarantee. There is no guarantee to waive here — nothing entered this branch
+            // for a reviewer to have an opinion about — so there is no consequence to attest to.
+            bool isStackReplay = followUp is not null && task.FollowUpKind == FollowUpKind.StackReplay;
             ReviewStageComposition reviewStageComposition = isPrReview
                 ? ReviewStageComposition.FullPipeline
-                : ReviewStageCompositionResolver.Resolve(
-                    task.ReviewStageComposition, project.ReviewStageComposition, options.Value.ReviewStageComposition);
+                : isStackReplay
+                    ? ReviewStageComposition.None
+                    : ReviewStageCompositionResolver.Resolve(
+                        task.ReviewStageComposition, project.ReviewStageComposition, options.Value.ReviewStageComposition);
 
             // Resolved once, here, exactly like the worktree above: this run's directory is
             // under the task's own directory when the project has a home (backlog 49), and
@@ -256,7 +290,9 @@ public sealed class RunLauncher(
                         ? SessionRoleName.Checks
                         : task.FollowUpKind == FollowUpKind.Rebase
                             ? SessionRoleName.Rebase
-                            : SessionRoleName.Build
+                            : task.FollowUpKind == FollowUpKind.StackReplay
+                                ? SessionRoleName.StackReplay
+                                : SessionRoleName.Build
                     : SessionRoleName.Build;
             string sessionName = SessionRoleName.For(DomainId.Short(taskId), sessionRole);
 
@@ -272,7 +308,24 @@ public sealed class RunLauncher(
                 PrReviewBaseRefName: prReviewFacts?.BaseRefName, SessionName: sessionName,
                 ReviewStageComposition: reviewStageComposition,
                 DispatchingNodeId: dispatchingNodeId ?? nodeId,
-                OpeningReviewSinceSha: followUp is not null ? task.FollowUpPullRequestHeadSha : null));
+                OpeningReviewSinceSha: followUp is not null ? task.FollowUpPullRequestHeadSha : null,
+                // Recorded as the project's own base branch's NAME only when it differs — blank
+                // means "the project's own", which is what keeps every unstacked run's stream and
+                // every stream written before this field byte-identical in meaning (the field's
+                // own doc). A stacked replay is the one follow-up whose base moves: closeout has
+                // already retargeted the pull request onto the project's base by the time it
+                // reopens, so the resolver's answer for it is the project's base too.
+                BaseBranch: stackedBase.BaseBranch == project.BaseBranch ? string.Empty : stackedBase.BaseBranch,
+                // This branch's fork point, observed at the moment it was true (the field's own
+                // doc): the start point a fresh cut resolved, the commit a replay is dispatched to
+                // land on, or — for any other follow-up, which resumes the branch without moving
+                // it — whatever the run before this one recorded. Blank when none of the three
+                // could be observed, which is what stops a later replay from inventing a boundary.
+                BaseCommit: isStackReplay
+                    ? task.StackReplayOntoCommit ?? string.Empty
+                    : followUp is not null
+                        ? await PreviousRunBaseCommitAsync(session, task, runId, cancellationToken)
+                        : worktree.StartPointCommit));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
@@ -304,14 +357,20 @@ public sealed class RunLauncher(
                 prompt = task.FollowUpKind == FollowUpKind.FailingChecks
                     ? AgentPromptBuilder.BuildFixChecks(
                         task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
-                        interactiveMilestoneAddress: null)
+                        interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch)
                     : task.FollowUpKind == FollowUpKind.Rebase
                         ? AgentPromptBuilder.BuildRebase(
                             task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
-                            interactiveMilestoneAddress: null)
-                        : AgentPromptBuilder.BuildFollowUp(
-                            task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
-                            interactiveMilestoneAddress: null);
+                            interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch)
+                        : isStackReplay
+                            ? AgentPromptBuilder.BuildStackReplay(
+                                task, project, worktree.Branch, review.PullRequestUrl,
+                                stackedBase.BaseBranch,
+                                task.StackReplayUpstreamCommit ?? string.Empty,
+                                task.StackReplayOntoCommit ?? string.Empty)
+                            : AgentPromptBuilder.BuildFollowUp(
+                                task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
+                                interactiveMilestoneAddress: null, baseBranch: stackedBase.BaseBranch);
             }
             else
             {
@@ -332,7 +391,8 @@ public sealed class RunLauncher(
                 // (independent pre-PR review, cycle 1, adversarial lens; AGENTS.md and
                 // docs/scope.md say so plainly).
                 prompt = AgentPromptBuilder.Build(
-                    task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs);
+                    task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
+                    baseBranch: stackedBase.BaseBranch);
             }
 
             SpawnedAgent agent = await executor.SpawnAsync(
@@ -668,8 +728,16 @@ public sealed class RunLauncher(
     /// path won, so the prompt tells a resuming agent to review the previous attempt's
     /// work — possibly uncommitted in the retained worktree — before starting over.
     /// </summary>
+    /// <summary>
+    /// <paramref name="baseBranch"/> is the resolved base this run sits on — the project's own for
+    /// every ordinary task, a stacked child's parent branch instead (<see cref="StackedBaseResolver"/>).
+    /// A retry resuming its own previous branch never consults it: that branch was already cut from
+    /// whatever base the earlier attempt resolved, and the retry is continuing that work rather
+    /// than re-basing it.
+    /// </summary>
     private async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
-        TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, CancellationToken cancellationToken)
+        TaskDetails task, ProjectDetails project, string baseBranch, Guid taskId, Guid runId,
+        CancellationToken cancellationToken)
     {
         if (task.RetryBranch.IsNotBlank())
         {
@@ -683,15 +751,43 @@ public sealed class RunLauncher(
             {
                 logger.LogInformation(
                     "Retry of task {TaskId} cannot resume branch {Branch} ({Reason}); starting clean from {BaseBranch}",
-                    taskId, task.RetryBranch, exception.Message, project.BaseBranch);
+                    taskId, task.RetryBranch, exception.Message, baseBranch);
             }
         }
 
         return (await worktrees.CreateAsync(
             new WorktreeRequest(
-                project.RepositoryPath, project.BaseBranch, taskId, runId, task.Objective,
+                project.RepositoryPath, baseBranch, taskId, runId, task.Objective,
                 project.BranchNameTemplate, task.ExternalReference),
             cancellationToken), false);
+    }
+
+    /// <summary>
+    /// The fork point the run before this one recorded, for a follow-up that resumes this task's
+    /// existing branch: resuming a branch does not move where it forked from, so the fact carries
+    /// forward rather than being re-observed (and there is nothing to re-observe it against —
+    /// <c>RunDispatched.BaseCommit</c>'s own doc explains why git cannot recover it). Blank when no
+    /// prior run recorded one, which is every stream written before that field.
+    /// <para>
+    /// The previous run is the newest entry in <see cref="TaskDetails.RunIds"/> that is not
+    /// <paramref name="runId"/> — deliberately not <c>CurrentRunId</c>, which by this point already
+    /// names THIS run: the claim that produced it committed before the launcher was called, and its
+    /// own run stream does not exist yet, so reading it would resolve nothing and silently blank the
+    /// fork point on every follow-up (found in this task's own round-two self-review, after the
+    /// first cut did exactly that).
+    /// </para>
+    /// </summary>
+    private static async Task<string> PreviousRunBaseCommitAsync(
+        IQuerySession session, TaskDetails task, Guid runId, CancellationToken cancellationToken)
+    {
+        Guid previousRunId = task.RunIds.LastOrDefault(id => id != runId);
+        if (previousRunId == Guid.Empty)
+        {
+            return string.Empty;
+        }
+
+        RunDetails? previous = await session.LoadAsync<RunDetails>(previousRunId, cancellationToken);
+        return previous?.BaseCommit ?? string.Empty;
     }
 
     private async Task RecordLaunchFailureAsync(

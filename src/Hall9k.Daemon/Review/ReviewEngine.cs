@@ -1408,7 +1408,12 @@ public sealed class ReviewEngine(
         bool interactiveModeEnabled = await IsInteractiveModeEnabledAsync(context.TaskId, cancellationToken);
         string prompt = AgentPromptBuilder.BuildReview(
             context.Task, context.Project, context.Run.Branch, cycle, lens, mode, context.PriorRulings,
-            priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions, sinceSha: sinceSha,
+            priorHumanDirectedInteractions: context.PriorHumanDirectedInteractions,
+            // Null for every ordinary run; a stacked child's parent branch instead, so this pass's
+            // diff range is the child's own delta rather than the parent's work alongside it
+            // (task: a stacked pull-request edge exists as an explicit opt-in dependency).
+            mechanicsOverride: context.StackedMechanics,
+            sinceSha: sinceSha,
             priorBoundaryApprovals: context.PriorBoundaryApprovals,
             interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName,
             interactiveModeEnabledOverride: interactiveModeEnabled);
@@ -1483,7 +1488,8 @@ public sealed class ReviewEngine(
             sinceSha, priorCycleMode, priorCycleSinceSha, context.PriorRulings,
             context.PriorHumanDirectedInteractions, context.PriorBoundaryApprovals,
             interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName,
-            interactiveModeEnabledOverride: interactiveModeEnabled);
+            interactiveModeEnabledOverride: interactiveModeEnabled,
+            baseBranch: context.BaseBranch);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -1679,10 +1685,12 @@ public sealed class ReviewEngine(
         string prompt = resumesRebaseDispute
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings,
-                context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled)
+                context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
+                baseBranch: context.BaseBranch)
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
-                context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled);
+                context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
+                baseBranch: context.BaseBranch);
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
@@ -1829,7 +1837,7 @@ public sealed class ReviewEngine(
         }
 
         string worktreePath = context.Run.WorktreePath;
-        string baseBranch = context.Project.BaseBranch;
+        string baseBranch = context.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
 
         // Checked before anything else touches the worktree — the same guard
@@ -1848,9 +1856,10 @@ public sealed class ReviewEngine(
 
         // A follow-up run reuses whatever pull request the task already has open, and that pull
         // request's base can have been retargeted away from the project's own base branch on
-        // GitHub itself (the stacked-PR shape AGENTS.md documents as current practice) — the same
-        // fact CloseoutEngine's own mechanical rebase checks before ever touching git, for the
-        // same reason (independent pre-PR review, cycle 1, both lenses): rebasing onto
+        // GitHub itself, and this platform now retargets one itself when a stacked child's parent
+        // merges (Decisions Log #144) — the same fact CloseoutEngine's own mechanical rebase
+        // checks before ever touching git, for the same reason (independent pre-PR review,
+        // cycle 1, both lenses): rebasing onto
         // baseBranch in that case would silently rewrite the branch onto a base it was never
         // meant to be on. A fresh run has no pull request yet, so there is nothing to retarget and
         // this is skipped entirely; a read failure is treated the same as "no mismatch observed" —
@@ -2317,7 +2326,7 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        string baseBranch = context.Project.BaseBranch;
+        string baseBranch = context.BaseBranch;
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string rebasedFromCommit = "unknown";
         string rebasedOntoCommit = "unknown";
@@ -2381,7 +2390,7 @@ public sealed class ReviewEngine(
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
         string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
             context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
-            humanGuidance, rebaseStillInProgress);
+            humanGuidance, rebaseStillInProgress, baseBranch: context.BaseBranch);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = RebaseRecoveryArtifactName(sessionId);
@@ -2486,7 +2495,7 @@ public sealed class ReviewEngine(
         bool recordAsResolved = outcome == ReviewFixOutcome.Fixed
             || (outcome == ReviewFixOutcome.Unknown
                 && await RebaseActuallyLandedAsync(
-                    context.Run.WorktreePath, context.Run.Branch, context.Project.BaseBranch, cancellationToken));
+                    context.Run.WorktreePath, context.Run.Branch, context.BaseBranch, cancellationToken));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
@@ -2498,7 +2507,7 @@ public sealed class ReviewEngine(
             // read at dispatch time: the recovery session's own fetch can have picked up a later
             // commit while it ran (ResolveObservedOntoCommitAsync's own doc).
             string observedOntoCommit = await ResolveObservedOntoCommitAsync(
-                context.Run.WorktreePath, context.Project.BaseBranch, cancellationToken);
+                context.Run.WorktreePath, context.BaseBranch, cancellationToken);
 
             // Records the resolution as a completed rebase, the same event a clean git-only apply
             // appends, so h9k task show renders one consistent outcome regardless of which path
@@ -3094,7 +3103,10 @@ public sealed class ReviewEngine(
                 try
                 {
                     TaskAdded added = ReviewDraftBugTask.Compose(
-                        draftTaskId, context.Task, context.RunId, context.Run.Branch, context.Project.BaseBranch,
+                        // This run's own base, not the project's: the "pre-existing on <base>"
+                        // sentence the routed draft carries has to name the branch the reviewer's
+                        // out-of-scope tag was actually measured against.
+                        draftTaskId, context.Task, context.RunId, context.Run.Branch, context.BaseBranch,
                         lens, cycle, finding, now, context.Run.OwnerId);
                     session.Events.StartStream<TaskAggregate>(draftTaskId, added);
                     routed.Add(new RoutedFinding(lens, finding, draftTaskId, null));
@@ -5405,5 +5417,27 @@ public sealed class ReviewEngine(
         Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project,
         IReadOnlyList<ReviewParkResolution> PriorRulings,
         IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions,
-        IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals);
+        IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals)
+    {
+        /// <summary>
+        /// The branch this run's work sits on top of, as resolved once at dispatch and recorded on
+        /// <c>RunDispatched.BaseBranch</c> — the project's own for every ordinary run, a stacked
+        /// child's parent branch instead (task: a stacked pull-request edge exists as an explicit
+        /// opt-in dependency). Every base-branch read in this engine goes through here rather than
+        /// <c>Project.BaseBranch</c>, so the range this run's reviewers read, the base its
+        /// pre-final-pass rebase targets, and the base its pull request was opened against are all
+        /// the same branch.
+        /// </summary>
+        public string BaseBranch => Run.BaseBranchOr(Project.BaseBranch);
+
+        /// <summary>
+        /// What <c>AppendReviewMechanics</c> needs told when this run's base is not the project's
+        /// own — the base branch alone, every other mechanic unchanged. Null for an ordinary run,
+        /// which is what keeps every unstacked review prompt byte-identical.
+        /// </summary>
+        public AgentPromptBuilder.ReviewMechanicsOverride? StackedMechanics =>
+            BaseBranch == Project.BaseBranch
+                ? null
+                : new AgentPromptBuilder.ReviewMechanicsOverride(BaseBranch);
+    }
 }

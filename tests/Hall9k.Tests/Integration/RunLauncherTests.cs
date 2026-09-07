@@ -808,6 +808,301 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// A stacked child's dispatch (task: a stacked pull-request edge exists as an explicit opt-in
+    /// dependency): the branch is cut from the PARENT's branch head rather than from the project's
+    /// base, and that base is recorded once on <c>RunDispatched</c> so the pull request's own
+    /// <c>--base</c>, the review packet's diff range, and the pre-final-pass rebase all read the
+    /// same branch. Recording it wrongly here is the one-directional hazard: everything downstream
+    /// trusts this value, so a child cut from main would open a pull request whose diff contains
+    /// the parent's already-reviewed work.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_child_is_cut_from_its_parents_branch_and_records_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid parentTaskId = DomainId.New();
+        Guid parentRunId = DomainId.New();
+        Guid childTaskId = DomainId.New();
+        Guid childRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string parentBranch = "task/parent-slice-one";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"stacked-launch-{childTaskId:N}",
+                "/tmp/stacked-launch-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            // The parent, Delivered: its run carries the branch a stacked child builds on, which is
+            // where the launcher reads it from — the branch name lives on the run, never the task.
+            (TaskAggregate parent, object[] parentLifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    parentTaskId, projectId, "Parent slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed parentClaimed =
+                TaskDecider.Claim(parent, node.NodeId, node.OwnerId, parentRunId, Now);
+            parent.Apply(parentClaimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted parentCompleted =
+                TaskDecider.Complete(parent, parentRunId, "https://github.com/x/y/pull/7", Now);
+            session.Events.StartStream<TaskAggregate>(
+                parentTaskId, [.. parentLifecycle, parentClaimed, parentCompleted]);
+            session.Events.StartStream<RunAggregate>(parentRunId,
+                new RunDispatched(parentRunId, parentTaskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/parent-wt", parentBranch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(parentRunId, Now),
+                new VerificationPassed(parentRunId, Now),
+                new PullRequestOpened(parentRunId, "https://github.com/x/y/pull/7", 7, Now));
+
+            // The child, declared stacked on it and claimed — which the parent's Delivered allows.
+            TaskDependencyGraph graph = new([
+                new TaskDependency(
+                    parentTaskId, "Parent slice", TaskState.Done, IsClosedOut: false, RunState.AwaitingReview,
+                    "https://github.com/x/y/pull/7", TaskType.Feature, []),
+            ]);
+            (TaskAggregate child, object[] childLifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    childTaskId, projectId, "Child slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId,
+                    blockedBy: [parentTaskId], stackedOnTaskId: parentTaskId),
+                node.OwnerId, Now, graph);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed childClaimed =
+                TaskDecider.Claim(child, node.NodeId, node.OwnerId, childRunId, Now);
+            session.Events.StartStream<TaskAggregate>(childTaskId, [.. childLifecycle, childClaimed]);
+            session.Store(new TaskLease
+            {
+                Id = childTaskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(childTaskId, childRunId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        worktrees.CreateRequests.Should().ContainSingle().Which.BaseBranch.Should().Be(
+            parentBranch, "the child's branch is cut from the parent's branch head, not from main");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(childRunId, cts.Token))!;
+        run.BaseBranch.Should().Be(parentBranch);
+        run.StackedOnBranch.Should().Be(parentBranch);
+        run.BaseBranchOr("main").Should().Be(parentBranch, "the pull request opens against the parent's branch");
+
+        executor.Request!.Prompt.Should().Contain($"git diff origin/{parentBranch}...HEAD",
+            "the session's own self-review hunt reads this branch's delta against the parent");
+    }
+
+    /// <summary>
+    /// The unstacked half of the same fact: an ordinary task records a BLANK base branch, which is
+    /// what <c>RunDetails.BaseBranch</c> means by "the project's own" — the invariant that lets the
+    /// CLI's composers tell a stacked run from an ordinary one with no project in hand.
+    /// </summary>
+    [Fact]
+    public async Task An_unstacked_dispatch_records_no_base_branch_of_its_own()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"unstacked-launch-{taskId:N}",
+                "/tmp/unstacked-launch-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Ordinary work", ["it works"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        worktrees.CreateRequests.Should().ContainSingle().Which.BaseBranch.Should().Be("main");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.BaseBranch.Should().BeEmpty("blank means the project's own base — nothing to back-fill, ever");
+        run.StackedOnBranch.Should().BeNull();
+        run.BaseBranchOr("main").Should().Be("main");
+    }
+
+    /// <summary>
+    /// <see cref="StubWorktreeManager"/> with the requests kept, so a test can assert what the
+    /// launcher actually asked to cut from rather than only what the run stream records afterwards.
+    /// </summary>
+    private sealed class RequestCapturingWorktreeManager : IWorktreeManager
+    {
+        public List<WorktreeRequest> CreateRequests { get; } = [];
+
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken)
+        {
+            CreateRequests.Add(request);
+            return Task.FromResult(new Worktree(
+                Path.Combine(Path.GetTempPath(), $"hall9k-wt-{request.RunId:N}"),
+                "task/child-slice-two", request.BaseBranch));
+        }
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new Worktree(
+                Path.Combine(Path.GetTempPath(), $"hall9k-wt-{request.RunId:N}"), request.Branch, request.Branch));
+
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Not reached by these tests.");
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken) =>
+            Task.FromResult(new CheckoutRefresh(UpToDate: true, "nothing here is a real repository"));
+
+        public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+    }
+
+    /// <summary>
+    /// A follow-up that resumes a stacked child's branch carries the fork point forward. Resuming a
+    /// branch does not move where it forked from, and nothing can re-derive that point later — so a
+    /// follow-up that blanked it would leave the NEXT replay with no observable boundary, and the
+    /// child would silently stop being replayed at all.
+    /// <para>
+    /// Pinned because the first cut of this did exactly that: it read <c>task.CurrentRunId</c> for
+    /// "the previous run", which by launch time already names the run being launched — whose stream
+    /// does not exist yet — so every follow-up recorded a blank fork point and nothing failed.
+    /// Found in round two of this task's own self-review.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_on_a_stacked_child_carries_the_recorded_fork_point_forward()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(postgres.ConnectionString);
+            opts.ConfigureHall9k(AutoCreate.All);
+        });
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string parentBranch = "task/parent-slice-one";
+        const string childBranch = "task/child-slice-two";
+        const string forkPoint = "abc1234def5678";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"carry-forward-{taskId:N}",
+                "/tmp/carry-forward-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Child slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, firstRunId, Now);
+            aggregate.Apply(claimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+                TaskDecider.Complete(aggregate, firstRunId, PullRequestUrl, Now);
+            aggregate.Apply(completed);
+
+            // The review-feedback reopen: an ordinary follow-up, carrying no replay commits of its
+            // own, which is exactly the shape that has to inherit the fork point rather than
+            // re-observe it.
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                aggregate, firstRunId, childBranch, "review feedback", FollowUpKind.ReviewFeedback,
+                automatic: true, Now, node.OwnerId);
+            aggregate.Apply(reopened);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, followUpRunId, Now);
+
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, claimed, completed, reopened, reclaimed]);
+
+            // The first run recorded the fork point its cut observed.
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(firstRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/child-wt", childBranch, ExecutorMode.Subscription, Now,
+                    BaseBranch: parentBranch, BaseCommit: forkPoint),
+                new AgentSessionCompleted(firstRunId, Now),
+                new VerificationPassed(firstRunId, Now),
+                new PullRequestOpened(firstRunId, PullRequestUrl, 11, Now),
+                new RunSuperseded(firstRunId, 2, Now));
+
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails followUp = (await query.LoadAsync<RunDetails>(followUpRunId, cts.Token))!;
+        followUp.BaseCommit.Should().Be(forkPoint,
+            "resuming a branch does not move its fork point, and nothing can re-derive it later — "
+            + "a blank here would leave the next replay with no observable boundary");
+        worktrees.CreateRequests.Should().BeEmpty("a follow-up resumes the branch rather than cutting one");
+    }
+
+    /// <summary>
     /// The pr-review dispatch branch itself (cycle-1 conformance finding, `PrReviewEngine.cs:50`
     /// — before this, LaunchAsync's own isPrReview branch had no coverage at all): a fresh read
     /// of the open pull request resolves the base branch and the checkout, the run's primary
