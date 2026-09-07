@@ -1327,7 +1327,7 @@ public sealed partial class VerificationRunner(
         if (cacheable)
         {
             CleanBaseGateVerdict? cached = await query.LoadAsync<CleanBaseGateVerdict>(
-                CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, baseCommitSha!), cancellationToken);
+                CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!), cancellationToken);
             if (cached is not null)
             {
                 logger.LogInformation(
@@ -1345,36 +1345,62 @@ public sealed partial class VerificationRunner(
         // around the gate spawn, never around the refresh above, for the identical reentrancy
         // reason ProjectSetCommand.ValidateGatesAgainstCleanBaseAsync's own lock documents.
         //
-        // The wait to acquire it is itself bounded to CleanBaseCheckTimeoutCap, not left open-ended
-        // (independent pre-PR review, cycle 1, adversarial lens): this same lock also serializes
-        // against `git worktree add`/`remove` for every run and closeout's own worktree cleanup on
-        // this project, so an unbounded wait here — behind a slow gate comparison already holding
-        // it elsewhere, or a `project set --verify` validation holding it for its own gates — would
-        // defer this run's own RecordFailureAsync, and with it the run's failure, its lease
-        // release, and its node slot, for as long as that other holder runs. A lock that cannot be
-        // acquired within budget means the comparison is skipped, honestly, exactly like every
-        // other unobservable case in this method — never a reason to block the real failure this
-        // method exists to record. Deliberately still the fixed cap, not the gate's own recorded-
-        // duration budget below: this bounds contention for the lock itself, a different question
-        // from how long the gate command run under it is allowed to take.
+        // AcquireCheckoutLockAsync, deliberately not the broader AcquireRepositoryLockAsync
+        // (independent pre-PR review, cycle 1, adversarial lens, medium): the budget below is now
+        // the gate's own recorded duration, not a fixed five-minute cap, so this call can hold a
+        // lock for as long as VerifyGateTimeout allows — the repository-wide lock would have held
+        // that same span against every other run's own `git worktree add` and closeout's own
+        // `git worktree remove` on this project, stalling the node's dispatch loop for a
+        // best-effort diagnostic on top of a failure already being recorded. The checkout-scoped
+        // lock still serializes against every other caller that spawns a gate command in this
+        // exact checkout (h9k task verify, h9k project set --verify, this same method's own
+        // sibling runs), which is all the exclusion this call actually needs.
+        //
+        // The wait to acquire it is itself bounded to CleanBaseCheckTimeoutCap, not left
+        // open-ended (independent pre-PR review, cycle 1, adversarial lens): an unbounded wait
+        // here — behind a slow gate comparison already holding it elsewhere, or a `project set
+        // --verify` validation holding it for its own gates — would defer this run's own
+        // RecordFailureAsync, and with it the run's failure, its lease release, and its node slot,
+        // for as long as that other holder runs. A lock that cannot be acquired within budget
+        // means the comparison is skipped, honestly, exactly like every other unobservable case in
+        // this method — never a reason to block the real failure this method exists to record.
+        // Deliberately still the fixed cap, not the gate's own recorded-duration budget below:
+        // this bounds contention for the lock itself, a different question from how long the gate
+        // command run under it is allowed to take.
         using CancellationTokenSource lockBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lockBudget.CancelAfter(AdHocGateRunner.CleanBaseCheckTimeoutCap);
         IAsyncDisposable gateLock;
         try
         {
-            gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, lockBudget.Token);
+            gateLock = await worktrees.AcquireCheckoutLockAsync(checkout, lockBudget.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             logger.LogInformation(
                 "Run {RunId}: skipping the clean-base comparison for gate '{Gate}' — could not acquire the " +
-                "repository lock for {Checkout} within {Timeout}",
+                "checkout lock for {Checkout} within {Timeout}",
                 runId, gate.Name, checkout, AdHocGateRunner.CleanBaseCheckTimeoutCap);
             return null;
         }
 
         await using (gateLock)
         {
+            // Re-observed now that the lock is actually held, not reused from the capture above
+            // (adversarial review, cycle 1, medium): acquiring this lock can wait — the whole
+            // reason its own wait is bounded rather than instant — and RefreshReadingCheckoutAsync
+            // takes this identical checkout's lock to fast-forward it, so a sibling refresh can
+            // move the checkout's HEAD (or dirty it) while this call queues for the lock above.
+            // Without re-observing here, the gate that is about to run under the lock — against
+            // whatever commit the checkout actually holds right now — would be recorded and
+            // reported as an observation of the stale commit captured before the wait, which is
+            // exactly the unobserved-fact-as-fact mistake AGENTS.md's "never guess" rule exists to
+            // catch. Once this lock is held, nothing else can move or dirty this checkout until it
+            // is released (every other caller of it takes the identical lock first), so this
+            // observation stays valid for the rest of the block.
+            uncleanNote = await CheckoutCleanliness.DescribeNotConfirmedCleanAsync(checkout, project.BaseBranch, cancellationToken);
+            baseCommitSha = await GetHeadShaAsync(checkout, cancellationToken);
+            cacheable = baseCommitSha is not null && uncleanNote is null;
+
             // Re-checked now that the lock is actually held: two runs failing the same gate
             // against the same red commit within the same short window can both miss the cache
             // above and both queue up for this same lock — without this second look, the loser of
@@ -1385,7 +1411,7 @@ public sealed partial class VerificationRunner(
             if (cacheable)
             {
                 CleanBaseGateVerdict? wonRace = await query.LoadAsync<CleanBaseGateVerdict>(
-                    CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, baseCommitSha!), cancellationToken);
+                    CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!), cancellationToken);
                 if (wonRace is not null)
                 {
                     logger.LogInformation(
@@ -1417,7 +1443,8 @@ public sealed partial class VerificationRunner(
                 if (cacheable)
                 {
                     await RecordCleanBaseVerdictAsync(
-                        nodeId, project.Id, gate.Name, baseCommitSha!, basePasses: true, failureNote: null, cancellationToken);
+                        nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!, basePasses: true, failureNote: null,
+                        cancellationToken);
                 }
 
                 return null;
@@ -1431,7 +1458,8 @@ public sealed partial class VerificationRunner(
             if (cacheable)
             {
                 await RecordCleanBaseVerdictAsync(
-                    nodeId, project.Id, gate.Name, baseCommitSha!, basePasses: false, failureNote: note, cancellationToken);
+                    nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!, basePasses: false, failureNote: note,
+                    cancellationToken);
             }
 
             return note;
@@ -1440,13 +1468,13 @@ public sealed partial class VerificationRunner(
 
     /// <summary>Overwrites, never appends — this is a cache of an observation (CleanBaseGateVerdict's own doc comment), not a fact worth a history of its own.</summary>
     private async Task RecordCleanBaseVerdictAsync(
-        Guid nodeId, Guid projectId, string gate, string baseCommitSha, bool basePasses, string? failureNote,
+        Guid nodeId, Guid projectId, string gate, string gateCommand, string baseCommitSha, bool basePasses, string? failureNote,
         CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Store(new CleanBaseGateVerdict
         {
-            Id = CleanBaseGateVerdict.ComputeId(nodeId, projectId, gate, baseCommitSha),
+            Id = CleanBaseGateVerdict.ComputeId(nodeId, projectId, gate, gateCommand, baseCommitSha),
             NodeId = nodeId,
             ProjectId = projectId,
             Gate = gate,

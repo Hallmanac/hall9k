@@ -324,9 +324,14 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             // Serializes this checkout's gate spawn against every other caller that can run a
             // command in it at the same time (the daemon's own post-failure comparison, another
             // concurrent h9k task verify, h9k project set --verify) — the identical reasoning
-            // VerificationRunner.DescribeCleanBaseComparisonAsync's own lock documents. The wait to
-            // acquire it is itself bounded, for the identical reason that method's own bounded wait
-            // documents: this same lock also serializes `git worktree add`/`remove`, so an
+            // VerificationRunner.DescribeCleanBaseComparisonAsync's own lock documents, including
+            // its use of the checkout-scoped AcquireCheckoutLockAsync rather than the broader
+            // AcquireRepositoryLockAsync (independent pre-PR review, cycle 1, adversarial lens,
+            // medium): every gate spawn against this one checkout needs to agree on the same lock
+            // scope, or two of them could race the checkout's build output unguarded, so this
+            // caller and the daemon's own comparison must use the identical lock method even
+            // though this one's own budget below is unchanged. The wait to acquire it is itself
+            // bounded, for the identical reason that method's own bounded wait documents: an
             // unbounded wait here would leave an operator staring at a silent terminal behind
             // whichever other caller already holds it, with no way to tell "waiting" from "hung".
             using CancellationTokenSource lockBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -334,7 +339,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             IAsyncDisposable gateLock;
             try
             {
-                gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, lockBudget.Token);
+                gateLock = await worktrees.AcquireCheckoutLockAsync(checkout, lockBudget.Token);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {

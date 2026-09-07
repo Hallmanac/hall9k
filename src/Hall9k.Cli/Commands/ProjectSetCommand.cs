@@ -808,20 +808,24 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // the loser's exit code was then recorded as the gate itself being broken). Acquired
             // fresh per gate rather than once for the whole loop, and bounded rather than left
             // open-ended on either the wait to acquire it or the gate's own run (adversarial
-            // review, medium): this is the same repository-wide lock that serializes `git worktree
-            // add`/`remove`/`fetch` for every run on this project and closeout's own worktree
-            // cleanup, so validating N gates here used to hold that lock — and with it the whole
-            // node's dispatch loop — for up to N times AdHocGateRunner.DefaultTimeout (30 minutes
-            // each), with no cap of its own. Bounded to AdHocGateRunner.CleanBaseCheckTimeoutCap,
-            // the identical budget the daemon's own comparison already uses for the identical
-            // reason: this is a best-effort validation on top of a change that has not landed yet,
-            // never a real gate pass, so it has no claim on the full 30-minute budget.
+            // review, medium). AcquireCheckoutLockAsync, not the repository-wide
+            // AcquireRepositoryLockAsync (independent pre-PR review, cycle 1, adversarial lens,
+            // medium): the daemon's own comparison budgets its own gate run off the gate's own
+            // recorded duration now, up to VerifyGateTimeout, and the repository-wide lock would
+            // have held that span against every other run's own `git worktree add`/`remove`/
+            // `fetch` and closeout's own worktree cleanup on this project — this checkout-scoped
+            // lock still serializes against every other caller of this same checkout, which is all
+            // three gate-spawning callers actually need to agree on. Still bounded to
+            // AdHocGateRunner.CleanBaseCheckTimeoutCap, the identical budget the daemon's own
+            // comparison already uses for the identical reason: this is a best-effort validation
+            // on top of a change that has not landed yet, never a real gate pass, so it has no
+            // claim on the full 30-minute budget.
             using CancellationTokenSource lockBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             lockBudget.CancelAfter(AdHocGateRunner.CleanBaseCheckTimeoutCap);
             IAsyncDisposable gateLock;
             try
             {
-                gateLock = await worktrees.AcquireRepositoryLockAsync(checkout, lockBudget.Token);
+                gateLock = await worktrees.AcquireCheckoutLockAsync(checkout, lockBudget.Token);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {

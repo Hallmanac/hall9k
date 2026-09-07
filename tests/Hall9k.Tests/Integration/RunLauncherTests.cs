@@ -144,6 +144,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
             Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
     }
 
     private sealed class NoOpLock : IAsyncDisposable
@@ -725,6 +728,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
             Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
     }
 
     /// <summary>Records the spawn request instead of starting anything.</summary>
@@ -1004,6 +1010,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             Task.FromResult(new CheckoutRefresh(UpToDate: true, "nothing here is a real repository"));
 
         public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
             Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
     }
 

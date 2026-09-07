@@ -47,16 +47,22 @@ public static class AdHocGateRunner
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(30);
 
     /// <summary>
-    /// The budget a clean-base comparison gets, on either side of the CLI/daemon split — a
-    /// best-effort diagnostic on top of a failure (or a refusal) that is already being recorded
-    /// either way, not a real gate pass, so it has no claim on <see cref="DefaultTimeout"/>'s own
-    /// 30-minute budget. Shared here rather than duplicated per caller (independent pre-PR
-    /// review, cycle 1, conformance lens: <c>h9k project set --verify</c> used to hold the
-    /// repository-wide worktree lock for up to <see cref="DefaultTimeout"/> per gate, with no cap
-    /// of its own, while the daemon's own comparison already capped itself at exactly this value
-    /// for exactly this reason). Also doubles as the budget a caller is willing to wait to
-    /// *acquire* that same lock before giving up on the comparison rather than blocking
-    /// indefinitely behind whichever other caller is already holding it.
+    /// The budget a clean-base comparison's gate spawn gets on the CLI side of the CLI/daemon
+    /// split (<c>h9k project set --verify</c>, <c>h9k task verify</c>) — a best-effort diagnostic
+    /// on top of a failure (or a refusal) that is already being recorded either way, not a real
+    /// gate pass, so it has no claim on <see cref="DefaultTimeout"/>'s own 30-minute budget
+    /// (independent pre-PR review, cycle 1, conformance lens: <c>h9k project set --verify</c>
+    /// used to hold the repository-wide worktree lock for up to <see cref="DefaultTimeout"/> per
+    /// gate, with no cap of its own). The daemon's own comparison no longer uses this as its gate
+    /// budget (task: the clean-base comparison can actually finish — origin incident
+    /// 2026-09-05/06): <see cref="ComputeComparisonBudget"/> budgets that one off the gate's own
+    /// recorded duration instead, since this fixed value alone could never fit a slow project's
+    /// full test suite. This constant survives there as the FLOOR <see cref="ComputeComparisonBudget"/>
+    /// never budgets below, and — on both sides of the split — as the budget a caller is willing
+    /// to wait to *acquire* the checkout lock before giving up on the comparison rather than
+    /// blocking indefinitely behind whichever other caller is already holding it; that acquisition
+    /// wait stays fixed even where the gate's own run below it does not, since an unbounded wait
+    /// would defer the run's own real failure for as long as the other holder runs.
     /// </summary>
     public static readonly TimeSpan CleanBaseCheckTimeoutCap = TimeSpan.FromMinutes(5);
 

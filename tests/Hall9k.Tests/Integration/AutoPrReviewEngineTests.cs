@@ -268,6 +268,9 @@ public sealed class AutoPrReviewEngineTests(PostgresFixture postgres) : IClassFi
 
         public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
             Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
     }
 
     private sealed class NoOpLock : IAsyncDisposable

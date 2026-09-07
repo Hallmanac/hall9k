@@ -496,6 +496,25 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         // method would fail to serialize against them at all.
         await AcquireRepositoryLockCoreAsync(Path.GetFullPath(repositoryPath), cancellationToken);
 
+    /// <inheritdoc/>
+    public async Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken)
+    {
+        string fullPath = Path.GetFullPath(checkoutPath);
+        SemaphoreSlim mutex = LockFor(fullPath);
+        await mutex.WaitAsync(cancellationToken);
+        try
+        {
+            string lockDirectory = await ResolveCheckoutLockDirectoryAsync(fullPath, cancellationToken);
+            FileStream crossProcessLock = await AcquireLockFileAsync(lockDirectory, cancellationToken);
+            return new RepositoryLock(mutex, crossProcessLock);
+        }
+        catch
+        {
+            mutex.Release();
+            throw;
+        }
+    }
+
     /// <summary>
     /// FileShare.None maps to an exclusive advisory lock on Unix (the same mechanism
     /// SingleInstanceGuard already uses for the daemon's own single-instance check) and to a
@@ -506,6 +525,17 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     private async Task<FileStream> AcquireCrossProcessLockAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         string lockDirectory = await ResolveLockDirectoryAsync(repositoryPath, cancellationToken);
+        return await AcquireLockFileAsync(lockDirectory, cancellationToken);
+    }
+
+    /// <summary>
+    /// The retry loop shared by <see cref="AcquireCrossProcessLockAsync"/> and
+    /// <see cref="AcquireCheckoutLockAsync"/> — identical mechanics, differing only in which
+    /// directory <paramref name="lockDirectory"/> resolved to (the repository's shared
+    /// git-common-dir for the former, one checkout's own private git-dir for the latter).
+    /// </summary>
+    private async Task<FileStream> AcquireLockFileAsync(string lockDirectory, CancellationToken cancellationToken)
+    {
         string lockFilePath = Path.Combine(lockDirectory, ".h9k-worktree.lock");
         DateTimeOffset waitStarted = DateTimeOffset.UtcNow;
         DateTimeOffset nextLogAt = waitStarted.AddSeconds(1);
@@ -517,14 +547,14 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             }
             catch (DirectoryNotFoundException)
             {
-                // repositoryPath itself no longer exists (removed out-of-band, or pruned by
-                // an earlier step in the same call chain) — no process can ever release a
-                // lock for a directory that is gone, so retrying here would spin until the
-                // caller's own cancellation fires instead of failing honestly right away.
-                // CloseoutEngine.RemoveWorktreeBestEffortAsync's own best-effort catch already
-                // treats any non-cancellation exception as "safe to log and continue", which
-                // is exactly the right outcome for a repository that has already vanished.
-                throw new WorktreeException($"Repository {repositoryPath} no longer exists on disk.");
+                // lockDirectory's own repository or checkout no longer exists (removed
+                // out-of-band, or pruned by an earlier step in the same call chain) — no process
+                // can ever release a lock for a directory that is gone, so retrying here would
+                // spin until the caller's own cancellation fires instead of failing honestly
+                // right away. CloseoutEngine.RemoveWorktreeBestEffortAsync's own best-effort catch
+                // already treats any non-cancellation exception as "safe to log and continue",
+                // which is exactly the right outcome for a repository that has already vanished.
+                throw new WorktreeException($"Repository {lockDirectory} no longer exists on disk.");
             }
             catch (IOException)
             {
@@ -574,6 +604,29 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         }
 
         return Path.GetFullPath(answer, Path.GetFullPath(repositoryPath));
+    }
+
+    /// <summary>
+    /// <paramref name="checkoutPath"/>'s own git-dir — <c>--git-dir</c>, deliberately not
+    /// <see cref="ResolveLockDirectoryAsync"/>'s <c>--git-common-dir</c> — so
+    /// <see cref="AcquireCheckoutLockAsync"/>'s lock file lands somewhere private to this one
+    /// checkout: a linked worktree's git-dir is its own subdirectory of the repository's shared
+    /// administrative area (<c>&lt;common&gt;/worktrees/&lt;name&gt;</c>), never the shared area
+    /// itself, so this resolves to a different directory than <see cref="ResolveLockDirectoryAsync"/>
+    /// would for the identical checkout — exactly the decoupling <see cref="AcquireCheckoutLockAsync"/>
+    /// exists for. Falls back to <paramref name="checkoutPath"/> itself when git cannot answer, the
+    /// same convention <see cref="ResolveLockDirectoryAsync"/> follows for the identical reason.
+    /// </summary>
+    private static async Task<string> ResolveCheckoutLockDirectoryAsync(string checkoutPath, CancellationToken cancellationToken)
+    {
+        (int exitCode, string gitDirectory, _) = await TryRunGitAsync(
+            checkoutPath, "rev-parse --git-dir", cancellationToken);
+        if (exitCode != 0 || gitDirectory.Trim() is not { Length: > 0 } answer)
+        {
+            return checkoutPath;
+        }
+
+        return Path.GetFullPath(answer, Path.GetFullPath(checkoutPath));
     }
 
     private sealed class RepositoryLock(SemaphoreSlim mutex, FileStream crossProcessLock) : IAsyncDisposable

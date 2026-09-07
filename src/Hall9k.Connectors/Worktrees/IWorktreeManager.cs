@@ -155,4 +155,28 @@ public interface IWorktreeManager
     /// result to release it.
     /// </summary>
     Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// A narrower lock than <see cref="AcquireRepositoryLockAsync"/>: scoped to exactly
+    /// <paramref name="checkoutPath"/>'s own git-dir rather than the repository's shared
+    /// git-common-dir, so it serializes command spawns against that one checkout only, never
+    /// against <c>git worktree add</c>/<c>remove</c> for every other worktree the repository has
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium: a clean-base comparison
+    /// budgeted off a gate's own recorded duration can now hold a lock for as long as that gate
+    /// takes to run — up to <c>VerifyGateTimeout</c>, not the old fixed five-minute cap — and
+    /// <see cref="AcquireRepositoryLockAsync"/> would have held that span against every other
+    /// run's own worktree creation and closeout's own worktree removal on the same project, not
+    /// just against the checkout the gate actually runs in). For a linked worktree this resolves
+    /// to a directory unique to it; for a bare clone or an ordinary, non-worktree checkout it
+    /// falls back to the same directory <see cref="AcquireRepositoryLockAsync"/> would use, since
+    /// there the two scopes are identical anyway. Every caller that spawns a gate command
+    /// directly against one checkout (a clean-base comparison, <c>h9k task verify</c>,
+    /// <c>h9k project set --verify</c>) must use this lock rather than
+    /// <see cref="AcquireRepositoryLockAsync"/> — all three share the identical checkout, and
+    /// mixing lock scopes between them would let two of their gate spawns race the same
+    /// checkout's build output unguarded, the exact corruption
+    /// <see cref="AcquireRepositoryLockAsync"/> was first reused here to prevent. Dispose the
+    /// result to release it.
+    /// </summary>
+    Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken);
 }
