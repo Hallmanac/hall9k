@@ -197,10 +197,15 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         // run.BaseBranchOr, not project.BaseBranch: a stacked child's branch is a delta against
         // its parent's branch, so the project's base would count the parent's commits as this
         // claim's own and report "N commits to deliver" for a branch that holds none of its own
-        // (task: a stacked pull-request edge exists as an explicit opt-in dependency).
+        // (task: a stacked pull-request edge exists as an explicit opt-in dependency). The recorded
+        // fork point rides along as a second candidate boundary, and the count is the smaller of
+        // the two: the parent's own ref stops naming the cut point the moment the parent is
+        // force-pushed, which leaves this branch's copies of the parent's rewritten-away commits
+        // counted as this claim's own — the same "N commits to deliver" over a branch that holds
+        // none (class sweep, conformance review cycle 4).
         int commits = await InteractiveWorktreeGit.CountBranchCommitsAsync(
             run.WorktreePath, run.BaseBranchOr(project.BaseBranch), cancellationToken,
-            headReference: run.Branch);
+            headReference: run.Branch, forkPointCommit: run.StackedForkPoint(project.BaseBranch));
         if (commits < 0)
         {
             // Never guessed at as "holds commits" (InteractiveWorktreeGit's own contract,

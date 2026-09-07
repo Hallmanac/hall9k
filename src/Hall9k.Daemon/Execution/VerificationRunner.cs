@@ -422,8 +422,14 @@ public sealed partial class VerificationRunner(
             // commits as this session's own — a stacked child that committed nothing at all would
             // read as productive and sail past the very check that exists to catch it (task: a
             // stacked pull-request edge exists as an explicit opt-in dependency).
+            // The recorded fork point rides along as a second candidate boundary, and the count is
+            // the smallest any of them reports: a parent force-pushed since this branch was cut
+            // leaves this branch's copies of the parent's rewritten-away commits unreachable from
+            // that ref, so they are counted as this session's own and a run that committed nothing
+            // sails past this very check (class sweep, conformance review cycle 4).
             string baseBranch = run.BaseBranchOr(project.BaseBranch);
-            int? commits = await CountBranchCommitsAsync(run.WorktreePath, baseBranch, cancellationToken);
+            int? commits = await CountBranchCommitsAsync(
+                run.WorktreePath, baseBranch, run.StackedForkPoint(project.BaseBranch), cancellationToken);
             if (commits == 0)
             {
                 string reason = strandedFiles is { Count: > 0 }
@@ -1024,24 +1030,45 @@ public sealed partial class VerificationRunner(
     }
 
     /// <summary>
-    /// Commits the branch carries beyond the base (remote-tracking ref preferred, local
-    /// base as the no-origin fallback — the log #4 convention). Null when git cannot
-    /// answer: an unobservable count is never treated as zero.
+    /// Commits the branch carries beyond the base — the SMALLEST count any boundary the base is
+    /// known by reports, over the remote-tracking ref, the local base as the no-origin fallback
+    /// (the log #4 convention), and, for a stacked child, this run's own recorded fork point
+    /// (<paramref name="forkPointCommit"/>, null for every ordinary run). Null when git could not
+    /// answer for any of them: an unobservable count is never treated as zero.
+    /// <para>
+    /// Smallest rather than first-that-resolves, because each boundary is wrong in the same
+    /// direction and only sometimes: a two-dot count is inflated by every commit the boundary does
+    /// not reach, so a boundary that is not on this branch counts this branch's copies of the
+    /// parent's commits as this session's own. Both candidates go stale that way and neither one
+    /// always — <c>origin/&lt;parent&gt;</c> when the parent was force-pushed since the cut, the
+    /// recorded fork point when the branch was later brought onto a newer parent head — and none of
+    /// them can ever UNDERcount, since a commit this session authored is reachable from no boundary
+    /// but this branch. The smallest is therefore the most accurate answer available, and it is the
+    /// safe direction for the no-commit check this feeds: an inflated count reads a session that
+    /// committed nothing as productive and sails past the very check that exists to catch it (class
+    /// sweep, conformance review cycle 4). For an unstacked run this still resolves to the
+    /// remote-tracking ref's own count, since a stale local base branch can only be behind it and
+    /// so can only count higher.
+    /// </para>
     /// </summary>
     private static async Task<int?> CountBranchCommitsAsync(
-        string worktreePath, string baseBranch, CancellationToken cancellationToken)
+        string worktreePath, string baseBranch, string? forkPointCommit, CancellationToken cancellationToken)
     {
-        foreach (string baseRef in new[] { $"origin/{baseBranch}", baseBranch })
+        string[] boundaries = forkPointCommit is null
+            ? [$"origin/{baseBranch}", baseBranch]
+            : [forkPointCommit, $"origin/{baseBranch}", baseBranch];
+        int? smallest = null;
+        foreach (string baseRef in boundaries)
         {
             (int exitCode, string output) = await RunGitAsync(
                 worktreePath, ["rev-list", "--count", $"{baseRef}..HEAD"], cancellationToken);
-            if (exitCode == 0 && int.TryParse(output.Trim(), out int count))
+            if (exitCode == 0 && int.TryParse(output.Trim(), out int count) && (smallest is null || count < smallest))
             {
-                return count;
+                smallest = count;
             }
         }
 
-        return null;
+        return smallest;
     }
 
     /// <summary>

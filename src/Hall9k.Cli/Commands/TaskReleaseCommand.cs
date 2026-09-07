@@ -314,13 +314,20 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         // (conformance review, cycle 3).
         // run.BaseBranchOr, not project.BaseBranch, for the reason TaskDeliverCommand's own
         // identical count states: a stacked child's branch would otherwise read its parent's
-        // commits as this claim's own and refuse a release of a claim nothing was done in.
+        // commits as this claim's own and refuse a release of a claim nothing was done in. The
+        // recorded fork point rides along as a second candidate boundary, and the count is the
+        // smaller of the two, for the same reason again: a force-pushed parent leaves this branch's
+        // copies of its rewritten-away commits counted here (class sweep, conformance review
+        // cycle 4).
         string baseBranch = run.BaseBranchOr(project.BaseBranch);
+        string? forkPoint = run.StackedForkPoint(project.BaseBranch);
         int commits = worktreeExists
             ? await InteractiveWorktreeGit.CountBranchCommitsAsync(
-                run.WorktreePath, baseBranch, cancellationToken, headReference: run.Branch)
+                run.WorktreePath, baseBranch, cancellationToken, headReference: run.Branch,
+                forkPointCommit: forkPoint)
             : await InteractiveWorktreeGit.CountBranchCommitsAsync(
-                project.RepositoryPath, baseBranch, cancellationToken, headReference: run.Branch);
+                project.RepositoryPath, baseBranch, cancellationToken, headReference: run.Branch,
+                forkPointCommit: forkPoint);
         if (commits < 0)
         {
             // Never guessed at as empty (InteractiveWorktreeGit's own contract, mirrored by
