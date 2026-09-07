@@ -1489,7 +1489,10 @@ public sealed class ReviewEngine(
             context.PriorHumanDirectedInteractions, context.PriorBoundaryApprovals,
             interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName,
             interactiveModeEnabledOverride: interactiveModeEnabled,
-            baseBranch: context.BaseBranch);
+            // baseCommit rides along with baseBranch for the same reason StackedMechanics carries
+            // it: this pass's full-diff fallback range is a three-dot diff, and a force-pushed
+            // parent moves origin/<parent> out from under it.
+            baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -1694,7 +1697,10 @@ public sealed class ReviewEngine(
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
-                baseBranch: context.BaseBranch);
+                // baseCommit too: the self-check phase's own class sweep draws its
+                // own-changes boundary from this range, and on a stacked child that boundary is
+                // the recorded fork point rather than origin/<parent> for the same reason.
+                baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit);
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
@@ -5466,12 +5472,25 @@ public sealed class ReviewEngine(
 
         /// <summary>
         /// What <c>AppendReviewMechanics</c> needs told when this run's base is not the project's
-        /// own — the base branch alone, every other mechanic unchanged. Null for an ordinary run,
-        /// which is what keeps every unstacked review prompt byte-identical.
+        /// own — the base branch and the fork point off it that this run recorded, every other
+        /// mechanic unchanged. Null for an ordinary run, which is what keeps every unstacked review
+        /// prompt byte-identical.
+        /// <para>
+        /// The commit rides along with the branch rather than the branch alone (conformance and
+        /// adversarial review, cycle 4): the ranges a review pass reads and scopes against are
+        /// three-dot diffs, and a parent branch force-pushed mid-review — an ordinary review lap
+        /// folding its own fixes — collapses their merge base below this child's real fork point,
+        /// so the reviewer reads and grades the parent's whole rewritten-away delta as the child's
+        /// own work. The same hazard, and the same fix, as the build session's self-review range
+        /// and the rebase replay. Blank when the run recorded no fork point, in which case the
+        /// prompts fall back to the parent branch's ref rather than inventing a boundary
+        /// (<c>WorkPromptBuilder.StackedForkPoint</c>).
+        /// </para>
         /// </summary>
         public AgentPromptBuilder.ReviewMechanicsOverride? StackedMechanics =>
             BaseBranch == Project.BaseBranch
                 ? null
-                : new AgentPromptBuilder.ReviewMechanicsOverride(BaseBranch);
+                : new AgentPromptBuilder.ReviewMechanicsOverride(
+                    BaseBranch, ForkPointCommit: Run.StackedForkPoint(Project.BaseBranch));
     }
 }

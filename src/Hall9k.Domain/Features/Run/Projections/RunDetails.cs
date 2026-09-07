@@ -559,6 +559,23 @@ public sealed class RunDetails
     /// </summary>
     public bool AwaitsStackedRetarget(string projectBaseBranch) =>
         StackedOnBranch is { } stacked && stacked != projectBaseBranch;
+
+    /// <summary>
+    /// The commit this branch was cut from, for a run whose base is another task's branch — and
+    /// null for every ordinary run, and for a stacked run whose fork point was never observed.
+    /// The one reading of "this run's own boundary" every git range about a stacked child has to
+    /// use in place of <c>origin/&lt;parent&gt;</c>: that ref is rewritten out from under a range
+    /// whenever the parent takes an ordinary review lap (a force-push folding its own fixes), which
+    /// collapses a three-dot merge base below this branch's real fork point and makes a two-dot
+    /// count include this branch's copies of the parent's rewritten-away commits. Null is the
+    /// honest answer rather than a fallback: an ordinary run's base branch is not rewritten under
+    /// it, so its ref is a stable boundary, and a stacked run with no recorded fork point has no
+    /// boundary to name at all (<see cref="BaseCommit"/>'s own doc, and
+    /// <c>Hall9k.Connectors.Prompts.WorkPromptBuilder.StackedForkPoint</c>, which is this same rule
+    /// for a caller holding loose strings rather than a run).
+    /// </summary>
+    public string? StackedForkPoint(string projectBaseBranch) =>
+        AwaitsStackedRetarget(projectBaseBranch) && BaseCommit.IsNotBlank() ? BaseCommit : null;
 }
 
 /// <summary>One retry <see cref="RunDetailsProjection.Apply(IEvent{RunSessionErrorRetried}, RunDetails)"/> recorded on <see cref="RunDetails.SessionErrorRetries"/>.</summary>

@@ -23,7 +23,7 @@ namespace Hall9k.Tests.Domain;
 /// files, so it needs neither <see cref="IsBuildOutput"/> nor
 /// <see cref="StripCommentsAndStrings"/>.
 /// <see cref="Hall9k.Tests.Domain.StackedBaseBranchGuardTests"/> is a sixth: it walks <c>src/</c>
-/// alone and matches on raw lines rather than stripped text, since each of its three scans reads a
+/// alone and matches on raw lines rather than stripped text, since each of its four scans reads a
 /// call's own argument list within a few lines of it (a whole-line comment is skipped instead) — so
 /// it needs <see cref="SourceDirectory"/> and <see cref="IsBuildOutput"/> but not
 /// <see cref="StripCommentsAndStrings"/>. This is now the full list of consumers and is meant to
