@@ -897,15 +897,19 @@ task's follow-up branch, and any task that already carries a live claim — ther
 the way `h9k task work` has one; a fresh claim is all `start` ever makes, and a fresh claim on an
 already-Blocked task is exactly what its own Blocked entry is, not a re-entry.
 
-Because nothing on this node is watching a start-it-mine run the way the daemon watches its own
-dispatched runs, the row it leaves behind reads the same as an interactive claim's: an untouched
-run sits at Working until a human runs `h9k task deliver`, `h9k task verify`, `h9k task work` (to
-attach), `h9k task handback`, or `h9k task release`, and the same stale-claim nudge described above
-fires once it has sat unattended past `interactiveClaimStaleAfterDays`. `h9k task deliver` is also
-the only point anything on this node reads the session's own `stream.jsonl` back: it recovers the
-agent's authored handoff for a dependent task and records the session's token usage against the
-node's periodic spend budget, both of which nothing else would otherwise ever capture for a run
-dispatched under the sentinel node id above.
+The daemon does watch a start-it-mine run, unlike an ordinary interactive claim: the moment its
+headless session exits, the platform reads the worktree itself and either delivers a clean,
+committed tree automatically through the standard gates/review/pull-request pipeline, or — for
+anything else, uncommitted files or no commits at all — flags the task needs-you within seconds
+rather than leaving the row reading Working indefinitely. A flagged claim then reads like an
+interactive one: it stays exactly where it was until a human runs `h9k task deliver`,
+`h9k task verify`, `h9k task work` (to attach — which also clears the flag), `h9k task handback`,
+or `h9k task release`, and the same stale-claim nudge described above fires once it has sat
+unattended past `interactiveClaimStaleAfterDays`. Whichever of those levers the human ends up using
+is the only point anything on this node reads the session's own `stream.jsonl` back for a flagged
+claim: it recovers the agent's authored handoff for a dependent task and records the session's
+token usage against the node's periodic spend budget — the automatic-delivery path above reads
+that same file itself instead, since it never reaches any of those levers.
 
 Giving the claim back — `handback`, `release`, `retry`, or `pr resolve` reopening it — does not
 land the task on Queued when the dependency snapshot the override acknowledged still names an

@@ -275,23 +275,28 @@ public static class WorkPromptBuilder
         }
         else if (isDeliberateHeadlessStart)
         {
-            // Neither of the other two sentences is true here: a dispatcher-launched build is
-            // watched by RunSupervisor, and an attached h9k task work session is watched by the
-            // operator sitting at it — this run is neither, since h9k task start's own RunDispatched
-            // carries the ceiling-exempt Guid.Empty NodeId and so no monitor ever adopts it. Framed
-            // as a human's act, not this session's own: InteractiveSessionLiveness.EnsureNotAttachedElsewhere
-            // refuses both h9k task deliver and h9k task verify unconditionally from inside this very
-            // session (unlike an attached h9k task work claim, verify's self-invocation exemption keys
-            // on HALL9K_INTERACTIVE_RUN_ID, which HeadlessLaunch.SpawnDetached never sets), so an
+            // RunSupervisor.AdoptDeliberateHeadlessStartsAsync now watches this run too (task: a
+            // do-now session launched by h9k task start is caught within seconds) — the moment
+            // this session exits, the platform reads the worktree itself and either delivers a
+            // clean, committed tree automatically or flags anything else for a human, so it is no
+            // longer true that nothing supervises this run. What is still true, and still framed
+            // as a human's act rather than this session's own: verification and delivery are never
+            // this session's to trigger by hand.
+            // InteractiveSessionLiveness.EnsureNotAttachedElsewhere refuses both h9k task deliver
+            // and h9k task verify unconditionally from inside this very session (unlike an attached
+            // h9k task work claim, verify's self-invocation exemption keys on
+            // HALL9K_INTERACTIVE_RUN_ID, which HeadlessLaunch.SpawnDetached never sets), so an
             // instruction telling this session to run either itself describes a command that always
             // fails (conformance and adversarial review, cycle 4).
-            prompt.AppendLine("  nothing supervises this run once it starts, and verification and delivery are");
-            prompt.AppendLine("  a human's to trigger by hand once you finish, not yours:");
-            prompt.AppendLine("  `h9k task deliver` pushes the branch and opens the pull request through the");
-            prompt.AppendLine("  ordinary review pipeline (`h9k task verify` checks the gates first if they want");
-            prompt.AppendLine("  to look before delivering). Both commands refuse when run from inside this very");
-            prompt.AppendLine("  session, so do not attempt them yourself — end with your summary once the work");
-            prompt.AppendLine("  below is done.");
+            prompt.AppendLine("  once your session ends, the platform checks the worktree itself: a clean,");
+            prompt.AppendLine("  committed tree is delivered automatically through the ordinary review pipeline");
+            prompt.AppendLine("  (the same push-and-open-the-pull-request `h9k task deliver` would otherwise do");
+            prompt.AppendLine("  by hand), and anything else — uncommitted files, or no commits beyond the base");
+            prompt.AppendLine("  branch — is left exactly as you leave it and flagged for a human instead.");
+            prompt.AppendLine("  Verification and delivery are still not yours to trigger: `h9k task deliver` and");
+            prompt.AppendLine("  `h9k task verify` both refuse when run from inside this very session, so");
+            prompt.AppendLine("  do not attempt them yourself — end with your summary once the work below is");
+            prompt.AppendLine("  done, and leave the tree exactly how you want it found.");
             AppendCheckpointCommitRules(
                 prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
             AppendSessionEndsAtFinalMessageRule(prompt);

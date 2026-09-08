@@ -246,13 +246,16 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
         //
         // ReadHeadlessResult first (adversarial review, cycle 1, on h9k task start): a
         // start-it-mine claim's own agent writes its handoff into its final message exactly as a
-        // dispatcher-launched build does (WorkPromptBuilder's own AppendHandoffRules), but
-        // nothing on this node ever adopts that run to capture it the way RunSupervisor does for
-        // a headless dispatch — the operator sitting at this delivery was never attached to that
-        // session and cannot retype from memory what they never saw. An attended h9k task work
-        // claim never writes a stream.jsonl at all (LaunchInteractiveClaudeAsync attaches claude
-        // to this terminal directly, no --output-format stream-json), so this read finds nothing
-        // there and PromptForHandoff's own blank-default behavior is unchanged for that claim.
+        // dispatcher-launched build does (WorkPromptBuilder's own AppendHandoffRules). RunSupervisor
+        // now captures that same handoff for a run its own unattended-exit sweep adopts (task: a
+        // do-now session launched by h9k task start is caught within seconds), but only for the
+        // automatic-delivery path — a claim that instead gets flagged needs-you and later reaches
+        // THIS command still needs its own recovered handoff read here, because the operator sitting
+        // at this delivery was never attached to that session and cannot retype from memory what
+        // they never saw. An attended h9k task work claim never writes a stream.jsonl at all
+        // (LaunchInteractiveClaudeAsync attaches claude to this terminal directly, no
+        // --output-format stream-json), so this read finds nothing there and PromptForHandoff's own
+        // blank-default behavior is unchanged for that claim.
         //
         // headlessResult stays scoped to the run-level file alone — its Usage feeds the
         // run-level TokensRecorded append below, and HeadlessTokenRecovery.AppendDelegatedPhaseTokens

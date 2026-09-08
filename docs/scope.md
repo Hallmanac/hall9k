@@ -188,7 +188,11 @@ earlier claim on the same still-open blockers is honored without asking again, w
 `start` or `work` gave it. Refused otherwise on Draft, a pr-review task, a reopened task's
 follow-up branch, and any task that already has a live claim; there is no re-entry path the way
 `h9k task work` has one — a fresh claim on an already-Blocked task is exactly what the Blocked
-entry is, not a re-entry. Giving the claim back (`handback`, `release`, `retry`, or `pr resolve`
+entry is, not a re-entry. Unlike an ordinary interactive claim, the daemon does watch this run: the
+moment its headless session exits, the platform reads the worktree itself and delivers a clean,
+committed tree automatically, or flags anything else needs-you within seconds rather than leaving
+the row reading Working indefinitely (`h9k task handback --now` dispatches through this identical
+mechanism and carries the same flag). Giving the claim back (`handback`, `release`, `retry`, or `pr resolve`
 reopening it) lands the task on Blocked rather than Queued when the acknowledged dependency is
 still open, since only `h9k task assign` clears that snapshot — and the acknowledgment itself stays
 on record for whichever command reclaims it next. See
