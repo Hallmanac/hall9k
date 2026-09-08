@@ -298,18 +298,46 @@ public static class ReviewResultParser
     public const string ThreadDispositionMarker = "THREAD DISPOSITION:";
 
     /// <summary>
+    /// The exact `thread=` value in the triage contract's own worked example
+    /// (<c>AgentPromptBuilder.AppendThreadTriageRules</c>). A session that quotes the contract
+    /// before answering — the same observed habit <see cref="ExampleLocationPlaceholder"/> already
+    /// guards against for a finding's location — echoes this header back verbatim, and a bare
+    /// blank-check does not catch it: the tag is non-blank, so <see cref="CloseThreadDisposition"/>
+    /// would otherwise record an outcome against a thread id no real GitHub thread has (cycle-1
+    /// pre-PR review, adversarial finding).
+    /// </summary>
+    public const string ThreadIdPlaceholder = "<the thread's node id>";
+
+    /// <summary>
+    /// The line a resolve-review-threads follow-up writes immediately after its last
+    /// <see cref="ThreadDispositionMarker"/> block, before any recap prose or dispute narrative
+    /// (cycle-1 pre-PR review, both lenses): the prompt asks for a closing recap ("which threads
+    /// you fixed … and any open questions") and, for a genuinely undecidable thread, the dispute's
+    /// own "both positions" narrative — both land after the last block and before
+    /// `RESOLUTION:`/`HANDOFF:`. Without a marker of its own that prose has nothing to stop the
+    /// last block at, so it was absorbed into that one thread's <see cref="ReviewThreadOutcome.Reasoning"/>
+    /// as if it were that thread's own restatement. This line closes the last block the same way
+    /// `RESOLUTION:`/`HANDOFF:` already do.
+    /// </summary>
+    public const string ThreadDispositionSummaryMarker = "SUMMARY:";
+
+    /// <summary>
     /// Every thread a resolve-review-threads follow-up triaged, in the order the summary wrote
     /// them. A block runs from its <see cref="ThreadDispositionMarker"/> header to the next
-    /// header, to the <c>RESOLUTION:</c> line, or to the <c>HANDOFF:</c> block — the same closing
-    /// rule <see cref="ParseDisagreements"/> uses, and for the same reason: a triage that also
-    /// disputed one genuinely undecidable thread still writes this block for every other thread
-    /// first.
+    /// header, to the <c>RESOLUTION:</c> line, to the <c>HANDOFF:</c> block, or to the
+    /// <see cref="ThreadDispositionSummaryMarker"/> line — the same closing rule
+    /// <see cref="ParseDisagreements"/> uses for its own first three, and for the same reason: a
+    /// triage that also disputed one genuinely undecidable thread still writes this block for
+    /// every other thread first.
     /// <para>
-    /// Tolerant the same way every other marker parser here is: a block with no <c>thread=</c> tag
+    /// Tolerant the same way every other marker parser here is: a block with no <c>thread=</c> tag,
+    /// or whose tag is the contract's own echoed placeholder (<see cref="ThreadIdPlaceholder"/>),
     /// carries nothing this platform can measure against a real GitHub thread, so it is dropped
-    /// rather than recorded with a guessed id. A block missing <c>disposition=</c> reads
-    /// <see cref="ReviewThreadDisposition.Unknown"/> — a session that triaged without saying how
-    /// is a fact worth keeping, not a parse failure to hide.
+    /// rather than recorded with a guessed or fabricated id. A block missing <c>disposition=</c>
+    /// reads <see cref="ReviewThreadDisposition.Unknown"/>, and a block missing <c>kind=</c> (or
+    /// carrying one this parser does not recognize) reads <c>IsHuman</c> as null — a session that
+    /// triaged without saying how, or without naming an actor type, is a fact worth keeping, not a
+    /// parse failure to hide or a guess to fill in.
     /// </para>
     /// <para>
     /// Returns empty when the output carries no headers at all, which is not "nothing was
@@ -333,7 +361,8 @@ public static class ReviewResultParser
             string trimmed = line.TrimStart();
             bool opensBlock = trimmed.StartsWith(ThreadDispositionMarker, StringComparison.OrdinalIgnoreCase);
             bool endsBlocks = trimmed.StartsWith("RESOLUTION:", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("HANDOFF:", StringComparison.OrdinalIgnoreCase);
+                || trimmed.StartsWith("HANDOFF:", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith(ThreadDispositionSummaryMarker, StringComparison.OrdinalIgnoreCase);
             if (opensBlock || endsBlocks)
             {
                 CloseThreadDisposition(outcomes, block);
@@ -357,7 +386,7 @@ public static class ReviewResultParser
 
         Dictionary<string, string> header = HeaderTags(block[0][ThreadDispositionMarker.Length..]);
         string? threadId = Tag(header, "thread");
-        if (threadId.IsBlank())
+        if (threadId.IsBlank() || string.Equals(threadId, ThreadIdPlaceholder, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -367,8 +396,21 @@ public static class ReviewResultParser
             ReviewThreadDisposition.Parse(Tag(header, "disposition")),
             string.Join('\n', block.Skip(1)).Trim(),
             Tag(header, "author"),
-            string.Equals(Tag(header, "kind"), "human", StringComparison.OrdinalIgnoreCase)));
+            ParseIsHuman(Tag(header, "kind"))));
     }
+
+    /// <summary>
+    /// `kind=` read the same tri-state way every other tag in this file's tolerant marker parsers
+    /// already is: `human` or `bot` are the two the prompt actually teaches, and anything else —
+    /// absent, misspelled, or a raw GraphQL typename the session forgot to translate — is an
+    /// unobserved fact, never a guessed `false` (cycle-1 pre-PR review, both lenses).
+    /// </summary>
+    private static bool? ParseIsHuman(string? kind) => kind?.Trim().ToLowerInvariant() switch
+    {
+        "human" => true,
+        "bot" => false,
+        _ => null,
+    };
 
     public static ReviewVerdict ParseVerdict(string? summary) =>
         LastMarkerValue(summary, "VERDICT:") switch

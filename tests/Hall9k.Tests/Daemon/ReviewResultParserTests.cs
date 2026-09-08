@@ -214,6 +214,67 @@ public sealed class ReviewResultParserTests
     }
 
     /// <summary>
+    /// An absent or unrecognized `kind=` tag is an unobserved fact, not a guessed "bot" — the same
+    /// nullable treatment <c>RunDetails.UnresolvedHumanReviewThreads</c> already gives this exact
+    /// question at the run level (cycle-1 pre-PR review, both lenses).
+    /// </summary>
+    [Theory]
+    [InlineData("THREAD DISPOSITION: thread=PRRC_1; disposition=fix\nfixed it")]
+    [InlineData("THREAD DISPOSITION: thread=PRRC_1; disposition=fix; kind=User\nfixed it")]
+    public void A_thread_disposition_block_with_no_recognized_kind_tag_reads_IsHuman_as_null(string summary)
+    {
+        ReviewThreadOutcome outcome = ReviewResultParser.ParseThreadDispositions(summary)
+            .Should().ContainSingle().Subject;
+
+        outcome.IsHuman.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A session that quotes the triage contract's own worked example before answering — the
+    /// same observed habit <see cref="ExampleLocationPlaceholder"/> already guards against for a
+    /// finding's location — must not have that echoed placeholder recorded as a real thread id
+    /// (cycle-1 pre-PR review, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void A_thread_disposition_block_echoing_the_contracts_placeholder_thread_id_is_dropped()
+    {
+        ReviewResultParser.ParseThreadDispositions(
+            $"{ReviewResultParser.ThreadDispositionMarker} thread={ReviewResultParser.ThreadIdPlaceholder}; "
+            + "disposition=fix|decline|route; kind=human|bot; author=<login>\n"
+            + "<why: the fix's brief restatement, the decline's evidence, or the route's scope reason>")
+            .Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The recap prose the prompt asks a follow-up to write after its triage blocks — and, for a
+    /// disputed thread, the "both positions" narrative above the RESOLUTION line — must not be
+    /// absorbed into the last block's own reasoning, mis-attributing it as that thread's evidence
+    /// (cycle-1 pre-PR review, both lenses). The `SUMMARY:` marker closes the last block the same
+    /// way `RESOLUTION:`/`HANDOFF:` already do.
+    /// </summary>
+    [Fact]
+    public void The_summary_marker_stops_trailing_recap_prose_from_landing_in_the_last_threads_reasoning()
+    {
+        string summary = """
+            THREAD DISPOSITION: thread=PRRC_1; disposition=decline; kind=bot; author=copilot
+            Reproduced in a scratch repo: git push does update the remote-tracking ref.
+            THREAD DISPOSITION: thread=PRRC_2; disposition=fix; kind=human; author=brianhallmanac
+            Renamed the limiter per the reviewer's suggestion.
+            SUMMARY:
+            A third thread asks for a different projection shape entirely.
+
+            RESOLUTION: disputed
+            """;
+
+        IReadOnlyList<ReviewThreadOutcome> outcomes = ReviewResultParser.ParseThreadDispositions(summary);
+
+        outcomes.Should().HaveCount(2);
+        outcomes[1].ThreadId.Should().Be("PRRC_2");
+        outcomes[1].Reasoning.Should().Be("Renamed the limiter per the reviewer's suggestion.");
+        outcomes[1].Reasoning.Should().NotContain("A third thread");
+    }
+
+    /// <summary>
     /// No headers at all is "this run's prompt never taught the vocabulary", not "nothing was
     /// triaged" — the same reading <see cref="A_summary_with_no_disagreement_block_parses_to_none"/>
     /// already documents for its own marker.

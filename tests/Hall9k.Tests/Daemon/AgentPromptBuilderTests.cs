@@ -720,6 +720,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("Do not touch code until every thread has a disposition");
         prompt.Should().Contain(AgentPromptBuilder.ThreadDispositionMarker);
         prompt.Should().Contain("thread=<the thread's node id>; disposition=fix|decline|route; kind=human|bot; author=<login>");
+        prompt.Should().Contain(AgentPromptBuilder.ThreadDispositionSummaryMarker, "the closing recap must be fenced off from the last thread's own reasoning");
+        prompt.Should().Contain("never leave the `<the thread's node", "a session must not echo the contract's own placeholder thread id back as a real one");
     }
 
     /// <summary>

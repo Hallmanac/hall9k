@@ -94,14 +94,14 @@ Two consequences worth stating:
 
 10. **Commit any changes** following the repo's rules: the `commit-plan` skill, or `absorb-review-fixes` when the branch uses the narrative commit style. Agents never push: the platform verifies and pushes follow-up branches. A triage with nothing disposed fix has nothing to commit — that is expected, not an error.
 
-11. **Report**: one `THREAD DISPOSITION:` block per thread —
+11. **Report**: one `THREAD DISPOSITION:` block per thread, back to back with nothing between them —
 
     ```
     THREAD DISPOSITION: thread=<node id>; disposition=fix|decline|route; kind=human|bot; author=<login>
     <why: the fix's brief restatement, the decline's evidence, or the route's scope reason>
     ```
 
-    — so the platform can record the decline rate, followed by a plain-language summary and any follow-ups worth tracking. When running as a Hall9k follow-up, this is what `AgentPromptBuilder.BuildFollowUp`'s own summary instructions already ask for; running the skill standalone, write the same blocks anyway — they are what makes the triage measurable rather than only remembered.
+    — with the thread's own real node id, never the `<node id>` placeholder text above left in place. Then a line reading exactly `SUMMARY:`, followed by a plain-language recap and any follow-ups worth tracking — put it there, not between the blocks or before them, or it is read as the last thread's own evidence rather than a closing note. When running as a Hall9k follow-up, this is what `AgentPromptBuilder.BuildFollowUp`'s own summary instructions already ask for; running the skill standalone, write the same blocks anyway — they are what makes the triage measurable rather than only remembered.
 
 ## Handing a disagreement to a human
 
@@ -111,4 +111,4 @@ If a thread is a design disagreement where the reviewer's position and yours are
 RESOLUTION: disputed
 ```
 
-Above it, record **both** positions: what the reviewer asked for and their reasoning, what you would do instead and yours, and what you already did. When this skill is running inside a Hall9k follow-up run, that marker parks the run as `NeedsHuman` with your text saved beside it and nothing is pushed until a human decides (`h9k review resolve`). Park at most once: this is one honest attempt, not a negotiation.
+Above it, under the `SUMMARY:` line step 11 asks for, record **both** positions: what the reviewer asked for and their reasoning, what you would do instead and yours, and what you already did. When this skill is running inside a Hall9k follow-up run, that marker parks the run as `NeedsHuman` with your text saved beside it and nothing is pushed until a human decides (`h9k review resolve`). Park at most once: this is one honest attempt, not a negotiation.

@@ -20,12 +20,16 @@ namespace Hall9k.Domain.Features.Run;
 /// <param name="IsHuman">
 /// Whether the thread-starter is a person rather than a bot — read off the provider's own actor
 /// type, never guessed from the login (the same rule the closeout inspector's own reviewer-kind
-/// read already applies) — because it is what decides whether an agent may resolve a declined or
-/// routed thread after replying, or must leave it open for the human to close themselves.
+/// read already applies). Null when the session's `kind=` tag was absent or unrecognized — an
+/// unobserved fact, not a claimed "bot" — the same nullable treatment
+/// <see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.UnresolvedHumanReviewThreads"/>
+/// already gives this exact question at the run level. This is a record of what the session
+/// reported, not itself consulted anywhere to decide whether an agent may resolve a thread — that
+/// decision is made entirely in the follow-up prompt's own instructions.
 /// </param>
 public sealed record ReviewThreadOutcome(
     string ThreadId,
     ReviewThreadDisposition Disposition,
     string Reasoning,
     string? Author = null,
-    bool IsHuman = false);
+    bool? IsHuman = null);
