@@ -18,6 +18,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 
 namespace Hall9k.Tests.Integration;
 
@@ -747,8 +748,9 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
 
         // Origin is gone by the time the push guard's ls-remote runs: unreachable, not
-        // merely empty of this ref.
-        Directory.Delete(originPath, recursive: true);
+        // merely empty of this ref. Through TemporaryTree because git leaves its own loose
+        // objects read-only, which Directory.Delete refuses outright on Windows.
+        TemporaryTree.Delete(originPath);
 
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -820,13 +822,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Environment.SetEnvironmentVariable("HALL9K_HOME", null);
         foreach (string dir in new[] { _home, _root })
         {
-            try
-            {
-                Directory.Delete(dir, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TemporaryTree.TryDelete(dir);
         }
     }
 
