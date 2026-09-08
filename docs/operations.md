@@ -290,6 +290,10 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   ├── orchestrator-recipe-generator/  the generator skill, published beside the anchor it writes for
 │   └── orchestrator.md         written once by that skill; never overwritten, only .new beside it
 ├── .claude/skills/              the generator skill's adapter symlink, for the node window's own discovery
+├── journal.md                  the node window's own live state; seeded once by the
+│                               orchestrator-recipe-generator skill, never regenerated
+├── sessions.md                 seeded alongside it: the registry of sessions this window has spawned
+├── notes/prototype-feedback.md seeded alongside it: dated feedback about this node's own generated recipes
 ├── projects/<name>/            a project's home, unless the project records another location
 │   ├── AGENTS.md               rendered from the project's facts; never hand-maintained
 │   ├── repo/                   <name>.git (bare) · dev/ (primary branch) · wt-*/ (dispatch)
@@ -299,7 +303,11 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   ├── tasks/_archive/<id>-<slug>/  the same shape, moved here once the task is terminal (below)
 │   ├── skills/                 symlinks into ~/.hall9k/skills, plus this project's own
 │   ├── recipes/                this project window's own recipe, the identical shape as above
-│   └── .claude/skills/         symlinks into the line above: the Claude Code adapter
+│   ├── .claude/skills/         symlinks into the line above: the Claude Code adapter
+│   ├── journal.md              seeded once by the same skill: this window's own live state
+│   ├── sessions.md             seeded alongside it: the registry of sessions this window has spawned
+│   └── notes/prototype-feedback.md  seeded alongside it: dated feedback about this project's own
+│                               generated recipes
 ├── ideas/<idea-id>/workspace/  the fallback for an idea captured with no project, or a project
 │                               with no home yet: permanent, never relocated after capture
 ├── postgres/docker-compose.yml Hall9k's own Postgres definition (h9k install writes it, §Postgres)

@@ -14,7 +14,11 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// <c>ideas/</c>, <c>tasks/</c>, and <c>skills/</c> — plus <c>.claude/</c>, which is generated
 /// vendor plumbing rather than a noun of its own, and <c>recipes/</c> (task: an operator starts a
 /// lean node or project orchestrator window), the platform-owned launch anchor and settings file
-/// plus whatever the orchestrator-recipe-generator skill writes beside them.
+/// plus whatever the orchestrator-recipe-generator skill writes beside them. Beside those seven,
+/// the skill also seeds a plain file directly at this root, <c>journal.md</c> (see
+/// <see cref="RecipeJournalFile"/> for why it sits here rather than under <c>recipes/</c>), its
+/// sibling <c>sessions.md</c>, which no platform code path names, and a <c>notes/</c> directory
+/// holding <c>prototype-feedback.md</c>.
 /// </para>
 /// <para>
 /// There is deliberately no top-level <c>runs/</c>: a run belongs to exactly one task, so it
@@ -161,8 +165,15 @@ public static class ProjectHomePaths
     /// <summary>The generator-written recipe the anchor hands off to; absent until the skill has run.</summary>
     public static string OrchestratorRecipeFile(string home) => Path.Combine(RecipesDirectory(home), RecipeLibraryPaths.OrchestratorRecipeFileName);
 
-    /// <summary>The generator-written open-loop journal beside the recipe; absent until the skill has run.</summary>
-    public static string RecipeJournalFile(string home) => Path.Combine(RecipesDirectory(home), RecipeLibraryPaths.JournalFileName);
+    /// <summary>
+    /// The generator-seeded open-loop journal, at the project home's own root rather than under
+    /// <see cref="RecipesDirectory"/> — Brian's own ruling (task: an operator starts a lean node
+    /// or project orchestrator window, 2026-09-07 16:10 EDT): one rule per folder, since
+    /// <c>recipes/</c> is the platform-owned launch folder <c>install</c> and <c>init</c>
+    /// overwrite and the anchor's own <c>.new</c> rule governs, while the journal is the window's
+    /// own live state. Absent until the skill has run.
+    /// </summary>
+    public static string RecipeJournalFile(string home) => Path.Combine(home, RecipeLibraryPaths.JournalFileName);
 
     /// <summary>
     /// Where the orchestrator-recipe-generator skill itself lives once seeded into this home,
