@@ -341,7 +341,7 @@ internal static class TaskPhaseComposer
         if (task.State == TaskState.Claimed || task.State == TaskState.NeedsHuman)
         {
             TaskPhase working = Working(task, run, session);
-            return working with { Text = $"follow-up on {pullRequest}: {working.Text}" };
+            return WithTriageDetail(working with { Text = $"follow-up on {pullRequest}: {working.Text}" }, run);
         }
 
         if (run is null)
@@ -545,9 +545,65 @@ internal static class TaskPhaseComposer
         }
 
         string count = $"{run.UnresolvedReviewThreads} unresolved review thread(s)";
-        return run.UnresolvedHumanReviewThreads is { } human
+        string detail = run.UnresolvedHumanReviewThreads is { } human
             ? $"{count}, {human} from a human"
             : count;
+        return run.LastReviewThreadOutcomes.Count > 0
+            ? $"{detail}; last triage: {DispositionSummary(run.LastReviewThreadOutcomes)}"
+            : detail;
+    }
+
+    /// <summary>
+    /// A follow-up's own triage (task: every review thread on a pull request gets a triage
+    /// disposition before any fix work), folded into whichever phase line already names this
+    /// follow-up's pull request. A run this task's follow-up has not yet triaged, or one whose
+    /// prompt never taught the vocabulary, carries no outcomes and the phase renders exactly as
+    /// it did before this field existed.
+    /// </summary>
+    private static TaskPhase WithTriageDetail(TaskPhase phase, RunDetails? run) =>
+        run is { LastReviewThreadOutcomes.Count: > 0 }
+            ? phase with
+            {
+                Detail = phase.Detail.IsBlank()
+                    ? $"last triage: {DispositionSummary(run.LastReviewThreadOutcomes)}"
+                    : $"{phase.Detail}; last triage: {DispositionSummary(run.LastReviewThreadOutcomes)}",
+            }
+            : phase;
+
+    /// <summary>
+    /// Each thread's disposition, counted rather than listed one row per thread — the phase line
+    /// is one line by contract (<see cref="TaskPhase"/>'s own doc), and the count is what answers
+    /// the question this field exists for: how much of a triage's own work turned into a real fix
+    /// versus a decline or a route.
+    /// </summary>
+    private static string DispositionSummary(IReadOnlyList<ReviewThreadOutcome> outcomes)
+    {
+        int fix = outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Fix);
+        int decline = outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Decline);
+        int route = outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Route);
+        int unknown = outcomes.Count - fix - decline - route;
+        List<string> parts = [];
+        if (fix > 0)
+        {
+            parts.Add($"{fix} fix");
+        }
+
+        if (decline > 0)
+        {
+            parts.Add($"{decline} decline");
+        }
+
+        if (route > 0)
+        {
+            parts.Add($"{route} route");
+        }
+
+        if (unknown > 0)
+        {
+            parts.Add($"{unknown} unrecognized");
+        }
+
+        return string.Join(", ", parts);
     }
 
     /// <summary>
