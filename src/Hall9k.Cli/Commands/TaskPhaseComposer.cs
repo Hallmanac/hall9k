@@ -84,14 +84,14 @@ internal static class TaskPhaseComposer
         // (mirrors AttentionComposer's own identical guard on this same field): the reason is
         // cleared by a fresh InteractiveSessionStarted (h9k task register-session, or
         // h9k task work --direct-launch, re-entering the claim, independent pre-PR review, cycle
-        // 1) but nothing clears it when one of the OTHER two levers it names moves RunState off
-        // Dispatched/Running instead — h9k task handback or h9k task release to Superseded, chief
-        // among them (never h9k task deliver: it runs the identical check this reason already
-        // failed and refuses on that same ground every time, and the one variant of this reason
-        // it would not refuse outright, git unobservable, leaves it equally unable to verify the
-        // tree, so it would push blind rather than refuse, independent pre-PR review, cycle 3,
-        // both lenses) — so this must still stop firing once that happens, or the phase line
-        // would keep reading "needs your input" over a run already moved on.
+        // 1) but nothing clears it when one of the OTHER levers it names moves RunState off
+        // Dispatched/Running instead — h9k task handback, h9k task release, or (whenever
+        // RunUnattendedExitFlagged.DeliverConfirmedRefuses is false — an unreadable branch, an
+        // unreadable git status, a vanished process, or a plain error result, none of which ever
+        // confirmed the tree was bad; AttentionComposer's own lever offers h9k task deliver only
+        // then, independent pre-PR review, cycle 1, both lenses) h9k task deliver itself — so this
+        // must still stop firing once that happens, or the phase line would keep reading "needs
+        // your input" over a run already moved on.
         if (run.ExitedUnattendedReason is { } exitedUnattendedReason
             && (run.State.Value == "Dispatched" || run.State.Value == "Running"))
         {
