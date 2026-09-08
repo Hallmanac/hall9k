@@ -242,9 +242,9 @@ public sealed class UninstallCommandTests : IDisposable
     [Fact]
     public void A_non_empty_recipe_directory_is_left_alone()
     {
-        // recipes/ can hold real, generator-written content (orchestrator.md, journal.md) even
-        // after the platform-owned files and the published skill are removed — this must never be
-        // swept out from under it.
+        // recipes/ can hold real, generator-written content (orchestrator.md and its siblings)
+        // even after the platform-owned files and the published skill are removed — this must
+        // never be swept out from under it.
         string directory = Path.Combine(this.directory, "recipes-with-content");
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "orchestrator.md"), "the generator's own recipe\n");
