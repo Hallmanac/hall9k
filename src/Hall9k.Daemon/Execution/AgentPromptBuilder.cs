@@ -130,6 +130,7 @@ public static class AgentPromptBuilder
         }
 
         AppendReviewerAttributionRules(prompt);
+        AppendThreadTriageRules(prompt, project.Name);
         AppendThreadHandlingRules(prompt);
         AppendThreadDisputeRules(prompt);
 
@@ -138,17 +139,18 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- You are in an isolated git worktree checked out on the EXISTING pull-request");
         prompt.AppendLine($"  branch `{branch}`. Work only here.");
         AppendRetainedWorktreeNote(prompt);
-        prompt.AppendLine("- Use the resolve-review-threads skill to triage every unresolved thread on");
-        prompt.AppendLine($"  {pullRequestUrl}: apply valid fixes, reply in-thread, resolve them.");
+        prompt.AppendLine("- Use the resolve-review-threads skill for the mechanics of triaging every");
+        prompt.AppendLine($"  unresolved thread on {pullRequestUrl}: give each one a disposition, apply the");
+        prompt.AppendLine("  fixes, reply in-thread, and resolve per the rules above.");
         AppendThreadTextBoundaryRule(prompt);
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
             ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
-        prompt.AppendLine("- End with a short summary: which threads you addressed, which you answered");
-        prompt.AppendLine("  without a code change and why, which you dismissed and why, and any open");
-        prompt.AppendLine("  questions.");
+        prompt.AppendLine("- End with a short summary: one THREAD DISPOSITION block per thread as the");
+        prompt.AppendLine("  triage section above asks for, then which threads you fixed, which you");
+        prompt.AppendLine("  declined or routed and why, and any open questions.");
         // R8's outbound milestones (task: agents on an interactive-mode task report outbound):
         // this follow-up dispatches under SessionRoleName.Build (RunLauncher's own sessionRole
         // split), so it is a dispatched build session by the same discriminator the rest of this
@@ -1290,26 +1292,96 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// How a thread is answered, with the human/bot asymmetry stated rather than implied
-    /// (Decisions Log #62). Bounded on purpose: one honest attempt per thread per follow-up,
+    /// The header line a triage block opens with, and the tags <c>ReviewResultParser.ParseThreadDispositions</c>
+    /// reads off it (task: every review thread on a pull request gets a triage disposition before
+    /// any fix work). Public so a test can build a summary against the exact contract this prompt
+    /// teaches, rather than a copy of it that could drift.
+    /// </summary>
+    public const string ThreadDispositionMarker = ReviewResultParser.ThreadDispositionMarker;
+
+    /// <summary>
+    /// The triage gate itself (task: every review thread on a pull request gets a triage
+    /// disposition before any fix work — origin: two full fix laps in two days bought by false
+    /// Copilot threads on PR #199 and PR #229, both resolved by hand on Brian's word after
+    /// evidence). Every thread gets exactly one of three dispositions before any code changes, and
+    /// the marker contract this section teaches is what lets <c>RunSupervisor</c> record each one
+    /// on the run stream (<c>ReviewThreadsTriaged</c>) so the decline rate is measurable rather
+    /// than an impression. <see cref="AppendThreadHandlingRules"/> teaches what each disposition
+    /// means for the reply and the resolve — this section teaches only the gate and the marker.
+    /// </summary>
+    private static void AppendThreadTriageRules(StringBuilder prompt, string projectName)
+    {
+        prompt.AppendLine("## Triage every thread before you fix anything");
+        prompt.AppendLine();
+        prompt.AppendLine("Read every unresolved thread and the diff around it, then give each one exactly");
+        prompt.AppendLine("one disposition before changing any code:");
+        prompt.AppendLine();
+        prompt.AppendLine("- **fix** — the finding is real and in scope. The only disposition that earns a");
+        prompt.AppendLine("  code change.");
+        prompt.AppendLine("- **decline** — you have reproduction-grade evidence it does not hold up: a");
+        prompt.AppendLine("  scratch-repo demonstration, or a pointer to the code path that already handles");
+        prompt.AppendLine("  it. Disagreeing is not evidence — if you cannot point to something concrete,");
+        prompt.AppendLine("  this is not a decline.");
+        prompt.AppendLine("- **route** — real, but out of this task's own scope. File it rather than growing");
+        prompt.AppendLine($"  this diff: `h9k idea add \"<text>\" --project \"{projectName}\"`.");
+        prompt.AppendLine();
+        prompt.AppendLine("Do not touch code until every thread has a disposition. Apply fixes only for the");
+        prompt.AppendLine("threads disposed fix. A triage where every thread is decline or route pushes");
+        prompt.AppendLine("nothing — that is the honest outcome of this gate, not a failure to find work.");
+        prompt.AppendLine();
+        prompt.AppendLine("Close your summary with one block per thread, in this shape, so the platform can");
+        prompt.AppendLine("record what you decided — this is for measurement only, and changes nothing about");
+        prompt.AppendLine("the reply or the resolve you make in the thread itself (the section below covers");
+        prompt.AppendLine("those):");
+        prompt.AppendLine();
+        prompt.AppendLine("```");
+        prompt.AppendLine($"{ThreadDispositionMarker} thread=<the thread's node id>; disposition=fix|decline|route; kind=human|bot; author=<login>");
+        prompt.AppendLine("<why: the fix's brief restatement, the decline's evidence, or the route's scope reason>");
+        prompt.AppendLine("```");
+        prompt.AppendLine();
+        prompt.AppendLine("One block per thread, ahead of the RESOLUTION line (if any) and the HANDOFF block.");
+        prompt.AppendLine("`kind=` is the thread-starter's own provider actor type — `Bot` reads as `bot`,");
+        prompt.AppendLine("everything else (`User`, a mannequin, an enterprise account) reads as `human` — read");
+        prompt.AppendLine("off the same GraphQL `__typename` the thread-fetch already returns, never guessed");
+        prompt.AppendLine("from the login string.");
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// How a triage disposition becomes a reply and a resolve decision (Decisions Log #62, #156).
+    /// A fix invites no argument and is replied and resolved the same way regardless of who
+    /// started the thread; a decline or a route is different — the evidence or the routing note
+    /// still goes in the thread, but only a bot-authored thread may be resolved afterward. A
+    /// human-authored one stays open: posting evidence answers the reviewer, closing their thread
+    /// for them does not (task: every review thread on a pull request gets a triage disposition
+    /// before any fix work — "agents never close a human's thread" is the acceptance bar this
+    /// asymmetry exists to meet). Bounded on purpose: one honest attempt per thread per follow-up,
     /// the never-loop rule the review park already runs on.
     /// </summary>
     private static void AppendThreadHandlingRules(StringBuilder prompt)
     {
-        prompt.AppendLine("## How to handle each thread");
+        prompt.AppendLine("## How to act on each disposition");
         prompt.AppendLine();
-        prompt.AppendLine("Read the thread and the diff around it before deciding anything. Then:");
-        prompt.AppendLine();
-        prompt.AppendLine("- A suggestion you agree with gets the fix, then a reply saying what changed.");
-        prompt.AppendLine("- A suggestion you disagree with gets a reply with your reasoning, citing the");
-        prompt.AppendLine("  pattern, constraint, or decision it rests on. Once. One honest attempt per");
-        prompt.AppendLine("  thread per follow-up; never re-litigate a point a previous run already answered.");
+        prompt.AppendLine("- **fix**: apply it, then reply saying what changed. Resolve the thread once the");
+        prompt.AppendLine("  reply is posted — bot-authored or human-authored, since a fix invites no");
+        prompt.AppendLine("  argument.");
+        prompt.AppendLine("- **decline**: reply with the evidence — the scratch-repo demonstration or the");
+        prompt.AppendLine("  code path, not just your disagreement. Then:");
+        prompt.AppendLine("  - Bot-authored thread: resolve it. The evidence is what a bot needed; there is");
+        prompt.AppendLine("    nobody left to answer.");
+        prompt.AppendLine("  - Human-authored thread: leave it open. The evidence is posted, but closing a");
+        prompt.AppendLine("    person's thread for them is not yours to do — they read it and resolve it");
+        prompt.AppendLine("    themselves.");
+        prompt.AppendLine("- **route**: reply naming the idea you filed and why it is out of scope here, then");
+        prompt.AppendLine("  apply the same bot-resolves / human-stays-open rule decline uses.");
         prompt.AppendLine("- **A question gets an answer, not a code change.** If the honest answer is \"yes,");
-        prompt.AppendLine("  deliberately, because X\", that reply IS the resolution. Inventing a change to");
-        prompt.AppendLine("  look responsive is worse than saying nothing.");
+        prompt.AppendLine("  deliberately, because X\", that reply IS the resolution — usually a decline whose");
+        prompt.AppendLine("  evidence is the answer itself, or a fix if the honest answer turns out to be");
+        prompt.AppendLine("  \"you're right\".");
         prompt.AppendLine("- **Never resolve a human's thread without replying substantively.** A resolved");
         prompt.AppendLine("  thread with no answer in it is worse than an open one: it reads as handled.");
-        prompt.AppendLine("  Resolve only after the reply is posted.");
+        prompt.AppendLine("- One honest attempt per thread per follow-up; never re-litigate a point a");
+        prompt.AppendLine("  previous run already answered.");
         prompt.AppendLine();
         prompt.AppendLine("A review can also carry a BODY alongside its inline comments, and GitHub makes a");
         prompt.AppendLine("body unthreadable — there is nothing to reply inside. Answer it with a top-level");
