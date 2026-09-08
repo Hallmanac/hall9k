@@ -1,0 +1,2900 @@
+using System.Text.Json;
+using FluentAssertions;
+using Hall9k.Connectors.WorkItems;
+using Hall9k.Connectors.Worktrees;
+using Hall9k.Daemon;
+using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Daemon.ProjectHomes;
+using Hall9k.Daemon.Publication;
+using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Project.Handlers;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.Fakes;
+using JasperFx.Events;
+using Marten;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Xunit;
+
+namespace Hall9k.Tests.Integration;
+
+/// <summary>
+/// The two daemon sweeps that render the store's current state outward — one to the tracker card,
+/// one to the project home's <c>task.md</c> and <c>idea.md</c> — sharing one container. Both are a
+/// pure function of the store rather than a per-event handler, which is the shape the second's own
+/// doc comment already cited the first for; they were separate classes for twenty-seven and
+/// twenty-four tests. Every assertion here reads what its own test seeded, by id or under a
+/// directory of that seam's own, so the two are as invisible to each other as two tests in one
+/// class already were.
+/// <para>
+/// Card publication, the daemon half of <c>h9k task push-to-jira</c> (backlog 18): a request
+/// becomes one agent session, and what is recorded afterwards is read off the task rather than off
+/// what the session said. The assertions worth having there are all about the gap between claiming
+/// and being believed — a session that reports a beautiful success and never gets a key past
+/// <c>h9k task write-jira</c> has published nothing, and the record has to say so, because the
+/// alternative is a task that looks linked and a card that does not exist.
+/// </para>
+/// <para>
+/// Project-home rendering, the daemon half of backlog 48: what matters there is the seam between
+/// the store and the filesystem — a revision renaming the directory, a home that has not been
+/// materialised yet being skipped rather than half-written into, and a stray directory being
+/// reconciled — since <c>TaskDocumentRendererTests</c> and <c>HomeEntryWriterTests</c> already
+/// cover the rendering and the filesystem mechanics in isolation. Those tests keep a home of their
+/// own (<c>_renderHome</c>, a directory that genuinely exists) rather than sharing the redirected
+/// <c>HALL9K_HOME</c> the publication seam uses, because every one of them passes its home in
+/// explicitly and half of them are about what happens when a home is NOT materialised.
+/// </para>
+/// </summary>
+[Collection("Hall9kHome")]
+[Trait("Category", "RequiresDocker")]
+public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
+{
+    private static readonly DateTimeOffset Now = new(2026, 8, 21, 12, 0, 0, TimeSpan.Zero);
+
+    private const string TokenVariable = "HALL9K_TEST_PUBLICATION_JIRA_TOKEN";
+
+    private readonly string _home = SetTempHome();
+    private readonly string _repository = Path.Combine(Path.GetTempPath(), $"hall9k-repo-{Guid.NewGuid():N}");
+
+    private static string SetTempHome()
+    {
+        string home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
+        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+        return home;
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+        Environment.SetEnvironmentVariable(TokenVariable, null);
+        foreach (string directory in new[] { _home, _repository, _renderHome })
+        {
+            try
+            {
+                if (Directory.Exists(directory))
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// A session that ends with a scripted result. <paramref name="beforeFinishing"/> is what a
+    /// real one does just before it ends: call h9k task write-jira, modelled here as the
+    /// WorkItemLinked append that command makes once it has read the card back.
+    /// <para>
+    /// That work runs detached and only once the whole launch is on the stream, because that is
+    /// the real order and the engine depends on it: the daemon records a launch in two appends,
+    /// the dispatch before the spawn and the process after it, and a session that writes to the
+    /// task in between is racing its own launch. Two writers on one stream is not a race either
+    /// of them survives — Marten refuses the second append outright — so the wait is for the
+    /// recorded process rather than the recorded dispatch, which is only the first half. Waiting
+    /// on a condition rather than on a delay keeps the test off a guessed duration. Origin
+    /// incident (2026-08-22): waiting on the dispatch alone left the link colliding with the
+    /// process append, and on a loaded ubuntu CI runner the link lost, so the scripted session
+    /// died before writing its result and the sweep sat to its twenty-second ceiling and reported
+    /// a publication with no link.
+    /// </para>
+    /// </summary>
+    private sealed class ScriptedSession(
+        string? summary,
+        FakeProcessManager processes,
+        DocumentStore? store = null,
+        Guid taskId = default,
+        Func<Task>? beforeFinishing = null) : IExecutor
+    {
+        private int _nextPid = 9000;
+
+        public List<AgentSpawnRequest> Spawns { get; } = [];
+
+        /// <summary>
+        /// What <paramref name="beforeFinishing"/> threw, if it threw. The work is detached, so
+        /// nothing else would see it — and a scripted link that failed silently is a sweep that
+        /// reports no link for a reason the assertion cannot name.
+        /// </summary>
+        public Exception? Failure { get; private set; }
+
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Spawns.Add(request);
+            int pid = _nextPid++;
+            Directory.CreateDirectory(request.RunDirectory);
+
+            if (summary is null)
+            {
+                // Dead on arrival with nothing written: the died-without-a-result path.
+                return Task.FromResult(new SpawnedAgent(pid, Now));
+            }
+
+            processes.MarkAlive(pid);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (beforeFinishing is { } work)
+                    {
+                        await WaitForRecordedLaunchAsync(cancellationToken);
+                        await work();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    Failure = exception;
+                }
+
+                // Written whatever became of the work above, because that is what a real session
+                // does: one whose h9k task write-jira failed still ends and still says what it did.
+                // Swallowing the result here would leave the engine waiting on a session that is
+                // over, and the assertion reading a timeout instead of the failure that caused it.
+                string line = JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["type"] = "result",
+                    ["subtype"] = "success",
+                    ["is_error"] = false,
+                    ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 10, ["output_tokens"] = 20 },
+                    ["result"] = summary,
+                });
+                await File.WriteAllTextAsync(RunPaths.StreamFile(request.RunDirectory), line + "\n", cancellationToken);
+            }, cancellationToken);
+
+            return Task.FromResult(new SpawnedAgent(pid, Now));
+        }
+
+        /// <summary>
+        /// Waits for the recorded process, which is the second and last append the daemon makes
+        /// before it settles into watching the session — so past it, the scripted work is the
+        /// task's only writer.
+        /// </summary>
+        private async Task WaitForRecordedLaunchAsync(CancellationToken cancellationToken)
+        {
+            for (int attempt = 0; attempt < 100 && store is not null; attempt++)
+            {
+                await using IQuerySession query = store.QuerySession();
+                if ((await query.LoadAsync<TaskDetails>(taskId, cancellationToken))?
+                    .PublicationSessionProcessId is not null)
+                {
+                    return;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_request_becomes_one_session_in_the_projects_own_repository()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, taskId, () => LinkAsync(store, taskId, cts.Token));
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        session.Failure.Should().BeNull("the scripted h9k task write-jira is what the sweep below is read against");
+        sweep.Should().Be(new CardPublicationSweepResult(1, 1));
+        AgentSpawnRequest spawn = session.Spawns.Should().ContainSingle().Subject;
+        spawn.WorktreePath.Should().Be(_repository, "the card rules live in the project's own repository");
+        spawn.Prompt.Should().Contain("Publish me").And.Contain($"h9k task write-jira {taskId}");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.ExternalReference.Should().Be("jira:PROJ-123");
+        task.PendingPublicationProvider.Should().BeNull("the errand is over");
+        task.PublicationOutcome.Should().Contain("Created PROJ-123.");
+    }
+
+    /// <summary>
+    /// The gap this closes (routed from the pre-PR review of task
+    /// 01a05cef-b7d8-722c-bb14-2a2c3e340005): a publication session's usage used to be discarded
+    /// entirely, invisible to the dispatcher's period-spend budget. It has to ride the task's own
+    /// stream rather than a fresh <c>TokensRecorded</c> on some stream of its own, because a
+    /// publication has no run — and a bare <c>TokensRecorded</c> on a stream with no
+    /// <c>RunDispatched</c> would have <see cref="RunDetailsProjection"/> mint a phantom run
+    /// document keyed by whatever id it landed on, which the last assertion here guards against.
+    /// </summary>
+    [Fact]
+    public async Task A_finished_sessions_usage_is_recorded_and_counted_in_the_periods_spend()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, taskId, () => LinkAsync(store, taskId, cts.Token));
+
+        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<PublicationTokensRecorded> recorded = await query.Events
+            .QueryRawEventDataOnly<PublicationTokensRecorded>()
+            .Where(e => e.Id == taskId)
+            .ToListAsync(cts.Token);
+        PublicationTokensRecorded tokens = recorded.Should().ContainSingle(
+            "the scripted session reported usage, and it must not be discarded").Subject;
+        tokens.InputTokens.Should().Be(10, "the scripted result's own usage.input_tokens");
+        tokens.OutputTokens.Should().Be(20, "the scripted result's own usage.output_tokens");
+
+        PeriodSpend spend = await PeriodSpend.ReadAsync(query, Now.AddDays(-1), cts.Token);
+        spend.TotalInputTokens.Should().BeGreaterThanOrEqualTo(
+            10, "PeriodSpend is what the dispatcher's spend budget actually reads");
+
+        RunDetails? phantom = await query.LoadAsync<RunDetails>(taskId, cts.Token);
+        phantom.Should().BeNull(
+            "the task's own id must never surface as a run: PublicationTokensRecorded is its own "
+            + "event type precisely so RunDetailsProjection never sees one on this stream");
+    }
+
+    /// <summary>
+    /// The observation gate, seen from the other side. Nothing here reads what the agent claimed;
+    /// the outcome is decided by whether the task came out carrying a reference, which only the
+    /// verifying command can have set.
+    /// </summary>
+    [Fact]
+    public async Task A_session_that_reports_success_without_verifying_publishes_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("All done! I created PROJ-999 for you.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 1, Linked: 0),
+            "a session ran; what it did not do is produce a card anybody verified");
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.ExternalReference.Should().BeNull("a claim is not a link");
+        task.PublicationOutcome.Should().Contain("without a verified card key")
+            .And.Contain("I created PROJ-999", "what it said is kept, as its words rather than as the record")
+            .And.Contain("Check the board", "PROJ-999 may well exist; what nobody has is proof of it");
+    }
+
+    /// <summary>
+    /// Completing clears the pending marker, which is what makes the task publishable again — so
+    /// an outcome that reports no link has to say that no card was <em>seen</em> rather than that
+    /// none exists. A session that died mid-flight may have filed one first, and an operator who
+    /// reads "no card" and runs push-to-jira again gets the duplicate. Origin incident
+    /// (2026-08-21): the pre-PR review of this branch found the caution on the adoption and
+    /// shutdown paths and missing from the ordinary ones.
+    /// </summary>
+    [Fact]
+    public async Task A_session_that_dies_without_a_result_says_where_to_look()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(null, processes);
+
+        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PublicationOutcome.Should().Contain("left no result to read")
+            .And.Contain(RunPaths.Root, "the transcript is somewhere, and the record says where")
+            .And.Contain("Check the board", "it may have filed a card before it died");
+        task.PendingPublicationProvider.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A session that submitted its composed payload through h9k task write-jira and hit a
+    /// rejected credential has not left an unreported card behind: the write is recorded pending
+    /// on the task, and the daemon's own retry sweep finishes it once the connection is fixed. The
+    /// generic "check the board, a session may have filed a card and never told you" caution is
+    /// wrong here — no card was ever filed — and sends an operator to push-to-jira again instead of
+    /// to the retry that is already queued (independent pre-PR review, conformance lens, cycle 1).
+    /// </summary>
+    [Fact]
+    public async Task A_session_stuck_on_a_rejected_credential_is_not_told_to_check_the_board()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        Guid writeId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(
+                taskId,
+                new JiraWriteRequested(taskId, writeId, JiraWriteOperation.Create, null, "{}", node.OwnerId, Now),
+                new JiraWriteFailed(
+                    taskId,
+                    writeId,
+                    "Jira rejected the registered credentials. This write stays recorded and pending; it "
+                    + "retries automatically once the connection is fixed.",
+                    IsAuthFailure: true,
+                    Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeProcessManager processes = new();
+        ScriptedSession agentSession = new(
+            "Submitted the payload through h9k task write-jira; Jira rejected the credentials, so it is pending.",
+            processes);
+
+        await NewEngine(store, node, agentSession, processes).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingJiraWriteIsAuthFailure.Should().BeTrue("the pre-seeded write is still pending on a rejected credential");
+        task.PublicationOutcome.Should()
+            .Contain("rejected the registered credential")
+            .And.Contain("retries automatically")
+            .And.NotContain("Check the board", "no card was ever filed for this session to have lost track of");
+    }
+
+    /// <summary>
+    /// The seam failing underneath a session that is still running: what a transient IOException
+    /// out of the tail read, or a dropped connection out of the linked check, looks like from the
+    /// engine. Kills are passed through to the real fake, because whether the session was stopped
+    /// is the assertion.
+    /// </summary>
+    private sealed class UnwatchableProcesses(FakeProcessManager processes) : IProcessManager
+    {
+        public SpawnedProcess Spawn(ProcessSpawnRequest request) => processes.Spawn(request);
+
+        public bool IsAlive(int processId, DateTimeOffset startedAt) =>
+            throw new IOException("the session's stream could not be read");
+
+        public void Terminate(int processId, DateTimeOffset startedAt) => processes.Terminate(processId, startedAt);
+    }
+
+    /// <summary>
+    /// Losing track of a running session is not the same fact as never having started one, and
+    /// only the first is what happened here. The session is stopped for the reason the timeout
+    /// path stops one — nobody is watching it and nothing will record what it does next — and the
+    /// outcome says a card may exist, because completing makes the task publishable again and an
+    /// operator told the session could not be run would publish a second time. Origin incident
+    /// (2026-08-21): the second cycle of this branch's pre-PR review found the sweep's catch-all
+    /// recording "the daemon could not run the publication session", with no kill and no caution,
+    /// while the agent it had spawned was still working.
+    /// </summary>
+    [Fact]
+    public async Task A_session_the_daemon_loses_track_of_is_stopped_rather_than_reported_as_never_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(null, processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, new UnwatchableProcesses(processes))
+            .PollOnceAsync(cts.Token);
+
+        sweep.Dispatched.Should().Be(1, "a session was spawned, whatever became of watching it");
+        sweep.Linked.Should().Be(0);
+        session.Spawns.Should().ContainSingle();
+        processes.Terminations.Should().ContainSingle(
+            "a session nobody is watching any more is stopped, not left detached with a card to file");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PublicationOutcome.Should().Contain("lost track of it")
+            .And.NotContain("could not run the publication session", "it ran; what failed was watching it")
+            .And.Contain(RunPaths.Root, "the transcript is somewhere, and the record says where")
+            .And.Contain("Check the board", "it was mid-flight, so it may have filed a card first");
+        task.PendingPublicationProvider.Should().BeNull("the task is publishable again, which is why the caution is there");
+    }
+
+    /// <summary>
+    /// The failure that costs a human an afternoon is two cards for one task, so a request whose
+    /// session has already been dispatched is never picked up again — even by a sweep that runs
+    /// while the first session is still going.
+    /// </summary>
+    [Fact]
+    public async Task A_request_whose_session_already_ran_is_not_dispatched_twice()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession first = new("All done! I created PROJ-999 for you.", processes);
+        await NewEngine(store, node, first, processes).PollOnceAsync(cts.Token);
+
+        // The first sweep completed the request; a second sweep has nothing to do, and would not
+        // pick it up even if the completion had not landed.
+        ScriptedSession second = new("A second card nobody asked for.", processes);
+        CardPublicationSweepResult sweep = await NewEngine(store, node, second, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Dispatched.Should().Be(0);
+        second.Spawns.Should().BeEmpty();
+        _ = taskId;
+    }
+
+    [Fact]
+    public async Task A_request_made_by_another_owner_is_not_this_nodes_to_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        await SeedAsync(store, node, cts.Token, requestedBy: DomainId.New());
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Dispatched.Should().Be(0);
+        session.Spawns.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A project that owns a home records its repository as the bare clone inside <c>repo/</c>,
+    /// which has refs and objects and not one file of the project's code. The session is here to
+    /// read the project's card-authoring skills, so it runs in <c>repo/dev</c>, the worktree the
+    /// home keeps on the primary branch for exactly that. Origin incident (2026-08-23): the
+    /// pre-PR review of the project-home branch found the session spawned inside the bare clone,
+    /// where the prompt's "read them from the repository you are in" cannot be followed.
+    /// </summary>
+    [Fact]
+    public async Task A_project_with_a_home_runs_its_session_in_the_dev_worktree_not_the_bare_clone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string home = Path.Combine(_repository, "home");
+        string bare = ProjectHomePaths.BareRepository(home, "publication");
+        Directory.CreateDirectory(Path.Combine(bare, "objects"));
+        Directory.CreateDirectory(Path.Combine(bare, "refs"));
+        Directory.CreateDirectory(Path.Combine(ProjectHomePaths.DevWorktree(home), ".git"));
+
+        Guid taskId = await SeedAsync(
+            store, node, cts.Token, repositoryPath: bare, homeDirectory: ProjectHome.Parse(home));
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, taskId, () => LinkAsync(store, taskId, cts.Token));
+
+        StubWorktreeManager worktrees = new();
+        await NewEngine(store, node, session, processes, worktrees: worktrees).PollOnceAsync(cts.Token);
+
+        session.Spawns.Should().ContainSingle().Subject.WorktreePath
+            .Should().Be(ProjectHomePaths.DevWorktree(home));
+
+        // repo/dev is cut once by h9k project init and otherwise never touched, so a session
+        // spawned there to read this project's card rules reads them as of whenever the worktree
+        // was made unless something brings it forward first.
+        worktrees.Refreshed.Should().Equal([ProjectHomePaths.DevWorktree(home)]);
+    }
+
+    /// <summary>
+    /// The other half of that rule. A project registered before homes existed reads from an
+    /// ordinary clone that belongs to whoever made it, and moving somebody's working directory
+    /// under them is not housekeeping the platform gets to do on its own account.
+    /// </summary>
+    [Fact]
+    public async Task A_project_with_no_home_has_its_own_checkout_left_where_it_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, taskId, () => LinkAsync(store, taskId, cts.Token));
+
+        StubWorktreeManager worktrees = new();
+        await NewEngine(store, node, session, processes, worktrees: worktrees).PollOnceAsync(cts.Token);
+
+        session.Spawns.Should().ContainSingle().Subject.WorktreePath.Should().Be(_repository);
+        worktrees.Refreshed.Should().BeEmpty("that clone is somebody's, not the home's own dev/");
+    }
+
+    /// <summary>
+    /// The same project before <c>h9k project init</c> has cut the worktree: the bare clone is
+    /// there and exists, so an existence check alone passes it. There is still nothing to read.
+    /// </summary>
+    [Fact]
+    public async Task A_bare_clone_with_no_worktree_is_refused_rather_than_dispatched_into()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string home = Path.Combine(_repository, "home");
+        string bare = ProjectHomePaths.BareRepository(home, "publication");
+        Directory.CreateDirectory(Path.Combine(bare, "objects"));
+        Directory.CreateDirectory(Path.Combine(bare, "refs"));
+
+        Guid taskId = await SeedAsync(
+            store, node, cts.Token, repositoryPath: bare, homeDirectory: ProjectHome.Parse(home));
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1));
+        session.Spawns.Should().BeEmpty();
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.PublicationOutcome
+            .Should().Contain("h9k project init", "the refusal names the command that makes a checkout");
+    }
+
+    [Fact]
+    public async Task A_project_whose_repository_is_gone_is_reported_rather_than_dispatched_into()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token, repositoryPath: "/no/such/repository");
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1),
+            "there was no repository to dispatch into, so no session ran");
+        session.Spawns.Should().BeEmpty();
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.PublicationOutcome
+            .Should().Contain("/no/such/repository");
+    }
+
+    /// <summary>
+    /// The daemon stopping mid-publication used to strand the task for good: the dispatch is on
+    /// the stream and the completion never lands, and nothing else clears that marker — the sweep
+    /// skips a request whose session already ran, push-to-jira refuses while one is outstanding,
+    /// and link-jira needs a card key that may not exist. Origin incident (2026-08-21): the pre-PR
+    /// review of this branch, which traced it from h9k daemon stop inside the timeout window.
+    /// </summary>
+    [Fact]
+    public async Task A_session_the_daemon_never_saw_finish_is_adopted_rather_than_left_outstanding()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await DispatchedAsync(store, node, taskId, processId: 4242, cts.Token);
+
+        // Nothing is marked alive: the session died with the daemon that spawned it.
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Adopted.Should().Be(1);
+        sweep.Dispatched.Should().Be(0);
+        session.Spawns.Should().BeEmpty("adoption finishes the session that ran; it never starts a second one");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingPublicationProvider.Should().BeNull("the task is no longer waiting on anything");
+        task.PublicationOutcome.Should().Contain("daemon stopped while this session was running")
+            .And.Contain(
+                "Check the board",
+                Exactly.Once(),
+                "whether a card exists is the one thing nobody here observed, said once");
+    }
+
+    /// <summary>
+    /// The gap the adversarial lens found (routed from the pre-PR review of task
+    /// 01a0620c-5d2c-76e6-b013-e10b2bdc8846, cycle 1): <see cref="TaskDetails.PublicationSessionModel"/>
+    /// is the only thing standing between an adopted session's recorded spend and
+    /// <see cref="AgentModel.Unknown"/>, and nothing exercised it — the projection's own assignment
+    /// could be deleted and the rest of the suite would still be green.
+    /// </summary>
+    [Fact]
+    public async Task An_adopted_sessions_usage_is_recorded_under_the_model_it_actually_ran_on()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        Guid sessionId = await DispatchedAsync(
+            store, node, taskId, processId: 4242, cts.Token, model: AgentModel.Opus);
+        await WriteResultAsync(sessionId, "Created PROJ-123.", cts.Token);
+
+        // Nothing is marked alive: the session died with the daemon that spawned it, so adoption
+        // reads its result straight off the stream file this seeded rather than waiting on a live
+        // process.
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Adopted.Should().Be(1);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<PublicationTokensRecorded> recorded = await query.Events
+            .QueryRawEventDataOnly<PublicationTokensRecorded>()
+            .Where(e => e.Id == taskId)
+            .ToListAsync(cts.Token);
+        PublicationTokensRecorded tokens = recorded.Should().ContainSingle(
+            "the adopted session reported usage, and it must not be discarded").Subject;
+        tokens.Model.Should().Be(
+            AgentModel.Opus,
+            "TaskDetails.PublicationSessionModel is what AdoptAsync reads the model from — nothing "
+            + "in the adopted session's own result names which model it ran on");
+    }
+
+    /// <summary>
+    /// The one stranding adoption cannot cover: a dispatch recorded against a node that never
+    /// comes back. Adoption is scoped to the node that spawned the session because a pid means
+    /// nothing off the machine that issued it, so a node identity that stops existing leaves the
+    /// task reading "a session is writing the card" with nothing able to clear it — the dispatch
+    /// sweep skips it, push-to-jira refuses while it is outstanding, link-jira needs a card key
+    /// that may not exist, and abandoning keeps the marker on purpose. Origin incident
+    /// (2026-08-22): the pre-PR review of this branch traced it from a machine rename, which gives
+    /// the same install a new node identity through NodeBootstrap's machine-name lookup.
+    /// </summary>
+    [Fact]
+    public async Task A_dispatch_belonging_to_a_node_that_never_came_back_is_ended_on_the_ceiling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        Guid gone = await ForeignNodeAsync(store, node, "the-old-machine-name", cts.Token);
+        await DispatchedAsync(
+            store, node, taskId, processId: 4242, cts.Token,
+            nodeId: gone, dispatchedAt: DateTimeOffset.UtcNow - TimeSpan.FromHours(2));
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Expired.Should().Be(1, "it is counted apart from adoption: nobody watched that session, only a clock");
+        session.Spawns.Should().BeEmpty("the request is ended, not retried into a second card");
+        processes.Terminations.Should().NotContain(
+            termination => termination.ProcessId == 4242,
+            "the pid on the task belongs to another machine, and judging it from here is the rule this "
+            + "engine does not break");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingPublicationProvider.Should().BeNull("the way out is the point");
+        task.PublicationOutcome.Should().Contain("the-old-machine-name", "the machine it belonged to is nameable")
+            .And.Contain("Only the node that spawned a session can judge it")
+            .And.Contain("Check the board", Exactly.Once(),
+                "no card was seen created here, which is not the same as no card");
+
+        TaskAggregate aggregate = (await query.Events
+            .AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        Action request = () => TaskDecider.RequestWorkItemPublication(
+            aggregate, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, node.OwnerId);
+        request.Should().NotThrow("a request ended on the ceiling must leave the task publishable again");
+    }
+
+    /// <summary>
+    /// And the ceiling is what keeps that from cutting a live session short. Another node running
+    /// a publication right now looks exactly the same from here — dispatched, no outcome, a pid
+    /// this machine cannot ask about — so the only thing separating the two is how long it has
+    /// stood, and inside the ceiling the answer is to leave it alone.
+    /// </summary>
+    [Fact]
+    public async Task A_publication_another_node_is_still_running_is_left_alone_until_the_ceiling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        Guid other = await ForeignNodeAsync(store, node, "the-other-machine", cts.Token);
+        await DispatchedAsync(
+            store, node, taskId, processId: 4242, cts.Token,
+            nodeId: other, dispatchedAt: DateTimeOffset.UtcNow);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Expired.Should().Be(0, "inside the ceiling the other node is still the one to finish it");
+        session.Spawns.Should().BeEmpty("a second session would be the second card this engine exists to avoid");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingPublicationProvider.Should().Be(WorkItemProvider.Jira.Value,
+            "the publication is still somebody's to finish");
+        task.PublicationOutcome.Should().BeNull("nothing has come of it yet, and saying otherwise would be a guess");
+    }
+
+    /// <summary>
+    /// And the way back is open again: the refusal that protects against two cards is exactly what
+    /// made the stranded state permanent, so adoption has to leave the task able to be published.
+    /// </summary>
+    [Fact]
+    public async Task An_adopted_task_can_be_published_again()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await DispatchedAsync(store, node, taskId, processId: 4242, cts.Token);
+
+        FakeProcessManager processes = new();
+        await NewEngine(store, node, new ScriptedSession(null, processes), processes).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate task = (await query.Events
+            .AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        Action request = () => TaskDecider.RequestWorkItemPublication(
+            task, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, node.OwnerId);
+
+        request.Should().NotThrow("a publication nobody watched end must not block the next attempt");
+    }
+
+    /// <summary>
+    /// A restarted daemon is not evidence that the session it spawned died. That session is
+    /// detached, so it can outlive the daemon, and killing it would throw away a card it may be
+    /// halfway through creating — it is waited on instead.
+    /// </summary>
+    [Fact]
+    public async Task An_adopted_session_that_is_still_running_is_waited_on_rather_than_assumed_dead()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        Guid sessionId = await DispatchedAsync(store, node, taskId, processId: 4242, cts.Token);
+        FakeProcessManager processes = new();
+        processes.MarkAlive(4242);
+        await WriteResultAsync(sessionId, "I filed the card but never reported it back.", cts.Token);
+
+        FakeProcessManager spawnProcesses = new();
+        ScriptedSession session = new("Created PROJ-123.", spawnProcesses);
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Adopted.Should().Be(1);
+        processes.Terminations.Should().NotContain(
+            termination => termination.ProcessId == 4242,
+            "a live session is picked back up, not killed");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PublicationOutcome.Should().Contain("picked it back up")
+            .And.Contain("I filed the card but never reported it back.")
+            .And.Contain(
+                "Check the board",
+                Exactly.Once(),
+                "the adopted outcome carries the caution the session's own outcome already ended with, "
+                + "and carrying it twice reads as a defect in the record");
+        task.ExternalReference.Should().BeNull("nothing came back through the gate, so nothing is linked");
+    }
+
+    /// <summary>
+    /// The loop's first sweep runs immediately rather than after a full interval, which is the
+    /// whole reason a request made while the daemon was down is picked up the moment it comes back.
+    /// That only works if the node has an identity by then: every query the sweep makes is scoped
+    /// to this node or its owner, and node bootstrap happens in the dispatch loop, whose own first
+    /// await lets the host start this one. Origin incident (2026-08-21): the pre-PR review of this
+    /// branch found every daemon start logging "Card publication sweep failed" with "NodeContext
+    /// not initialized yet", which pushed the first real sweep out by a full poll interval — the
+    /// exact delay the immediate first sweep exists to avoid.
+    /// </summary>
+    [Fact]
+    public async Task The_loop_waits_for_this_node_to_have_an_identity_before_its_first_sweep()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext bootstrapped = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        await SeedAsync(store, bootstrapped, cts.Token);
+
+        // The loop gets a node nothing has initialized, the way the host hands it one. It still
+        // needs a GitHub connection already on file before the deferred InitializeAsync call
+        // further down this test (inside the try, after StartAsync and the first assertion) runs,
+        // or NodeBootstrap.EnsureAsync falls through to GhLogin() and shells to the real gh — seeded
+        // explicitly here rather than relying on the earlier NewNodeAsync call above having done
+        // it as a side effect of seeding an unrelated task (PLAN.md §16 #110's own correction of
+        // #109 found exactly this kind of incidental ordering dependency).
+        await NodeBootstrapSeed.SeedGitHubConnectionAsync(store, cts.Token);
+        NodeContext node = new();
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+        CardPublicationLoop loop = new(
+            NewEngine(store, node, session, processes),
+            node,
+            new DaemonConnection(postgres.ConnectionString),
+            Options.Create(new DaemonOptions()),
+            NullLogger<CardPublicationLoop>.Instance);
+
+        await loop.StartAsync(cts.Token);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cts.Token);
+            session.Spawns.Should().BeEmpty(
+                "a sweep before bootstrap would throw on NodeContext rather than dispatch anything");
+
+            await node.InitializeAsync(store, cts.Token);
+
+            for (int attempt = 0; attempt < 100 && session.Spawns.Count == 0; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cts.Token);
+            }
+
+            session.Spawns.Should().ContainSingle(
+                "the sweep runs as soon as the node knows who it is, not a poll interval later");
+        }
+        finally
+        {
+            await loop.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// The window that two cards come out of, closed. A session spawned before its dispatch is on
+    /// the stream is a live card-writer nothing has a record of, so a lost commit or a kill -9 in
+    /// that window leaves the next sweep free to start a second one against the same request.
+    /// Origin incident (2026-08-21): the pre-PR review of this branch traced both paths.
+    /// </summary>
+    [Fact]
+    public async Task The_dispatch_is_on_the_stream_before_anything_is_spawned()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        ObservingSession session = new(store, taskId);
+
+        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+
+        session.DispatchedWhenSpawned.Should().BeTrue(
+            "the guard that refuses a second session has to be up before one exists that could file a card");
+
+        // And the process is recorded once there is one — read off the stream rather than the
+        // projection, which drops the session's identity the moment the errand ends.
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        stream.Select(recorded => recorded.Data).OfType<WorkItemPublicationSessionStarted>()
+            .Should().ContainSingle().Which.ProcessId.Should().Be(9100);
+    }
+
+    /// <summary>
+    /// A session spawned as the daemon is told to stop, which is the one window where losing the
+    /// session is silent. The stop is fired the moment the agent is live and before the daemon has
+    /// recorded which process it is, so the append that would name it is cancelled — and the
+    /// recording of a spawned process is deliberately best-effort, so a cancelled save comes back
+    /// out. Left alone the agent outlives the daemon, and the restart reads a dispatch with no
+    /// process beside it, which by contract terminates nothing and completes the publication, so
+    /// the task is publishable again while a detached session is still writing its card. Origin
+    /// incident (2026-08-22): the pre-PR review of this branch traced it from h9k daemon stop
+    /// inside that window.
+    /// </summary>
+    private sealed class SessionSpawnedAsTheDaemonStops(
+        FakeProcessManager processes, CancellationTokenSource stopping) : IExecutor
+    {
+        public int ProcessId => 9200;
+
+        public Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(request.RunDirectory);
+            processes.MarkAlive(ProcessId);
+            stopping.Cancel();
+            return Task.FromResult(new SpawnedAgent(ProcessId, Now));
+        }
+    }
+
+    /// <summary>
+    /// And what that window has to end as: the session stopped with the daemon and the outcome
+    /// recorded on a token of its own, which is the same answer the shutdown path gives a session
+    /// it was already watching.
+    /// </summary>
+    [Fact]
+    public async Task A_session_spawned_as_the_daemon_stops_is_stopped_with_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+
+        FakeProcessManager processes = new();
+        using CancellationTokenSource stopping = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+        SessionSpawnedAsTheDaemonStops session = new(processes, stopping);
+
+        Func<Task> sweep = () => NewEngine(store, node, session, processes).PollOnceAsync(stopping.Token);
+
+        await sweep.Should().ThrowAsync<OperationCanceledException>(
+            "the daemon is stopping, and a sweep that swallowed that would be asked for another one");
+
+        processes.Terminations.Should().Contain(
+            termination => termination.ProcessId == session.ProcessId,
+            "nothing is left watching it, and a detached session still writing a card is how a "
+            + "surprise card arrives on a board");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PublicationOutcome.Should().Contain("The daemon stopped while this session was writing the card")
+            .And.Contain("Check the board", "it was stopped without a verified key, and may have filed one");
+        task.PendingPublicationProvider.Should().BeNull("the request is over, however it ended");
+    }
+
+    /// <summary>
+    /// The other side of that split: a daemon that died between committing the dispatch and
+    /// recording the process it spawned. Nobody can now say whether a session ever ran, so the
+    /// outcome says that rather than picking an answer, and the task is left publishable again.
+    /// </summary>
+    [Fact]
+    public async Task A_dispatch_with_no_process_recorded_beside_it_is_reported_as_unknown()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await DispatchedAsync(store, node, taskId, processId: null, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Adopted.Should().Be(1);
+        session.Spawns.Should().BeEmpty("a session may be running; starting a second is the failure to avoid");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PublicationOutcome.Should().Contain("nothing can say whether it ran")
+            .And.Contain("Check the board", "no card was seen, which is not the same as no card");
+        task.PendingPublicationProvider.Should().BeNull("the task is publishable again");
+    }
+
+    /// <summary>
+    /// A publication ended after something went wrong still has to say what the task carries,
+    /// rather than assume it carries nothing. The flag on
+    /// <see cref="WorkItemPublicationCompleted"/> is read off the task's own state by contract,
+    /// and the paths that end a publication on a failure are the ones where assuming is easiest
+    /// and wrong: a session's own h9k task write-jira may already have landed. The state seeded
+    /// here is the one the projection can hold — a request appended behind a link, then
+    /// dispatched — because it is the one an outcome can be observed against without breaking
+    /// the store underneath the engine. Origin incident (2026-08-22): the third cycle of this
+    /// branch's pre-PR review found every one of those paths recording "no card produced", plus
+    /// the caution to go hunting for an unrecorded one, whatever the task said.
+    /// </summary>
+    [Fact]
+    public async Task An_outcome_recorded_after_a_failure_says_what_the_task_actually_carries()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await LinkAsync(store, taskId, cts.Token);
+        await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
+        await DispatchedAsync(store, node, taskId, processId: null, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Adopted.Should().Be(1);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        WorkItemPublicationCompleted completed = stream
+            .Select(@event => @event.Data)
+            .OfType<WorkItemPublicationCompleted>()
+            .Last();
+        completed.Linked.Should().BeTrue(
+            "the task carries a verified key, and the flag reads the task rather than the failure");
+        completed.Outcome.Should().Contain("verified card key")
+            .And.NotContain("Check the board", "there is nothing to go looking for: the card is recorded");
+    }
+
+    /// <summary>
+    /// The decider's other rule, enforced where the card would actually be written. A task that
+    /// already carries a card gets no session, whatever the pending marker says: the sweep is the
+    /// last gate before an agent is told to file one, and one task carries one external item.
+    /// Origin incident (2026-08-21): the pre-PR review of this branch found h9k task push-to-jira
+    /// appending its request unfenced, so a link landing between its read and its append left a
+    /// task both linked and pending — the state this test seeds directly.
+    /// </summary>
+    [Fact]
+    public async Task A_task_that_is_already_linked_gets_no_session_however_it_came_to_be_pending()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await LinkAsync(store, taskId, cts.Token);
+        await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("A second card nobody asked for.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1),
+            "the request was answered by a guard, and counting it as a session that ran would put an "
+            + "agent in somebody's repository in the daemon's log that was never there");
+        session.Spawns.Should().BeEmpty("a session dispatched here would file a second card for one task");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.ExternalReference.Should().Be("jira:PROJ-123", "the card it already had is untouched");
+        task.PendingPublicationProvider.Should().BeNull("the request is answered rather than left hanging");
+        task.PublicationOutcome.Should().Contain("already linked to jira:PROJ-123")
+            .And.Contain("second card", "the refusal says what it was protecting against");
+
+        IReadOnlyList<IEvent> stream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
+        stream.Select(@event => @event.Data).OfType<WorkItemPublicationCompleted>().Last()
+            .Linked.Should().BeTrue(
+                "the flag reads the task's own state by contract, and this is the one refusal that "
+                + "read a verified key off the task to decide it was a refusal at all");
+    }
+
+    /// <summary>
+    /// Abandoning is walking away from the work, and an errand nobody has started yet goes with
+    /// it. The sweep reads the pending marker and nothing else, so a request that outlived the
+    /// intent behind it would still become an agent session filing a real card — for work nobody
+    /// means to do, on a task that could not then record it, because linking an abandoned task is
+    /// refused too. Origin incident (2026-08-22): the pre-PR review of this branch traced it from
+    /// h9k task push-to-jira with the daemon stopped, then h9k task abandon, then the daemon
+    /// starting.
+    /// </summary>
+    [Fact]
+    public async Task Abandoning_before_the_daemon_sweeps_takes_the_request_with_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await AbandonAsync(store, taskId, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("A card for work nobody is doing.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CardPublicationSweepResult(0, 0));
+        session.Spawns.Should().BeEmpty("the request died with the task it was about");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.PendingPublicationProvider.Should().BeNull();
+        task.ExternalReference.Should().BeNull("no card was ever asked for");
+    }
+
+    /// <summary>
+    /// The same rule enforced where the consequence is, for a marker that reaches the sweep on an
+    /// abandoned task anyway — the request appended behind the abandon, which is the shape a
+    /// stream written before that rule existed has.
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_task_gets_no_session_however_it_came_to_be_pending()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token);
+        await AbandonAsync(store, taskId, cts.Token);
+        await RequestedBehindTheLinkAsync(store, node, taskId, cts.Token);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("A card for work nobody is doing.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1),
+            "a refusal is counted as a refusal; nothing ran");
+        session.Spawns.Should().BeEmpty("a card filed here is one nobody can link and nobody wants");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.ExternalReference.Should().BeNull();
+        task.PendingPublicationProvider.Should().BeNull("the request is answered rather than left hanging");
+        task.PublicationOutcome.Should().Contain("abandoned before the daemon picked the request up")
+            .And.Contain("nobody here intends to do", "the refusal says what it was protecting against");
+    }
+
+    /// <summary>
+    /// The card says what the task says at the moment the session is dispatched, not what it said
+    /// when the sweep began. A sweep reads its pending requests once and then works through them one
+    /// at a time, each publication blocking on an agent session for up to the publication timeout, so
+    /// a later request can sit for many minutes before its turn — and a task is published from Draft,
+    /// which is the one state h9k task revise edits. Origin incident (2026-08-22): the pre-PR review
+    /// of this branch found the prompt built from the sweep's opening snapshot while every guard
+    /// beside it re-read the aggregate, so a task revised during an earlier session would have had its
+    /// card written from a contract it no longer carried, with nothing downstream to catch it:
+    /// h9k task write-jira verifies that the card exists, never that it matches the task.
+    /// </summary>
+    [Fact]
+    public async Task A_task_revised_while_an_earlier_publication_ran_is_written_up_as_it_now_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid first = await SeedAsync(store, node, cts.Token);
+        Guid second = await SeedAsync(store, node, cts.Token, requestedAt: Now.AddMinutes(1));
+
+        // The owner revises the second task while the first one's session is still running, which is
+        // the window the sweep's serial processing opens.
+        int revised = 0;
+        FakeProcessManager processes = new();
+        ScriptedSession session = new(
+            "Created PROJ-123.", processes, store, first, async () =>
+            {
+                if (Interlocked.Exchange(ref revised, 1) == 0)
+                {
+                    await ReviseAsync(
+                        store, second, "Rewrite the exporter", ["The rewritten criterion"], cts.Token);
+                }
+            });
+
+        await NewEngine(store, node, session, processes).PollOnceAsync(cts.Token);
+
+        session.Failure.Should().BeNull("the scripted revision is what the prompt below is read against");
+        session.Spawns.Should().HaveCount(2, "both requests were the sweep's to run, oldest first");
+        session.Spawns[1].Prompt.Should()
+            .Contain("Rewrite the exporter", "the card is written from the objective the task carries now")
+            .And.Contain("The rewritten criterion")
+            .And.NotContain("Publish me", "the pre-revision contract is not what anybody asked for a card about")
+            .And.NotContain("A criterion");
+    }
+
+    /// <summary>What h9k task revise appends: a draft's contract, rewritten in place.</summary>
+    private static async Task ReviseAsync(
+        DocumentStore store,
+        Guid taskId,
+        string objective,
+        IReadOnlyList<string> criteria,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events
+            .AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        session.Events.Append(taskId, TaskDecider.Revise(
+            task,
+            Optional<string>.Of(objective),
+            Optional<IReadOnlyList<string>>.Of(criteria),
+            Optional<string>.None,
+            Optional<IReadOnlyList<Guid>>.None,
+            Optional<TaskType>.None,
+            Optional<AgentModel>.None,
+            Now,
+            task.AddedByOwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>What h9k task abandon appends: the walk-away ending, mid-publication or not.</summary>
+    private static async Task AbandonAsync(DocumentStore store, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events
+            .AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        session.Events.Append(taskId, TaskDecider.Abandon(task, "Superseded", Now, task.AddedByOwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The request the unfenced command used to be able to append after a link had landed: built
+    /// by hand because <see cref="TaskDecider.RequestWorkItemPublication"/> refuses to produce it,
+    /// which is exactly the rule the daemon is being asked to enforce a second time.
+    /// </summary>
+    private static async Task RequestedBehindTheLinkAsync(
+        DocumentStore store, NodeContext node, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(taskId, new WorkItemPublicationRequested(
+            taskId, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), Now, node.OwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads the task at the moment of the spawn, which is the whole assertion.
+    /// </summary>
+    private sealed class ObservingSession(DocumentStore store, Guid taskId) : IExecutor
+    {
+        public bool DispatchedWhenSpawned { get; private set; }
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            await using (IQuerySession query = store.QuerySession())
+            {
+                TaskAggregate? task = await query.Events
+                    .AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+                DispatchedWhenSpawned = task?.PublicationSessionDispatched is true;
+            }
+
+            await WriteResultAsync(request.RunId, "I filed a card.", cancellationToken);
+            return new SpawnedAgent(9100, Now);
+        }
+    }
+
+    /// <summary>
+    /// What the daemon appends when it dispatches a session, replayed here without one. Two events
+    /// because the daemon writes two: the dispatch is committed before the spawn, so that a crash
+    /// in between cannot leave a live session with nothing on the stream to stop the next sweep
+    /// starting a second one. Pass a null <paramref name="processId"/> to replay a daemon that
+    /// died inside that window.
+    /// </summary>
+    private static async Task<Guid> DispatchedAsync(
+        DocumentStore store,
+        NodeContext node,
+        Guid taskId,
+        int? processId,
+        CancellationToken cancellationToken,
+        Guid? nodeId = null,
+        DateTimeOffset? dispatchedAt = null,
+        AgentModel? model = null)
+    {
+        Guid sessionId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(taskId, new WorkItemPublicationDispatched(
+            taskId, sessionId, nodeId ?? node.NodeId, dispatchedAt ?? Now, model ?? AgentModel.Unknown));
+        if (processId is { } pid)
+        {
+            session.Events.Append(taskId, new WorkItemPublicationSessionStarted(taskId, sessionId, pid, Now));
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
+        return sessionId;
+    }
+
+    /// <summary>The terminal result line a session leaves behind in its own stream file.</summary>
+    private static async Task WriteResultAsync(Guid sessionId, string summary, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(sessionId));
+        string line = JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["type"] = "result",
+            ["subtype"] = "success",
+            ["is_error"] = false,
+            ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 10, ["output_tokens"] = 20 },
+            ["result"] = summary,
+        });
+        await File.WriteAllTextAsync(RunPaths.StreamFile(RunPaths.GlobalDirectory(sessionId)), line + "\n", cancellationToken);
+    }
+
+    /// <summary>What h9k task write-jira appends once it has read the card back from Jira.</summary>
+    private static async Task LinkAsync(DocumentStore store, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events
+            .AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
+        session.Events.Append(taskId, TaskDecider.LinkWorkItem(
+            task,
+            new ExternalReference(WorkItemProvider.Jira, "PROJ-123"),
+            "Publish me",
+            "To Do (open)",
+            Now,
+            Now,
+            task.AddedByOwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<Guid> SeedAsync(
+        DocumentStore store,
+        NodeContext node,
+        CancellationToken cancellationToken,
+        Guid? requestedBy = null,
+        string? repositoryPath = null,
+        DateTimeOffset? requestedAt = null,
+        ProjectHome? homeDirectory = null)
+    {
+        Directory.CreateDirectory(_repository);
+        Environment.SetEnvironmentVariable(TokenVariable, "a-token");
+
+        await using IDocumentSession session = store.LightweightSession();
+        Guid ownerId = node.OwnerId;
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        if (await WorkItemConnections.FindJiraConnectionAsync(session, cancellationToken) is null)
+        {
+            Guid connectionId = DomainId.New();
+            session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
+                connectionId, ownerId, WorkItemProvider.Jira, "brian@example.com",
+                CredentialReference.EnvironmentVariable(TokenVariable), Now,
+                new Uri("https://hall9k.atlassian.net")));
+        }
+
+        ProjectRegisteredSeed(session, projectId, ownerId, repositoryPath ?? _repository, homeDirectory);
+
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Publish me", ["A criterion"], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null, Now, ownerId);
+        TaskAggregate task = new();
+        task.Apply(added);
+        WorkItemPublicationRequested requested = TaskDecider.RequestWorkItemPublication(
+            task, WorkItemProvider.Jira, JiraProjectKey.Parse("PROJ"), requestedAt ?? Now, requestedBy ?? ownerId);
+        session.Events.StartStream<TaskAggregate>(taskId, added, requested);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
+    private static void ProjectRegisteredSeed(
+        IDocumentSession session, Guid projectId, Guid ownerId, string repositoryPath,
+        ProjectHome? homeDirectory = null)
+    {
+        Hall9k.Domain.Features.Project.Events.ProjectRegistered registered = ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), $"publication-{projectId:N}", repositoryPath, null, "main", Now,
+            homeDirectory);
+        session.Events.StartStream<ProjectAggregate>(projectId, registered);
+    }
+
+
+    private static CardPublicationEngine NewEngine(
+        DocumentStore store,
+        NodeContext node,
+        IExecutor executor,
+        IProcessManager processes,
+        TimeSpan? foreignCeiling = null,
+        StubWorktreeManager? worktrees = null) =>
+        new(store, node, executor, processes, worktrees ?? new StubWorktreeManager(),
+            Options.Create(new DaemonOptions
+            {
+                CardPublicationTimeout = TimeSpan.FromSeconds(20),
+                ForeignPublicationCeiling = foreignCeiling ?? TimeSpan.FromHours(1),
+            }),
+            NullLogger<CardPublicationEngine>.Instance);
+
+    /// <summary>
+    /// Records what the engine asked to be refreshed, and touches no git. The refresh itself is
+    /// GitWorktreeManager's, proved against a real repository by RepoMaterialiserTests' sibling
+    /// path; what matters here is which checkout the engine hands it, and that it hands it one.
+    /// </summary>
+    private sealed class StubWorktreeManager : IWorktreeManager
+    {
+        public List<string> Refreshed { get; } = [];
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken)
+        {
+            Refreshed.Add(checkoutPath);
+            return Task.FromResult(new CheckoutRefresh(UpToDate: true, $"already at origin/{branch}"));
+        }
+
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A publication session works in an existing checkout.");
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A publication session works in an existing checkout.");
+
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A publication session works in an existing checkout.");
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+    }
+
+    private sealed class NoOpLock : IAsyncDisposable
+    {
+        public static readonly NoOpLock Instance = new();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// A node that is not this one, registered so the record can name the machine it belonged to.
+    /// A machine rename is the realistic way this arises: the same install comes back with a new
+    /// node identity, and every publication the old identity dispatched is now foreign to it.
+    /// </summary>
+    private static async Task<Guid> ForeignNodeAsync(
+        DocumentStore store, NodeContext node, string machineName, CancellationToken cancellationToken)
+    {
+        Guid nodeId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<NodeAggregate>(nodeId, NodeDecider.Register(
+            nodeId, node.OwnerId, machineName, "macos", Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return nodeId;
+    }
+
+    // ── rendering task.md and idea.md into a project home ──
+    private static readonly DateTimeOffset RenderNow = new(2026, 8, 23, 12, 0, 0, TimeSpan.Zero);
+
+    private readonly string _renderHome = Directory.CreateTempSubdirectory("hall9k-render-engine-home-").FullName;
+
+    [Fact]
+    public async Task A_sweep_renders_every_task_and_idea_in_a_materialised_home()
+    {
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            AddTask(session, projectId, ownerId, "Tasks and ideas render as markdown files");
+            CaptureIdea(session, projectId, ownerId, "Project directory and tracker mirroring");
+            await session.SaveChangesAsync();
+        }
+
+        ProjectHomeRenderSweepResult sweep = await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        sweep.ProjectsInspected.Should().Be(1);
+        sweep.TasksRendered.Should().Be(1);
+        sweep.IdeasRendered.Should().Be(1);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string taskDirectory = Directory.EnumerateDirectories(tasksRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(taskDirectory).Should().Contain("tasks-and-ideas-render-as-markdown-files");
+        File.ReadAllText(Path.Combine(taskDirectory, "task.md")).Should().Contain("state: Draft");
+        Directory.Exists(Path.Combine(taskDirectory, "workspace")).Should().BeTrue();
+
+        string ideasRoot = ProjectHomePaths.IdeasDirectory(_renderHome);
+        string ideaDirectory = Directory.EnumerateDirectories(ideasRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(ideaDirectory).Should().Contain("project-directory-and-tracker-mirroring");
+        File.ReadAllText(Path.Combine(ideaDirectory, "idea.md")).Should().Contain("Project directory and tracker mirroring");
+    }
+
+    [Fact]
+    public async Task Revising_the_objective_moves_the_directory_instead_of_leaving_a_stale_copy()
+    {
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Original objective", ["criterion"], TaskType.Feature, null,
+                null, null, RenderNow, ownerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string originalDirectory = Directory.EnumerateDirectories(tasksRoot).Should().ContainSingle().Subject;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            TaskRevised revised = TaskDecider.Revise(
+                task, Optional<string>.Of("Renamed objective"), Optional<IReadOnlyList<string>>.None,
+                Optional<string>.None, Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None,
+                Optional<AgentModel>.None, RenderNow, ownerId);
+            session.Events.Append(taskId, revised);
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        Directory.Exists(originalDirectory).Should().BeFalse("the stale slug must not survive the rename");
+        string renamedDirectory = Directory.EnumerateDirectories(tasksRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(renamedDirectory).Should().Contain("renamed-objective");
+        File.ReadAllText(Path.Combine(renamedDirectory, "task.md")).Should().Contain("objective: Renamed objective");
+    }
+
+    [Fact]
+    public async Task A_project_whose_home_is_not_materialised_on_this_machine_is_skipped_not_half_written()
+    {
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string unmaterialisedHome = Path.Combine(Path.GetTempPath(), $"hall9k-never-created-{Guid.NewGuid():N}");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), "elsewhere", "/tmp/elsewhere", null, "main", RenderNow,
+                ProjectHome.Parse(unmaterialisedHome));
+            session.Events.StartStream<ProjectAggregate>(projectId, registered);
+            AddTask(session, projectId, ownerId, "Some task");
+            await session.SaveChangesAsync();
+        }
+
+        ProjectHomeRenderSweepResult sweep = await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        sweep.ProjectsInspected.Should().Be(0);
+        sweep.TasksRendered.Should().Be(0);
+        Directory.Exists(unmaterialisedHome).Should().BeFalse(
+            "a recorded home that was never materialised here must not be created by the render sweep");
+    }
+
+    [Fact]
+    public async Task Reassigning_an_idea_to_a_project_with_its_own_home_does_not_create_a_decoy_workspace()
+    {
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid originalProjectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        string otherHome = Directory.CreateTempSubdirectory("hall9k-render-engine-other-home-").FullName;
+        Guid ideaId = DomainId.New();
+
+        try
+        {
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                RegisterProject(session, originalProjectId, ownerId, "original");
+                ProjectRegistered otherRegistered = ProjectDecider.Register(
+                    otherProjectId, ownerId, DomainId.New(), "other", "/tmp/other", null, "main", RenderNow,
+                    ProjectHome.Parse(otherHome));
+                session.Events.StartStream<ProjectAggregate>(otherProjectId, otherRegistered);
+
+                // Captured while bound to the original project, whose home is already
+                // materialised — the workspace decision (backlog 49) is made here and never
+                // moves, even once the idea is reassigned below.
+                ProjectHome workspaceHome = ProjectHome.Parse(_renderHome);
+                IdeaCaptured captured = IdeaDecider.Capture(
+                    ideaId, ownerId, "Idea that moves projects", originalProjectId, RenderNow, workspaceHome);
+                session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+                await session.SaveChangesAsync();
+            }
+
+            await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+            string originalIdeasRoot = ProjectHomePaths.IdeasDirectory(_renderHome);
+            string originalIdeaDirectory = Directory.EnumerateDirectories(originalIdeasRoot).Should().ContainSingle().Subject;
+            string originalWorkspace = Path.Combine(originalIdeaDirectory, "workspace");
+            File.WriteAllText(Path.Combine(originalWorkspace, "notes.md"), "real research, keep me");
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                    ?? throw new InvalidOperationException("idea not found");
+                IdeaAssignedToProject assigned = IdeaDecider.AssignToProject(idea, otherProjectId, RenderNow, ownerId);
+                session.Events.Append(ideaId, assigned);
+                await session.SaveChangesAsync();
+            }
+
+            await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+            string otherIdeasRoot = ProjectHomePaths.IdeasDirectory(otherHome);
+            string ideaDirectory = Directory.EnumerateDirectories(otherIdeasRoot).Should().ContainSingle().Subject;
+            Directory.Exists(Path.Combine(ideaDirectory, "workspace")).Should().BeFalse(
+                "the idea's real workspace stays at its capture-time home; the project it moved to must not get a decoy");
+
+            // The other half of the same invariant (adversarial review, backlog 48 cycle 4): the
+            // idea's ORIGINAL project no longer owns it, so the sweep that just ran no longer
+            // renders idea.md there — but the directory it already rendered, carrying the idea's
+            // one true workspace, must survive the same sweep's orphan reconciliation rather than
+            // being mistaken for a stray no task or idea claims any more.
+            Directory.Exists(originalIdeaDirectory).Should().BeTrue(
+                "reassignment must not orphan the idea's permanent, capture-time home directory");
+            File.Exists(Path.Combine(originalWorkspace, "notes.md")).Should().BeTrue(
+                "real research dropped in the idea's one true workspace must never be swept away by a reassignment");
+            File.Exists(Path.Combine(originalIdeaDirectory, "ORPHANED.md")).Should().BeFalse(
+                "the directory is still the idea's real home, not an orphan, so it must not be marked as one");
+        }
+        finally
+        {
+            Directory.Delete(otherHome, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Re_recording_a_projects_home_with_different_case_does_not_orphan_an_anchored_idea()
+    {
+        // Adversarial review, cycle 6: idea.WorkspaceHome == project.HomeDirectory used ProjectHome's
+        // raw record equality (ordinal string comparison) instead of ProjectHomePaths.SameDirectory,
+        // the one helper this codebase built for "do these two recorded paths name the same
+        // directory". `h9k project init` lets a project's HomeDirectory be re-recorded at any time
+        // (ProjectSettingsChanged), and nothing normalises case, so the same physical directory
+        // retyped differently rewrites the recorded string. An idea anchored there under a project it
+        // has since moved away from must still be recognised as "known" by the raw equality's
+        // case-insensitive-filesystem replacement, or its real workspace gets deleted or marked
+        // ORPHANED.md by the very next sweep.
+        if (OperatingSystem.IsLinux())
+        {
+            // SameDirectory is deliberately ordinal on Linux, which does not fold case by default —
+            // a recased path there names a genuinely different directory, so this scenario cannot
+            // arise on that platform.
+            return;
+        }
+
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid originalProjectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        string otherHome = Directory.CreateTempSubdirectory("hall9k-render-engine-other-home-").FullName;
+        Guid ideaId = DomainId.New();
+
+        try
+        {
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                RegisterProject(session, originalProjectId, ownerId, "original");
+                ProjectRegistered otherRegistered = ProjectDecider.Register(
+                    otherProjectId, ownerId, DomainId.New(), "other", "/tmp/other", null, "main", RenderNow,
+                    ProjectHome.Parse(otherHome));
+                session.Events.StartStream<ProjectAggregate>(otherProjectId, otherRegistered);
+
+                ProjectHome workspaceHome = ProjectHome.Parse(_renderHome);
+                IdeaCaptured captured = IdeaDecider.Capture(
+                    ideaId, ownerId, "Idea anchored under a home later re-recorded with different case",
+                    originalProjectId, RenderNow, workspaceHome);
+                session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+                await session.SaveChangesAsync();
+            }
+
+            await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+            string originalIdeasRoot = ProjectHomePaths.IdeasDirectory(_renderHome);
+            string originalIdeaDirectory = Directory.EnumerateDirectories(originalIdeasRoot).Should().ContainSingle().Subject;
+            string originalWorkspace = Path.Combine(originalIdeaDirectory, "workspace");
+            File.WriteAllText(Path.Combine(originalWorkspace, "notes.md"), "real research, keep me");
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                    ?? throw new InvalidOperationException("idea not found");
+                IdeaAssignedToProject assigned = IdeaDecider.AssignToProject(idea, otherProjectId, RenderNow, ownerId);
+                session.Events.Append(ideaId, assigned);
+
+                // The same physical directory as _renderHome, retyped with different case — what
+                // "h9k project init" re-run against the same path in a differently-cased shell
+                // invocation would record. Nothing moves on disk.
+                ProjectAggregate original = await session.Events.AggregateStreamAsync<ProjectAggregate>(originalProjectId)
+                    ?? throw new InvalidOperationException("project not found");
+                ProjectSettingsChanged recased = ProjectDecider.ChangeSettings(
+                    original, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+                    Optional<IReadOnlyList<ContextLink>>.None, RenderNow, ownerId,
+                    homeDirectory: ProjectHome.Parse(Recase(_renderHome)));
+                session.Events.Append(originalProjectId, recased);
+
+                await session.SaveChangesAsync();
+            }
+
+            await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+            Directory.Exists(originalIdeaDirectory).Should().BeTrue(
+                "a home re-recorded with different case must not orphan the idea's permanent, capture-time home directory");
+            File.Exists(Path.Combine(originalWorkspace, "notes.md")).Should().BeTrue(
+                "real research in the idea's one true workspace must survive a case-only re-recording of its home");
+            File.Exists(Path.Combine(originalIdeaDirectory, "ORPHANED.md")).Should().BeFalse(
+                "the directory is still the idea's real home, not an orphan, so it must not be marked as one");
+        }
+        finally
+        {
+            Directory.Delete(otherHome, recursive: true);
+        }
+    }
+
+    private static string Recase(string path) =>
+        string.Concat(path.Select((c, i) => i % 2 == 0 ? char.ToUpperInvariant(c) : char.ToLowerInvariant(c)));
+
+    [Fact]
+    public async Task Revising_an_idea_after_reassignment_does_not_orphan_its_anchored_workspace()
+    {
+        // The other half of Reassigning_an_idea_to_a_project_with_its_own_home_does_not_create_a_decoy_workspace
+        // (adversarial review, backlog 49 cycle 5): once reassigned, nothing under the ORIGINAL
+        // project ever renders idea.md again, so nothing renames its directory there. A later
+        // revise still changes the idea's text and therefore the slug ReconcileOrphans would
+        // recompute for it — that recomputed name must not be trusted as "the" on-disk name, or
+        // the sweep looks for a directory that was never created and reads the real one, still
+        // sitting at its original slug, as an orphan.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid originalProjectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        string otherHome = Directory.CreateTempSubdirectory("hall9k-render-engine-other-home-").FullName;
+        Guid ideaId = DomainId.New();
+
+        try
+        {
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                RegisterProject(session, originalProjectId, ownerId, "original");
+                ProjectRegistered otherRegistered = ProjectDecider.Register(
+                    otherProjectId, ownerId, DomainId.New(), "other", "/tmp/other", null, "main", RenderNow,
+                    ProjectHome.Parse(otherHome));
+                session.Events.StartStream<ProjectAggregate>(otherProjectId, otherRegistered);
+
+                ProjectHome workspaceHome = ProjectHome.Parse(_renderHome);
+                IdeaCaptured captured = IdeaDecider.Capture(
+                    ideaId, ownerId, "Idea that moves projects", originalProjectId, RenderNow, workspaceHome);
+                session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+                await session.SaveChangesAsync();
+            }
+
+            await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+            string originalIdeasRoot = ProjectHomePaths.IdeasDirectory(_renderHome);
+            string originalIdeaDirectory = Directory.EnumerateDirectories(originalIdeasRoot).Should().ContainSingle().Subject;
+            string originalWorkspace = Path.Combine(originalIdeaDirectory, "workspace");
+            File.WriteAllText(Path.Combine(originalWorkspace, "notes.md"), "real research, keep me");
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                    ?? throw new InvalidOperationException("idea not found");
+                IdeaAssignedToProject assigned = IdeaDecider.AssignToProject(idea, otherProjectId, RenderNow, ownerId);
+                session.Events.Append(ideaId, assigned);
+                await session.SaveChangesAsync();
+            }
+
+            await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+            // Revise the idea's text after it has already moved projects — its slug changes, but
+            // its anchored directory under the ORIGINAL home is never rendered (and so never
+            // renamed) again.
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                    ?? throw new InvalidOperationException("idea not found");
+                IdeaRevised revised = IdeaDecider.Revise(idea, "Renamed after the move", RenderNow, ownerId);
+                session.Events.Append(ideaId, revised);
+                await session.SaveChangesAsync();
+            }
+
+            await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+            Directory.Exists(originalIdeaDirectory).Should().BeTrue(
+                "a revise after reassignment must not orphan the idea's permanent, capture-time home directory");
+            File.Exists(Path.Combine(originalWorkspace, "notes.md")).Should().BeTrue(
+                "real research in the idea's one true workspace must survive a post-reassignment revise");
+            File.Exists(Path.Combine(originalIdeaDirectory, "ORPHANED.md")).Should().BeFalse(
+                "the directory is still the idea's real home, not an orphan, so it must not be marked as one");
+        }
+        finally
+        {
+            Directory.Delete(otherHome, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_slug_changing_revise_before_the_first_sweep_still_finds_the_directory_capture_created()
+    {
+        // Mirrors what h9k idea add actually does (IdeaAddCommand): it creates the idea's
+        // home-resident directory and workspace itself, synchronously, because no doorbell
+        // ever wakes the render sweep for an idea. That directory has to carry the identity
+        // marker from the moment it is created — if a slug-changing revise lands before the
+        // first sweep ever runs, the sweep's HomeEntryLookup.FindExisting match requires the
+        // marker to recognise this as the same directory rather than building a fresh, empty
+        // decoy at the new name and stranding this one (adversarial review, backlog 49 cycle 3).
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid ideaId = DomainId.New();
+        IdeaCaptured captured;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            ProjectHome workspaceHome = ProjectHome.Parse(_renderHome);
+            captured = IdeaDecider.Capture(ideaId, ownerId, "Original idea text", projectId, RenderNow, workspaceHome);
+            session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+            await session.SaveChangesAsync();
+        }
+
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            ProjectHome.Parse(_renderHome), ProjectHomePaths.EntryDirectoryName(ideaId, captured.Text), ideaId);
+        string workspace = IdeaPaths.EnsureWorkspace(ideaDirectory);
+        HomeEntryLookup.EnsureIdentityMarker(ideaDirectory, ideaId);
+        File.WriteAllText(Path.Combine(workspace, "notes.md"), "keep me");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            IdeaAggregate idea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId)
+                ?? throw new InvalidOperationException("idea not found");
+            IdeaRevised revised = IdeaDecider.Revise(idea, "Renamed idea text", RenderNow, ownerId);
+            session.Events.Append(ideaId, revised);
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string ideasRoot = ProjectHomePaths.IdeasDirectory(_renderHome);
+        Directory.Exists(ideaDirectory).Should().BeFalse("the stale slug's directory must not survive the rename");
+        string renamedDirectory = Directory.EnumerateDirectories(ideasRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(renamedDirectory).Should().Contain("renamed-idea-text");
+        File.ReadAllText(Path.Combine(renamedDirectory, "workspace", "notes.md")).Should().Be("keep me",
+            "capture's own workspace file must survive the move rather than being orphaned behind a decoy");
+    }
+
+    [Fact]
+    public async Task A_task_that_reaches_true_closeout_moves_into_the_archive_directory()
+    {
+        // True closeout, not raw Done (backlog 51): TaskCompleted fires the moment the pull
+        // request opens, and only RunCompleted — appended once the closeout monitor observes
+        // the merge — means the story is actually over. That is the same bar the dependency
+        // rule (TaskDependencyQuery.IsClosedOut) already uses.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/1";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task that closes out", ["criterion"], TaskType.Feature, null,
+                    null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, RenderNow);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            Guid runId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/closes-out", ExecutorMode.Subscription, RenderNow),
+                new RunCompleted(runId, RenderNow));
+
+            await session.SaveChangesAsync();
+        }
+
+        ProjectHomeRenderSweepResult sweep = await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "a task that has reached true closeout must not remain at the top level");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(archivedDirectory).Should().Contain("task-that-closes-out");
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
+        Directory.Exists(Path.Combine(archivedDirectory, "workspace")).Should().BeTrue();
+        sweep.TasksRendered.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_task_closed_out_at_launch_time_before_its_own_run_ever_dispatched_still_archives()
+    {
+        // Conformance review, backlog 51: RunLauncher.TryCloseOutMergedPullRequestAsync discovers,
+        // at launch time, that a requeued task's pull request is already merged, and appends
+        // TaskCompleted directly — before RunDispatched ever commits for this generation. No run
+        // of this generation will ever carry RunCompleted (CloseoutEngine's own merge-watching
+        // sweep can never match task.CurrentRunId against a run that was never dispatched), and
+        // ResolvedReason is never set either, so only IsArchived's "current run has no projection
+        // at all" signal proves this is true closeout rather than a run this sweep has not seen
+        // finish yet.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/4";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task closed out at launch time", ["criterion"], TaskType.Feature, null,
+                    null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            // No RunAggregate stream is ever started for this generation's CurrentRunId: the
+            // launch discovered the merge and closed the task out before RunDispatched committed.
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, RenderNow);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        ProjectHomeRenderSweepResult sweep = await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "this generation will never carry RunCompleted for its own CurrentRunId, which never dispatched");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        Path.GetFileName(archivedDirectory).Should().Contain("task-closed-out-at-launch-time");
+        sweep.TasksRendered.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_done_task_whose_pull_request_is_still_open_stays_at_the_top_level()
+    {
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task with an open pull request", ["criterion"], TaskType.Feature, null,
+                    null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            // No RunCompleted at all here: the run that carried this task is still out there,
+            // under review — Done alone (TaskCompleted) is not true closeout.
+            TaskCompleted completed = TaskDecider.Complete(
+                task, task.CurrentRunId!.Value, "https://github.com/example/hall9k/pull/2", RenderNow);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            // The run that actually opened this PR (PullRequestOpener's own path) always has a
+            // RunDispatched on its stream by the time TaskCompleted lands — recording it here is
+            // what tells IsArchived's "current run has no projection at all" signal (the
+            // launch-time merge-closeout case, backlog 51) apart from this ordinary awaiting-review
+            // case.
+            Guid runId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/still-open", ExecutorMode.Subscription, RenderNow));
+
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        string taskDirectory = LiveTaskDirectories(tasksRoot).Should()
+            .ContainSingle("a Done task whose pull request is still open has not reached true closeout")
+            .Subject;
+        File.ReadAllText(Path.Combine(taskDirectory, "task.md")).Should().Contain("state: Done");
+        Directory.Exists(archiveRoot).Should().BeFalse(
+            "nothing has ever archived here, so the render sweep must never have created the archive root");
+    }
+
+    [Fact]
+    public async Task A_hand_resolved_task_archives_even_though_its_current_run_ended_failed()
+    {
+        // Adversarial review, backlog 51 cycle 2: h9k task resolve is the attestation exit from
+        // Failed (Decisions Log #27) — it ends the task Done without ever touching CurrentRunId
+        // (TaskAggregate.Apply(TaskResolved), unlike TaskRetried, leaves it exactly as it was), so
+        // the current run stays Failed forever. This exercises the ResolvedReason attestation
+        // branch specifically — no run of this task ever reaches RunCompleted, so archiving here
+        // depends entirely on the attestation, not on the "any run" broadening below.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task resolved by hand after its run died", ["criterion"], TaskType.Feature,
+                    null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            Guid runId = task.CurrentRunId!.Value;
+
+            TaskFailed failed = TaskDecider.Fail(task, runId, "agent crashed", RenderNow);
+            task.Apply(failed);
+            taskEvents.Add(failed);
+
+            TaskResolved resolved = TaskDecider.Resolve(
+                task, "merged by hand", "https://github.com/example/hall9k/pull/9", RenderNow, ownerId);
+            task.Apply(resolved);
+            taskEvents.Add(resolved);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/resolved-by-hand", ExecutorMode.Subscription, RenderNow),
+                new RunFailed(runId, "agent crashed", RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "a hand-resolved task is terminal by attestation and must not remain at the top level");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
+    }
+
+    [Fact]
+    public async Task A_task_closed_out_again_archives_on_an_earlier_runs_completion_even_though_its_current_run_has_no_projection_yet()
+    {
+        // Adversarial review, backlog 51 cycle 3: the hand-resolved test above passes through
+        // TaskDetails.ResolvedReason alone and never actually exercises the "any of the task's
+        // runs, not only the current one" broadening the Done branch also relies on — narrowing
+        // IsArchived's Done check back to a current-run-only test leaves that test green while
+        // silently breaking this rule. A follow-up run whose own RunDispatched has not landed
+        // yet (a crash between the claim and the dispatch, or the render sweep simply polling in
+        // that window) leaves CurrentRunId naming a run with no projection at all; only the
+        // first run's own RunCompleted proves true closeout here, and ResolvedReason is never
+        // set on this task at all.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/11";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task closed out again while its follow-up run is still undispatched",
+                    ["criterion"], TaskType.Feature, null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed firstClaim = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(firstClaim);
+            taskEvents.Add(firstClaim);
+            Guid firstRunId = task.CurrentRunId!.Value;
+            int firstGeneration = task.LeaseGeneration;
+
+            TaskCompleted firstCompleted = TaskDecider.Complete(task, firstRunId, PullRequestUrl, RenderNow);
+            task.Apply(firstCompleted);
+            taskEvents.Add(firstCompleted);
+
+            TaskReopened reopened = TaskDecider.Reopen(
+                task, firstRunId, "task/closed-out-twice", "one more look", FollowUpKind.ReviewFeedback,
+                automatic: false, RenderNow, ownerId);
+            task.Apply(reopened);
+            taskEvents.Add(reopened);
+
+            TaskClaimed secondClaim = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(secondClaim);
+            taskEvents.Add(secondClaim);
+            Guid secondRunId = task.CurrentRunId!.Value;
+
+            TaskCompleted secondCompleted = TaskDecider.Complete(task, secondRunId, PullRequestUrl, RenderNow);
+            task.Apply(secondCompleted);
+            taskEvents.Add(secondCompleted);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            // Only the FIRST run ever gets a projection; the second (current) run's own
+            // RunDispatched never lands — the exact gap the "any run" rule exists to cover.
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(
+                    firstRunId, taskId, nodeId, ownerId, firstGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/closed-out-twice", ExecutorMode.Subscription, RenderNow),
+                new RunCompleted(firstRunId, RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "an earlier run of this task already reached true closeout, so the task archives even " +
+            "though its current run has no projection to check yet");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
+    }
+
+    [Fact]
+    public async Task A_task_still_dispatched_into_the_archive_directory_by_a_reopen_is_not_moved_out_from_under_it()
+    {
+        // Adversarial review, backlog 51 cycle 2: RunLauncher dispatches a reopened task's
+        // follow-up run straight into tasks/_archive/ when the render sweep has not yet moved
+        // the directory back out (its own alternate-root search finds the task still archived).
+        // The task's own state already reads non-terminal at that point, so unless the sweep
+        // recognises the current run as still live, it moves the directory back to tasks/ out
+        // from under the run that is writing into it.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/10";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task reopened straight into the archive directory", ["criterion"],
+                    TaskType.Feature, null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, RenderNow);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            Guid firstRunId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(
+                    firstRunId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/gets-reopened-into-archive", ExecutorMode.Subscription, RenderNow),
+                new RunCompleted(firstRunId, RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        // The task archives on the first sweep.
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the closed-out task must have archived on the first sweep");
+
+        Guid followUpRunId;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            TaskReopened reopened = TaskDecider.Reopen(
+                task, task.CurrentRunId!.Value, "task/gets-reopened-into-archive", "one more look",
+                FollowUpKind.ReviewFeedback, automatic: false, RenderNow, ownerId);
+            task.Apply(reopened);
+            session.Events.Append(taskId, reopened);
+
+            // Mirrors RunLauncher: a follow-up run dispatched straight into the directory as it
+            // is found on disk right now — still under tasks/_archive/, since the render sweep
+            // has not run again yet — and still live (no RunCompleted/RunFailed appended).
+            followUpRunId = DomainId.New();
+            TaskClaimed reclaimed = TaskDecider.Claim(task, nodeId, ownerId, followUpRunId, RenderNow);
+            session.Events.Append(taskId, reclaimed);
+            session.Events.StartStream<RunAggregate>(followUpRunId,
+                new RunDispatched(
+                    followUpRunId, taskId, nodeId, ownerId, task.LeaseGeneration + 1, DomainId.New(),
+                    "/tmp/worktree-followup", "task/gets-reopened-into-archive", ExecutorMode.Subscription, RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "the follow-up run is still live inside tasks/_archive/; moving it out now would race that run");
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the task's directory must stay put, runs/ and all, until the follow-up run stops being live");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(followUpRunId, new RunFailed(followUpRunId, "agent process died", RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        Directory.EnumerateDirectories(archiveRoot).Should().BeEmpty(
+            "once the run stops being live, the reopened task is free to move back to the top level");
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle(
+            "the reopened task must move back out now that nothing is still writing to its directory");
+    }
+
+    [Fact]
+    public async Task A_task_reopened_into_the_archive_directory_moves_back_the_moment_its_run_parks()
+    {
+        // Adversarial review, backlog 51 cycle 5: cycle 4 had kept a reopened task's directory
+        // inside tasks/_archive/ until its follow-up run reached a TERMINAL state, on the theory
+        // that a parked-but-not-live run (ReviewParked) could still have a pull request opened
+        // onto its RunDirectory once a human resolved the park. That kept a needs-you park hidden
+        // inside tasks/_archive/ for the follow-up's whole review loop — exactly the state a human
+        // browsing tasks/ most needs to see at the top level. RenderNow that PullRequestOpener,
+        // CloseoutEngine, ReviewEngine, and ClaudeExecutor all re-resolve a run's directory
+        // dynamically (RunPaths.ResolveCurrentDirectory) instead of trusting the value RunDispatched
+        // recorded once at dispatch, it is safe to move the directory back as soon as the run stops
+        // being LIVE (RunState.IsLive) rather than waiting for it to go fully terminal.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/12";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task reopened into the archive directory then parked",
+                    ["criterion"], TaskType.Feature, null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, RenderNow);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            Guid firstRunId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(
+                    firstRunId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/gets-reopened-then-parked", ExecutorMode.Subscription, RenderNow),
+                new RunCompleted(firstRunId, RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        // The task archives on the first sweep.
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the closed-out task must have archived on the first sweep");
+
+        Guid followUpRunId;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            TaskReopened reopened = TaskDecider.Reopen(
+                task, task.CurrentRunId!.Value, "task/gets-reopened-then-parked", "one more look",
+                FollowUpKind.ReviewFeedback, automatic: false, RenderNow, ownerId);
+            task.Apply(reopened);
+            session.Events.Append(taskId, reopened);
+
+            followUpRunId = DomainId.New();
+            TaskClaimed reclaimed = TaskDecider.Claim(task, nodeId, ownerId, followUpRunId, RenderNow);
+            session.Events.Append(taskId, reclaimed);
+            session.Events.StartStream<RunAggregate>(followUpRunId,
+                new RunDispatched(
+                    followUpRunId, taskId, nodeId, ownerId, task.LeaseGeneration + 1, DomainId.New(),
+                    "/tmp/worktree-followup", "task/gets-reopened-then-parked", ExecutorMode.Subscription, RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // The run stopped running and parked for a human — not live, and not terminal either.
+            session.Events.Append(followUpRunId, new ReviewParked(followUpRunId, "a finding was disputed", RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        Directory.EnumerateDirectories(archiveRoot).Should().BeEmpty(
+            "the moment the run stops being live it is safe to move the directory back — the run's own " +
+            "consumers now resolve wherever it actually sits rather than trusting a stale recorded path");
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle(
+            "the reopened task's needs-you park must surface at the top level of tasks/, not stay " +
+            "hidden inside tasks/_archive/ for the rest of its follow-up review loop");
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_does_not_archive_on_a_failure_reason_left_over_from_a_retried_earlier_run()
+    {
+        // Adversarial and conformance review, backlog 51 cycle 4: FailureReason survives a retry
+        // on purpose (Apply(TaskRetried)), so it is not proof that the task's CURRENT run went
+        // through TaskFailed — only that some earlier run did. A task whose first run failed, was
+        // retried, and was then abandoned while its second run's own RunDispatched had not yet
+        // landed must keep waiting exactly like any other in-flight launch racing an abandon,
+        // rather than being mistaken for "this run already recorded a launch failure and will
+        // never dispatch" on the strength of the first run's stale reason.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task retried after a launch failure then abandoned mid-relaunch",
+                    ["criterion"], TaskType.Feature, null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed firstClaim = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(firstClaim);
+            taskEvents.Add(firstClaim);
+            Guid firstRunId = task.CurrentRunId!.Value;
+
+            TaskFailed failed = TaskDecider.Fail(task, firstRunId, "worktree checkout failed", RenderNow);
+            task.Apply(failed);
+            taskEvents.Add(failed);
+
+            TaskRetried retried = TaskDecider.Retry(task, firstRunId, null, "try again", RenderNow, ownerId);
+            task.Apply(retried);
+            taskEvents.Add(retried);
+
+            TaskClaimed secondClaim = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(secondClaim);
+            taskEvents.Add(secondClaim);
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "giving up on this one", RenderNow, ownerId);
+            taskEvents.Add(abandoned);
+
+            // No RunAggregate stream at all for the second run: its own RunDispatched has not
+            // landed yet — the launch is racing the abandon, exactly like the provably-dead case
+            // below, except this failure reason belongs to the FIRST run, not this one.
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle(
+            "the recorded failure belongs to the first run, not the current in-flight launch, so " +
+            "this must defer exactly like any other launch racing an abandon");
+        Directory.Exists(archiveRoot).Should().BeFalse("nothing has archived yet");
+    }
+
+    [Fact]
+    public async Task A_task_rendered_live_before_it_closes_out_still_archives_once_it_does()
+    {
+        // Regression, adversarial review cycle 1: every real task renders live under tasks/
+        // (tasks/_archive/ does not exist yet) well before it ever reaches true closeout, unlike
+        // the fixture above, which seeds the terminal state before the very first sweep and so
+        // never exercises HomeEntryWriter.Write moving a directory INTO an archive root that does
+        // not exist on disk yet.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/4";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task that was live before it closes out", ["criterion"], TaskType.Feature,
+                    null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle("the task is still Working on the first sweep");
+        Directory.Exists(archiveRoot).Should().BeFalse(
+            "nothing has archived yet, so the render sweep must never have created the archive root");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            Guid runId = task.CurrentRunId!.Value;
+            TaskCompleted completed = TaskDecider.Complete(task, runId, PullRequestUrl, RenderNow);
+            session.Events.Append(taskId, completed);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/was-live", ExecutorMode.Subscription, RenderNow),
+                new RunCompleted(runId, RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "a task that has reached true closeout must not remain at the top level");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Done");
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_moves_into_the_archive_directory()
+    {
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Task nobody wants any more", ["criterion"], TaskType.Feature, null,
+                null, null, RenderNow, ownerId);
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "no longer needed", RenderNow, ownerId);
+            session.Events.StartStream<TaskAggregate>(taskId, added, abandoned);
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty("abandoned is a terminal state; nothing here is still live");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Abandoned");
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_with_a_live_run_stays_at_the_top_level_until_the_run_stops()
+    {
+        // Regression, adversarial review cycle 1: abandoning a task does not kill whatever agent
+        // is currently running for it — no daemon-side handler reacts to TaskAbandoned — so
+        // archiving unconditionally would move runs/<run-id>/ out from under a process still
+        // writing to it, exactly the hazard the true-closeout rule above already guards against.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        Guid runId;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task abandoned mid-run", ["criterion"], TaskType.Feature, null, null, null,
+                    RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            runId = task.CurrentRunId!.Value;
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "changed my mind", RenderNow, ownerId);
+            taskEvents.Add(abandoned);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/abandoned-mid-run", ExecutorMode.Subscription, RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().ContainSingle(
+            "the run is still live, so archiving now would move it out from under itself");
+        Directory.Exists(archiveRoot).Should().BeFalse("nothing has archived yet");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunFailed(runId, "agent process died", RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty("the run has stopped, so the abandoned task can archive now");
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_whose_run_is_permanently_parked_archives_instead_of_waiting_forever()
+    {
+        // Adversarial review, backlog 51 cycle 5: nothing un-parks a run once its task is
+        // abandoned — h9k pr resolve refuses a task that is not Claimed and the retry sweep does
+        // the same, so a run left ReviewParked or BudgetParked when its task is abandoned will
+        // never reach a terminal state on its own. Requiring IsTerminal (cycle 4) left a task like
+        // this stranded at the top level of tasks/ forever, the opposite of what this rule exists
+        // to do. RunState.IsLive is the right bar: a parked run has no active process that could
+        // race a directory move, and every daemon-side reader of a run's directory now resolves
+        // it dynamically rather than trusting the recorded value, so nothing is stranded by moving
+        // it immediately.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        Guid runId;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task abandoned while its review park will never be resolved",
+                    ["criterion"], TaskType.Feature, null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            runId = task.CurrentRunId!.Value;
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "nobody is coming back to resolve this park", RenderNow, ownerId);
+            taskEvents.Add(abandoned);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/abandoned-while-parked", ExecutorMode.Subscription, RenderNow),
+                new ReviewParked(runId, "a finding was disputed", RenderNow));
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "the run is parked, not live, and nothing will ever un-park an abandoned task's run — " +
+            "waiting for its terminal state would wait forever");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Abandoned");
+    }
+
+    [Fact]
+    public async Task An_abandoned_task_whose_launch_died_before_dispatching_archives_instead_of_waiting_forever()
+    {
+        // Adversarial review, backlog 51 cycle 3: RunLauncher.RecordLaunchFailureAsync only
+        // appends RunFailed when the run's own stream already exists — a failure before
+        // RunDispatched ever commits (a worktree checkout error, say) instead fails the TASK
+        // directly, leaving CurrentRunId naming a run that never had, and never will have, a
+        // projection. Abandoning that task must not wait on a projection that can provably never
+        // appear: FailureReason being set is proof this exact run already went through
+        // TaskFailed, and no later code path writes to that run id.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task whose launch died before dispatching", ["criterion"], TaskType.Feature,
+                    null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            Guid runId = task.CurrentRunId!.Value;
+
+            TaskFailed failed = TaskDecider.Fail(task, runId, "worktree checkout failed", RenderNow);
+            task.Apply(failed);
+            taskEvents.Add(failed);
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "giving up on this one", RenderNow, ownerId);
+            taskEvents.Add(abandoned);
+
+            // No RunAggregate stream at all for runId: the launch died before RunDispatched
+            // ever committed, so this run's projection genuinely never appears.
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        LiveTaskDirectories(tasksRoot).Should().BeEmpty(
+            "the recorded launch failure proves this run will never dispatch, so there is nothing left to wait for");
+        string archivedDirectory = Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle().Subject;
+        File.ReadAllText(Path.Combine(archivedDirectory, "task.md")).Should().Contain("state: Abandoned");
+    }
+
+    [Fact]
+    public async Task The_provably_dead_launch_diagnostic_logs_once_not_on_every_sweep()
+    {
+        // Conformance review, backlog 51 cycle 4: the condition this diagnostic reports —
+        // Abandoned, current run with a recorded same-run failure and no projection — is
+        // permanent once the task archives, since nothing ever changes an Abandoned task again.
+        // Logging it from inside IsArchived, which every sweep re-evaluates for every task,
+        // would otherwise repeat the same warning forever (roughly one line per poll interval,
+        // indefinitely) — the exact pattern HomeEntryReconciler.Mark exists to avoid, checked
+        // against disk rather than kept in memory so the engine stays a pure function of store
+        // state across restarts too.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        ListLogger<ProjectHomeRenderEngine> logger = new();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task whose launch died before dispatching, logged once",
+                    ["criterion"], TaskType.Feature, null, null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+            Guid runId = task.CurrentRunId!.Value;
+
+            TaskFailed failed = TaskDecider.Fail(task, runId, "worktree checkout failed", RenderNow);
+            task.Apply(failed);
+            taskEvents.Add(failed);
+
+            TaskAbandoned abandoned = TaskDecider.Abandon(task, "giving up on this one", RenderNow, ownerId);
+            taskEvents.Add(abandoned);
+
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            await session.SaveChangesAsync();
+        }
+
+        ProjectHomeRenderEngine engine = new(store, logger);
+        await engine.PollOnceAsync(CancellationToken.None);
+        await engine.PollOnceAsync(CancellationToken.None);
+        await engine.PollOnceAsync(CancellationToken.None);
+
+        logger.Lines.Where(line => line.Contains("will never dispatch")).Should().ContainSingle(
+            "the task archived on the first sweep, so every sweep after must recognise the " +
+            "directory is already handled instead of re-logging the same permanent diagnostic");
+    }
+
+    [Fact]
+    public async Task A_reopened_archived_task_moves_back_to_the_top_level()
+    {
+        // The other half of the archive rule (backlog 51): the folder must never lie about
+        // liveness, so a task that leaves its terminal state has to come back out on the very
+        // next sweep, carrying task.md, workspace/ and runs/ with it exactly as it moved in.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const string PullRequestUrl = "https://github.com/example/hall9k/pull/3";
+        Guid runId;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Task that gets reopened", ["criterion"], TaskType.Feature, null,
+                    null, null, RenderNow, ownerId),
+                ownerId, RenderNow);
+            List<object> taskEvents = [.. lifecycle];
+
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, DomainId.New(), RenderNow);
+            task.Apply(claimed);
+            taskEvents.Add(claimed);
+
+            TaskCompleted completed = TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, RenderNow);
+            task.Apply(completed);
+            taskEvents.Add(completed);
+
+            runId = task.CurrentRunId!.Value;
+            session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(
+                    runId, taskId, nodeId, ownerId, task.LeaseGeneration, DomainId.New(), "/tmp/worktree",
+                    "task/gets-reopened", ExecutorMode.Subscription, RenderNow),
+                new RunCompleted(runId, RenderNow));
+
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+        string tasksRoot = ProjectHomePaths.TasksDirectory(_renderHome);
+        string archiveRoot = ProjectHomePaths.ArchivedTasksDirectory(_renderHome);
+        Directory.EnumerateDirectories(archiveRoot).Should().ContainSingle(
+            "the closed-out task must have archived on the first sweep");
+        File.WriteAllText(
+            Path.Combine(Directory.EnumerateDirectories(archiveRoot).Single(), "workspace", "notes.md"), "keep me");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId)
+                ?? throw new InvalidOperationException("task not found");
+            TaskReopened reopened = TaskDecider.Reopen(
+                task, runId, "task/gets-reopened", "one more look", FollowUpKind.ReviewFeedback, automatic: false,
+                RenderNow, ownerId);
+            session.Events.Append(taskId, reopened);
+            await session.SaveChangesAsync();
+        }
+
+        await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        Directory.EnumerateDirectories(archiveRoot).Should().BeEmpty(
+            "a reopened task is live again and must not stay archived");
+        string liveDirectory = LiveTaskDirectories(tasksRoot).Should()
+            .ContainSingle("the reopened task must move back to the top level")
+            .Subject;
+        File.ReadAllText(Path.Combine(liveDirectory, "task.md")).Should().Contain("state: Queued");
+        File.ReadAllText(Path.Combine(liveDirectory, "workspace", "notes.md")).Should().Be("keep me",
+            "the move back out must carry the same directory, workspace and all, not a fresh empty one");
+    }
+
+    [Fact]
+    public async Task A_stray_directory_inside_the_archive_root_is_reconciled_like_a_top_level_stray()
+    {
+        // The orphan reconciler treats tasks/_archive/ as platform-owned exactly like tasks/
+        // itself (backlog 51): a stray directory there is caught by the same rule, and the
+        // archive root itself must never be mistaken for a stray inside tasks/'s own pass.
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            await session.SaveChangesAsync();
+        }
+
+        string strayDirectory = Path.Combine(
+            ProjectHomePaths.ArchivedTasksDirectory(_renderHome), "deadbeef-leftover-from-somewhere");
+        Directory.CreateDirectory(strayDirectory);
+        File.WriteAllText(Path.Combine(strayDirectory, "task.md"), "stale generated content");
+
+        ProjectHomeRenderSweepResult sweep = await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        sweep.OrphansHandled.Should().Be(1);
+        Directory.Exists(strayDirectory).Should().BeFalse("an empty shell orphan is removed, not left behind");
+        Directory.Exists(ProjectHomePaths.ArchivedTasksDirectory(_renderHome)).Should().BeTrue(
+            "the archive root itself must never be treated as an orphan by its own reconciliation pass");
+        File.Exists(Path.Combine(ProjectHomePaths.ArchivedTasksDirectory(_renderHome), "ORPHANED.md")).Should().BeFalse(
+            "the archive root is platform-owned, not a stray a human dropped beside the tasks it holds");
+    }
+
+    private static IEnumerable<string> LiveTaskDirectories(string tasksRoot) =>
+        Directory.EnumerateDirectories(tasksRoot)
+            .Where(directory => Path.GetFileName(directory) != ProjectHomePaths.ArchiveDirectoryName);
+
+    [Fact]
+    public async Task A_stray_directory_matching_no_task_or_idea_is_reconciled_away_on_the_next_sweep()
+    {
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            RegisterProject(session, projectId, ownerId, "hall9k");
+            await session.SaveChangesAsync();
+        }
+
+        string strayDirectory = Path.Combine(ProjectHomePaths.TasksDirectory(_renderHome), "deadbeef-leftover-from-somewhere");
+        Directory.CreateDirectory(strayDirectory);
+        File.WriteAllText(Path.Combine(strayDirectory, "task.md"), "stale generated content");
+
+        ProjectHomeRenderSweepResult sweep = await NewRenderEngine(store).PollOnceAsync(CancellationToken.None);
+
+        sweep.OrphansHandled.Should().Be(1);
+        Directory.Exists(strayDirectory).Should().BeFalse("an empty shell orphan is removed, not left behind");
+    }
+
+    private ProjectHomeRenderEngine NewRenderEngine(IDocumentStore store) =>
+        new(store, NullLogger<ProjectHomeRenderEngine>.Instance);
+
+    private void RegisterProject(IDocumentSession session, Guid projectId, Guid ownerId, string name)
+    {
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), name, "/tmp/repo", null, "main", RenderNow,
+            ProjectHome.Parse(_renderHome));
+        session.Events.StartStream<ProjectAggregate>(projectId, registered);
+        Directory.CreateDirectory(_renderHome);
+    }
+
+    private static void AddTask(IDocumentSession session, Guid projectId, Guid ownerId, string objective)
+    {
+        Guid taskId = DomainId.New();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, objective, ["criterion"], TaskType.Feature, "Some agent context.",
+            null, null, RenderNow, ownerId);
+        session.Events.StartStream<TaskAggregate>(taskId, added);
+    }
+
+    private void CaptureIdea(IDocumentSession session, Guid projectId, Guid ownerId, string text)
+    {
+        Guid ideaId = DomainId.New();
+        // Mirrors what h9k idea add actually checks: the project's home already materialised
+        // on this machine at capture time (RegisterProject creates _renderHome before this runs).
+        ProjectHome workspaceHome = Directory.Exists(_renderHome) ? ProjectHome.Parse(_renderHome) : ProjectHome.None;
+        IdeaCaptured captured = IdeaDecider.Capture(ideaId, ownerId, text, projectId, RenderNow, workspaceHome);
+        session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+    }
+}
