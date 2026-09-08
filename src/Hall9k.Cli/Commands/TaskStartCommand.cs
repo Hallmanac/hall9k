@@ -487,6 +487,13 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
                 IsFollowUp: false, Model: model, RunDirectory: runDirectory, SessionName: sessionName,
                 ReviewStageComposition: reviewStageComposition,
+                // The physical daemon this claim's own unattended-exit sweep must be reachable
+                // from (task: a do-now session launched by h9k task start is caught within
+                // seconds): RunSupervisor's sentinel-run adoption already tells one node's own
+                // sentinel runs apart from another sharing the same database through this exact
+                // field (RunDispatched.DispatchingNodeId's own doc); left unset here it defaulted
+                // to Guid.Empty, which no node's own scoped sweep could ever match.
+                DispatchingNodeId: context.NodeId,
                 // Blank whenever the base IS the project's own, which is every ordinary task — the
                 // invariant RunDetails.StackedOnBranch reads, held identically here and in
                 // RunLauncher.
@@ -498,7 +505,12 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 // child was Delivered dispatched no replay and its later merge no retarget. Blank
                 // only when no earlier run recorded one either and the rev-parse could not be
                 // read — the cases RunDispatched.BaseCommit's own doc already admits.
-                BaseCommit: baseCommit));
+                BaseCommit: baseCommit,
+                // This is the one call site in the whole platform that ever sets this true
+                // (RunDispatched.IsDeliberateHeadlessStart's own doc) — h9k task work's own
+                // interactive claim, and every ordinary daemon dispatch, leave it at its default
+                // false.
+                IsDeliberateHeadlessStart: true));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

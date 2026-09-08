@@ -466,6 +466,20 @@ public sealed class RunDetails
     public bool ContextSynthesized { get; set; }
     public DateTimeOffset DispatchedAt { get; set; }
     public bool IsFollowUp { get; set; }
+    /// <summary>See <see cref="RunDispatched"/>'s own doc — true only for <c>h9k task start</c>'s own claim.</summary>
+    public bool IsDeliberateHeadlessStart { get; set; }
+    /// <summary>
+    /// Set by <see cref="Events.RunUnattendedExitFlagged"/> when a deliberate headless start
+    /// exited with nobody watching and the worktree was not one the platform could honestly
+    /// deliver on the operator's behalf (task: a do-now session launched by h9k task start is
+    /// caught within seconds) — names the state found (uncommitted files, or no commits beyond
+    /// the base branch) for <c>TaskPhaseComposer</c> and <c>AttentionComposer</c> to surface.
+    /// Null otherwise, including once one of the three levers this names
+    /// (<c>h9k task deliver</c>/<c>h9k task work</c>/<c>h9k task release</c>) moves
+    /// <see cref="State"/> off Dispatched/Running — both composers only ever read this while the
+    /// run still sits in one of those two states, so a stale value left behind is never surfaced.
+    /// </summary>
+    public string? ExitedUnattendedReason { get; set; }
     /// <summary>See <see cref="RunDispatched"/>'s own doc — the seed for this run's opening Discovery cycle's diff instruction, rendered by <c>h9k task show</c>.</summary>
     public string? OpeningReviewSinceSha { get; set; }
     /// <summary>
@@ -699,6 +713,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         State = RunState.Dispatched,
         DispatchedAt = @event.Data.DispatchedAt,
         IsFollowUp = @event.Data.IsFollowUp,
+        IsDeliberateHeadlessStart = @event.Data.IsDeliberateHeadlessStart,
         OpeningReviewSinceSha = @event.Data.OpeningReviewSinceSha,
     };
 
@@ -724,6 +739,16 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
             name: view.SessionName);
         view.State = RunState.Running;
+    }
+
+    // RunDeliveredAutomatically carries no state of its own to apply (see the event's own doc):
+    // AgentSessionCompleted, appended right alongside it, is what actually moves State into the
+    // standard pipeline — the same transition h9k task deliver's own hand-off already relies on.
+    // Marten skips an event with no matching Apply/Create on this projection, the same as
+    // ReviewFindingRouted and friends already do here.
+    public void Apply(IEvent<RunUnattendedExitFlagged> @event, RunDetails view)
+    {
+        view.ExitedUnattendedReason = @event.Data.Reason;
     }
 
     // A resume records the new process whole — pid plus start time (log #2's identity) — since
