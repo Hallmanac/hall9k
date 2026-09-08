@@ -319,7 +319,14 @@ public sealed partial class VerificationRunner(
     /// recording this check's own verdict never mistakes the one for the other (independent pre-PR
     /// review, cycle 1, conformance finding).
     /// </summary>
-    private readonly record struct StrandedWorkCheck(
+    /// <remarks>
+    /// Internal rather than private (task: a do-now session launched by h9k task start is caught
+    /// within seconds): <c>RunSupervisor</c>'s own unattended-exit handling reuses this exact
+    /// check — the identical clean-tree-with-commits question <c>h9k task deliver</c> already
+    /// answers by hand — rather than a second, independently maintained copy of the same git
+    /// status and commit-count reads.
+    /// </remarks>
+    internal readonly record struct StrandedWorkCheck(
         string? FailureReason, IReadOnlyList<string> StrandedFiles, bool Observed = true);
 
     /// <summary>
@@ -336,7 +343,7 @@ public sealed partial class VerificationRunner(
     /// the session before it finished). Either way the reason names the files, so a human or a
     /// recovery session finds the finished work instead of rediscovering it.
     /// </summary>
-    private async Task<StrandedWorkCheck> DetectStrandedWorkAsync(
+    internal async Task<StrandedWorkCheck> DetectStrandedWorkAsync(
         RunDetails run, TaskDetails task, ProjectDetails project, CancellationToken cancellationToken)
     {
         (IReadOnlyList<string>? modifiedFiles, IReadOnlyList<string> untrackedFiles) =
