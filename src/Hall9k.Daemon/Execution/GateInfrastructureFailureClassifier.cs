@@ -6,9 +6,11 @@ namespace Hall9k.Daemon.Execution;
 /// Tells a gate failure caused by the verification environment itself — Postgres refusing or
 /// dropping a connection, Testcontainers failing to bring a container up, the SSLRequest
 /// handshake mismatch a container answers before Postgres inside it is ready, MSBuild's own
-/// shared child node crashing under concurrent gates on Windows — apart from a gate that failed
-/// because the agent's work is actually broken (backlog 53; the MSBuild shape is Windows field
-/// report item 3, ruled 2026-09-01).
+/// shared child node crashing under concurrent gates on Windows, a test's own `dotnet publish`
+/// missing its wall-clock budget while fifteen other dotnet processes hold the machine — apart
+/// from a gate that failed because the agent's work is actually broken (backlog 53; the MSBuild
+/// shape is Windows field report item 3, ruled 2026-09-01; the publish-budget shape is the
+/// Windows full-suite baseline of 2026-09-08).
 /// <para>
 /// The never-guess rule, applied exactly as backlog 40 applied it to budget exhaustion:
 /// classification fires only on the literal, recognizable shape of an infrastructure failure.
@@ -47,7 +49,31 @@ public static class GateInfrastructureFailureClassifier
         // it and stays a real failure — the same literal-marker discipline every marker above
         // already holds to.
         "MSB4166",
+        // A `dotnet publish` inside a test missing its own wall-clock budget under suite load
+        // (origin: the Windows full-suite baseline of 2026-09-08 — both publish tests cancelled
+        // at their five-minute budget in two consecutive full runs while passing in nine seconds
+        // in isolation, and the same pair failed the same way on CI's ubuntu leg for PR #274 the
+        // day before). A publish that never returned reported nothing about the product, so the
+        // failure belongs to the machine's load rather than to the agent's work; the marker is a
+        // fixed token no other output carries, held here so the writer and the reader share one
+        // literal (see PublishBudgetExceededMarker).
+        PublishBudgetExceededMarker,
     ];
+
+    /// <summary>
+    /// The literal token that the test project's own <c>PublishTestSupport</c> (in
+    /// <c>Hall9k.Tests</c>) puts at the head of the exception it throws when a test's
+    /// <c>dotnet publish</c> misses its wall-clock budget, so the miss classifies here as the
+    /// infrastructure-class timeout it is rather than as the bare
+    /// <see cref="OperationCanceledException"/> it used to surface as. It lives beside the
+    /// marker list — the reader — rather than in the test project that writes it, exactly as
+    /// <see cref="GateWaitEvidenceDirectoryEnvironmentVariable"/> does and for the same reason:
+    /// <c>Hall9k.Tests</c> already references <c>Hall9k.Daemon</c> (AGENTS.md's reference graph
+    /// forbids the reverse), so the writer reads this constant instead of duplicating its text.
+    /// Deliberately not a phrase an ordinary sentence could contain: an assertion message that
+    /// merely says "publish" or "timed out" carries no marker and stays a real failure.
+    /// </summary>
+    public const string PublishBudgetExceededMarker = "HALL9K_PUBLISH_BUDGET_EXCEEDED";
 
     public static bool IsInfrastructureFailure(string? gateOutput) =>
         gateOutput is not null
