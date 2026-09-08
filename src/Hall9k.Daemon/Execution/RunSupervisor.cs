@@ -920,11 +920,17 @@ public sealed class RunSupervisor(
         // committed, but DETACHED tree — a session that died mid-recompose rebase, between
         // applied picks — would otherwise sail through the check above and let the pipeline gate
         // one tree while PullRequestOpener pushes and opens a pull request over a different,
-        // pre-rebase one (independent pre-PR review, cycle 1, both lenses). Null, not mismatched,
-        // when git could not answer at all: never guessed at as either matching or not, the same
-        // "never guess" convention DetectStrandedWorkAsync's own reads already follow.
+        // pre-rebase one (independent pre-PR review, cycle 1, both lenses). Null — git could not
+        // answer at all — is never treated as a confirmed match: a `git branch --show-current`
+        // that fails on its own (a separate subprocess invocation from DetectStrandedWorkAsync's
+        // own reads, not part of the same atomic check) leaves which branch is checked out
+        // genuinely unobserved, and auto-delivering on an unobserved branch reopens the exact
+        // gate-one-tree/ship-another race this guard exists to close (independent pre-PR review,
+        // cycle 2, adversarial lens). Only an actual reported value equal to run.Branch counts as
+        // on-claim-branch, the same "never guess" convention DetectStrandedWorkAsync's own reads
+        // already follow.
         string? currentBranch = await VerificationRunner.GetCurrentBranchAsync(run.WorktreePath, cancellationToken);
-        bool onClaimBranch = currentBranch is null || currentBranch == run.Branch;
+        bool onClaimBranch = currentBranch == run.Branch;
 
         if (check.Observed && check.FailureReason is null && onClaimBranch)
         {
@@ -972,10 +978,16 @@ public sealed class RunSupervisor(
             return;
         }
 
-        string flaggedReason = !onClaimBranch
+        string flaggedReason = currentBranch is null
+            ? "a deliberate headless start (h9k task start, or h9k task handback --now) launched this "
+              + "session unattended; the platform could not read which branch the worktree was left checked "
+              + "out to, so it could not confirm the tree it would gate and open a pull request over is the "
+              + $"tree the session actually left behind. Check out '{run.Branch}' in the worktree, then use "
+              + "whichever of h9k task deliver, handback, or release fits."
+            : !onClaimBranch
             ? "a deliberate headless start (h9k task start, or h9k task handback --now) launched this "
               + "session unattended; the worktree was left checked out to "
-              + (currentBranch!.Length == 0 ? "a detached commit" : $"'{currentBranch}'")
+              + (currentBranch.Length == 0 ? "a detached commit" : $"'{currentBranch}'")
               + $", not its claim branch '{run.Branch}', so the platform could not confirm the tree it would "
               + "gate and open a pull request over is the tree the session actually left behind. Check out "
               + $"'{run.Branch}' in the worktree, then use whichever of h9k task deliver, handback, or "
