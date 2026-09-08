@@ -184,6 +184,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 header.AddRow("Close linked issue", CloseLinkedIssueMarkup(details, project));
             }
         }
+        else if (details.CloseLinkedIssue is not null && project?.BacklogPolicy == BacklogPolicy.GitHubIssues)
+        {
+            // An override recorded at publish is real before the linked issue itself exists — the
+            // daemon has not yet created it, so there is no ExternalReference to gate the row on
+            // above. Shown only under a github-issues backlog policy, since that is the only
+            // provider this rule ever applies to.
+            header.AddRow("Close linked issue", CloseLinkedIssueMarkup(details, project));
+        }
 
         if (details.Origin is { } origin)
         {
@@ -1570,7 +1578,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     {
         if (details.CloseLinkedIssue is { } taskOverride)
         {
-            return $"{taskOverride.Value.EscapeMarkup()} [dim](task override)[/]";
+            return $"{taskOverride.CliSpelling.EscapeMarkup()} [dim](task override)[/]";
         }
 
         CloseLinkedIssueRule effective = project?.CloseLinkedIssue ?? CloseLinkedIssueRule.WhenAllTasksClose;
@@ -1578,7 +1586,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             ? $" [dim](never if the issue carries one of the project's never-close labels: "
               + $"{string.Join(", ", neverCloseLabels).EscapeMarkup()})[/]"
             : string.Empty;
-        return $"{effective.Value.EscapeMarkup()} [dim](inherited from the project's close-linked-issue setting)[/]{labelNote}";
+        return $"{effective.CliSpelling.EscapeMarkup()} [dim](inherited from the project's close-linked-issue setting)[/]{labelNote}";
     }
 
     /// <summary>

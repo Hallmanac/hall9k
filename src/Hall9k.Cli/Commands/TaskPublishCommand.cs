@@ -158,7 +158,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         if (published.CloseLinkedIssue.HasValue)
         {
             AnsiConsole.MarkupLine(published.CloseLinkedIssue.Value is { } closeLinkedIssueRule
-                ? $"[dim]  Close linked issue: {closeLinkedIssueRule.Value.EscapeMarkup()} (task override) — "
+                ? $"[dim]  Close linked issue: {closeLinkedIssueRule.CliSpelling.EscapeMarkup()} (task override) — "
                   + $"h9k task revise {shortId} --close-linked-issue default clears it.[/]"
                 : $"[dim]  Close linked issue: inherited from the project's own setting.[/]");
         }

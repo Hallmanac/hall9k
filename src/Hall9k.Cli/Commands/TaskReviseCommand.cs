@@ -615,7 +615,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         if (revised.CloseLinkedIssue.HasValue)
         {
             yield return revised.CloseLinkedIssue.Value is { } closeLinkedIssue
-                ? $"close linked issue {closeLinkedIssue.Value.EscapeMarkup()}"
+                ? $"close linked issue {closeLinkedIssue.CliSpelling.EscapeMarkup()}"
                 : "close linked issue override cleared";
         }
     }
