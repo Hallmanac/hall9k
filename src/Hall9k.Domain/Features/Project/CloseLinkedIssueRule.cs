@@ -87,6 +87,21 @@ public sealed record CloseLinkedIssueRule
     };
 
     /// <summary>
+    /// The mirror of <see cref="FromInput"/>: the kebab-case spelling a <c>--close-linked-issue</c>
+    /// flag actually accepts, for a caller rendering this value back at a terminal (<c>h9k task
+    /// show</c>, publish/revise confirmations). This is deliberately not <see cref="Value"/> — the
+    /// persisted PascalCase spelling round-trips through nothing a command line accepts, and
+    /// echoing it back would hand an operator a value <see cref="ParseOverride"/> refuses.
+    /// </summary>
+    public string CliSpelling => Value switch
+    {
+        "OnCloseout" => "on-closeout",
+        "Never" => "never",
+        "WhenAllTasksClose" => "when-all-tasks-close",
+        _ => Value,
+    };
+
+    /// <summary>
     /// The strict form a project's own input goes through: a typo is refused rather than silently
     /// scheduled as the default. <c>default</c> is the clearing word — it restores
     /// <see cref="WhenAllTasksClose"/>, the same idiom <c>--priority default</c> uses.
