@@ -824,6 +824,58 @@ public sealed class TaskPhaseSurfaceTests
             .Phase.Text.Should().Be("follow-up queued for the pull request");
     }
 
+    /// <summary>
+    /// Every review thread on a pull request gets a triage disposition before any fix work
+    /// (task: every review thread on a pull request gets a triage disposition before any fix
+    /// work). Once a follow-up has triaged, the count is folded into the watching phase's own
+    /// detail rather than replacing it — the unresolved count still answers "how many", the
+    /// triage answers "what happened to them last time". <see cref="RunDetails.ReviewThreadOutcomes"/>
+    /// is seeded with an earlier follow-up's own entry too, so this also proves the label reads
+    /// <see cref="RunDetails.LastReviewThreadOutcomes"/> rather than the cumulative history — a
+    /// second, smaller triage must not make "last triage" report the running total.
+    /// </summary>
+    [Fact]
+    public void A_watched_pull_requests_phase_names_its_last_triage()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/24";
+        RunDetails watching = StatusFixtures.Run(runId, RunState.ReviewPending, sessionProcessId: null, pullRequestNumber: 24);
+        watching.UnresolvedReviewThreads = 2;
+        watching.UnresolvedHumanReviewThreads = 1;
+        watching.ReviewThreadOutcomes =
+        [
+            new ReviewThreadOutcome("PRRC_0", ReviewThreadDisposition.Fix, "an earlier follow-up's own triage", "copilot", IsHuman: false),
+            new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "copilot", IsHuman: false),
+            new ReviewThreadOutcome("PRRC_2", ReviewThreadDisposition.Route, "filed as idea abc123", "brianhallmanac", IsHuman: true),
+        ];
+        watching.LastReviewThreadOutcomes =
+        [
+            new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "copilot", IsHuman: false),
+            new ReviewThreadOutcome("PRRC_2", ReviewThreadDisposition.Route, "filed as idea abc123", "brianhallmanac", IsHuman: true),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), watching);
+
+        row.Phase.Text.Should().Be("watching PR #24");
+        row.Phase.Detail.Should().Be("2 unresolved review thread(s), 1 from a human; last triage: 1 decline, 1 route");
+    }
+
+    /// <summary>A follow-up's own triage is visible while it is still the live claim, not only once it lands.</summary>
+    [Fact]
+    public void A_follow_up_in_flight_names_its_own_triage_alongside_its_ordinary_phase()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/24";
+        RunDetails triaging = StatusFixtures.Run(runId, RunState.Running, pullRequestNumber: 24);
+        triaging.ReviewThreadOutcomes = [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Fix, "applied the suggested fix")];
+        triaging.LastReviewThreadOutcomes = [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Fix, "applied the suggested fix")];
+
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Claimed, runId, pullRequest), triaging);
+
+        row.Phase.Text.Should().Be("follow-up on PR #24: building");
+        row.Phase.Detail.Should().Be("last triage: 1 fix");
+    }
+
     [Fact]
     public void Gates_claim_no_session_because_they_run_in_the_daemon()
     {
