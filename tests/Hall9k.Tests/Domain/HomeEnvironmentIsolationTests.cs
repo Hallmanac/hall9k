@@ -71,11 +71,20 @@ namespace Hall9k.Tests.Domain;
 /// caller already carries the attribute for an independent reason, but a future one would not be
 /// caught here.
 /// </para>
+/// <para>
+/// The class holds a second fact,
+/// <see cref="No_postgres_backed_test_class_is_serialized_for_a_home_it_never_touches"/>,
+/// which reads the same rule backwards over the Postgres-backed classes alone: one of those
+/// carrying the attribute without naming a risky member is not a correctness problem but a
+/// wall-clock one, since it holds a container in the serial lane for nothing. See that fact for
+/// why it is scoped to those classes rather than applied tree-wide.
+/// </para>
 /// </summary>
 public sealed class HomeEnvironmentIsolationTests
 {
     private const string SelfFileName = "HomeEnvironmentIsolationTests.cs";
     private const string CollectionAttribute = "[Collection(\"Hall9kHome\")]";
+    private const string PostgresFixtureDeclaration = "IClassFixture<PostgresFixture>";
 
     private static readonly string[] RiskyMembers =
     [
@@ -174,14 +183,7 @@ public sealed class HomeEnvironmentIsolationTests
     [Fact]
     public void Every_test_class_touching_the_platform_home_environment_shares_the_serialized_collection()
     {
-        string testsDirectory = TestSourceTree.RootDirectory();
-
-        string[] files =
-        [
-            .. Directory.EnumerateFiles(testsDirectory, "*.cs", SearchOption.AllDirectories)
-               .Where(file => !string.Equals(Path.GetFileName(file), SelfFileName, StringComparison.Ordinal))
-               .Where(file => !TestSourceTree.IsBuildOutput(testsDirectory, file)),
-        ];
+        (string testsDirectory, string[] files) = TestSources();
 
         List<string> offenders = [];
         int riskyMemberHits = 0;
@@ -235,6 +237,117 @@ public sealed class HomeEnvironmentIsolationTests
             "itself is probably broken (TestSourceTree.RootDirectory() misresolving, or the whole RiskyMembers " +
             "list gone stale at once) rather than working as intended; a single renamed entry can " +
             "still leave this floor comfortably clear, so this only catches wholesale breakage");
+    }
+
+    /// <summary>
+    /// The same rule read the other way round, and the direction that costs wall-clock time
+    /// rather than correctness: a Postgres-backed class carrying
+    /// <c>[Collection("Hall9kHome")]</c> it does not need runs one at a time, inside the
+    /// collection every HALL9K_HOME-touching class in the tree shares, so its container is
+    /// started, used and torn down with no other container-backed class allowed to overlap it.
+    /// The serial lane is the expensive lane; only a class that genuinely races HALL9K_HOME
+    /// belongs in it. Every container-backed class that keeps the attribute today names a
+    /// <see cref="RiskyMembers"/> member in its own source, and this fails the build for one
+    /// that does not — so the attribute cannot drift back onto a class by copy-paste from a
+    /// sibling, which is how twenty-six of fifty container-backed classes came to sit in
+    /// the serial lane before this direction of the rule was checked at all (PLAN.md §16 #157).
+    /// <para>
+    /// Scoped to the classes that take <see cref="Hall9k.Tests.Integration.PostgresFixture"/>
+    /// deliberately, rather than applied tree-wide. A DB-free class in this collection costs
+    /// milliseconds, so there is nothing to reclaim by policing it, while the wider scan would
+    /// report every class carrying the attribute for a reason this text-level scan cannot see —
+    /// the shared-helper blind spot the type's own doc comment above describes. Across the two
+    /// dozen container-backed classes that blind spot is checkable by hand, and was: none of them
+    /// reaches HALL9K_HOME through a helper.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void No_postgres_backed_test_class_is_serialized_for_a_home_it_never_touches()
+    {
+        (string testsDirectory, string[] files) = TestSources();
+
+        List<string> offenders = [];
+        int postgresBackedClasses = 0;
+
+        foreach (string file in files)
+        {
+            string source = File.ReadAllText(file);
+            (string code, int[] originalIndex, bool balanced) = TestSourceTree.StripCommentsAndStrings(source);
+
+            if (!balanced)
+            {
+                // Reported rather than skipped, for the same reason the other fact reports it:
+                // a file whose class boundaries cannot be trusted is a hole in this scan, and a
+                // hole nobody is told about is how a guard comes to protect nothing.
+                offenders.Add(
+                    $"{Path.GetRelativePath(testsDirectory, file)} -> <StripCommentsAndStrings " +
+                    "desynced on this file: stripped brace depth never returned to zero>");
+                continue;
+            }
+
+            List<ClassFrame> frames = FindClassFrames(code, originalIndex, source);
+
+            foreach (ClassFrame frame in frames.Where(frame => frame.TakesPostgresFixture))
+            {
+                postgresBackedClasses++;
+
+                if (!frame.HasAttribute)
+                {
+                    continue;
+                }
+
+                // The frame's own body range, nested classes included: a risky-member hit inside
+                // a nested class credits the enclosing one too. That errs toward leaving an
+                // attribute in place, which is the safe direction for this guard to be wrong in —
+                // tolerating a serial class that could have run parallel costs seconds, while
+                // demanding the removal of an attribute something still needs costs a flaky
+                // suite.
+                bool touchesHome = RiskyMembers.Any(
+                    member => IndexOfMemberBoundary(code, member, frame.BodyStart) is int index
+                              && index < frame.BodyEnd);
+
+                if (!touchesHome)
+                {
+                    offenders.Add($"{Path.GetRelativePath(testsDirectory, file)} -> {frame.Name}");
+                }
+            }
+        }
+
+        offenders.Should().BeEmpty(
+            $"a class taking IClassFixture<PostgresFixture> and carrying {CollectionAttribute} runs " +
+            "in the serial lane, so its Postgres container never overlaps another test class's — " +
+            "which is worth paying only for a class that actually sets or resolves a " +
+            "HALL9K_HOME-derived path. None of these name a risky member in their own source; " +
+            "drop the attribute and let the class run in the container-gated parallel lane, or, " +
+            "if it reaches HALL9K_HOME through a helper this text-level scan cannot see, add that " +
+            "helper's own accessor to RiskyMembers so the reason is checkable rather than " +
+            "remembered");
+
+        postgresBackedClasses.Should().BeGreaterThan(
+            15,
+            "far fewer classes take IClassFixture<PostgresFixture> than this suite actually has — " +
+            "FindClassFrames is probably no longer reading a declaration's base list into " +
+            "ClassFrame.TakesPostgresFixture, which would leave this guard passing green while " +
+            "checking nothing");
+    }
+
+    /// <summary>
+    /// This project's own sources, minus this file (whose <see cref="RiskyMembers"/> list names
+    /// every risky member by definition) and minus build output. Shared by both facts so a
+    /// change to what counts as a test source cannot land on one and not the other.
+    /// </summary>
+    private static (string TestsDirectory, string[] Files) TestSources()
+    {
+        string testsDirectory = TestSourceTree.RootDirectory();
+
+        string[] files =
+        [
+            .. Directory.EnumerateFiles(testsDirectory, "*.cs", SearchOption.AllDirectories)
+               .Where(file => !string.Equals(Path.GetFileName(file), SelfFileName, StringComparison.Ordinal))
+               .Where(file => !TestSourceTree.IsBuildOutput(testsDirectory, file)),
+        ];
+
+        return (testsDirectory, files);
     }
 
     private static int CountOccurrences(string source, string member)
@@ -343,7 +456,12 @@ public sealed class HomeEnvironmentIsolationTests
         return (offenders, code);
     }
 
-    private sealed record ClassFrame(string Name, int BodyStart, int BodyEnd, bool HasAttribute);
+    private sealed record ClassFrame(
+        string Name,
+        int BodyStart,
+        int BodyEnd,
+        bool HasAttribute,
+        bool TakesPostgresFixture);
 
     private static ClassFrame? InnermostFrame(List<ClassFrame> frames, int codeIndex)
     {
@@ -389,11 +507,11 @@ public sealed class HomeEnvironmentIsolationTests
     {
         HashSet<int> codePositions = [.. originalIndex];
         List<ClassFrame> frames = [];
-        Stack<(string Name, bool HasAttribute, int BodyDepth, int BodyStart)> open = [];
+        Stack<(string Name, bool HasAttribute, bool TakesPostgresFixture, int BodyDepth, int BodyStart)> open = [];
         Dictionary<int, int> lastBoundaryAtDepth = new() { [0] = 0 };
         Match[] declarations = [.. ClassDeclaration.Matches(code).Cast<Match>()];
         int nextDeclaration = 0;
-        (string Name, bool HasAttribute)? armed = null;
+        (string Name, bool HasAttribute, int KeywordOriginalIndex)? armed = null;
         int depth = 0;
 
         for (int i = 0; i < code.Length; i++)
@@ -410,7 +528,7 @@ public sealed class HomeEnvironmentIsolationTests
                 bool hasAttribute = CollectionAttributeLine.Matches(window).Any(
                     attributeMatch => codePositions.Contains(windowStart + attributeMatch.Index));
 
-                armed = (match.Groups["name"].Value, hasAttribute);
+                armed = (match.Groups["name"].Value, hasAttribute, keywordOriginalIndex);
             }
 
             char c = code[i];
@@ -420,7 +538,20 @@ public sealed class HomeEnvironmentIsolationTests
                 depth++;
                 if (armed is { } pendingClass)
                 {
-                    open.Push((pendingClass.Name, pendingClass.HasAttribute, depth, i + 1));
+                    // The declaration's own text, from its class keyword through to its body's
+                    // opening brace, so a base list written on the line below the primary
+                    // constructor still counts — ReviewEngineTests, which takes two fixtures,
+                    // is written that way.
+                    string declaration = source.Substring(
+                        pendingClass.KeywordOriginalIndex,
+                        originalIndex[i] - pendingClass.KeywordOriginalIndex);
+
+                    open.Push((
+                        pendingClass.Name,
+                        pendingClass.HasAttribute,
+                        declaration.Contains(PostgresFixtureDeclaration, StringComparison.Ordinal),
+                        depth,
+                        i + 1));
                     armed = null;
                 }
 
@@ -432,8 +563,8 @@ public sealed class HomeEnvironmentIsolationTests
             {
                 if (open.Count > 0 && open.Peek().BodyDepth == depth)
                 {
-                    (string name, bool hasAttribute, _, int bodyStart) = open.Pop();
-                    frames.Add(new ClassFrame(name, bodyStart, i, hasAttribute));
+                    (string name, bool hasAttribute, bool takesPostgresFixture, _, int bodyStart) = open.Pop();
+                    frames.Add(new ClassFrame(name, bodyStart, i, hasAttribute, takesPostgresFixture));
                 }
 
                 depth--;
