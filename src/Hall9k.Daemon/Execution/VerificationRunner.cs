@@ -475,6 +475,32 @@ public sealed partial class VerificationRunner(
     }
 
     /// <summary>
+    /// The branch the worktree is actually checked out to, or null when git could not be asked
+    /// (never guessed at as matching). <c>git branch --show-current</c> rather than
+    /// <c>rev-parse --abbrev-ref HEAD</c>: it exits 0 with empty output for a detached HEAD
+    /// instead of failing, so a caller can tell "git is unreadable" (null, skip the check) apart
+    /// from "checked out somewhere else, including detached" (empty or a different name, block)
+    /// without a second command.
+    /// <para>
+    /// Mirrors <c>InteractiveWorktreeGit.GetCurrentBranchAsync</c>, which <c>h9k task deliver</c>
+    /// itself uses for the identical branch-checkout guard — duplicated here rather than shared,
+    /// because the CLI cannot reference <c>Hall9k.Daemon</c> (it never hosts Wolverine).
+    /// <see cref="RunSupervisor"/>'s own deliberate-headless-start exit handler calls this before
+    /// treating <see cref="DetectStrandedWorkAsync"/>'s clean-tree verdict as safe to auto-deliver:
+    /// that check counts commits and reads status against whatever HEAD happens to be, never
+    /// confirming HEAD is actually <c>run.Branch</c> (independent pre-PR review, cycle 1, both
+    /// lenses — a session that died mid-recompose rebase can leave a clean, committed, but
+    /// DETACHED tree, which would otherwise gate one tree and let <c>PullRequestOpener</c>
+    /// publish a different, pre-rebase one).
+    /// </para>
+    /// </summary>
+    internal static async Task<string?> GetCurrentBranchAsync(string worktreePath, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output) = await RunGitAsync(worktreePath, ["branch", "--show-current"], cancellationToken);
+        return exitCode == 0 ? output.Trim() : null;
+    }
+
+    /// <summary>
     /// One bounded, commit-only recovery session (task: when a session ends with finished work
     /// uncommitted, the daemon recovers on its own), spawned into the SAME worktree the failed
     /// session left dirty — never a second worktree checkout, since this run's own is still

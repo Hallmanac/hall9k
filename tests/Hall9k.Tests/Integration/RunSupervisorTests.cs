@@ -267,6 +267,86 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The other bad-path shape the acceptance criteria name alongside the dirty-tree one
+    /// (independent pre-PR review, cycle 1, conformance lens): a clean tree that never committed
+    /// anything beyond its base at all. Distinct from the dirty-tree test above — that fixture
+    /// has both a commit and a modified file, so it never exercises this arm of
+    /// <c>DetectStrandedWorkAsync</c>. Without this test, a regression that mis-read the
+    /// no-commit case (for instance treating <c>check.StrandedFiles.Count == 0</c> as "safe to
+    /// auto-deliver" instead of <c>check.FailureReason is null</c>) would pass the whole suite
+    /// green and auto-deliver a branch holding nothing beyond its base.
+    /// </summary>
+    [Fact]
+    public async Task Deliberate_headless_start_with_no_commits_beyond_base_is_flagged_needs_you()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, _) =
+            await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: false, dirty: false, cts.Token);
+
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine));
+        await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+        await WaitForEventCountAsync<RunUnattendedExitFlagged>(store, runId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ExitedUnattendedReason.Should().NotBeNull(
+            "a branch that holds nothing beyond its base is exactly what the no-commit check exists to catch");
+        run.ExitedUnattendedReason.Should().Contain("no commits");
+        run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
+            "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunDeliveredAutomatically>().Should().BeEmpty(
+            "a branch holding nothing beyond its base must never be auto-delivered");
+    }
+
+    /// <summary>
+    /// The branch-checkout guard (independent pre-PR review, cycle 1, both lenses):
+    /// <c>DetectStrandedWorkAsync</c> counts commits and reads status against whatever HEAD
+    /// happens to be, never confirming HEAD is actually checked out on <c>run.Branch</c> — so a
+    /// session that died mid-recompose rebase (<c>GIT_SEQUENCE_EDITOR=: git rebase -i
+    /// --autosquash</c>) can leave a clean, committed, but DETACHED tree that would otherwise
+    /// sail through that check as "safe to auto-deliver" while the branch it actually publishes
+    /// (<c>run.Branch</c>) still sits at its pre-rebase tip — gating one tree and shipping a
+    /// different one. This proves the extra guard catches exactly that shape instead.
+    /// </summary>
+    [Fact]
+    public async Task Deliberate_headless_start_with_a_clean_but_detached_tree_is_flagged_needs_you()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, _) = await SeedDeliberateHeadlessStartTaskAsync(
+            store, withTaskCommit: true, dirty: false, cts.Token, detached: true);
+
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine));
+        await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+        await WaitForEventCountAsync<RunUnattendedExitFlagged>(store, runId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ExitedUnattendedReason.Should().NotBeNull(
+            "a clean but detached tree must never sail through as safe to auto-deliver");
+        run.ExitedUnattendedReason.Should().Contain("detached commit");
+        run.ExitedUnattendedReason.Should().Contain("task/test");
+        run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
+            "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunDeliveredAutomatically>().Should().BeEmpty(
+            "gating one tree while the pipeline later publishes a different, pre-rebase one is exactly what "
+            + "this guard exists to prevent");
+    }
+
+    /// <summary>
     /// The error-result guard (independent pre-PR review, cycle 3, both lenses): AGENTS.md's own
     /// "commit as you go" rule means a checkpoint commit can already sit on a clean, committed
     /// tree by the time the provider reports a token-budget exhaustion — so judging this session
@@ -1266,8 +1346,15 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     /// would read as "git status unobservable" for every scenario alike, which is a real, distinct
     /// case of its own but not the one these tests exist to exercise.
     /// </summary>
+    /// <param name="detached">
+    /// When true, leaves the worktree's HEAD detached at the same commit <c>task/test</c> points
+    /// to — exactly the shape a session that died mid-recompose rebase
+    /// (<c>GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash</c>) can leave behind between applied
+    /// picks: clean, committed, but checked out to no branch at all rather than its claim branch
+    /// (independent pre-PR review, cycle 1, both lenses).
+    /// </param>
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId, string WorktreePath)> SeedDeliberateHeadlessStartTaskAsync(
-        DocumentStore store, bool withTaskCommit, bool dirty, CancellationToken cancellationToken)
+        DocumentStore store, bool withTaskCommit, bool dirty, CancellationToken cancellationToken, bool detached = false)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -1283,13 +1370,14 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             ? "git -c user.email=t@t -c user.name=t commit --allow-empty -m work -q && "
             : string.Empty;
         string dirtyStep = dirty ? "echo changed > tracked.txt" : "true";
+        string detachStep = detached ? " && git checkout -q --detach HEAD" : string.Empty;
         await RunShellAsync(
             worktreePath,
             "git init -q -b main && git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q && "
             + "echo original > tracked.txt && git add tracked.txt && "
             + "git -c user.email=t@t -c user.name=t commit -q -m seed && "
             + "git checkout -q -b task/test && "
-            + commitStep + dirtyStep,
+            + commitStep + dirtyStep + detachStep,
             cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
