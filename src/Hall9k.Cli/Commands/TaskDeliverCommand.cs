@@ -424,9 +424,13 @@ public sealed class TaskDeliverCommand : Hall9kAsyncCommand<TaskDeliverCommand.S
     /// <c>Hall9k.Daemon.Execution.StreamJsonParser.TryParseResult</c> reads into
     /// <c>AgentResult</c> for a headless-dispatched run, duplicated here at the field level
     /// rather than referenced because the CLI cannot reference <c>Hall9k.Daemon</c> (Reference
-    /// graph: Cli -> Domain + Connectors). A start-it-mine run's <c>Guid.Empty</c> node id means
-    /// <c>RunSupervisor</c> never adopts it, so this delivery is the only place anything ever
-    /// reads that line back — without this, the node's periodic token-spend budget
+    /// graph: Cli -> Domain + Connectors). <c>RunSupervisor.AdoptDeliberateHeadlessStartsAsync</c>
+    /// (task: a do-now session launched by h9k task start is caught within seconds) now adopts a
+    /// start-it-mine run's own <c>Guid.Empty</c> node id too, but reads this same line back only
+    /// on its own automatic-delivery path; a run it flags needs-you instead is left exactly where
+    /// it was, so this delivery is still the only place anything reads that line back once one of
+    /// the human levers the flag names retires the claim this way (independent pre-PR review,
+    /// cycle 3, both lenses) — without this, the node's periodic token-spend budget
     /// (<c>PeriodSpend</c>) silently under-counts every session <c>h9k task start</c> launches
     /// (adversarial review, cycle 1, on h9k task start). Both fields null/absent when the file
     /// is missing (an attended h9k task work claim never writes one) or carries no parseable

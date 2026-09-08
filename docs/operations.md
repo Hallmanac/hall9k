@@ -900,16 +900,25 @@ already-Blocked task is exactly what its own Blocked entry is, not a re-entry.
 The daemon does watch a start-it-mine run, unlike an ordinary interactive claim: the moment its
 headless session exits, the platform reads the worktree itself and either delivers a clean,
 committed tree automatically through the standard gates/review/pull-request pipeline, or — for
-anything else, uncommitted files or no commits at all — flags the task needs-you within seconds
-rather than leaving the row reading Working indefinitely. A flagged claim then reads like an
-interactive one: it stays exactly where it was until a human runs `h9k task deliver`,
-`h9k task verify`, `h9k task work` (to attach — which also clears the flag), `h9k task handback`,
-or `h9k task release`, and the same stale-claim nudge described above fires once it has sat
-unattended past `interactiveClaimStaleAfterDays`. Whichever of those levers the human ends up using
-is the only point anything on this node reads the session's own `stream.jsonl` back for a flagged
-claim: it recovers the agent's authored handoff for a dependent task and records the session's
-token usage against the node's periodic spend budget — the automatic-delivery path above reads
-that same file itself instead, since it never reaches any of those levers.
+anything else, uncommitted files, no commits at all, or git itself unreadable — flags the task
+needs-you within seconds rather than leaving the row reading Working indefinitely. A flagged claim
+then reads like an interactive one: the platform's own attention pane leads with `h9k task work`
+(to attach — printing a fresh prompt by default, which does not by itself clear the flag; the
+pasted session's own first act, `h9k task register-session`, or the legacy `--direct-launch`
+path's own launch-time recording, is what actually clears it), `h9k task handback`, or
+`h9k task release` — never `h9k task deliver`: it runs the identical check this flag's own reason
+already failed, so it refuses on that same ground whenever the reason names concrete stranded
+work, and on the one variant it would not refuse outright, git unobservable, it cannot verify the
+tree either, so running it there means a blind push rather than a confirmed one. `h9k task verify`
+stays available once attached (it reports uncommitted files rather than refusing on them), but it
+is a diagnostic a human can run from inside `h9k task work`, not one of the levers that clears the
+flag itself. The same stale-claim nudge described above fires once it has sat unattended past
+`interactiveClaimStaleAfterDays`. Whichever of `h9k task work`, `h9k task handback`, or
+`h9k task release` the human ends up using is the only point anything on this node reads the
+session's own `stream.jsonl` back for a flagged claim: it recovers the agent's authored handoff
+for a dependent task and records the session's token usage against the node's periodic spend
+budget — the automatic-delivery path above reads that same file itself instead, since it never
+reaches any of those levers.
 
 Giving the claim back — `handback`, `release`, `retry`, or `pr resolve` reopening it — does not
 land the task on Queued when the dependency snapshot the override acknowledged still names an

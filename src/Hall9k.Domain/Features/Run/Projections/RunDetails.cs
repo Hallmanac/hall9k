@@ -472,12 +472,18 @@ public sealed class RunDetails
     /// Set by <see cref="Events.RunUnattendedExitFlagged"/> when a deliberate headless start
     /// exited with nobody watching and the worktree was not one the platform could honestly
     /// deliver on the operator's behalf (task: a do-now session launched by h9k task start is
-    /// caught within seconds) — names the state found (uncommitted files, or no commits beyond
-    /// the base branch) for <c>TaskPhaseComposer</c> and <c>AttentionComposer</c> to surface.
-    /// Null otherwise, including once one of the three levers this names
-    /// (<c>h9k task deliver</c>/<c>h9k task work</c>/<c>h9k task release</c>) moves
-    /// <see cref="State"/> off Dispatched/Running — both composers only ever read this while the
-    /// run still sits in one of those two states, so a stale value left behind is never surfaced.
+    /// caught within seconds) — names the state found (uncommitted files, no commits beyond the
+    /// base branch, or git itself unobservable) for <c>TaskPhaseComposer</c> and
+    /// <c>AttentionComposer</c> to surface. Null otherwise: cleared directly by a fresh
+    /// <see cref="Events.InteractiveSessionStarted"/> (<c>h9k task register-session</c>, or
+    /// <c>h9k task work --direct-launch</c>, re-entering the claim — never <c>h9k task deliver</c>:
+    /// it runs the identical check this reason already failed and refuses on that same ground
+    /// every time, and the one variant it would not refuse outright, git unobservable, leaves it
+    /// equally unable to verify the tree, so it would push blind rather than refuse, independent
+    /// pre-PR review, cycle 3, both lenses), or made moot once <c>h9k task handback</c> or
+    /// <c>h9k task release</c> moves <see cref="State"/> off Dispatched/Running — both composers
+    /// only ever read this while the run still sits in one of those two states, so a stale value
+    /// left behind is never surfaced.
     /// </summary>
     public string? ExitedUnattendedReason { get; set; }
     /// <summary>See <see cref="RunDispatched"/>'s own doc — the seed for this run's opening Discovery cycle's diff instruction, rendered by <c>h9k task show</c>.</summary>
@@ -1388,13 +1394,19 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             view.RegisteredInteractiveSessionName = @event.Data.SessionName;
         }
         view.InteractiveSessionCount++;
-        // A live session is now attached and watching this run itself, whether this append is
+        // A live session is now actually recorded against this run, whether this append is
         // h9k task start's own original launch (already null, a no-op) or a human re-entering
-        // with h9k task work after the unattended sweep flagged it needs-you — h9k task work is
-        // one of the three levers RunUnattendedExitFlagged's own doc advises, and nothing else
-        // ever cleared this field (independent pre-PR review, cycle 1, both lenses: taking that
-        // advised action left AttentionComposer and TaskPhaseComposer reporting needs-you with a
-        // stale cause for as long as the human was actually attached and working the claim).
+        // after the unattended sweep flagged it needs-you — h9k task work is one of the three
+        // levers RunUnattendedExitFlagged's own doc advises for that, but only once this exact
+        // event lands: the default h9k task work re-entry prints a prompt and appends nothing on
+        // its own, so what actually clears this field is the pasted session's own first act,
+        // h9k task register-session (or, on the legacy --direct-launch path, the launch itself)
+        // (independent pre-PR review, cycle 3, adversarial lens — the field stayed stale, and the
+        // row kept reading needs-you, for as long as an operator sat at the printed prompt without
+        // yet running register-session). Nothing else ever clears this field (independent pre-PR
+        // review, cycle 1, both lenses: leaving it set once a session is genuinely attached left
+        // AttentionComposer and TaskPhaseComposer reporting needs-you with a stale cause for as
+        // long as the human was actually attached and working the claim).
         view.ExitedUnattendedReason = null;
         // @event.Timestamp (when this event was actually appended), not @event.Data.StartedAt
         // (the claude process's own start time): a direct launch's StartedAt is ~milliseconds

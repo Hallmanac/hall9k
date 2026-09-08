@@ -22,9 +22,14 @@ public sealed class AttentionSurfaceTests
     /// <summary>
     /// A deliberate headless start (h9k task start) whose session exited unattended and could
     /// not be delivered automatically (task: a do-now session launched by h9k task start is
-    /// caught within seconds): flagged needs-you naming the recorded state and all three levers,
-    /// rather than the misleading days-later "still yours, or ready to hand off?" nudge every
-    /// other Guid.Empty-claimed, session-gone row eventually earns.
+    /// caught within seconds): flagged needs-you naming the recorded state and the three levers
+    /// that can actually clear it, rather than the misleading days-later "still yours, or ready
+    /// to hand off?" nudge every other Guid.Empty-claimed, session-gone row eventually earns.
+    /// Never h9k task deliver (independent pre-PR review, cycle 3, both lenses): this fixture's
+    /// reason is the platform's own clean-tree-and-commits check already refusing it — the same
+    /// check deliver itself runs, so deliver would refuse here too — and on this reason's other
+    /// variant, git unobservable at exit, deliver could not verify the tree either, so it would
+    /// push blind rather than refuse, which is still not a lever worth advising.
     /// </summary>
     [Fact]
     public void An_unattended_exit_flag_names_the_recorded_state_and_the_three_levers()
@@ -40,8 +45,9 @@ public sealed class AttentionSurfaceTests
 
         row.Attention.NeedsYou.Should().BeTrue();
         row.Attention.Cause.Should().Be(run.ExitedUnattendedReason, "the recorded state is quoted, never re-guessed");
-        row.Attention.Lever.Should().Contain("h9k task deliver");
+        row.Attention.Lever.Should().NotContain("h9k task deliver", "deliver refuses the same check this reason already failed");
         row.Attention.Lever.Should().Contain("h9k task work");
+        row.Attention.Lever.Should().Contain("h9k task handback");
         row.Attention.Lever.Should().Contain("h9k task release");
     }
 

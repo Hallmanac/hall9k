@@ -267,6 +267,88 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The error-result guard (independent pre-PR review, cycle 3, both lenses): AGENTS.md's own
+    /// "commit as you go" rule means a checkpoint commit can already sit on a clean, committed
+    /// tree by the time the provider reports a token-budget exhaustion — so judging this session
+    /// on the tree alone, the way the good-path test above does, would auto-deliver half-finished
+    /// work. This mirrors CompleteRunAsync's own identical park (backlog 40): external and
+    /// clock-recoverable, not something to deliver or flag.
+    /// </summary>
+    [Fact]
+    public async Task Deliberate_headless_start_with_a_budget_exhausted_result_parks_rather_than_delivers()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, _) =
+            await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
+
+        const string budgetResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached|1762952400"}""";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(budgetResultLine));
+        await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+        RunDetails run = await WaitForStateAsync(store, runId, "BudgetParked", cts.Token);
+
+        run.ParkedReason.Should().Be("token budget exhausted - resumes when the subscription window resets");
+        run.ExitedUnattendedReason.Should().BeNull("this is a budget park, not the flagged-needs-you path");
+        run.NodeId.Should().Be(node.NodeId,
+            "moved off the ceiling-exempt sentinel so the ordinary TokenBudgetRetryEngine sweep can find it");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunDeliveredAutomatically>().Should().BeEmpty(
+            "an error result must never be judged on the tree it happens to leave behind");
+        events.OfType<TokensRecorded>().Should().ContainSingle(
+            "the session's own spend is still recorded even though it never reached a human lever");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Claimed, "a budget park keeps the claim intact, exactly like an ordinary dispatch");
+    }
+
+    /// <summary>
+    /// The non-budget half of the same guard: a plain error result is flagged needs-you rather
+    /// than judged on the worktree it left behind, exactly as a dirty or commit-less tree already
+    /// is — never silently delivered just because the last checkpoint commit happened to land on
+    /// a clean tree moments before the agent's own session errored out.
+    /// </summary>
+    [Fact]
+    public async Task Deliberate_headless_start_with_a_generic_error_result_is_flagged_needs_you()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, _) =
+            await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
+
+        const string errorResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Internal server error"}""";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(errorResultLine));
+        await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+        await WaitForEventCountAsync<RunUnattendedExitFlagged>(store, runId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ExitedUnattendedReason.Should().Contain("error result");
+        run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
+            "the run must stay where h9k task work/handback/release already expect it — no widened guard needed");
+        run.InputTokens.Should().Be(
+            0, "a flagged run's tokens are recorded by whichever lever the human ends up using, never here too");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunDeliveredAutomatically>().Should().BeEmpty(
+            "an error result must never be judged on the tree it happens to leave behind");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Claimed, "the flag's own levers all require Claimed");
+    }
+
+    /// <summary>
     /// The re-entry guard (independent pre-PR review, cycle 1, both lenses): once a human attaches
     /// with <c>h9k task work</c>, <see cref="RunDetails.RegisteredInteractiveSessionName"/> stops
     /// reading null, and this sweep must never again treat that operator's own eventual "closed the
@@ -302,6 +384,57 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.ExitedUnattendedReason.Should().BeNull("nothing has flagged this run — a human is simply attached");
+    }
+
+    /// <summary>
+    /// The delegation re-entry guard (independent pre-PR review, cycle 3, both lenses):
+    /// <c>h9k task delegate</c> records its contractor under this run's own machine-composed
+    /// build-session name — the identical name <c>h9k task start</c>'s original agent used — so
+    /// <see cref="RunDetails.RegisteredInteractiveSessionName"/> alone cannot tell a delegated
+    /// contractor's exit apart from the unattended start's own. Without the
+    /// <see cref="RunDetails.PhaseDelegations"/> filter, this sweep would adopt the contractor and
+    /// treat its own exit as this run kind's unattended one — auto-delivering (or re-flagging) a
+    /// claim <c>h9k task delegate</c> explicitly promises stays the operator's own to finish by
+    /// hand with <c>h9k task work</c>.
+    /// </summary>
+    [Fact]
+    public async Task AdoptDeliberateHeadlessStartsAsync_leaves_a_delegated_claim_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, _) =
+            await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
+
+        int contractorProcessId = SpawnFakeAgent(runId, FakeAgentScript.New().Exit(0));
+        string buildSessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build);
+
+        // Mirrors TaskDelegateCommand's own append: RunPhaseDelegated alongside
+        // InteractiveSessionStarted, both under the run's own build-session name rather than a
+        // human's own chosen one.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(
+                runId,
+                new RunPhaseDelegated(
+                    runId, "Handing off for a phase.", Now, node.OwnerId, buildSessionName,
+                    DomainId.New().ToString("N"), AgentModel.Unknown),
+                new InteractiveSessionStarted(
+                    runId, DomainId.New(), Now, contractorProcessId, Environment.MachineName, buildSessionName));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunSupervisor supervisor = NewSupervisor(store, node, new FakeProcessManager());
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+
+        supervisor.ActiveCount.Should().Be(0,
+            "a delegated claim stays the operator's own to finish by hand — this sweep must never adopt a "
+            + "contractor's exit as the original unattended start's own");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.RegisteredInteractiveSessionName.Should().BeNull(
+            "a delegated contractor is recorded under the same machine-composed build name h9k task start's "
+            + "own agent used, so this guard alone cannot exclude it");
+        run.PhaseDelegations.Should().ContainSingle("the delegation itself is what this sweep must key off instead");
     }
 
     /// <summary>
