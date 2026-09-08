@@ -16,9 +16,11 @@ namespace Hall9k.Tests.Connectors;
 /// 9272e514's slice 7): the default <c>h9k task work</c> path sets <c>requiresSelfRegistration</c>,
 /// and the kept-for-one-release <c>--direct-launch</c> path does not, since that path still
 /// records the session itself the way it always did — and a deliberate <c>h9k task start</c>
-/// kick-off: headless like the first, but unsupervised like neither (independent pre-PR review,
-/// cycle 1, both lenses: the session was being told the platform verifies and opens the PR after
-/// it finishes, which is true of the first shape only).
+/// kick-off: headless like the first, and — since <c>RunSupervisor.AdoptDeliberateHeadlessStartsAsync</c>
+/// (task: a do-now session launched by h9k task start is caught within seconds) — watched too,
+/// but never told to trigger verification or delivery itself, unlike the first shape (independent
+/// pre-PR review, cycle 1, both lenses: the session was previously told nothing supervised it at
+/// all, which stopped being true the moment that sweep started adopting it).
 /// </summary>
 public sealed class WorkPromptBuilderTests
 {
@@ -45,19 +47,22 @@ public sealed class WorkPromptBuilderTests
     }
 
     /// <summary>
-    /// h9k task start's own claim carries the ceiling-exempt sentinel Guid.Empty NodeId, so
-    /// RunSupervisor never adopts it (AdoptOrphansAsync/ResumeStrandedPipelinesAsync both filter
-    /// on r.NodeId == nodeId) — nothing verifies or opens a pull request until a human runs
-    /// h9k task deliver by hand, so the prompt must say that rather than either of the other two
-    /// claims.
+    /// h9k task start's own claim carries the ceiling-exempt sentinel Guid.Empty NodeId, so the
+    /// ordinary NodeId == nodeId sweeps never adopt it — but RunSupervisor.AdoptDeliberateHeadlessStartsAsync
+    /// (task: a do-now session launched by h9k task start is caught within seconds) does, widened
+    /// on DispatchingNodeId instead, and delivers a clean, committed tree automatically or flags
+    /// anything else for a human the moment the session exits, so the prompt must say that rather
+    /// than claiming nothing watches this run at all.
     /// </summary>
     [Fact]
-    public void A_deliberate_headless_start_is_told_nothing_supervises_it_and_delivery_is_manual()
+    public void A_deliberate_headless_start_is_told_the_platform_delivers_or_flags_it_automatically()
     {
         string prompt = Build(isInteractive: false, isDeliberateHeadlessStart: true);
 
-        prompt.Should().Contain("nothing supervises this run");
-        prompt.Should().Contain("`h9k task deliver` pushes the branch");
+        prompt.Should().Contain("the platform checks the worktree itself");
+        prompt.Should().Contain("delivered automatically");
+        prompt.Should().Contain("flagged for a human instead");
+        prompt.Should().NotContain("nothing supervises this run");
         prompt.Should().NotContain("the platform verifies and opens the PR after you finish.");
         prompt.Should().NotContain("delivery is `h9k task deliver`, run by the operator explicitly");
     }
@@ -75,7 +80,7 @@ public sealed class WorkPromptBuilderTests
     {
         string prompt = Build(isInteractive: false, isDeliberateHeadlessStart: true);
 
-        prompt.Should().Contain("a human's to trigger by hand");
+        prompt.Should().Contain("Verification and delivery are still not yours to trigger");
         prompt.Should().Contain("do not attempt them yourself");
         prompt.Should().NotContain("yours to trigger by hand once you finish");
     }

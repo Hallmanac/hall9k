@@ -149,10 +149,12 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // isInteractive: false — the ordinary headless build prompt (checkpoint commits, the
         // self-review phase, the end-of-session recompose, the handoff rules): this session is
         // unattended exactly like a dispatcher-launched build, not an operator's own attended one.
-        // isDeliberateHeadlessStart: true — but unlike a dispatcher-launched build, nothing on this
-        // node watches this run (RunSupervisor never adopts the sentinel Guid.Empty NodeId), so the
-        // prompt tells the agent delivery is its own to trigger by hand rather than claiming the
-        // platform verifies and opens the PR after it finishes.
+        // isDeliberateHeadlessStart: true — RunSupervisor.AdoptDeliberateHeadlessStartsAsync does
+        // now watch this run (task: a do-now session launched by h9k task start is caught within
+        // seconds), so the prompt tells the agent the platform delivers a clean, committed tree
+        // automatically and flags anything else, rather than claiming nothing supervises it at
+        // all; delivery and verification still refuse to run from inside this very session, so
+        // the prompt still tells the agent those are never its own to trigger by hand.
         // isHandback: taskDetails.ResumesFromHandback — the same reasoning
         // AgentPromptBuilder.Build already applies for a dispatcher-launched build (conformance
         // review, cycle 1): a start-it-mine claim can equally resume a human's own
