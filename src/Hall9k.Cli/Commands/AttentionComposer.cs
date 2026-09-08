@@ -94,11 +94,23 @@ internal static class AttentionComposer
             && (run.State == Domain.Features.Run.RunState.Dispatched
                 || run.State == Domain.Features.Run.RunState.Running))
         {
+            // Never h9k task deliver (independent pre-PR review, cycle 3, both lenses): this
+            // reason is recorded either when VerificationRunner.DetectStrandedWorkAsync found the
+            // tree undeliverable — no commits beyond base, uncommitted files, or both, the same
+            // check deliver itself runs, so deliver refuses on that same ground every time — or
+            // when git itself was unobservable at exit, the one variant deliver would not refuse
+            // outright but also could not verify anything; advising it there would trade a
+            // refusal for a blind, unverified push, which is worse guidance, not better. h9k task
+            // work always works (reattach and look by hand); h9k task handback and h9k task
+            // release both work whenever there are no uncommitted files still sitting in the
+            // worktree, and refuse the same files for the same reason otherwise — never advise a
+            // lever the platform will refuse.
             return new TaskAttention(
                 AttentionLevel.NeedsYou,
                 exitedUnattendedReason,
-                $"h9k task deliver {id} (if the work is actually done), h9k task work {id} (to look at it "
-                + $"yourself), or h9k task release {id} (to give it back)");
+                $"h9k task work {id} (to look at it yourself), h9k task handback {id} (to queue a fresh "
+                + $"headless follow-up), or h9k task release {id} (to give it back) — the latter two refuse "
+                + "while uncommitted files remain, which h9k task work can still resolve by hand");
         }
 
         if (run?.State == Domain.Features.Run.RunState.ReviewParked)

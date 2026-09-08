@@ -349,9 +349,19 @@ public static class WorkPromptBuilder
         // --keep-interactive — never a handback, which clears the flag unconditionally).
         if (task.InteractiveModeEnabled && !isInteractive)
         {
+            // parksAtBoundaryAfterward left at its true default here (independent pre-PR review,
+            // cycle 3, conformance lens): a deliberate headless start (h9k task start) used to
+            // pass false, on the premise that "nothing supervises this run once you end" — but
+            // RunSupervisor.AdoptDeliberateHeadlessStartsAsync now does (task: a do-now session
+            // launched by h9k task start is caught within seconds), delivering a clean, committed
+            // tree automatically and, since this branch is only ever reached with
+            // task.InteractiveModeEnabled true, the review loop's own first boundary then parks
+            // for the human exactly as it would for any other interactive-mode build. Passing
+            // false here told this exact session the opposite of what the "## Working rules"
+            // section above it already says.
             AppendOutboundMilestoneRules(
                 prompt, "build", OutboundMilestone.Build, interactiveMilestoneAddress,
-                parksAtBoundaryAfterward: !isDeliberateHeadlessStart, isDelegatedContractor: isDelegatedContractor);
+                isDelegatedContractor: isDelegatedContractor);
         }
         else if (task.InteractiveModeEnabled)
         {
@@ -1414,14 +1424,17 @@ public static class WorkPromptBuilder
     /// itself be a guess (Copilot review on PR #236).
     /// </param>
     /// <param name="parksAtBoundaryAfterward">
-    /// True (the default, and the only case for the review and fix roles, which the review engine
-    /// itself always dispatched) when slice 8's own phase-boundary park actually holds the instant
-    /// this session ends. False only for a build session dispatched by <c>h9k task start</c>
-    /// (<c>isDeliberateHeadlessStart</c>): nothing supervises that run once it starts, and
-    /// verification, delivery, and the review loop's own first boundary are a human's to trigger by
-    /// hand with <c>h9k task deliver</c> — asserting a park already holds there would contradict the
-    /// rule this same prompt gives the session for that path (independent pre-PR review, cycle 1,
-    /// both lenses).
+    /// True (the default) when slice 8's own phase-boundary park actually holds the instant this
+    /// session ends. No caller currently passes false: a build session dispatched by
+    /// <c>h9k task start</c> (<c>isDeliberateHeadlessStart</c>) used to, on the premise that
+    /// nothing supervised that run once it started, but <c>RunSupervisor.AdoptDeliberateHeadlessStartsAsync</c>
+    /// now does (task: a do-now session launched by h9k task start is caught within seconds) —
+    /// once it delivers a clean, committed tree automatically, the review loop's own first
+    /// boundary parks for the human exactly as it would for any other interactive-mode build, so
+    /// asserting otherwise contradicted the "## Working rules" section this same prompt already
+    /// gives that session (independent pre-PR review, cycle 3, conformance lens). The parameter
+    /// stays so a future launch shape genuinely unsupervised at this boundary can say so without a
+    /// second copy of this method.
     /// </param>
     /// <param name="isDelegatedContractor">
     /// True only for <c>h9k task delegate</c>'s own contractor. Every other build dispatch this

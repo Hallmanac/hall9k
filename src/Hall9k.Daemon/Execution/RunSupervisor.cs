@@ -699,6 +699,19 @@ public sealed class RunSupervisor(
     /// so would auto-deliver or flag the moment that operator's terminal closed, over a worktree
     /// they were still working, not one an unattended agent walked away from).
     /// </para>
+    /// <para>
+    /// That guard alone is not enough for a claim <c>h9k task delegate</c> has ever touched
+    /// (independent pre-PR review, cycle 3, both lenses): a delegated contractor is recorded under
+    /// this exact same machine-composed build-session name (<c>TaskDelegateCommand</c>'s own
+    /// <see cref="SessionRoleName.Build"/> dispatch), so <see cref="RunDetails.RegisteredInteractiveSessionName"/>
+    /// stays null for it too, and <see cref="RunDetails.ExitedUnattendedReason"/> is cleared the
+    /// same way a human's own re-entry clears it. Without the <see cref="RunDetails.PhaseDelegations"/>
+    /// filter below, a contractor's own exit would be adopted and treated as this run kind's own
+    /// unattended exit, auto-delivering (or re-flagging) a claim <c>h9k task delegate</c> explicitly
+    /// promises stays the operator's own to finish by hand with <c>h9k task work</c>. Once a run has
+    /// ever been delegated it is permanently out of this sweep's reach — the operator, not the
+    /// platform, is the one who decides what a delegated phase's own exit means.
+    /// </para>
     /// </summary>
     public async Task AdoptDeliberateHeadlessStartsAsync(CancellationToken cancellationToken)
     {
@@ -715,7 +728,8 @@ public sealed class RunSupervisor(
                 AdoptableDeliberateHeadlessStartStates[0], AdoptableDeliberateHeadlessStartStates[1]))
             .ToListAsync(cancellationToken);
 
-        foreach (RunDetails run in candidates.Where(r => !_monitors.ContainsKey(r.Id)))
+        foreach (RunDetails run in candidates.Where(
+            r => !_monitors.ContainsKey(r.Id) && r.PhaseDelegations.Count == 0))
         {
             ActiveSession? agentSession = run.ActiveSessions.SingleOrDefault(
                 activeSession => activeSession.Role == AgentRole.Interactive);
@@ -755,11 +769,6 @@ public sealed class RunSupervisor(
     private async Task HandleDeliberateHeadlessStartExitAsync(
         Guid runId, Guid taskId, string runDirectory, AgentResult? result, CancellationToken cancellationToken)
     {
-        if (result is not null)
-        {
-            await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
-        }
-
         await using IDocumentSession session = store.LightweightSession();
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
@@ -785,6 +794,20 @@ public sealed class RunSupervisor(
             return;
         }
 
+        // Deferred until every "is this run still mine" guard above has passed (independent
+        // pre-PR review, cycle 3, adversarial lens): writing the handoff artifact unconditionally
+        // at the top of this method could overwrite one a concurrent h9k task deliver had just
+        // written for the very same run — deliver's own WriteHandoffAsync landing between this
+        // handler starting and its guards running would otherwise have its human-typed handoff
+        // silently replaced by the agent's own parsed one, or by an empty file when the agent's
+        // final message carried no handoff block at all. Still not fully race-free — a deliver
+        // landing in the narrow window between the checks above and this write can still lose —
+        // but every guard this handler has to offer runs first, rather than none of them.
+        if (result is not null)
+        {
+            await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
+        }
+
         // The write-time half of the fence (GenerationFence.LoadFencedAsync's own doc), applied
         // to the RUN's own stream rather than the task's: this handler never writes the task
         // stream itself, so LoadFencedAsync's task-level expectedVersion has nothing to pin here,
@@ -804,6 +827,84 @@ public sealed class RunSupervisor(
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // Checked before the tree is ever read (independent pre-PR review, cycle 3, both lenses):
+        // AGENTS.md's own "commit as you go" rule means a checkpoint commit can already sit on a
+        // clean tree by the time the provider reports an error — a budget exhaustion chief among
+        // them — so an error result and a deliverable-looking worktree are not mutually exclusive.
+        // CompleteRunAsync branches on IsError for exactly this reason before it ever looks at the
+        // tree; this unattended shape has to as well, rather than judge solely on what the tree
+        // happened to hold at the moment the agent died.
+        if (result is { IsError: true })
+        {
+            if (result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
+            {
+                // Mirrors CompleteRunAsync's own identical park: external and clock-recoverable
+                // (backlog 40), not a reason to auto-deliver or flag needs-you. AgentSessionCompleted's
+                // DeliveredByNodeId moves this run's NodeId off the ceiling-exempt sentinel onto the
+                // dispatching node's own real id, the same convention the clean-tree branch below
+                // uses — from there TokenBudgetRetryEngine's own plain NodeId == nodeId sweep already
+                // finds and resumes it hourly like any other daemon-owned parked run, so no sentinel
+                // widening of that sweep is needed for this shape.
+                object[] budgetEvents =
+                [
+                    new AgentSessionCompleted(runId, now, run.DispatchingNodeId),
+                    result.ToTokensRecorded(runId, now, run.Model),
+                    new RunBudgetExhausted(runId, summary, now),
+                ];
+                session.Events.Append(runId, expectedVersion: runStreamState.Version + budgetEvents.Length, budgetEvents);
+                try
+                {
+                    await session.SaveChangesAsync(cancellationToken);
+                }
+                catch (EventStreamUnexpectedMaxEventIdException)
+                {
+                    logger.LogInformation(
+                        "Task {TaskId}: lost the generation race parking run {RunId} on token-budget exhaustion "
+                        + "— a newer claim committed first",
+                        taskId, runId);
+                    return;
+                }
+
+                logger.LogWarning(
+                    "Run {RunId}: a deliberate headless start's session hit a token budget exhaustion — parked "
+                    + "rather than delivered; the daemon retries hourly. {Message}",
+                    runId, summary);
+                return;
+            }
+
+            // Every other error result: left exactly where it is and flagged needs-you, the same
+            // as an unreadable or undeliverable tree below — tokens are deliberately not recorded
+            // here, mirroring the flagged branch's own reasoning, since whichever of the human
+            // levers this flag names ends up retiring the run will read this same stream.jsonl
+            // back exactly once.
+            string errorReason =
+                "a deliberate headless start (h9k task start, or h9k task handback --now) launched this "
+                + "session unattended; it exited with an error result rather than completing normally, so the "
+                + "platform could not confirm the work was safe to deliver automatically."
+                + (result.Summary.IsNotBlank() ? $" The agent reported: {result.Summary}" : string.Empty);
+            session.Events.Append(
+                runId, expectedVersion: runStreamState.Version + 1, new RunUnattendedExitFlagged(runId, errorReason, now));
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: lost the generation race flagging run {RunId}'s unattended exit — a newer "
+                    + "claim committed first",
+                    taskId, runId);
+                return;
+            }
+
+            logger.LogWarning(
+                "Run {RunId}: a deliberate headless start's session exited with an error result — flagged "
+                + "needs-you rather than delivered automatically",
+                runId);
+            return;
+        }
+
         VerificationRunner.StrandedWorkCheck check =
             await verification.DetectStrandedWorkAsync(run, task, project, cancellationToken);
 
