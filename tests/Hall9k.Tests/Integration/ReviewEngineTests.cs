@@ -24,7 +24,6 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -42,7 +41,8 @@ namespace Hall9k.Tests.Integration;
 /// </summary>
 [Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
-public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
+public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginFixture origins)
+    : IClassFixture<PostgresFixture>, IClassFixture<SeededGitOriginFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
 
@@ -144,7 +144,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Merge_ready_needs_both_lenses_clean_and_archives_each_lens_findings()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, Guid mainSessionId) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -194,7 +194,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Composition_none_settles_immediately_with_no_review_pass_ever_dispatched()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(
             store, ["reviewed"], cts.Token, ReviewStageComposition.None);
 
@@ -226,7 +226,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Composition_none_resuming_a_pre_gate_dispute_settles_after_the_fix_without_dispatching_a_reviewer()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(
             store, cts.Token, ReviewStageComposition.None);
 
@@ -264,7 +264,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Composition_adversarial_only_never_dispatches_the_conformance_lens()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(
             store, ["reviewed"], cts.Token, ReviewStageComposition.AdversarialOnly);
 
@@ -287,7 +287,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Composition_conformance_only_never_dispatches_the_adversarial_lens()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(
             store, ["reviewed"], cts.Token, ReviewStageComposition.ConformanceOnly);
 
@@ -314,7 +314,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Composition_skip_final_pass_settles_without_the_mandatory_final_full_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(
             store, ["reviewed"], cts.Token, ReviewStageComposition.SkipFinalPass);
 
@@ -353,7 +353,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Each_review_pass_records_its_own_turns_and_input_tokens()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -432,6 +432,37 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The origin a seed hands its run: <see cref="SeededGitOriginFixture.OriginPath"/> itself
+    /// when the test only reads it, and a bare clone of it under this test's own home when the
+    /// test pushes. Either way the seeded history — <c>main</c> carrying one <c>base.txt</c>
+    /// commit — is the fixture's, built once for the class rather than rebuilt per test.
+    /// </summary>
+    private string OriginFor(Guid runId, bool ownOrigin)
+    {
+        if (!ownOrigin)
+        {
+            return origins.OriginPath;
+        }
+
+        string own = Path.Combine(_home, $"origin-{runId:N}.git");
+        origins.CopyTo(own);
+        return own;
+    }
+
+    /// <summary>
+    /// Refuses the shared template by name, so a test that pushes and forgot to ask for
+    /// <c>ownOrigin: true</c> fails here saying so rather than quietly rewriting the origin every
+    /// later test in the class is about to clone.
+    /// </summary>
+    private string MutableOrigin(string originPath) =>
+        originPath == origins.OriginPath
+            ? throw new InvalidOperationException(
+                "this is SeededGitOriginFixture's shared template origin, which every other test in "
+                + "this class clones — pushing to it would rewrite their starting state. Seed with "
+                + "ownOrigin: true to get a copy of it to push to instead.")
+            : originPath;
+
+    /// <summary>
     /// The lens that finds something carries the cycle: one NeedsFixes verdict, one merged
     /// finding list, one fix session for all of it (Decisions Log #59).
     /// </summary>
@@ -439,7 +470,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Either_lens_finding_defects_produces_one_verdict_and_one_fix_session_over_the_merged_findings()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string conformanceFinding = "1. `Auth.cs:42` — the limiter never resets. Scenario: the second request always 429s.";
@@ -497,7 +528,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Concurrent_passes_share_no_settings_file_and_take_no_optional_git_locks()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -539,7 +570,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_session_cap_of_one_serializes_the_two_lenses_one_completes_before_the_other_spawns()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -583,7 +614,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_tasks_own_session_cap_override_serializes_the_lenses_even_when_the_nodes_default_would_not()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -633,7 +664,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_session_cap_of_one_still_merges_findings_and_dispositions_exactly_as_a_parallel_pass_does()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string conformanceFinding = "1. `Auth.cs:42` — the limiter never resets. Scenario: the second request always 429s.";
@@ -684,7 +715,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_cycles_reverify_gate_that_fell_back_to_full_skips_the_redundant_settling_gate()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -736,7 +767,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_commands_change_after_the_reverify_gate_still_runs_the_settling_gate()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, Guid projectId) =
             await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
 
@@ -788,7 +819,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_clean_discovery_only_convergence_still_runs_the_settling_gate_over_the_current_verify_commands()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _, Guid projectId) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -832,7 +863,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_commands_change_while_parked_at_the_reverify_interactive_gate_still_runs_the_gate_on_resume()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, Guid projectId) = await SeedVerifiedRunWithTestGateAsync(
             store, cts.Token, interactiveMode: true, reviewStageComposition: ReviewStageComposition.AdversarialOnly);
 
@@ -937,7 +968,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Clearing_interactive_mode_mid_flight_is_seen_at_the_very_next_boundary_in_the_same_call()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
             store, cts.Token, interactiveMode: true, reviewStageComposition: ReviewStageComposition.AdversarialOnly);
 
@@ -1000,7 +1031,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_never_recorded_verify_commands_fingerprint_settles_without_a_redundant_gate()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithTestGateAsync(
             store, cts.Token, recordVerifyCommandsFingerprint: false);
 
@@ -1036,7 +1067,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_follow_ups_opening_discovery_cycle_scopes_to_the_seeded_head_and_still_pays_the_final_full_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
             store, cts.Token, seedOpeningReviewSinceSha: true);
         string seedSha = GitOutput(worktreePath, "rev-parse HEAD");
@@ -1088,7 +1119,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Final_full_pass_scopes_its_diff_instruction_to_the_discovery_cycles_own_head()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
         string discoveryHeadSha = GitOutput(worktreePath, "rev-parse HEAD");
 
@@ -1130,7 +1161,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Final_full_pass_falls_back_to_the_full_diff_when_the_recorded_boundary_no_longer_resolves()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
         string discoveryHeadSha = GitOutput(worktreePath, "rev-parse HEAD");
 
@@ -1175,7 +1206,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_fix_re_enters_review_at_the_fix_to_re_review_boundary_with_no_fix_session()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(
             store, cts.Token, interactiveMode: true, reviewStageComposition: ReviewStageComposition.AdversarialOnly);
 
@@ -1273,7 +1304,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_fix_is_refused_over_an_uncommitted_worktree_and_names_the_files()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) =
             await SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(store, cts.Token);
 
@@ -1309,7 +1340,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_fix_is_refused_when_the_worktree_is_not_on_the_claim_branch()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) =
             await SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(store, cts.Token);
 
@@ -1338,7 +1369,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_fix_with_an_unmoved_tip_is_refused_until_no_change_states_why()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) =
             await SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(store, cts.Token);
         string parkedTip = GitOutput(worktreePath, "rev-parse HEAD");
@@ -1388,7 +1419,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_fix_refuses_no_change_over_a_tip_that_did_move()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, _) =
             await SeedRunParkedAtTheReviewVerdictToFixBoundaryAsync(store, cts.Token);
         string parkedTip = GitOutput(worktreePath, "rev-parse HEAD");
@@ -1445,7 +1476,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private async Task AssertHumanFixWorksOnFollowUpAsync(FollowUpKind kind)
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) =
             await SeedInteractiveFollowUpRunWithOriginAsync(store, kind, cts.Token);
 
@@ -1505,7 +1536,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// actually exercises. The command rings the doorbell, which resolves its connection off
     /// <c>HALL9K_CONNECTION_STRING</c> rather than this fixture, so it is pointed at the fixture
     /// for the duration of the call and put back afterwards — the same process-wide dance
-    /// <c>ReviewResolveCommandTests</c> does, which is why both live in the serialized
+    /// <c>ReviewLapTests</c> does, which is why both live in the serialized
     /// <c>Hall9kHome</c> collection.
     /// </summary>
     private async Task<int> RunReviewFixedAsync(
@@ -1570,14 +1601,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         Guid runId = DomainId.New();
         Guid projectId = DomainId.New();
         string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
-        string originPath = Path.Combine(_home, $"origin-{runId:N}.git");
+
+        // This seed pushes the follow-up's own branch below, so it always needs an origin of its
+        // own rather than the class's shared template.
+        string originPath = OriginFor(runId, ownOrigin: true);
         Directory.CreateDirectory(_home);
-        Git(_home, $"init -q --bare -b main \"{originPath}\"");
         Git(_home, $"clone -q \"{originPath}\" \"{worktreePath}\"");
-        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
-        Git(worktreePath, "push -q origin main");
         Git(worktreePath, "checkout -q -b task/review-me");
         File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
         Git(worktreePath, "add -A");
@@ -1785,10 +1814,18 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     /// fetch and compare against. Real git, never a fake — the same convention
     /// <c>CloseoutEngineTests</c>' own mechanical-rebase coverage already follows, so a genuinely
     /// conflicting (or genuinely clean) history is what decides the outcome.
+    /// <para>
+    /// The seeded origin itself is <see cref="SeededGitOriginFixture"/>'s, built once for the
+    /// class. <paramref name="ownOrigin"/> defaults to true — a copy of the template, this run's
+    /// to push to — because all but one caller here does push to it; a caller that only reads
+    /// <c>origin/main</c> passes false and gets the template directly. Defaulting the other way
+    /// would make forgetting the parameter silently corrupt every later test in the class, so the
+    /// default is the safe one and <see cref="MutableOrigin"/> catches the mistake anyway.
+    /// </para>
     /// </summary>
     private async Task<(Guid TaskId, Guid RunId, string WorktreePath, string OriginPath)> SeedVerifiedRunWithOriginAsync(
         DocumentStore store, CancellationToken cancellationToken, string? pullRequestUrl = null,
-        string baseBranch = "")
+        string baseBranch = "", bool ownOrigin = true)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -1797,14 +1834,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         Guid projectId = DomainId.New();
         Guid mainSessionId = DomainId.New();
         string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
-        string originPath = Path.Combine(_home, $"origin-{runId:N}.git");
+        string originPath = OriginFor(runId, ownOrigin);
         Directory.CreateDirectory(_home);
-        Git(_home, $"init -q --bare -b main \"{originPath}\"");
         Git(_home, $"clone -q \"{originPath}\" \"{worktreePath}\"");
-        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
-        Git(worktreePath, "push -q origin main");
         Git(worktreePath, "checkout -q -b task/review-me");
         File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
         Git(worktreePath, "add -A");
@@ -1851,7 +1883,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private void PushToOrigin(string originPath, string fileName, string content, string message)
     {
         string otherClone = Path.Combine(_home, $"other-{Guid.NewGuid():N}");
-        Git(_home, $"clone -q \"{originPath}\" \"{otherClone}\"");
+        Git(_home, $"clone -q \"{MutableOrigin(originPath)}\" \"{otherClone}\"");
         File.WriteAllText(Path.Combine(otherClone, fileName), content);
         Git(otherClone, "add -A");
         Git(otherClone, $"-c user.name=Other -c user.email=other@test commit -q -m \"{message}\"");
@@ -1866,7 +1898,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private void PushBranchToOrigin(string originPath, string branch, string fileName, string content)
     {
         string otherClone = Path.Combine(_home, $"parent-{Guid.NewGuid():N}");
-        Git(_home, $"clone -q \"{originPath}\" \"{otherClone}\"");
+        Git(_home, $"clone -q \"{MutableOrigin(originPath)}\" \"{otherClone}\"");
         Git(otherClone, $"checkout -q -b {branch}");
         File.WriteAllText(Path.Combine(otherClone, fileName), content);
         Git(otherClone, "add -A");
@@ -1884,8 +1916,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Pre_final_pass_rebase_is_a_recorded_no_op_when_the_base_has_not_moved()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
-        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+        DocumentStore store = postgres.Store;
+        // This is the one origin-backed test here that never pushes — the base has not moved is
+        // the whole scenario — so it reads the class's shared origin rather than taking a copy.
+        (Guid taskId, Guid runId, _, _) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
 
         ScriptedExecutor executor = new(
             "Criteria met at cycle 1.\n\nVERDICT: merge-ready",
@@ -1926,7 +1961,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_pre_final_pass_rebase_skips_when_the_pull_request_was_retargeted_off_the_project_base()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) = await SeedVerifiedRunWithOriginAsync(
             store, cts.Token, pullRequestUrl: "https://github.com/acme/widgets/pull/42");
 
@@ -1977,7 +2012,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_pre_final_pass_rebase_leaves_a_foreign_base_alone_when_no_stacked_edge_is_declared()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) = await SeedVerifiedRunWithOriginAsync(
             store, cts.Token, baseBranch: "task/parent-slice");
 
@@ -2017,7 +2052,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stacked_child_is_replayed_onto_its_parents_head_before_its_first_review_cycle()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
 
         PushToOriginBranch(
@@ -2075,7 +2110,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Cycle_1_reviewers_are_told_the_fork_point_the_checkpoint_replay_landed_on()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
 
         string parentsNewHead = PushToOriginBranch(
@@ -2115,7 +2150,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stacked_child_whose_parent_moves_mid_review_is_replayed_before_the_final_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -2148,7 +2183,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stacked_child_whose_parent_stood_still_spends_nothing()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -2178,7 +2213,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stacked_child_parks_for_a_human_when_its_parent_can_no_longer_deliver()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         StackedChildFixture fixture = await SeedStackedChildRunAsync(
             store, cts.Token, parentPullRequestClosedUnmerged: true);
 
@@ -2217,7 +2252,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stacked_child_parks_when_its_parents_head_cannot_be_resolved_at_all()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         StackedChildFixture fixture = await SeedStackedChildRunAsync(
             store, cts.Token, parentPullRequestOpened: false);
 
@@ -2247,7 +2282,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stacked_child_past_its_rebase_budget_parks_rather_than_following_its_parent_again()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token, priorCheckpointRebases: 1);
 
         PushToOriginBranch(
@@ -2281,7 +2316,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stacked_checkpoint_replay_that_conflicts_parks_with_the_branch_restored()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
 
         // The parent's lap touches the very file this child added, differently: the replay of the
@@ -2331,14 +2366,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
         Guid projectId = DomainId.New();
         string parentBranch = $"task/{parentTaskId:N}"[..20];
         string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
-        string originPath = Path.Combine(_home, $"origin-{runId:N}.git");
+
+        // This seed pushes main and the parent's branch below, so it always needs an origin of its
+        // own rather than the class's shared template.
+        string originPath = OriginFor(runId, ownOrigin: true);
         Directory.CreateDirectory(_home);
-        Git(_home, $"init -q --bare -b main \"{originPath}\"");
         Git(_home, $"clone -q \"{originPath}\" \"{worktreePath}\"");
-        File.WriteAllText(Path.Combine(worktreePath, "base.txt"), "base\n");
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m init");
-        Git(worktreePath, "push -q origin main");
 
         // The parent's branch, cut from main and pushed — Delivered.
         Git(worktreePath, $"checkout -q -b {parentBranch}");
@@ -2449,7 +2482,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     private string PushToOriginBranch(string originPath, string branch, string fileName, string content)
     {
         string otherClone = Path.Combine(_home, $"lap-{Guid.NewGuid():N}");
-        Git(_home, $"clone -q \"{originPath}\" \"{otherClone}\"");
+        Git(_home, $"clone -q \"{MutableOrigin(originPath)}\" \"{otherClone}\"");
         Git(otherClone, $"checkout -q {branch}");
         File.WriteAllText(Path.Combine(otherClone, fileName), content);
         Git(otherClone, "add -A");
@@ -2468,7 +2501,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_clean_pre_final_pass_rebase_reads_the_rebased_tree_and_costs_no_extra_session()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) =
             await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
@@ -2516,7 +2549,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_clean_cycle_one_settle_with_nothing_owed_still_rebases_onto_a_moved_base()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) =
             await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
@@ -2550,7 +2583,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_conflicting_pre_final_pass_rebase_is_resolved_by_a_narrow_recovery_session_inside_the_same_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) =
             await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
@@ -2618,7 +2651,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_recovered_pre_final_pass_rebase_on_the_nothing_owed_settle_path_still_earns_a_final_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) =
             await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
@@ -2675,7 +2708,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_recovered_pre_final_pass_rebase_on_the_severity_bar_settle_path_still_earns_another_final_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) =
             await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
@@ -2738,7 +2771,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_disputed_pre_final_pass_rebase_conflict_parks_the_run_for_a_human()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) =
             await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
@@ -2791,7 +2824,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_rebase_recovery_session_that_never_actually_resolves_parks_once_the_round_cap_is_spent()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _, string originPath) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
         // A genuine add/add conflict that never resolves itself: every fresh `git rebase
@@ -2833,7 +2866,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_resolving_a_disputed_pre_final_pass_rebase_conflict_redispatches_with_their_guidance()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, string worktreePath, string originPath) =
             await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
@@ -2913,7 +2946,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_clean_track_goes_dormant_and_the_other_continues_alone()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -2976,7 +3009,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Each_findings_severity_scope_and_disposition_land_on_the_pass_event()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3012,7 +3045,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_cycle_missing_a_lens_tops_itself_up_instead_of_concluding_on_one()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         Guid strandedSession = DomainId.New();
@@ -3051,7 +3084,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_routing_that_failed_and_later_succeeded_settles_as_one_routed_defect()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string preExisting = "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\n"
@@ -3117,7 +3150,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_lens_less_pass_reads_back_its_own_findings_and_not_the_merged_document()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         Guid preLensSession = DomainId.New();
@@ -3186,7 +3219,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Past_the_gate_a_medium_is_fixed_and_ships_without_another_review_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3252,7 +3285,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_pass_whose_only_finding_is_graded_low_is_demoted_to_merge_ready_with_a_ride_along_and_no_fix_session()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3293,7 +3326,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_merge_ready_verdict_carrying_a_fix_disposed_finding_is_not_taken_at_its_word()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3342,7 +3375,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task An_out_of_scope_non_high_becomes_a_draft_bug_task_instead_of_a_fix()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3405,7 +3438,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task An_out_of_scope_low_folds_into_the_projects_standing_sweep_while_a_medium_still_gets_its_own_draft()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3470,7 +3503,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_medium_and_a_low_disagreeing_on_the_same_place_in_one_cycle_still_mint_the_mediums_own_draft()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3513,7 +3546,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_medium_that_outranks_an_earlier_swept_low_at_the_same_place_is_still_routed_only_once()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3563,7 +3596,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_low_finding_reported_by_a_second_run_updates_the_sweep_items_evidence_instead_of_duplicating_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid firstTaskId, Guid firstRunId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using IQuerySession firstQuery = store.QuerySession();
@@ -3609,7 +3642,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_cycle_whose_findings_all_route_away_ends_the_loop_with_no_fix_session()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3655,7 +3688,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_pass_shared_unplaced_out_of_scope_finding_routes_once_not_twice()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3703,7 +3736,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_routing_only_cycle_keeps_the_track_alive_while_the_other_one_rewrites_the_branch()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3754,7 +3787,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_finding_that_survives_into_a_later_cycle_is_not_routed_a_second_time()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string preExisting = "FINDING: severity=medium; scope=out-of-scope; at=Legacy.cs:12\n"
@@ -3798,7 +3831,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task The_same_defect_written_a_different_way_is_still_routed_only_once()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3842,7 +3875,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Two_defects_in_one_file_that_neither_names_a_line_are_two_defects()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -3878,7 +3911,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Both_tracks_reporting_one_place_in_one_cycle_export_it_once_and_say_which_cycle()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string preExisting = "Defect: the retry duplicates the effect. Scenario: a transient failure charges twice.";
@@ -3911,7 +3944,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task An_adversarial_track_capped_on_ungraded_findings_says_the_grades_did_not_parse()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         // No FINDING header at all, so nothing carries a grade the platform can read.
@@ -3945,7 +3978,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task An_adversarial_track_still_finding_highs_at_its_cap_parks_and_says_why()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string high = "FINDING: severity=high; scope=in-scope; at=Auth.cs:42\n"
@@ -3981,7 +4014,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task An_adversarial_cap_park_attributes_a_verify_pass_findings_by_their_own_track_tag()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -4025,7 +4058,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_conformance_track_still_finding_things_at_its_cap_parks_the_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -4065,7 +4098,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_task_level_cap_at_or_below_the_current_cycle_count_parks_the_run_as_a_takeover()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -4110,7 +4143,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_task_level_cap_of_zero_parks_immediately_without_offering_needs_fixes_as_a_lever()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -4167,7 +4200,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_node_level_cap_of_zero_names_the_node_level_and_a_lever_that_always_works()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -4210,7 +4243,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_task_level_final_full_pass_cap_of_zero_parks_before_the_mandatory_pass_ever_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -4270,7 +4303,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_lifetime_review_cycle_budget_parks_a_run_that_would_otherwise_settle_cleanly()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -4326,7 +4359,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_lifetime_budget_park_after_a_discovery_cycle_with_a_ride_along_names_the_finding_not_a_clean_convergence()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -4376,7 +4409,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_lifetime_budget_park_after_a_routed_medium_finding_names_it_rather_than_below_the_fix_bar()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -4420,7 +4453,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_track_the_mandatory_final_pass_reawakens_gets_a_genuine_cycle_to_fix_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string reawakenedFinding =
@@ -4478,7 +4511,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_fix_dispatched_from_the_mandatory_final_pass_gets_one_more_pass_before_settling()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -4544,7 +4577,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_track_the_final_pass_keeps_reawakening_parks_once_the_final_pass_round_cap_is_hit()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         string freshHigh(string at) =>
@@ -4631,7 +4664,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_final_pass_that_concludes_merge_ready_with_only_below_bar_findings_settles_by_the_bar()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -4698,7 +4731,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_final_pass_that_concludes_merge_ready_with_an_in_scope_medium_finding_settles_by_the_bar()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -4769,7 +4802,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_needs_fixes_park_resolution_grants_a_fresh_final_full_pass_round_instead_of_reparking()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         // A fresh HIGH on every mandatory pass (task: a mandatory FinalFullPass records
@@ -4858,7 +4891,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_ride_along_on_a_track_still_capped_when_the_run_settles_is_recorded_as_a_residual()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string mixedFindings =
@@ -4915,7 +4948,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_capped_fix_finding_the_run_settles_over_is_recorded_as_unfixed_not_dropped()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string mixedFindings =
@@ -4975,7 +5008,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_track_concluding_this_cycle_suppresses_its_shared_fix_finding_from_a_sibling_forced_sweep()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5049,7 +5082,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_disputed_fix_session_at_a_previously_fixed_unreviewed_location_does_not_double_count()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5120,7 +5153,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_disputed_fix_session_at_a_previously_fixed_unreviewed_ride_along_location_does_not_double_count()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5198,7 +5231,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_reactivated_tracks_new_finding_is_not_swallowed_by_a_sibling_s_superseded_residual()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5277,7 +5310,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_reawakened_track_s_new_finding_at_a_previously_fixed_location_is_not_swallowed()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5357,7 +5390,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_pass_s_unplaced_finding_tagged_for_an_already_concluded_track_is_not_recorded_twice()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5432,7 +5465,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_pass_finding_tagged_for_a_track_that_concluded_cycles_ago_is_credited_not_dropped()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5498,7 +5531,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Two_lenses_forced_concluding_together_collapse_a_shared_ride_along_to_one_residual()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string sharedNit =
@@ -5550,7 +5583,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_pass_shared_unplaced_ride_along_settles_as_one_residual_not_two()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string unplacedRideAlong =
@@ -5607,7 +5640,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_pass_shared_unplaced_ride_along_concluding_both_tracks_settles_as_one_residual_not_two()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5652,7 +5685,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_pass_tagged_ride_along_settles_under_the_track_its_own_tag_names()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5718,7 +5751,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_ride_along_handed_to_a_disputed_fix_session_settles_as_fixed_unreviewed()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5770,7 +5803,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_ride_along_never_shown_to_a_human_resolved_fix_session_settles_as_a_ride_along()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string mixedFindings =
@@ -5832,7 +5865,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_disputed_finding_parks_with_both_positions_recorded()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -5866,7 +5899,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_review_thread_dispute_that_disputes_again_after_resuming_points_at_the_thread_dispute_file()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _, _) = await SeedReviewThreadDisputeParkedRunAsync(store, cts.Token);
 
         const string humanResolution = "It is genuinely a design call — decide it yourself.";
@@ -5913,7 +5946,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_resolved_review_thread_dispute_still_scopes_the_opening_discovery_cycle_to_the_seeded_head()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _, string worktreePath) = await SeedReviewThreadDisputeParkedRunAsync(
             store, cts.Token, seedOpeningReviewSinceSha: true);
         string seedSha = GitOutput(worktreePath, "rev-parse HEAD");
@@ -5961,7 +5994,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verdict_less_pass_is_reprompted_once_in_the_same_session_and_may_still_conclude()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         // The origin incident's shape: a promise of a future verdict instead of one.
@@ -5989,7 +6022,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Two_verdict_less_passes_share_the_cycles_single_reprompt_before_parking()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -6031,7 +6064,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_needs_fixes_verdict_naming_nothing_is_reprompted_then_parks_if_it_still_names_nothing()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         const string hollow = "I found six verified findings, reported above.\n\nVERDICT: needs-fixes";
@@ -6074,7 +6107,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_bare_needs_fixes_verdict_is_reprompted_and_may_still_conclude_with_a_real_finding()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -6117,7 +6150,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task An_adversarial_finding_that_coincides_with_the_tasks_own_criterion_still_names_a_finding()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         const string criterion = "Auth.cs:42 no longer drops the token";
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, [criterion], cts.Token);
 
@@ -6151,7 +6184,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_park_resolved_merge_ready_proceeds_straight_to_the_pull_request()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
         await SeedParkedReviewAsync(store, runId, cts.Token);
 
@@ -6184,7 +6217,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_merge_ready_after_a_discovery_mode_park_still_runs_the_full_gate_before_settling()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
         await SeedParkedReviewAsync(store, runId, cts.Token);
 
@@ -6226,7 +6259,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_merge_ready_after_a_verify_mode_park_still_runs_the_full_gate_before_settling()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -6264,7 +6297,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_park_resolved_needs_fixes_dispatches_a_fix_session_over_the_human_findings()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
         await SeedParkedReviewAsync(store, runId, cts.Token);
 
@@ -6306,7 +6339,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_fresh_review_pass_after_a_human_resolve_is_told_it_as_a_settled_ruling()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
         await SeedParkedReviewAsync(store, runId, cts.Token);
 
@@ -6354,7 +6387,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_park_resolved_needs_fixes_on_a_rebase_dispute_resumes_the_rebase_prompt()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(store, cts.Token);
 
         const string humanResolution =
@@ -6397,7 +6430,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_rebase_dispute_that_disputes_again_after_resuming_parks_with_its_own_rebase_reason()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(store, cts.Token);
 
         const string humanResolution = "Keep the daemon side's retry policy.";
@@ -6442,7 +6475,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_second_rebase_dispute_resolution_still_resumes_the_rebase_prompt()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(store, cts.Token);
 
         const string firstResolution = "Keep the daemon side's retry policy.";
@@ -6505,7 +6538,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_needs_fixes_verdict_on_an_ordinary_rebase_follow_up_cycle_gets_the_review_fix_prompt()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRebaseFollowUpRunAsync(store, cts.Token);
 
         const string conformanceFinding = "1. `Auth.cs:42` — the limiter never resets.";
@@ -6552,7 +6585,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task An_ordinary_cycle_after_a_resumed_rebase_dispute_still_gets_the_review_fix_prompt()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedRebaseDisputeParkedRunAsync(store, cts.Token);
 
         const string humanResolution = "Keep the daemon side's retry policy.";
@@ -6600,7 +6633,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task Every_review_pass_and_the_fix_session_resolve_their_role_model_and_record_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         DaemonOptions options = new()
@@ -6647,7 +6680,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verify_pass_resolves_its_own_knob_while_discovery_finalfullpass_and_escalation_stay_on_review()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         DaemonOptions options = new()
@@ -6715,7 +6748,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_finalfullpass_resolves_its_own_knob_while_discovery_verify_and_escalation_stay_on_review()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         DaemonOptions options = new()
@@ -6789,7 +6822,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_second_fix_round_over_the_same_finding_escalates_and_a_fresh_defect_de_escalates()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         DaemonOptions options = new()
@@ -6861,7 +6894,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_repeat_round_with_identical_role_models_records_no_escalation()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         DaemonOptions options = new()
@@ -6911,7 +6944,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_resolving_a_dispute_with_needs_fixes_over_the_same_location_escalates_the_redispatch()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         DaemonOptions options = new()
@@ -6977,7 +7010,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_human_resolving_a_dispute_with_a_genuinely_different_reason_does_not_escalate()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         DaemonOptions options = new()
@@ -7044,7 +7077,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_verdict_reprompt_records_the_resumed_sessions_model_instead_of_re_resolving()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         DaemonOptions options = new()
@@ -7083,7 +7116,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_review_session_dying_without_a_result_fails_the_run_and_takes_its_sibling_pass_down()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         // The conformance pass dies without a result; the adversarial pass is still reading.
@@ -7116,7 +7149,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_review_session_reporting_an_error_result_is_retried_once_leaving_its_sibling_untouched()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -7161,7 +7194,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_review_session_erroring_with_no_result_message_is_retried_exactly_like_one_that_has_one()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -7197,7 +7230,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_second_consecutive_error_on_the_same_lens_and_cycle_fails_the_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -7235,7 +7268,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_fix_session_reporting_an_error_result_is_retried_once_over_the_same_findings()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         ScriptedExecutor executor = new(
@@ -7276,7 +7309,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_crash_while_the_fix_session_is_in_flight_terminates_it_too()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         // Recording the fix outcome writes this file first, so the loop throws while the
@@ -7312,7 +7345,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stale_generations_review_loop_stops_before_dispatching_and_never_touches_the_task()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
@@ -7363,7 +7396,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
     public async Task A_stale_generations_own_park_retires_the_run_instead_of_leaving_it_live()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -7428,11 +7461,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres) : IClassFixture<
             line.Contains("retired as superseded") && line.Contains("review loop's park"));
     }
 
-    private DocumentStore NewStore() => DocumentStore.For(opts =>
-    {
-        opts.Connection(postgres.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.All);
-    });
 
     private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor) =>
         NewEngine(store, executor, new DaemonOptions());
