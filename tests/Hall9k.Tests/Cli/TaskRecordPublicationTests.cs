@@ -10,7 +10,7 @@ namespace Hall9k.Tests.Cli;
 /// The pure half of writing the record into a published task's issue: which publish stamp the next
 /// write carries. The store-backed half — composing the record from a task, its epic and its
 /// dependency edges, and rewriting the issue body — lives in
-/// <c>Integration.CrossInstallTaskRecordTests</c>.
+/// <c>Integration.TaskRecordIntegrationTests</c>.
 /// </summary>
 public sealed class TaskRecordPublicationTests
 {
