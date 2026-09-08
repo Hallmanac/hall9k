@@ -1142,6 +1142,44 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// Every review thread on a pull request gets a triage disposition before any fix work (task:
+    /// every review thread on a pull request gets a triage disposition before any fix work). A
+    /// triage that also disputed one genuinely undecidable thread still records every other
+    /// thread's disposition on the run stream — the triage and the park are independent facts,
+    /// and <c>RecordThreadTriageAsync</c> runs ahead of <c>ParkedOnThreadDisputeAsync</c> for
+    /// exactly that reason.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_ups_thread_triage_lands_on_the_stream_even_when_it_also_parks()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token, asFollowUp: true);
+
+        const string summary =
+            "THREAD DISPOSITION: thread=PRRC_1; disposition=decline; kind=bot; author=copilot\n"
+            + "Reproduced in a scratch repo: git push does update the remote-tracking ref.\n"
+            + "THREAD DISPOSITION: thread=PRRC_2; disposition=fix; kind=human; author=brianhallmanac\n"
+            + "Renamed the limiter per the reviewer's suggestion.\n\n"
+            + "A third thread asks for a different projection shape entirely.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.ReviewThreadOutcomes.Should().HaveCount(2);
+        details.ReviewThreadOutcomes[0].ThreadId.Should().Be("PRRC_1");
+        details.ReviewThreadOutcomes[0].Disposition.Should().Be(ReviewThreadDisposition.Decline);
+        details.ReviewThreadOutcomes[0].IsHuman.Should().BeFalse("copilot's own kind tag says bot");
+        details.ReviewThreadOutcomes[1].ThreadId.Should().Be("PRRC_2");
+        details.ReviewThreadOutcomes[1].Disposition.Should().Be(ReviewThreadDisposition.Fix);
+        details.ReviewThreadOutcomes[1].IsHuman.Should().BeTrue();
+    }
+
+    /// <summary>
     /// The rebase counterpart of the review-thread dispute above (backlog 44,
     /// AgentPromptBuilder.AppendRebaseDisputeRules): a rebase follow-up that hits a conflict it
     /// cannot honestly resolve parks the same way, but with its own artifact and reason text —
@@ -1281,6 +1319,32 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ParkedReason.Should().BeNull();
         File.Exists(RunPaths.ReviewThreadDisputeFile(RunPaths.GlobalDirectory(runId))).Should().BeFalse(
             "nothing was disputed, so no position was written");
+    }
+
+    /// <summary>
+    /// The triage marker contract is taught only to <c>BuildFollowUp</c>'s own prompt (Decisions
+    /// Log #156): a CI-fix follow-up's summary that happens to quote it — the skill file lives in
+    /// the repo it is working in — must not be read as this run's own triage.
+    /// </summary>
+    [Fact]
+    public async Task A_checks_follow_ups_own_summary_quoting_the_triage_marker_is_not_recorded_as_a_triage()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.FailingChecks);
+
+        const string summary =
+            "Fixed the flaky test. The skill file's own triage line reads:\n"
+            + "THREAD DISPOSITION: thread=PRRC_1; disposition=fix; kind=bot; author=copilot";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ReviewThreadOutcomes.Should().BeEmpty();
     }
 
     private static string DisputedResultLine(string summary) =>
