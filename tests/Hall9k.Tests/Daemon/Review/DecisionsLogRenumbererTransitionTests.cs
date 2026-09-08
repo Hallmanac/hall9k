@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Daemon.Review;
@@ -268,6 +269,179 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
 
         result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
         result.NewNumber.Should().Be(2);
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 6, adversarial lens (DecisionsLogRenumberer.cs:389): an
+    /// entry renumbered once already carries its own placement note in its body — carried
+    /// forward untouched by the heading rewrite — and that note's own prose can mention the very
+    /// number a second collision is about to reassign away from. If <c>FindPlacementNoteLines</c>
+    /// ever failed to exclude it, the citation sweep would rewrite the FIRST renumbering's own
+    /// historical record to claim it assigned the number the SECOND renumbering actually picked,
+    /// falsifying what the mechanical step actually did.
+    /// </summary>
+    [Fact]
+    public async Task A_prior_renumbering_placement_note_is_never_rewritten_by_a_later_renumbering()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+
+        // This branch's own entry already carries a placement note from an earlier renumbering
+        // pass (the ordinary placeholder shape, assigned #3) — carried forward, untouched, by
+        // RewriteHeadingPreservingBody. The base then independently landed its own #3 after this
+        // branch's fork point, so this branch's own #3 collides again and must be renumbered a
+        // second time, this time via the transition shape.
+        await CommitPlanAsync("as if rebased onto base a second time",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Already renumbered once before.",
+            "",
+            "> Renumbering placement note: this entry was appended under placeholder",
+            "> `PLACEHOLDER-6df5f975` and assigned **#3** by the mechanical pre-final-pass",
+            "> rebase step — the log's next free number once this branch was rebased onto its base.",
+            "> Every citation of the placeholder elsewhere in this repository was rewritten to",
+            "> `#3` in the same commit.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, forkPointSha, "6df5f975", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.OldToken.Should().Be("3");
+        result.NewNumber.Should().Be(4);
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(_repoPath, "PLAN.md"));
+        plan.Should().Contain("4. **This branch's own entry.**");
+        plan.Should().NotContain("3. **This branch's own entry.**");
+        plan.Should().Contain(
+            "assigned **#3** by the mechanical pre-final-pass",
+            "the FIRST renumbering's own historical note must survive the SECOND renumbering's citation sweep untouched");
+        plan.Should().NotContain(
+            "assigned **#4** by the mechanical pre-final-pass",
+            "the sweep must never rewrite the first note's own historical number to the second renumbering's new one");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens: the citation sweep rewrites every
+    /// `#&lt;oldNumber&gt;` occurrence on a line this branch added, with no check that the
+    /// occurrence is actually a Decisions Log citation — this repository's own number space (pull
+    /// request numbers) can collide with a Decisions Log entry's own number by pure coincidence.
+    /// </summary>
+    [Fact]
+    public async Task A_number_that_merely_shares_digits_with_a_citation_is_never_rewritten()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+        File.WriteAllText(Path.Combine(_repoPath, "BaseNotes.md"), "Baseline notes, no citation yet.\n");
+        await RunGitAsync(["add", "-A"]);
+        await RunGitAsync(["commit", "-q", "-m", "fork point side file"]);
+
+        string baseTipSha = await CommitPlanAsync("base's own entry, after the fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+        ]);
+
+        // This branch's own rebase replays its hand-numbered #3 alongside a genuine citation of it
+        // AND a line whose own "#3" is an unrelated pull request reference sharing the same
+        // digits, not a Decisions Log citation at all.
+        File.WriteAllText(
+            Path.Combine(_repoPath, "BranchNotes.md"),
+            "This branch's own notes, citing Decisions Log #3.\n"
+            + "Origin incident (2026-08-17, PR #3): unrelated, not a citation.\n");
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Hand-numbered before the convention shipped.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, baseTipSha, "6df5f975", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.NewNumber.Should().Be(4);
+
+        string branchNotes = await File.ReadAllTextAsync(Path.Combine(_repoPath, "BranchNotes.md"));
+        branchNotes.Should().Contain("citing Decisions Log #4.", "the genuine citation is rewritten");
+        branchNotes.Should().Contain(
+            "PR #3", "a bare digit match outside a Decisions Log citation form is never rewritten");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, conformance lens: the ownership filter used to decide
+    /// "was this line already at the base tip" by whole-line string membership in a HashSet, so a
+    /// branch-added citation byte-identical to an existing base-tip line was silently excused as
+    /// "already there" and left unrewritten. Counting occurrences (a multiset) instead of merely
+    /// testing membership is what tells a branch's own THIRD identical line apart from the base's
+    /// own two.
+    /// </summary>
+    [Fact]
+    public async Task A_branch_added_citation_byte_identical_to_an_existing_base_line_is_still_rewritten()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+        File.WriteAllText(Path.Combine(_repoPath, "Notes.md"), "See Decisions Log #3 for background.\n");
+        await RunGitAsync(["add", "-A"]);
+        await RunGitAsync(["commit", "-q", "-m", "fork point side file"]);
+
+        // The base independently lands its own #3 and, elsewhere in the same file, a SECOND
+        // occurrence of the exact same citation line.
+        File.WriteAllText(
+            Path.Combine(_repoPath, "Notes.md"),
+            "See Decisions Log #3 for background.\n"
+            + "See Decisions Log #3 for background.\n");
+        string baseTipSha = await CommitPlanAsync("base's own entry and citation, after the fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+        ]);
+
+        // This branch's own rebase replays the base's two lines untouched and adds a THIRD,
+        // byte-identical line of its own — its own citation of its own hand-numbered #3, which
+        // just happens to read exactly like the base's own existing citation.
+        File.WriteAllText(
+            Path.Combine(_repoPath, "Notes.md"),
+            "See Decisions Log #3 for background.\n"
+            + "See Decisions Log #3 for background.\n"
+            + "See Decisions Log #3 for background.\n");
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Hand-numbered before the convention shipped.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, baseTipSha, "6df5f975", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.NewNumber.Should().Be(4);
+
+        string notes = await File.ReadAllTextAsync(Path.Combine(_repoPath, "Notes.md"));
+        int oldCitationCount = Regex.Matches(notes, @"(?<!\d)#3(?!\d)").Count;
+        int newCitationCount = Regex.Matches(notes, @"(?<!\d)#4(?!\d)").Count;
+        oldCitationCount.Should().Be(
+            2, "the base's own two citations, already present at baseTipSha, are not this branch's to rewrite");
+        newCitationCount.Should().Be(
+            1,
+            "exactly one line is this branch's own addition — a HashSet-based ownership check "
+            + "would have excused it too, as already present at the base tip");
     }
 
     private async Task<string> CommitPlanAsync(string message, IReadOnlyList<string> entries)
