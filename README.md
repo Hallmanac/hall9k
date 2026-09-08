@@ -458,15 +458,63 @@ liveness, its launch text, its recipe and journal paths, and its last measured t
 Neither one launches anything; you copy the printed line into a fresh terminal yourself.
 `h9k orchestrator launch-text show`/`set` reads and replaces that launch line, one setting per
 agent CLI, and `h9k orchestrator measure` runs a fixed one-turn probe against it so "lean" is a
-number you can watch rather than a promise.
+number you can watch rather than a promise: a same-day dry run of the skill's own first real run
+measured 25,072 tokens for a project recipe and 22,980 for a node's on 2026-09-07 (the anchor plus
+Claude Code's own floor, a project's `AGENTS.md`, and its skill listing), both well under a
+26,127-token hand-written-prototype baseline (PLAN.md §16 #155 has the full measurement) — the
+anchor design's whole point, since a session never reads the recipe file itself unless it actually
+follows the anchor's instructions, so this number holds regardless of how much the recipe says.
 
-### Installing on someone else's behalf
+### Running the generator
 
-If you are an agent running `h9k install` or `h9k project add` for a human, run the
-`orchestrator-recipe-generator` skill once for the node and once for every project you just
-registered, then tell the human to open a new terminal in that directory with the launch line
-`h9k orchestrator` prints. This session, the one doing the installing, is not the lean window:
-handing over the line is the last thing to do, not something to keep working from.
+The `orchestrator-recipe-generator` skill writes the recipe content; the platform never does.
+Every project and every node needs it run once, and again whenever the platform, the machine, or
+the project itself changes enough that the last recipe stopped fitting.
+
+**As a human**, open your usual agent CLI in a project's own home (`~/.hall9k/projects/<name>`)
+for a project recipe, or the node's own home (`~/.hall9k`) for the node recipe, and ask it to run
+the `orchestrator-recipe-generator` skill (or invoke it directly,
+`/orchestrator-recipe-generator` in Claude Code): the platform seeds the skill's
+`.claude/skills/orchestrator-recipe-generator` adapter at the home root, so that is where the
+slash command resolves. A project's `repo/dev` worktree does not carry that adapter of its own —
+only this repository does, checked in as one of its own repo-resident skills (AGENTS.md), which
+is why running it from `repo/dev` works here but is not something every registered project can
+rely on. The mode discovery inside the skill itself matches a worktree back to its project's home
+correctly once the skill is loaded; the gap is purely in whether the slash command is reachable
+from there in the first place. Wherever it runs from, the orchestrator window this recipe
+launches always runs from the project home itself, never the worktree, because that is
+the directory the platform's own launch line `cd`s into. It discovers the machine (operating
+system, your shell, whether the log tail is `tail -F` or PowerShell's `Get-Content -Wait`, where
+`h9kd.log` is and what time zone it prints, which agent CLIs are on `PATH`) and, for a project,
+the project's own facts from `h9k project show` (its home, whether its code lives in the home
+directory or a `repo/dev` worktree, its verify gates, base branch, commit style, linked trackers,
+and the other projects sharing this node's ceiling). From that it writes
+`recipes/orchestrator.md` and, for a project, `recipes/idea-discovery.md` and
+`recipes/task-refinement.md`, seeds `journal.md`, `sessions.md`, and
+`notes/prototype-feedback.md` at the home's own root when none exist yet, stores a per-agent-CLI
+launch text explicitly, even when the discovered machine needs no change from the platform's own
+computed default (`h9k orchestrator measure` refuses to run against a line nothing ever asked to
+store), and finishes by running `h9k orchestrator measure` and printing the launch line to paste
+into a fresh terminal.
+
+**As an agent installing on a human's behalf**, run `h9k install` or `h9k project add` /
+`h9k project init` first, then invoke the `orchestrator-recipe-generator` skill yourself, once from
+`~/.hall9k` for the node and once from each project's own home you just registered, before handing
+anything back. One thing this order can trip on: the anchor and the generator skill the install
+you just ran ships are only on disk once that install's own binary is the one actually running —
+an install that upgrades the daemon from an older build does not retroactively add them to the
+pass that ran on the old binary, so crossing that version boundary needs `h9k install` (or
+`h9k update`) run once more before the generator has anything to find. Tell the human to open a
+new terminal in that directory with the launch line `h9k orchestrator node` / `h9k orchestrator
+project` prints. This session, the one doing the installing, is not the lean window: handing over
+the line is the last thing to do, not something to keep working from.
+
+**Regenerating** never overwrites a recipe a human might have edited: a re-run writes
+`<recipe>.new` beside the current file, and the launch anchor's own start-up step is what compares
+the two, reports what changed and what would be lost, and asks whether to adopt it (keeping a
+dated `.prev` of what it replaced), keep the current file, or merge them by hand. `journal.md`,
+`sessions.md`, and `notes/prototype-feedback.md` are never regenerated once they exist — they are
+the window's own live state, not generated content.
 
 ---
 
