@@ -635,6 +635,10 @@ public sealed class RunSupervisor(
 
         if (!result.IsError)
         {
+            // Ahead of the dispute park below on purpose: a triage that also disputed one
+            // genuinely undecidable thread still triaged every other thread first, and those
+            // dispositions must land on the stream whether or not this run goes on to park.
+            await RecordThreadTriageAsync(runId, taskId, result, cancellationToken);
             switch (await ParkedOnThreadDisputeAsync(runId, taskId, result, cancellationToken))
             {
                 case ThreadDisputeOutcome.Parked:
@@ -1185,6 +1189,67 @@ public sealed class RunSupervisor(
     /// spending — the later review-loop fence would only reject it one step further in.
     /// </summary>
     private enum ThreadDisputeOutcome { NoDispute, Parked, Stale }
+
+    /// <summary>
+    /// Reads the follow-up's own triage off its closing summary and appends
+    /// <see cref="ReviewThreadsTriaged"/> when it triaged anything — the after-the-fact answer to
+    /// what closeout only asked as a count (task: every review thread on a pull request gets a
+    /// triage disposition before any fix work).
+    /// <para>
+    /// Gated on the same prompt-selection condition <see cref="ParkedOnThreadDisputeAsync"/>'s own
+    /// doc reads back from <c>RunLauncher</c>: only <c>BuildFollowUp</c> teaches the
+    /// <c>THREAD DISPOSITION:</c> marker, so this is a no-op for a CI-fix, a rebase, or a
+    /// changes-requested-review lap — reading their summaries for the marker would either never
+    /// match (nobody taught it) or, for a changes-requested lap, misread its own differently
+    /// shaped <c>DISAGREEMENT:</c> blocks as thread triage they are not. A run that carries no
+    /// marker at all — a plain build, or a follow-up whose triage genuinely found nothing to say —
+    /// appends nothing, which is the same "no moving parts on the happy path" shape every other
+    /// marker parser in this file already keeps.
+    /// </para>
+    /// </summary>
+    private async Task RecordThreadTriageAsync(
+        Guid runId, Guid taskId, AgentResult result, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<ReviewThreadOutcome> outcomes = ReviewResultParser.ParseThreadDispositions(result.Summary);
+        if (outcomes.Count == 0)
+        {
+            return;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is null || !run.IsFollowUp)
+        {
+            return;
+        }
+
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        if (task is null
+            || task.FollowUpKind == FollowUpKind.FailingChecks
+            || task.FollowUpKind == FollowUpKind.Rebase
+            || task.FollowUpKind == FollowUpKind.ReviewRequestedChanges)
+        {
+            return;
+        }
+
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewThreadsTriaged), cancellationToken))
+        {
+            // Stale lane: the run itself is already being retired by whichever caller lost the
+            // race (ParkedOnThreadDisputeAsync's own rejection, or the fenced completion above),
+            // so there is nothing for this purely informational append to do but skip.
+            return;
+        }
+
+        session.Events.Append(runId, new ReviewThreadsTriaged(runId, outcomes, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: triaged {Count} review thread(s) ({Fix} fix, {Decline} decline, {Route} route)",
+            runId, outcomes.Count,
+            outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Fix),
+            outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Decline),
+            outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Route));
+    }
 
     /// <summary>
     /// A follow-up that met a review thread it could not honestly judge parks the run for
