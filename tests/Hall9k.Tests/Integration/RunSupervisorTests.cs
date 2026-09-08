@@ -231,6 +231,53 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The signal a killed or crashed process leaves behind is strictly weaker than an IsError
+    /// result, not stronger (independent pre-PR review, cycle 1, conformance lens): the agent
+    /// never got the chance to say whether it considered the work finished, so this must not be
+    /// judged more permissively than a reported error just because a checkpoint commit happened to
+    /// land on a clean tree moments before the process died. Regression for the origin finding:
+    /// the first cut of this handler fell straight into the same tree check the clean-committed
+    /// test above exercises whenever the process vanished with no result line at all, auto-
+    /// delivering a session nobody ever confirmed had actually finished.
+    /// </summary>
+    [Fact]
+    public async Task Deliberate_headless_start_whose_process_vanishes_without_a_result_is_flagged_needs_you()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, _) =
+            await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
+
+        // Exits clean with no result line at all — a killed or crashed process, not a reported
+        // error — leaving behind the exact same clean, committed tree the good-path test above
+        // auto-delivers, so this test can only pass if the flag fires regardless of the tree.
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Exit(0));
+        await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+        await WaitForEventCountAsync<RunUnattendedExitFlagged>(store, runId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ExitedUnattendedReason.Should().NotBeNull(
+            "a process that never reported anything must never be judged on the tree it happens to leave behind");
+        run.ExitedUnattendedReason.Should().Contain("without ever reporting a result");
+        run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeFalse(
+            "the tree was never checked, so h9k task deliver is not confirmed to refuse here");
+        run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
+            "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunDeliveredAutomatically>().Should().BeEmpty(
+            "a process that vanished without reporting must never sail through auto-delivery on a clean tree alone");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Claimed, "the flag's own levers all require Claimed");
+    }
+
+    /// <summary>
     /// The bad path, uncommitted shape: the session exited with nobody watching and left a
     /// modified, uncommitted file — the platform cannot honestly deliver that on the operator's
     /// behalf, so it flags the task needs-you instead of showing "building" indefinitely.
@@ -254,6 +301,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.ExitedUnattendedReason.Should().NotBeNull("the dirty file is exactly what a human needs told about");
         run.ExitedUnattendedReason.Should().Contain("uncommitted");
+        run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeTrue(
+            "h9k task deliver runs this identical uncommitted-files check and refuses on the same ground");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
             "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
         run.InputTokens.Should().Be(
@@ -296,6 +345,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         run.ExitedUnattendedReason.Should().NotBeNull(
             "a branch that holds nothing beyond its base is exactly what the no-commit check exists to catch");
         run.ExitedUnattendedReason.Should().Contain("no commits");
+        run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeTrue(
+            "h9k task deliver runs this identical no-commits-beyond-base check and refuses on the same ground");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
             "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
 
@@ -336,6 +387,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "a clean but detached tree must never sail through as safe to auto-deliver");
         run.ExitedUnattendedReason.Should().Contain("detached commit");
         run.ExitedUnattendedReason.Should().Contain("task/test");
+        run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeTrue(
+            "h9k task deliver runs this identical branch-checkout check and refuses on the same ground");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
             "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
 
@@ -414,6 +467,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.ExitedUnattendedReason.Should().Contain("error result");
+        run.ExitedUnattendedDeliverConfirmedRefuses.Should().BeFalse(
+            "this branch never looks at the tree at all, so h9k task deliver is not confirmed to refuse — the "
+            + "tree left behind by an error result may well be perfectly clean and committed");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
             "the run must stay where h9k task work/handback/release already expect it — no widened guard needed");
         run.InputTokens.Should().Be(
@@ -1366,19 +1422,28 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         _createdWorktreePaths.Add(worktreePath);
 
         Directory.CreateDirectory(worktreePath);
-        string commitStep = withTaskCommit
-            ? "git -c user.email=t@t -c user.name=t commit --allow-empty -m work -q && "
-            : string.Empty;
-        string dirtyStep = dirty ? "echo changed > tracked.txt" : "true";
-        string detachStep = detached ? " && git checkout -q --detach HEAD" : string.Empty;
-        await RunShellAsync(
-            worktreePath,
-            "git init -q -b main && git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q && "
-            + "echo original > tracked.txt && git add tracked.txt && "
-            + "git -c user.email=t@t -c user.name=t commit -q -m seed && "
-            + "git checkout -q -b task/test && "
-            + commitStep + dirtyStep + detachStep,
-            cancellationToken);
+        await TestGit.RunAsync(worktreePath, ["init", "-q", "-b", "main"], cancellationToken);
+        await TestGit.RunAsync(
+            worktreePath, TestGit.CommitAs("commit", "--allow-empty", "-m", "init", "-q"), cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(worktreePath, "tracked.txt"), "original\n", cancellationToken);
+        await TestGit.RunAsync(worktreePath, ["add", "tracked.txt"], cancellationToken);
+        await TestGit.RunAsync(worktreePath, TestGit.CommitAs("commit", "-q", "-m", "seed"), cancellationToken);
+        await TestGit.RunAsync(worktreePath, ["checkout", "-q", "-b", "task/test"], cancellationToken);
+        if (withTaskCommit)
+        {
+            await TestGit.RunAsync(
+                worktreePath, TestGit.CommitAs("commit", "--allow-empty", "-m", "work", "-q"), cancellationToken);
+        }
+
+        if (dirty)
+        {
+            await File.WriteAllTextAsync(Path.Combine(worktreePath, "tracked.txt"), "changed\n", cancellationToken);
+        }
+
+        if (detached)
+        {
+            await TestGit.RunAsync(worktreePath, ["checkout", "-q", "--detach", "HEAD"], cancellationToken);
+        }
 
         await using IDocumentSession session = store.LightweightSession();
         ProjectRegistered registered = ProjectDecider.Register(
@@ -1402,22 +1467,6 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await session.SaveChangesAsync(cancellationToken);
 
         return (node, taskId, runId, worktreePath);
-    }
-
-    private static async Task RunShellAsync(string workingDirectory, string script, CancellationToken cancellationToken)
-    {
-        using Process process = new();
-        process.StartInfo = new ProcessStartInfo
-        {
-            FileName = "/bin/sh",
-            WorkingDirectory = workingDirectory,
-            UseShellExecute = false,
-        };
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add(script);
-        process.Start();
-        await process.WaitForExitAsync(cancellationToken);
-        process.ExitCode.Should().Be(0, $"'{script}' must succeed for the test repo to be usable");
     }
 
     /// <summary>

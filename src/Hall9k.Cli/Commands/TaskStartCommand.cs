@@ -252,8 +252,17 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             await startSession.SaveChangesAsync(CancellationToken.None);
         }
 
+        // Delivery is no longer the operator's own act to remember once this session finishes
+        // (task: a do-now session launched by h9k task start is caught within seconds) —
+        // RunSupervisor.AdoptDeliberateHeadlessStartsAsync watches this claim and either delivers
+        // a clean, committed exit automatically or flags it needs-you within seconds, so this
+        // message must stop telling the operator h9k task deliver is theirs to run once it
+        // finishes: that call now throws DomainConflictException the moment an auto-delivery has
+        // already landed (independent pre-PR review, cycle 1, conformance lens — this line was
+        // accurate on main and stopped being once auto-delivery shipped, while docs/operations.md
+        // and docs/scope.md were updated for exactly this).
         AnsiConsole.MarkupLineInterpolated(
-            $"[dim]Task {taskId} is dispatched, headless, as {sessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). h9k task show {taskId} to watch it, or once it finishes: h9k task deliver, h9k task verify, h9k task work (to attach), h9k task handback, or h9k task release.[/]");
+            $"[dim]Task {taskId} is dispatched, headless, as {sessionName} (pid {processId}) — reachable on the session mesh (claude agents --json, or SendMessage). h9k task show {taskId} to watch it: once it exits with a clean, committed tree the platform delivers it automatically through the ordinary review pipeline; anything else flags it needs-you, naming the lever that clears it. To step in sooner, h9k task work {taskId} (to attach), h9k task handback {taskId}, or h9k task release {taskId}.[/]");
         // Announced rather than silent (independent pre-PR review, cycle 1, conformance lens),
         // but only when this claim actually turned the flag on: gated on interactiveMode itself
         // (independent pre-PR review, cycle 3, conformance + adversarial lenses) because

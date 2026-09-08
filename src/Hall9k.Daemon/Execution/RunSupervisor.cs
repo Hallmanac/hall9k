@@ -467,8 +467,16 @@ public sealed class RunSupervisor(
                         {
                             // Same reasoning as the sawResult branch above: a process that died
                             // without ever writing a result line is not this run kind's ordinary
-                            // FailRunAsync case either — the worktree is the ground truth here,
-                            // not whether the agent got to report anything at all.
+                            // FailRunAsync case either. Unlike the sawResult branch, though, this
+                            // signal is strictly weaker than a reported error, not stronger — the
+                            // agent never got the chance to say whether it considered the work
+                            // finished — so HandleDeliberateHeadlessStartExitAsync treats a null
+                            // result with at least as much suspicion as an IsError one, flagging
+                            // needs-you unconditionally rather than trusting whatever the worktree
+                            // happens to hold (independent pre-PR review, cycle 1, conformance
+                            // lens: a killed/crashed process whose last checkpoint commit landed on
+                            // a clean tree must never sail through auto-delivery just because
+                            // nothing was left dirty).
                             await HandleDeliberateHeadlessStartExitAsync(runId, taskId, runDirectory, result: null, cancellationToken);
                             return;
                         }
@@ -754,23 +762,30 @@ public sealed class RunSupervisor(
     /// <summary>
     /// What a deliberate headless start's session actually left behind, decided the moment
     /// <see cref="MonitorAsync"/> observes it is over — a result line, or the process simply gone
-    /// (task: a do-now session launched by h9k task start is caught within seconds). Reuses
-    /// <see cref="VerificationRunner.DetectStrandedWorkAsync"/> whole: the identical clean-tree-
-    /// with-commits question <c>h9k task deliver</c> already answers by hand, rather than a second,
-    /// independently maintained copy of the same git status and commit-count reads. Also confirms
-    /// the worktree is actually checked out on <c>run.Branch</c> (<see cref="VerificationRunner.GetCurrentBranchAsync"/>),
-    /// the same guard <c>h9k task deliver</c> runs by hand before it ever pushes — without it, a
-    /// session that died mid-recompose rebase could leave a clean, committed, but DETACHED tree,
-    /// which would gate one tree while the pipeline later pushes and opens a pull request over a
-    /// different one (independent pre-PR review, cycle 1, both lenses). A clean tree on its claim
-    /// branch, with commits beyond its base, is handed straight into the standard pipeline (gates,
-    /// review, then push and pull request — this handler itself never pushes) via the same
+    /// (task: a do-now session launched by h9k task start is caught within seconds). A null
+    /// <paramref name="result"/> (the process vanished without ever writing one) is flagged
+    /// needs-you unconditionally, before the tree is ever read — that signal is strictly weaker
+    /// than an <c>IsError</c> result, not stronger, so it gets at least the same suspicion rather
+    /// than being judged on whatever the worktree happens to hold (independent pre-PR review,
+    /// cycle 1, conformance lens). Otherwise reuses <see cref="VerificationRunner.DetectStrandedWorkAsync"/>
+    /// whole: the identical clean-tree-with-commits question <c>h9k task deliver</c> already
+    /// answers by hand, rather than a second, independently maintained copy of the same git status
+    /// and commit-count reads. Also confirms the worktree is actually checked out on
+    /// <c>run.Branch</c> (<see cref="VerificationRunner.GetCurrentBranchAsync"/>), the same guard
+    /// <c>h9k task deliver</c> runs by hand before it ever pushes — without it, a session that died
+    /// mid-recompose rebase could leave a clean, committed, but DETACHED tree, which would gate one
+    /// tree while the pipeline later pushes and opens a pull request over a different one
+    /// (independent pre-PR review, cycle 1, both lenses). A clean tree on its claim branch, with
+    /// commits beyond its base, is handed straight into the standard pipeline (gates, review, then
+    /// push and pull request — this handler itself never pushes) via the same
     /// <see cref="AgentSessionCompleted"/> hand-off <c>h9k task deliver</c> itself uses, recorded as
     /// an automatic delivery with <see cref="RunDeliveredAutomatically"/>. Anything else —
-    /// uncommitted files, no commits at all, the wrong branch checked out, or a worktree this check
-    /// could not even read — flags the task needs-you instead (<see cref="RunUnattendedExitFlagged"/>),
-    /// naming what was found and the lever that clears it, rather than showing "building"
-    /// indefinitely.
+    /// uncommitted files, no commits at all, the wrong branch checked out, a worktree this check
+    /// could not even read, a process that vanished without reporting, or a plain error result —
+    /// flags the task needs-you instead (<see cref="RunUnattendedExitFlagged"/>), naming what was
+    /// found and whether <c>h9k task deliver</c> is confirmed to refuse on that same ground
+    /// (<see cref="RunUnattendedExitFlagged.DeliverConfirmedRefuses"/>) rather than showing
+    /// "building" indefinitely.
     /// </summary>
     private async Task HandleDeliberateHeadlessStartExitAsync(
         Guid runId, Guid taskId, string runDirectory, AgentResult? result, CancellationToken cancellationToken)
@@ -889,8 +904,13 @@ public sealed class RunSupervisor(
                 + "session unattended; it exited with an error result rather than completing normally, so the "
                 + "platform could not confirm the work was safe to deliver automatically."
                 + (result.Summary.IsNotBlank() ? $" The agent reported: {result.Summary}" : string.Empty);
+            // DeliverConfirmedRefuses: false — this branch never looks at the worktree at all, so
+            // there is no ground on which h9k task deliver's own tree check is confirmed to refuse;
+            // the tree left behind by an error result may well be perfectly clean and committed
+            // (independent pre-PR review, cycle 3, adversarial lens).
             session.Events.Append(
-                runId, expectedVersion: runStreamState.Version + 1, new RunUnattendedExitFlagged(runId, errorReason, now));
+                runId, expectedVersion: runStreamState.Version + 1,
+                new RunUnattendedExitFlagged(runId, errorReason, now, DeliverConfirmedRefuses: false));
             try
             {
                 await session.SaveChangesAsync(cancellationToken);
@@ -907,6 +927,44 @@ public sealed class RunSupervisor(
             logger.LogWarning(
                 "Run {RunId}: a deliberate headless start's session exited with an error result — flagged "
                 + "needs-you rather than delivered automatically",
+                runId);
+            return;
+        }
+
+        if (result is null)
+        {
+            // The process itself vanished without ever writing a result line — killed, crashed, or
+            // the machine went down. Strictly weaker than an IsError result above (the agent never
+            // even got the chance to say it considered the work finished), so this is flagged
+            // unconditionally rather than judged on the tree it happens to leave behind: a
+            // checkpoint commit landing moments before the process died can leave a perfectly
+            // clean, committed tree that was never actually finished (independent pre-PR review,
+            // cycle 1, conformance lens).
+            string deadProcessReason =
+                "a deliberate headless start (h9k task start, or h9k task handback --now) launched this "
+                + "session unattended; its process ended without ever reporting a result — killed, crashed, "
+                + "or the machine went down before it had the chance — so the platform could not confirm the "
+                + "work was actually finished on purpose, and left it flagged rather than judging automatic "
+                + "delivery on the worktree alone.";
+            session.Events.Append(
+                runId, expectedVersion: runStreamState.Version + 1,
+                new RunUnattendedExitFlagged(runId, deadProcessReason, now, DeliverConfirmedRefuses: false));
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: lost the generation race flagging run {RunId}'s unattended exit — a newer "
+                    + "claim committed first",
+                    taskId, runId);
+                return;
+            }
+
+            logger.LogWarning(
+                "Run {RunId}: a deliberate headless start's process ended without ever reporting a result — "
+                + "flagged needs-you rather than judged on the worktree alone",
                 runId);
             return;
         }
@@ -978,6 +1036,19 @@ public sealed class RunSupervisor(
             return;
         }
 
+        // Whether h9k task deliver, run against this exact tree right now, is confirmed to refuse
+        // on the same ground this flag just found — the composers (AttentionComposer,
+        // TaskPhaseComposer) read this to decide whether deliver belongs in the levers they advise
+        // (independent pre-PR review, cycle 1, both lenses: a blanket "never deliver" contradicted
+        // the two variants below where deliver does not refuse outright). True only for the two
+        // variants TaskDeliverCommand's own checks are guaranteed to reject: a confirmed branch
+        // mismatch (TaskDeliverCommand.cs's own currentBranch != run.Branch check) and a
+        // definitively bad tree (uncommitted files or no commits beyond base — the same
+        // DetectStrandedWorkAsync check deliver itself runs). False for a branch git could not
+        // observe, or a git status it could not read either — both cases where TaskDeliverCommand
+        // only warns and proceeds rather than refusing, so deliver may in fact succeed there.
+        bool deliverConfirmedRefuses = currentBranch is not null
+            && (!onClaimBranch || (check.Observed && check.FailureReason is not null));
         string flaggedReason = currentBranch is null
             ? "a deliberate headless start (h9k task start, or h9k task handback --now) launched this "
               + "session unattended; the platform could not read which branch the worktree was left checked "
@@ -997,7 +1068,8 @@ public sealed class RunSupervisor(
                 : "the platform could not read the worktree's git status after the session exited, so it could "
                   + "not confirm the tree was safe to deliver automatically";
         session.Events.Append(
-            runId, expectedVersion: runStreamState.Version + 1, new RunUnattendedExitFlagged(runId, flaggedReason, now));
+            runId, expectedVersion: runStreamState.Version + 1,
+            new RunUnattendedExitFlagged(runId, flaggedReason, now, deliverConfirmedRefuses));
         try
         {
             await session.SaveChangesAsync(cancellationToken);

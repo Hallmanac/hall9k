@@ -470,22 +470,32 @@ public sealed class RunDetails
     public bool IsDeliberateHeadlessStart { get; set; }
     /// <summary>
     /// Set by <see cref="Events.RunUnattendedExitFlagged"/> when a deliberate headless start
-    /// exited with nobody watching and the worktree was not one the platform could honestly
-    /// deliver on the operator's behalf (task: a do-now session launched by h9k task start is
-    /// caught within seconds) — names the state found (uncommitted files, no commits beyond the
-    /// base branch, or git itself unobservable) for <c>TaskPhaseComposer</c> and
-    /// <c>AttentionComposer</c> to surface. Null otherwise: cleared directly by a fresh
+    /// exited with nobody watching and what the platform found was not something it could
+    /// honestly deliver on the operator's behalf (task: a do-now session launched by h9k task
+    /// start is caught within seconds) — names the state found: uncommitted files, no commits
+    /// beyond the base branch, the wrong branch checked out, git itself unobservable, the process
+    /// vanishing without ever reporting a result, or the agent reporting a plain error — for
+    /// <c>TaskPhaseComposer</c> and <c>AttentionComposer</c> to surface, alongside
+    /// <see cref="ExitedUnattendedDeliverConfirmedRefuses"/> for whether <c>h9k task deliver</c> is
+    /// worth advising for that particular variant. Null otherwise: cleared directly by a fresh
     /// <see cref="Events.InteractiveSessionStarted"/> (<c>h9k task register-session</c>, or
-    /// <c>h9k task work --direct-launch</c>, re-entering the claim — never <c>h9k task deliver</c>:
-    /// it runs the identical check this reason already failed and refuses on that same ground
-    /// every time, and the one variant it would not refuse outright, git unobservable, leaves it
-    /// equally unable to verify the tree, so it would push blind rather than refuse, independent
-    /// pre-PR review, cycle 3, both lenses), or made moot once <c>h9k task handback</c> or
-    /// <c>h9k task release</c> moves <see cref="State"/> off Dispatched/Running — both composers
-    /// only ever read this while the run still sits in one of those two states, so a stale value
-    /// left behind is never surfaced.
+    /// <c>h9k task work --direct-launch</c>, re-entering the claim), or made moot once
+    /// <c>h9k task handback</c> or <c>h9k task release</c> moves <see cref="State"/> off
+    /// Dispatched/Running — both composers only ever read this while the run still sits in one of
+    /// those two states, so a stale value left behind is never surfaced.
     /// </summary>
     public string? ExitedUnattendedReason { get; set; }
+    /// <summary>
+    /// <see cref="Events.RunUnattendedExitFlagged.DeliverConfirmedRefuses"/>, read alongside
+    /// <see cref="ExitedUnattendedReason"/> — meaningless while that field is null, and never
+    /// independently cleared for the same reason it is not: both are written and read together.
+    /// True only for a definitively bad tree or a confirmed branch mismatch, the two variants
+    /// <c>h9k task deliver</c>'s own checks are guaranteed to refuse on; false whenever deliver is
+    /// not guaranteed to refuse outright, so <c>AttentionComposer</c> and <c>TaskPhaseComposer</c>
+    /// can offer it as a lever instead of excluding it on a rationale that does not hold for that
+    /// variant (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    public bool ExitedUnattendedDeliverConfirmedRefuses { get; set; }
     /// <summary>See <see cref="RunDispatched"/>'s own doc — the seed for this run's opening Discovery cycle's diff instruction, rendered by <c>h9k task show</c>.</summary>
     public string? OpeningReviewSinceSha { get; set; }
     /// <summary>
@@ -755,6 +765,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<RunUnattendedExitFlagged> @event, RunDetails view)
     {
         view.ExitedUnattendedReason = @event.Data.Reason;
+        view.ExitedUnattendedDeliverConfirmedRefuses = @event.Data.DeliverConfirmedRefuses;
     }
 
     // A resume records the new process whole — pid plus start time (log #2's identity) — since

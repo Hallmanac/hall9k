@@ -25,11 +25,10 @@ public sealed class AttentionSurfaceTests
     /// caught within seconds): flagged needs-you naming the recorded state and the three levers
     /// that can actually clear it, rather than the misleading days-later "still yours, or ready
     /// to hand off?" nudge every other Guid.Empty-claimed, session-gone row eventually earns.
-    /// Never h9k task deliver (independent pre-PR review, cycle 3, both lenses): this fixture's
-    /// reason is the platform's own clean-tree-and-commits check already refusing it — the same
-    /// check deliver itself runs, so deliver would refuse here too — and on this reason's other
-    /// variant, git unobservable at exit, deliver could not verify the tree either, so it would
-    /// push blind rather than refuse, which is still not a lever worth advising.
+    /// Never h9k task deliver for THIS reason (a confirmed no-commits tree,
+    /// RunUnattendedExitFlagged.DeliverConfirmedRefuses true, independent pre-PR review, cycle 1):
+    /// deliver runs the identical clean-tree-and-commits check this reason already failed, so it
+    /// would refuse here too. The sibling test below covers a reason where deliver is offered.
     /// </summary>
     [Fact]
     public void An_unattended_exit_flag_names_the_recorded_state_and_the_three_levers()
@@ -39,6 +38,7 @@ public sealed class AttentionSurfaceTests
         run.SessionName = "abcd1234-build";
         run.ExitedUnattendedReason =
             "Agent produced no commits: branch 'task/28b19893-x' holds nothing beyond 'main'.";
+        run.ExitedUnattendedDeliverConfirmedRefuses = true;
 
         TaskStatusRow row = StatusFixtures.Compose(
             StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty), run);
@@ -46,6 +46,35 @@ public sealed class AttentionSurfaceTests
         row.Attention.NeedsYou.Should().BeTrue();
         row.Attention.Cause.Should().Be(run.ExitedUnattendedReason, "the recorded state is quoted, never re-guessed");
         row.Attention.Lever.Should().NotContain("h9k task deliver", "deliver refuses the same check this reason already failed");
+        row.Attention.Lever.Should().Contain("h9k task work");
+        row.Attention.Lever.Should().Contain("h9k task handback");
+        row.Attention.Lever.Should().Contain("h9k task release");
+    }
+
+    /// <summary>
+    /// The other side of the guard above (independent pre-PR review, cycle 1, both lenses): a
+    /// plain error result never even checks the worktree, so RunSupervisor records
+    /// DeliverConfirmedRefuses false, and h9k task deliver — which re-checks the tree fresh — is
+    /// offered alongside the other three levers instead of being withheld on a rationale that does
+    /// not hold for this variant.
+    /// </summary>
+    [Fact]
+    public void An_unattended_exit_flag_offers_deliver_when_the_tree_was_never_confirmed_bad()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        run.SessionName = "abcd1234-build";
+        run.ExitedUnattendedReason =
+            "a deliberate headless start launched this session unattended; it exited with an error "
+            + "result rather than completing normally, so the platform could not confirm the work "
+            + "was safe to deliver automatically.";
+        run.ExitedUnattendedDeliverConfirmedRefuses = false;
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty), run);
+
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Lever.Should().Contain("h9k task deliver", "the tree was never checked, so deliver may well succeed");
         row.Attention.Lever.Should().Contain("h9k task work");
         row.Attention.Lever.Should().Contain("h9k task handback");
         row.Attention.Lever.Should().Contain("h9k task release");
