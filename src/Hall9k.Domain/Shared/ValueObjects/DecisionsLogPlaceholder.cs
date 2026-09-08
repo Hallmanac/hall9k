@@ -4,9 +4,9 @@ namespace Hall9k.Domain.Shared.ValueObjects;
 
 /// <summary>
 /// The placeholder-numbering convention PLAN.md §16's v0 Decisions Log entries use while a
-/// branch is in flight (task: a Decisions Log entry gets its number at merge time, not at write
-/// time). A branch writing its own entry has no way to know the log's true next number without
-/// racing every other branch reading the same tail, so it cites its own task's short id instead
+/// branch is in flight (Decisions Log #PLACEHOLDER-6df5f975). A branch writing its own entry has
+/// no way to know the log's true next number without racing every other branch reading the same
+/// tail, so it cites its own task's short id instead
 /// — unique by construction (<c>DomainId.Short</c>) — and the mechanical pre-final-pass rebase
 /// step assigns the real number once the branch is current with its base. Shared by
 /// <c>DecisionsLogNumberingGuardTests</c> (recognizing the convention so it does not fail a
@@ -40,6 +40,12 @@ public static class DecisionsLogPlaceholder
         return $"{Prefix}{taskShortId}";
     }
 
-    /// <summary>The citation form of a task's placeholder, e.g. <c>#PLACEHOLDER-6df5f975</c>.</summary>
+    /// <summary>
+    /// The citation form of a task's placeholder, e.g. <c>#PLACEHOLDER-00000000</c> for short id
+    /// <c>00000000</c> — deliberately not this file's own task's real short id: a live citation
+    /// of it here would itself match the pattern this very convention's own renumbering pass
+    /// sweeps for, and get silently rewritten by it the first time this task's branch is rebased
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
     public static string CitationFor(string taskShortId) => $"#{TokenFor(taskShortId)}";
 }

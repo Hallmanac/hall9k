@@ -1969,9 +1969,9 @@ public sealed class ReviewEngine(
         // `gh pr view` and a second pair of worktree reads to answer a question already answered.
         if (StackedParentWatch.IsStackedChild(context.Run, context.Project))
         {
-            // Deliberately not wired to DecisionsLogRenumberer here (task: a Decisions Log entry
-            // gets its number at merge time, not at write time — a documented scope limit, not an
-            // oversight): the fork point a transition-shape check needs is "against main", which a
+            // Deliberately not wired to DecisionsLogRenumberer here (Decisions Log
+            // #PLACEHOLDER-6df5f975 — a documented scope limit, not an oversight): the fork point
+            // a transition-shape check needs is "against main", which a
             // checkpoint replay onto a PARENT branch's head does not carry, and this run's own
             // mergeBase-against-origin-base is never computed on this path at all. A stacked
             // child's own placeholder stays unrenumbered until this task's branch is retargeted
@@ -2051,8 +2051,14 @@ public sealed class ReviewEngine(
                 if (mergeBase == originTip)
                 {
                     // origin/<base> has not moved past what this branch already contains (task:
-                    // the no-op guarantee) — nothing to rebase, and nothing recorded beyond the
-                    // fact that this was checked.
+                    // the no-op guarantee) — nothing to rebase, but a placeholder at the tail
+                    // still needs its number: this is also the shape the loop re-enters through
+                    // once a conflict's own recovery session has already rebased by hand
+                    // (DispatchRebaseRecoverySessionAsync's LoopAgain lands back here, and by then
+                    // mergeBase already equals originTip), so skipping the call here is the one
+                    // path that would let a branch merge its own placeholder into main
+                    // unrenumbered (independent pre-PR review, cycle 1, both lenses).
+                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, originTip, cancellationToken);
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: true, recoveredByAgentSession: false,
                         $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
@@ -2063,7 +2069,7 @@ public sealed class ReviewEngine(
                 ProcessResult rebase = await git("git", ["rebase", $"origin/{baseBranch}"], worktreePath, cancellationToken);
                 if (rebase.ExitCode == 0)
                 {
-                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, cancellationToken);
+                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, originTip, cancellationToken);
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased cleanly onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}).",
@@ -2094,7 +2100,7 @@ public sealed class ReviewEngine(
                         worktreePath, context.Run.Branch, $"origin/{baseBranch}", cancellationToken))
                 {
                     string observedOntoCommit = await ResolveObservedOntoCommitAsync(worktreePath, baseBranch, cancellationToken);
-                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, cancellationToken);
+                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, observedOntoCommit, cancellationToken);
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, observedOntoCommit, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(observedOntoCommit)}) — "
@@ -2128,25 +2134,33 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// The placeholder-numbering convention's own half of this method (task: a Decisions Log
-    /// entry gets its number at merge time, not at write time): called immediately after a clean
-    /// rebase lands, before <see cref="RecordRebaseOutcomeAsync"/>, so the mandatory gate that
-    /// runs next reads the renumbered tree rather than a placeholder still waiting for its real
-    /// number. <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> does the actual work —
-    /// mechanically, no agent session — against this run's own task short id and the merge-base
-    /// this rebase computed before it ran (the fork point its own transition-shape check reads).
-    /// Best-effort like every other step on this path: a renumbering failure is logged and
-    /// swallowed rather than failing the run, since it is never this run's own work at fault and
-    /// closeout's own guard keeps failing the build honestly if something about the log's tail is
-    /// genuinely wrong.
+    /// The placeholder-numbering convention's own half of this method (Decisions Log
+    /// #PLACEHOLDER-6df5f975): called for every outcome that leaves this branch current with
+    /// origin's base — a clean rebase, a stuck-pipe rebase confirmed landed, AND the no-op case
+    /// where origin had not moved — before <see cref="RecordRebaseOutcomeAsync"/>, so the
+    /// mandatory gate that runs next reads the renumbered tree rather than a placeholder still
+    /// waiting for its real number. Covering the no-op case too is what keeps a branch that needs
+    /// no rebase at all, or whose conflict was already resolved by hand by the rebase-recovery
+    /// session before the loop re-entered here, from merging its placeholder unrenumbered — the
+    /// one gap this call used to leave (independent pre-PR review, cycle 1, both lenses).
+    /// <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> does the actual work —
+    /// mechanically, no agent session — against this run's own task short id, the merge-base this
+    /// rebase computed before it ran (<paramref name="forkPointSha"/>, the fork point its own
+    /// transition-shape check reads), and the base's own tip now that this branch is current with
+    /// it (<paramref name="baseTipSha"/>, what its citation sweep reads to tell the base's own
+    /// additions apart from this branch's). Best-effort like every other step on this path: a
+    /// renumbering failure is logged and swallowed rather than failing the run, since it is never
+    /// this run's own work at fault and closeout's own guard keeps failing the build honestly if
+    /// something about the log's tail is genuinely wrong.
     /// </summary>
     private async Task RenumberDecisionsLogPlaceholderAsync(
-        ReviewContext context, ProcessRunner git, string worktreePath, string forkPointSha, CancellationToken cancellationToken)
+        ReviewContext context, ProcessRunner git, string worktreePath, string forkPointSha, string baseTipSha,
+        CancellationToken cancellationToken)
     {
         try
         {
             DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
-                git, worktreePath, forkPointSha, DomainId.Short(context.TaskId), cancellationToken);
+                git, worktreePath, forkPointSha, baseTipSha, DomainId.Short(context.TaskId), cancellationToken);
             if (result.Outcome == DecisionsLogRenumberOutcome.Renumbered)
             {
                 logger.LogInformation(

@@ -198,8 +198,7 @@ Before assigning a batch, estimate each task's likely file footprint and decide:
   tasks appending a PLAN.md §16 decision no longer belongs on this list: each writes its own entry
   under a placeholder derived from its task's own short id (`PLACEHOLDER-<shortid>`), so two
   branches can never claim the same number — the mechanical pre-final-pass rebase step assigns
-  the real one at merge time (task: a Decisions Log entry gets its number at merge time, not at
-  write time).
+  the real one at merge time (Decisions Log #PLACEHOLDER-6df5f975).
 - **Run alone** for a wide rewrite that touches a layer rather than a slice.
 
 A collision guess costs latency; a miss costs a rebase conflict. Both are survivable, so prefer
