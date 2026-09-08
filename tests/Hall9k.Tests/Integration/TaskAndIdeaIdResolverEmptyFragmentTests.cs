@@ -18,6 +18,19 @@ namespace Hall9k.Tests.Integration;
 /// <see cref="EpicIdResolver"/>: after stripping dashes, an empty fragment made both
 /// StartsWith and EndsWith true for every id, so a blank or dashes-only reference resolved to
 /// the install's sole task or idea instead of being refused as invalid input.
+/// <para>
+/// Two tests, and still its own class and so its own container, against the rule that a
+/// Postgres-backed class this small is folded into a shared-container class grouped by seam
+/// (PLAN.md §16 #157): the scenario *is* a database holding exactly one task and exactly one
+/// idea, so that a vacuous match has something to vacuously match. Beside another seam's rows
+/// both tests would still pass with the bug back in place, because the resolver would then refuse
+/// for ambiguity instead of for the empty fragment — a test that keeps its name and loses its
+/// teeth. <see cref="StoreBackedRecordTests"/>, the class it would otherwise have joined, states
+/// the same from its own side; the epic twin of this scenario lives there because
+/// <see cref="EpicIdResolver.ResolveForMembershipAsync"/> is scoped by project id, and a
+/// per-test project keeps its "only epic" premise honest in a shared database.
+/// <see cref="TaskIdResolver"/> and <see cref="IdeaIdResolver"/> take no such scope.
+/// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
 public sealed class TaskAndIdeaIdResolverEmptyFragmentTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
