@@ -2058,10 +2058,40 @@ public sealed class ReviewEngine(
                     // mergeBase already equals originTip), so skipping the call here is the one
                     // path that would let a branch merge its own placeholder into main
                     // unrenumbered (independent pre-PR review, cycle 1, both lenses).
-                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, originTip, cancellationToken);
+                    //
+                    // The transition-shape check inside DecisionsLogRenumberer needs this branch's
+                    // own TRUE original fork point, not mergeBase as freshly recomputed above: on
+                    // the ordinary no-op path (nothing ever conflicted) the two are identical, but
+                    // on the post-recovery re-entry this branch's own doc names, mergeBase already
+                    // equals originTip precisely BECAUSE the recovery session's own rebase already
+                    // landed the base's content — reading the transition check against it here
+                    // would make "was this number already taken at the fork point" trivially true
+                    // forever, and the transition shape could never fire on the one re-entry it
+                    // exists for (independent pre-PR review, cycle 3, conformance lens).
+                    // RunAggregate.Apply(RunRebasedOntoBase)'s own "trailing no-op" guard keeps
+                    // LastPreFinalPassRebaseFromCommit pointing at that original fork point across
+                    // exactly this re-entry, so it is read here instead whenever the run's last
+                    // landed rebase needed the recovery session.
+                    string transitionForkPointSha = run.LastPreFinalPassRebaseRecovered
+                        && run.LastPreFinalPassRebaseFromCommit is { } recoveredForkPoint
+                            ? recoveredForkPoint
+                            : mergeBase;
+                    DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
+                        context, git, worktreePath, transitionForkPointSha, originTip, cancellationToken);
+
+                    // A renumbering commit moves HEAD past whatever this run's tip was last gated
+                    // at, exactly like a real rebase does, so it must not be recorded as a no-op:
+                    // wasNoOp: true never raises RunAggregate.PreFinalPassRebaseAwaitingGate, which
+                    // left the renumbered tree — and the numbering guard it is supposed to satisfy
+                    // — ungated on the single most common settle shape (independent pre-PR review,
+                    // cycle 3, conformance lens).
+                    bool renumberCommitted = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
                     await RecordRebaseOutcomeAsync(
-                        context.RunId, mergeBase, originTip, wasNoOp: true, recoveredByAgentSession: false,
-                        $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
+                        context.RunId, mergeBase, originTip, wasNoOp: !renumberCommitted, recoveredByAgentSession: false,
+                        renumberCommitted
+                            ? $"origin/{baseBranch} has not moved since this branch's own merge base, but the Decisions " +
+                              "Log's tail entry still needed the mechanical rebase step's own renumbering commit."
+                            : $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
                         checkpointSpend: null, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
@@ -2151,9 +2181,25 @@ public sealed class ReviewEngine(
     /// additions apart from this branch's). Best-effort like every other step on this path: a
     /// renumbering failure is logged and swallowed rather than failing the run, since it is never
     /// this run's own work at fault and closeout's own guard keeps failing the build honestly if
-    /// something about the log's tail is genuinely wrong.
+    /// something about the log's tail is genuinely wrong. The caller reads the returned
+    /// <see cref="DecisionsLogRenumberResult.Outcome"/> to decide whether this call actually
+    /// landed a commit — a no-op rebase call that still committed a renumbering must not be
+    /// recorded as though nothing happened to this branch's tip.
+    /// <para>
+    /// <paramref name="forkPointSha"/> or <paramref name="baseTipSha"/> can arrive as
+    /// <see cref="RunRebasedOntoBase.UnreadableCommit"/> — a git read one of this rebase's own
+    /// callers could not resolve, most often <c>ResolveObservedOntoCommitAsync</c>'s fallback
+    /// after a stuck output pipe — and <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/>
+    /// itself is what refuses to treat that literal string as a revision, before it ever writes
+    /// PLAN.md's heading to disk, rather than this call guarding it up front: only its rare
+    /// transition shape ever reads either parameter, so a blanket check here would also have
+    /// skipped the ordinary placeholder rename whenever the run's own worktree happened to have
+    /// nothing usable to observe for a value neither its own shape needed (independent pre-PR
+    /// review, cycle 3, adversarial lens — the exception this call's own catch below used to
+    /// swallow left a half-applied rewrite sitting uncommitted for the mandatory final pass to read).
+    /// </para>
     /// </summary>
-    private async Task RenumberDecisionsLogPlaceholderAsync(
+    private async Task<DecisionsLogRenumberResult> RenumberDecisionsLogPlaceholderAsync(
         ReviewContext context, ProcessRunner git, string worktreePath, string forkPointSha, string baseTipSha,
         CancellationToken cancellationToken)
     {
@@ -2167,11 +2213,14 @@ public sealed class ReviewEngine(
                     "Run {RunId}: Decisions Log #{OldToken} renumbered to #{NewNumber} ({FilesRewritten} citation file(s) rewritten)",
                     context.RunId, result.OldToken, result.NewNumber, result.FilesRewritten);
             }
+
+            return result;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(
                 exception, "Run {RunId}: the Decisions Log renumbering step failed — proceeding without it", context.RunId);
+            return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.NoActionNeeded, null, null, 0);
         }
     }
 
