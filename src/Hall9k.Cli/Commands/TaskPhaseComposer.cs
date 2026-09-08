@@ -75,6 +75,23 @@ internal static class TaskPhaseComposer
             return new TaskPhase("paused for your answer", session, "the session exited to wait");
         }
 
+        // A deliberate headless start (h9k task start) whose session exited unattended and could
+        // not be delivered automatically (task: a do-now session launched by h9k task start is
+        // caught within seconds) — checked ahead of every other Working() branch below, including
+        // the Guid.Empty/Running one a few lines down that this row would otherwise fall into and
+        // read as an ordinary, benign "building" line, exactly the misreading the origin incident
+        // (task ef2fefe5) sat behind for an hour. Gated on run.State, not on the reason alone
+        // (mirrors AttentionComposer's own identical guard on this same field): the reason is
+        // never cleared once recorded, so once one of the three levers it names moves RunState off
+        // Dispatched/Running — h9k task deliver to Verifying, chief among them — this must stop
+        // firing, or the phase line would keep reading "needs your input" over a run already
+        // delivered and into the gates.
+        if (run.ExitedUnattendedReason is { } exitedUnattendedReason
+            && (run.State.Value == "Dispatched" || run.State.Value == "Running"))
+        {
+            return new TaskPhase("needs your input", SessionLiveness.NotApplicable, exitedUnattendedReason);
+        }
+
         // The blocker-context session is dispatched inside the launch itself, before the run's
         // own process starts (BlockerContextAssembler, then RunProcessStarted), so the run is
         // still Dispatched while it reads. Only the recorded session's role names that work: the

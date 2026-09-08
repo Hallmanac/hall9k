@@ -19,6 +19,32 @@ public sealed class AttentionSurfaceTests
 {
     private static readonly DateTimeOffset Now = StatusFixtures.Now;
 
+    /// <summary>
+    /// A deliberate headless start (h9k task start) whose session exited unattended and could
+    /// not be delivered automatically (task: a do-now session launched by h9k task start is
+    /// caught within seconds): flagged needs-you naming the recorded state and all three levers,
+    /// rather than the misleading days-later "still yours, or ready to hand off?" nudge every
+    /// other Guid.Empty-claimed, session-gone row eventually earns.
+    /// </summary>
+    [Fact]
+    public void An_unattended_exit_flag_names_the_recorded_state_and_the_three_levers()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        run.SessionName = "abcd1234-build";
+        run.ExitedUnattendedReason =
+            "Agent produced no commits: branch 'task/28b19893-x' holds nothing beyond 'main'.";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty), run);
+
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Be(run.ExitedUnattendedReason, "the recorded state is quoted, never re-guessed");
+        row.Attention.Lever.Should().Contain("h9k task deliver");
+        row.Attention.Lever.Should().Contain("h9k task work");
+        row.Attention.Lever.Should().Contain("h9k task release");
+    }
+
     [Fact]
     public void A_review_parked_run_names_the_recorded_reason_and_the_command_that_clears_it()
     {
