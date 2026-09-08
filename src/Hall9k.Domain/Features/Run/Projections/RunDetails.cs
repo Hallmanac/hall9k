@@ -1388,6 +1388,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             view.RegisteredInteractiveSessionName = @event.Data.SessionName;
         }
         view.InteractiveSessionCount++;
+        // A live session is now attached and watching this run itself, whether this append is
+        // h9k task start's own original launch (already null, a no-op) or a human re-entering
+        // with h9k task work after the unattended sweep flagged it needs-you — h9k task work is
+        // one of the three levers RunUnattendedExitFlagged's own doc advises, and nothing else
+        // ever cleared this field (independent pre-PR review, cycle 1, both lenses: taking that
+        // advised action left AttentionComposer and TaskPhaseComposer reporting needs-you with a
+        // stale cause for as long as the human was actually attached and working the claim).
+        view.ExitedUnattendedReason = null;
         // @event.Timestamp (when this event was actually appended), not @event.Data.StartedAt
         // (the claude process's own start time): a direct launch's StartedAt is ~milliseconds
         // behind the append, but a self-registered session's is the pid's real start time, which

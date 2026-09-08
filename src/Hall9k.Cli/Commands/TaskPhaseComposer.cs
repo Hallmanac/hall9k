@@ -82,10 +82,12 @@ internal static class TaskPhaseComposer
         // read as an ordinary, benign "building" line, exactly the misreading the origin incident
         // (task ef2fefe5) sat behind for an hour. Gated on run.State, not on the reason alone
         // (mirrors AttentionComposer's own identical guard on this same field): the reason is
-        // never cleared once recorded, so once one of the three levers it names moves RunState off
-        // Dispatched/Running — h9k task deliver to Verifying, chief among them — this must stop
-        // firing, or the phase line would keep reading "needs your input" over a run already
-        // delivered and into the gates.
+        // cleared by a fresh InteractiveSessionStarted (h9k task work re-entering the claim,
+        // independent pre-PR review, cycle 1) but nothing clears it when one of the OTHER two
+        // levers it names moves RunState off Dispatched/Running instead — h9k task deliver to
+        // Verifying, chief among them — so this must still stop firing once that happens, or the
+        // phase line would keep reading "needs your input" over a run already delivered and into
+        // the gates.
         if (run.ExitedUnattendedReason is { } exitedUnattendedReason
             && (run.State.Value == "Dispatched" || run.State.Value == "Running"))
         {

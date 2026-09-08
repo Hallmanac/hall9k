@@ -210,7 +210,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
 
         int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine));
-        await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+        await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
         await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
@@ -244,7 +244,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: true, cts.Token);
 
         int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine));
-        await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+        await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
         await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
@@ -256,9 +256,52 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         run.ExitedUnattendedReason.Should().Contain("uncommitted");
         run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
             "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+        run.InputTokens.Should().Be(
+            0,
+            "a flagged run's tokens are recorded by whichever lever the human ends up using (deliver, work, "
+            + "release, abandon, handback), never here too, or the node's spend budget double-counts this "
+            + "session");
 
         TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
         task.State.Should().Be(TaskState.Claimed, "the three levers this flag names all require Claimed");
+    }
+
+    /// <summary>
+    /// The re-entry guard (independent pre-PR review, cycle 1, both lenses): once a human attaches
+    /// with <c>h9k task work</c>, <see cref="RunDetails.RegisteredInteractiveSessionName"/> stops
+    /// reading null, and this sweep must never again treat that operator's own eventual "closed the
+    /// terminal" as this run kind's unattended exit — the claim is attended now, exactly like an
+    /// ordinary interactive one.
+    /// </summary>
+    [Fact]
+    public async Task AdoptDeliberateHeadlessStartsAsync_leaves_a_reentered_claim_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, _) =
+            await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
+
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Exit(0));
+        await RecordInteractiveSessionStartedAsync(store, runId, taskId, processId, cts.Token);
+
+        // The human re-enters with h9k task work before this sweep ever adopts the original
+        // headless agent — the same event, under the operator's own interactive-claim session
+        // name rather than the machine-composed build one.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new InteractiveSessionStarted(
+                runId, DomainId.New(), Now, processId, Environment.MachineName,
+                $"{DomainId.Short(taskId)}-interactive-claim"));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunSupervisor supervisor = NewSupervisor(store, node, new FakeProcessManager());
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+
+        supervisor.ActiveCount.Should().Be(0, "a human has re-entered — this sweep must leave the claim alone");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ExitedUnattendedReason.Should().BeNull("nothing has flagged this run — a human is simply attached");
     }
 
     /// <summary>
@@ -1274,6 +1317,36 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunProcessStarted(runId, processId, startedAt));
+        await session.SaveChangesAsync(cancellationToken);
+        return startedAt;
+    }
+
+    /// <summary>
+    /// A deliberate headless start's own claim never appends <see cref="RunProcessStarted"/> — it
+    /// records its agent with <see cref="InteractiveSessionStarted"/> instead, exactly as
+    /// <c>TaskStartCommand.RunDeliberateStartAsync</c> does under the machine-composed build
+    /// session name (independent pre-PR review, cycle 1, both lenses: a test seeded with
+    /// <see cref="RecordProcessStartedAsync"/> here exercised a shape production never produces,
+    /// since <see cref="RunDetails.ProcessId"/> is never set for this claim shape at all).
+    /// </summary>
+    private static async Task<DateTimeOffset> RecordInteractiveSessionStartedAsync(
+        DocumentStore store, Guid runId, Guid taskId, int processId, CancellationToken cancellationToken)
+    {
+        DateTimeOffset startedAt;
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            startedAt = DateTimeOffset.UtcNow;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new InteractiveSessionStarted(
+            runId, DomainId.New(), startedAt, processId, Environment.MachineName,
+            SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build)));
         await session.SaveChangesAsync(cancellationToken);
         return startedAt;
     }
