@@ -1,4 +1,3 @@
-using Hall9k.Domain.Infrastructure.Storage;
 using FluentAssertions;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
@@ -15,16 +14,14 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
-using JasperFx;
+using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
-
-using Hall9k.Tests.Fakes;
-using Hall9k.Tests.TestSupport;
 
 namespace Hall9k.Tests.Integration;
 
@@ -60,7 +57,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task All_gates_passing_records_verification_passed_with_logs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [
                 new VerifyCommand("hello", GateScript.New().Print("hello-from-gate").Command),
@@ -97,7 +94,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Failing_gate_fails_run_and_task_and_names_the_gate()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [
                 new VerifyCommand("ok", GateScript.Passes),
@@ -143,7 +140,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_gate_that_also_fails_on_a_clean_checkout_of_the_base_branch_says_so()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
         await InitializeCleanCheckoutAsync(cleanBase, "main", cts.Token);
         try
@@ -178,7 +175,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_gate_that_fails_on_a_checkout_not_confirmed_clean_does_not_call_it_clean()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string uncleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-unclean-{Guid.NewGuid():N}");
         await InitializeCleanCheckoutAsync(uncleanBase, "feature-x", cts.Token);
         try
@@ -215,7 +212,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_gate_that_fails_only_on_this_runs_own_branch_does_not_claim_it_also_fails_on_clean_base()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
         Directory.CreateDirectory(cleanBase);
         try
@@ -262,7 +259,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task The_same_base_commit_is_compared_once_across_two_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
         string counterFile = Path.Combine(Path.GetTempPath(), $"hall9k-vt-counter-{Guid.NewGuid():N}");
         await InitializeCleanCheckoutAsync(cleanBase, "main", cts.Token);
@@ -325,7 +322,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task An_inconclusive_comparison_is_retried_on_the_next_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
         string markerFile = Path.Combine(Path.GetTempPath(), $"hall9k-vt-marker-{Guid.NewGuid():N}");
         await InitializeCleanCheckoutAsync(cleanBase, "main", cts.Token);
@@ -383,7 +380,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task An_infrastructure_classified_failure_retries_once_and_passes()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string marker = Path.Combine(_worktree, "retry-marker");
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("flaky", GateScript.New().BranchOnFile(
@@ -425,7 +422,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_second_consecutive_infrastructure_failure_fails_the_run_with_the_classification_named()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("dead", GateScript.New().Print(ConnectionRefused).Exit(1).Command)], cts.Token);
 
@@ -456,7 +453,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_gate_retried_before_an_earlier_daemon_restart_never_earns_a_second_retry_on_adoption()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("dead", GateScript.New().Print(ConnectionRefused).Exit(1).Command)], cts.Token);
 
@@ -491,7 +488,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_connection_class_signature_pushed_out_of_the_tail_still_classifies_as_infrastructure()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("flaky", GateScript.New()
                 .Print(ConnectionRefused)
@@ -523,7 +520,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_retry_that_surfaces_a_real_failure_is_recorded_as_a_real_failure()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string marker = Path.Combine(_worktree, "retry-marker");
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("flaky", GateScript.New().BranchOnFile(
@@ -545,7 +542,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task No_gates_passes_with_an_explicit_note()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store, gates: [], cts.Token);
 
         await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -562,7 +559,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Overrunning_gate_times_out_as_a_failure_not_a_hang()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("slow", GateScript.New().Pause(TimeSpan.FromSeconds(30)).Command)], cts.Token);
 
         VerificationRunner runner = new(
@@ -590,7 +587,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_gate_that_hangs_after_writing_an_infrastructure_marker_still_classifies_and_retries()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string marker = Path.Combine(_worktree, "retry-marker");
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("flaky", GateScript.New().BranchOnFile(
@@ -638,7 +635,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_gate_still_queued_on_the_container_gate_when_killed_classifies_and_retries()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string marker = Path.Combine(_worktree, "retry-marker");
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("flaky", GateScript.New().BranchOnFile(
@@ -675,7 +672,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Zero_commits_on_the_branch_fails_fast_before_any_gate_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
@@ -699,7 +696,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_branch_with_commits_clears_the_no_commit_check_and_runs_its_gates()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
 
@@ -720,7 +717,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Zero_commits_with_a_modified_file_names_the_file_alongside_the_no_commits_reason()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token, trackedFile: "stranded.txt");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "stranded.txt"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -748,7 +745,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task An_untracked_source_file_fails_the_run_alongside_a_modified_one()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         Directory.CreateDirectory(Path.Combine(_worktree, "src", "Hall9k.Connectors"));
@@ -777,7 +774,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task An_untracked_test_file_alone_fails_the_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
         Directory.CreateDirectory(Path.Combine(_worktree, "tests", "Hall9k.Tests"));
         await File.WriteAllTextAsync(
@@ -808,7 +805,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task An_untracked_TestResults_directory_under_tests_does_not_fail_the_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
         Directory.CreateDirectory(Path.Combine(_worktree, "tests", "Hall9k.Tests", "TestResults"));
         await File.WriteAllTextAsync(
@@ -833,7 +830,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Committed_work_with_an_uncommitted_file_still_fails_before_the_gates()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -873,7 +870,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task An_untracked_file_left_in_the_worktree_does_not_fail_the_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
         await File.WriteAllTextAsync(Path.Combine(_worktree, "TestResults.trx"), "gate byproduct", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
@@ -889,7 +886,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_research_task_may_legitimately_end_with_zero_commits()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("truth", GateScript.Passes)], cts.Token, TaskType.Research);
@@ -908,7 +905,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_research_tasks_uncommitted_file_still_fails_before_the_gates()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token, trackedFile: "notes.md");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "notes.md"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -934,7 +931,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Automatic_recovery_that_commits_the_stranded_file_lets_the_run_reach_its_gates()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
@@ -972,7 +969,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Automatic_recovery_that_also_ends_dirty_fails_the_run_naming_both()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -1013,7 +1010,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Automatic_recovery_that_discards_the_stranded_file_still_fails_the_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -1054,7 +1051,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Automatic_recovery_that_restores_a_stranded_deletion_still_fails_the_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         File.Delete(Path.Combine(_worktree, "half-done.cs"));
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -1096,7 +1093,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Automatic_recovery_that_commits_a_stranded_submodule_bump_is_recognized_as_recovered()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string submoduleSource = Path.Combine(Path.GetTempPath(), $"hall9k-vt-sub-{Guid.NewGuid():N}");
         Directory.CreateDirectory(submoduleSource);
         try
@@ -1162,7 +1159,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_recovery_session_that_could_not_be_spawned_still_records_a_completion()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -1195,7 +1192,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_second_dirty_ending_never_earns_a_second_recovery_session()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -1230,7 +1227,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task Daemon_shutdown_mid_recovery_wait_terminates_the_orphan_before_rethrowing()
     {
         using CancellationTokenSource hardStop = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         await InitGitWorktreeAsync(withTaskCommit: true, hardStop.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", hardStop.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
@@ -1261,7 +1258,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_stale_generations_gate_failure_does_not_touch_the_live_generations_task_or_lease()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("boom", GateScript.New().Print("exploding").Exit(3).Command)], cts.Token);
 
@@ -1306,7 +1303,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task An_unscoped_test_gate_records_full_with_the_reason_in_the_log_and_the_pass_note()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("test", "dotnet test --help")], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(
@@ -1332,7 +1329,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_scoped_test_gate_injects_the_filter_and_records_it_in_the_log_and_the_pass_note()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string sinceSha = await InitScopableRepoAsync(cts.Token);
         await CommitAsync(
             "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget", cts.Token);
@@ -1372,7 +1369,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_scoped_filter_that_matches_no_tests_falls_back_to_a_full_run_and_records_it_honestly()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string sinceSha = await InitScopableRepoAsync(cts.Token);
         await CommitAsync(
             "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget", cts.Token);
@@ -1414,7 +1411,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     public async Task A_mixed_scope_pass_across_multiple_test_gates_is_never_recorded_as_fully_scoped()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         string sinceSha = await InitScopableRepoAsync(cts.Token);
         await CommitAsync(
             "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget", cts.Token);
@@ -1492,7 +1489,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         try
         {
             using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-            using DocumentStore store = NewStore();
+            DocumentStore store = postgres.Store;
             (Guid taskId, Guid runId) = await SeedAsync(
                 store, [new VerifyCommand("envcheck", GateScript.PrintEnvironmentVariable(VariableName))], cts.Token);
 
@@ -1547,7 +1544,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
 
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(
             store, [new VerifyCommand("envcheck", "set MSBUILDDISABLENODEREUSE=0 && cmd /c set MSBUILDDISABLENODEREUSE")], cts.Token);
 
@@ -1639,11 +1636,6 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
     }
 
-    private DocumentStore NewStore() => DocumentStore.For(opts =>
-    {
-        opts.Connection(postgres.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.All);
-    });
 
     private static VerificationRunner NewRunner(
         DocumentStore store, IExecutor? executor = null, IProcessManager? processManager = null) =>

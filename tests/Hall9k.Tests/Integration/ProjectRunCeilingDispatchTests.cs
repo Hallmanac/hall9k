@@ -13,11 +13,9 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -47,7 +45,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task A_project_capped_at_one_never_takes_a_second_slot_while_another_project_fills_the_node()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -98,7 +96,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task A_cap_of_zero_pauses_the_project_and_no_sweep_ever_unpauses_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -141,7 +139,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task A_cap_raised_between_sweeps_takes_effect_on_the_next_cycle_with_no_restart()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -165,7 +163,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task Each_deferral_names_the_limit_that_held_it_and_says_it_once()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1, logger);
@@ -204,7 +202,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task The_published_measurement_carries_each_projects_own_count_and_cap()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -235,7 +233,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task An_interactive_claim_costs_this_projects_cap_nothing()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -257,7 +255,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task A_task_whose_project_has_no_document_is_uncapped_rather_than_stuck()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -277,7 +275,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task A_sweep_no_project_can_claim_in_never_asks_the_spend_budget()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2, logger, spendBudgetTokens: 500_000);
@@ -307,7 +305,7 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
     public async Task A_spent_budget_never_takes_the_blame_for_a_paused_projects_rows()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2, logger, spendBudgetTokens: 500_000);
@@ -329,11 +327,6 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
                 "this project admits, so the budget is the limit that really is holding its row");
     }
 
-    private DocumentStore Store() => DocumentStore.For(opts =>
-    {
-        opts.Connection(postgres.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.All);
-    });
 
     private static async Task<NodeContext> FreshNodeAsync(IDocumentStore store, CancellationToken cancellationToken)
     {

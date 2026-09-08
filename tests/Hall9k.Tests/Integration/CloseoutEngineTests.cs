@@ -1,14 +1,14 @@
 using System.Diagnostics;
 using FluentAssertions;
-using Hall9k.Daemon;
-using Hall9k.Daemon.Closeout;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Daemon;
+using Hall9k.Daemon.Closeout;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
-using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -16,11 +16,9 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Marten.Events;
 using Marten.Linq.MatchesSql;
@@ -232,7 +230,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
         WriteHandoffArtifact(runId, "The column is named Canonical; the rename is deliberate.");
@@ -261,7 +258,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
         WriteHandoffArtifact(runId, "Work that never landed on main.");
@@ -292,7 +288,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -334,7 +329,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -385,7 +379,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -424,7 +417,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
         if (artifactExists)
@@ -462,7 +454,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1);
@@ -502,7 +493,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1);
@@ -548,7 +538,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) =
@@ -597,7 +586,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
@@ -641,7 +629,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
@@ -676,7 +663,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
@@ -708,7 +694,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
@@ -738,7 +723,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
@@ -777,7 +761,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
@@ -815,7 +798,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
@@ -858,7 +840,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(
@@ -910,7 +891,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(
@@ -958,7 +938,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
@@ -1000,7 +979,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
@@ -1040,7 +1018,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
@@ -1076,7 +1053,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
@@ -1107,7 +1083,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
         Guid dependentId = await SeedBlockedDependentAsync(store, node.OwnerId, taskId, cts.Token);
@@ -1171,7 +1146,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) =
@@ -1222,7 +1196,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, _) =
@@ -1260,7 +1233,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, _) = await SeedOrphanedFailedRunAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -1292,7 +1264,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (_, Guid runId, _) = await SeedOrphanedFailedRunAsync(
@@ -1332,7 +1303,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (_, Guid runId, _) = await SeedOrphanedFailedRunAsync(
@@ -1370,7 +1340,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         await SeedOrphanedFailedRunAsync(
@@ -1400,7 +1369,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, _) = await SeedOrphanedFailedRunAsync(store, node, worktrees, repoPath, cts.Token);
@@ -1535,7 +1503,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, Worktree worktree) =
@@ -1579,7 +1546,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, _) = await SeedResolvedFailedRunWithPullRequestAsync(
@@ -1617,7 +1583,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId, _) = await SeedResolvedFailedRunWithPullRequestAsync(
@@ -1672,7 +1637,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (_, Guid runId, _) = await SeedResolvedFailedRunWithPullRequestAsync(
@@ -1716,7 +1680,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (_, Guid runId, _) = await SeedResolvedFailedRunWithPullRequestAsync(
@@ -1840,7 +1803,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(store, node, repoPath, cts.Token);
@@ -1889,7 +1851,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(store, node, repoPath, cts.Token);
@@ -1964,7 +1925,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(
@@ -2002,7 +1962,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
         await DrainPriorSweepStateAsync(store, node, cts.Token);
 
         (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(
@@ -2042,7 +2001,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -2082,7 +2040,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -2109,7 +2066,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
         SeedGenuineConflictOnMain(repoPath);
@@ -2142,7 +2098,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree, _) =
             await SeedAwaitingReviewWithUnmetDependencyAsync(store, node, worktrees, repoPath, cts.Token);
@@ -2189,7 +2144,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree, Guid blockerId) =
             await SeedAwaitingReviewWithUnmetDependencyAsync(store, node, worktrees, repoPath, cts.Token);
@@ -2256,7 +2210,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -2303,7 +2256,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
         SeedGenuineConflictOnMain(repoPath);
@@ -2337,7 +2289,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -2390,7 +2341,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -2428,7 +2378,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -2471,7 +2420,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -2518,7 +2466,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -2546,7 +2493,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -2580,7 +2526,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
@@ -2610,7 +2555,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
@@ -2668,7 +2612,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true,
@@ -2721,7 +2664,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
@@ -2784,7 +2726,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
@@ -2833,7 +2774,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
@@ -2876,7 +2816,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1, asFollowUp: true);
@@ -2916,7 +2855,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -2957,7 +2895,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -3007,7 +2944,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 1);
@@ -3050,7 +2986,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 2);
@@ -3077,7 +3012,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -3111,7 +3045,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token, priorAutomaticReopens: 2);
@@ -3162,7 +3095,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3203,7 +3135,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token);
@@ -3241,7 +3172,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3282,7 +3212,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3322,7 +3251,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3362,7 +3290,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3408,7 +3335,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3452,7 +3378,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3497,7 +3422,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3538,7 +3462,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3589,7 +3512,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3634,7 +3556,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string originPath, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (_, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -3660,7 +3581,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -3685,7 +3605,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -3715,7 +3634,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
@@ -3762,7 +3680,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         await SeedJiraConnectionAsync(store, node.OwnerId, cts.Token);
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
@@ -3817,7 +3734,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3850,7 +3766,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3887,7 +3802,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3929,7 +3843,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -3961,7 +3874,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#3");
         (Guid task1Id, _, _) = await SeedAwaitingReviewAsync(
@@ -4005,7 +3917,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#4");
         (Guid task1Id, _, _) = await SeedAwaitingReviewAsync(
@@ -4053,7 +3964,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#6");
         (Guid task2Id, _, _) = await SeedAwaitingReviewAsync(
@@ -4099,7 +4009,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#5");
         (Guid task2Id, _, _) = await SeedAwaitingReviewAsync(
@@ -4145,7 +4054,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#8");
         (Guid task1Id, _, _) = await SeedAwaitingReviewAsync(
@@ -4182,7 +4090,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -4218,7 +4125,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         FakeInspector inspector = new()
         {
@@ -4266,7 +4172,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         Guid projectId = DomainId.New();
         Guid taskId = DomainId.New();
@@ -4315,7 +4220,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
@@ -4355,7 +4259,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         await SeedJiraConnectionAsync(store, node.OwnerId, cts.Token);
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
@@ -4384,7 +4287,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// each other, so <see cref="JiraWriteCoordinator.SubmitAsync"/> refuses the comment
     /// with a <see cref="Hall9k.Domain.Shared.Exceptions.DomainConflictException"/>, and closeout
     /// queues it instead of dropping it (Brian's design, 2026-08-28). The queued notice is not
-    /// this test's job to drain — <c>JiraWriteRetryEngineTests</c> covers that — only that
+    /// this test's job to drain — <c>TrackerAssignmentTests</c> covers that — only that
     /// closeout itself never loses it.
     /// </summary>
     [Fact]
@@ -4393,7 +4296,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         await SeedJiraConnectionAsync(store, node.OwnerId, cts.Token);
         (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
@@ -4434,11 +4336,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     private async Task<(DocumentStore Store, NodeContext Node, GitWorktreeManager Worktrees, string OriginPath, string RepoPath)>
         SetUpAsync(CancellationToken cancellationToken)
     {
-        DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Directory.CreateDirectory(_root);
@@ -4796,7 +4694,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
-    /// A registered Jira connection with a site, the same shape <c>JiraWriteRetryEngineTests</c>
+    /// A registered Jira connection with a site, the same shape <c>TrackerAssignmentTests</c>
     /// seeds: <c>TellJiraAsync</c> now refuses to comment a merged pull request on a card at all
     /// without one (independent pre-PR review, adversarial lens, cycle 3), the same guard every
     /// other Jira write surface already holds to, so every test exercising that comment needs one
@@ -5105,7 +5003,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -5147,7 +5044,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
 
@@ -5183,7 +5079,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
             await SetUpAsync(cts.Token);
-        using IDisposable storeLifetime = store;
 
         (Guid firstTaskId, Guid firstRunId, _) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);

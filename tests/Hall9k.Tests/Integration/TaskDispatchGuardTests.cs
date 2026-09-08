@@ -8,9 +8,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -32,7 +30,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     public async Task Only_queued_tasks_assigned_to_this_nodes_owner_are_claimed()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -72,7 +70,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     public async Task The_sweep_unblocks_a_task_whose_dependency_closed_out_and_holds_one_whose_dependency_died()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -116,7 +114,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     public async Task The_sweep_parks_a_task_whose_dependency_reached_Done_on_a_run_that_will_never_complete()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -156,7 +154,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     public async Task Retrying_a_failed_blocker_lifts_the_hold_on_its_dependents_within_one_sweep()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -216,7 +214,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     public async Task A_blocker_retried_and_failed_again_is_held_again()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -272,7 +270,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     public async Task Resolving_a_failed_blocker_restates_the_hold_rather_than_leaving_stale_advice()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -325,7 +323,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     public async Task A_dependent_whose_blockers_all_change_is_reported_once_per_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -382,7 +380,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
     public async Task A_recovery_that_leaves_another_blocker_dead_reports_the_hold_that_survives()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -538,11 +536,6 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
         id, DomainId.New(), objective, ["it is done"], TaskType.Chore,
         null, null, null, Now, DomainId.New(), blockedBy: blockedBy);
 
-    private DocumentStore NewStore() => DocumentStore.For(opts =>
-    {
-        opts.Connection(postgres.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.All);
-    });
 
     private DispatchEngine NewEngine(DocumentStore store, NodeContext node) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),

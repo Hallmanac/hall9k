@@ -6,9 +6,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
-using JasperFx;
 using Marten;
 using Xunit;
 
@@ -30,11 +28,7 @@ public sealed class TaskAndIdeaIdResolverEmptyFragmentTests(PostgresFixture post
     public async Task An_empty_or_dashes_only_fragment_never_vacuously_matches_the_only_task()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -65,11 +59,7 @@ public sealed class TaskAndIdeaIdResolverEmptyFragmentTests(PostgresFixture post
     public async Task An_empty_or_dashes_only_fragment_never_vacuously_matches_the_only_idea()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Guid ownerId = DomainId.New();
         Guid ideaId = DomainId.New();
