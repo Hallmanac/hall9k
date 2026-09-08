@@ -44,9 +44,12 @@ every conflicting branch (PLAN.md Decisions Log #131). That is the after-push ha
 half runs earlier still, immediately before the mandatory full pass just mentioned: the run fetches
 the base branch and, if it moved, rebases onto it right there in its own worktree, so the mandatory
 gate and pass read the rebased tree and the pull request that opens afterward is mergeable on
-arrival. A no-op or a clean rebase costs nothing extra; a conflict is handed to a narrow recovery
-session dispatched inside the same run (never a task reopen), and only a conflict that session
-cannot honestly resolve parks for a human (PLAN.md Decisions Log #138).
+arrival. A no-op rebase and a clean rebase both still run one mechanical step first: reassigning
+the log's own tail placeholder (PLAN.md §16, Decisions Log #PLACEHOLDER-6df5f975) its real number
+and rewriting every citation of it, committed on its own before the mandatory gate reruns. Beyond
+that step, neither costs anything extra; a conflict is handed to a narrow recovery session
+dispatched inside the same run (never a task reopen), and only a conflict that session cannot
+honestly resolve parks for a human (PLAN.md Decisions Log #138).
 
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a

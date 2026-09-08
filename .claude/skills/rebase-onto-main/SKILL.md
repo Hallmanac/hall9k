@@ -47,6 +47,14 @@ this skill is not needed; GitHub merges it fine as-is.
      lines, and picking either would silently drop real work. See "When a conflict is not
      yours to resolve" below.
 
+   **PLAN.md's own §16 v0 Decisions Log tail is never yours to number by hand here.** A
+   conflict there is always **keep both**: this branch's own entry (real number or
+   `PLACEHOLDER-<shortid>`) stays exactly as written, ordered after whatever main gained.
+   Never renumber, reorder, or pick a "winning" number while resolving this conflict — the
+   mechanical pre-final-pass rebase step (`DecisionsLogRenumberer`, invoked automatically once
+   this rebase lands, no agent session) is what assigns the real number, and a hand-picked one
+   here would just be a second, competing guess for it to untangle.
+
    Land a resolved conflict inside the commit being replayed (`git add <files>` then
    `git rebase --continue`), never as a separate "resolve conflict" commit. The mapping
    rule `absorb-review-fixes` uses (a change belongs to the commit that owns it) applies

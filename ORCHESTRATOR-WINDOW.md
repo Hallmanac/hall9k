@@ -193,9 +193,13 @@ Before assigning a batch, estimate each task's likely file footprint and decide:
 - **Serialize with `--blocked-by`** when they would rewrite the same file. The recurring shape in
   this repo is the **shared append point**: a new project setting touches the same six-file chain
   every time (`ProjectSettingsChanged`, `ProjectDecider`, `ProjectAggregate`, `ProjectDetails`,
-  `ProjectSetCommand`, the CLI registration), two tasks appending a decision both claim the same
-  PLAN.md §16 number, and every task that teaches something appends to AGENTS.md. Those conflicts
-  are mechanical to resolve and expensive to discover at merge.
+  `ProjectSetCommand`, the CLI registration), and every task that teaches something appends to
+  AGENTS.md. Those conflicts are mechanical to resolve and expensive to discover at merge. Two
+  tasks appending a PLAN.md §16 decision no longer belongs on this list: each writes its own entry
+  under a placeholder derived from its task's own short id (`PLACEHOLDER-<shortid>`), so two
+  branches can never claim the same number — the mechanical pre-final-pass rebase step assigns
+  the real one at merge time (task: a Decisions Log entry gets its number at merge time, not at
+  write time).
 - **Run alone** for a wide rewrite that touches a layer rather than a slice.
 
 A collision guess costs latency; a miss costs a rebase conflict. Both are survivable, so prefer
