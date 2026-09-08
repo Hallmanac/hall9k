@@ -154,4 +154,74 @@ public sealed class ReviewResultParserTests
         ReviewResultParser.ParseDisagreements("Fixed everything.\nRESOLUTION: disputed").Should().BeEmpty();
         ReviewResultParser.ParseDisagreements(null).Should().BeEmpty();
     }
+
+    /// <summary>
+    /// A follow-up's own triage (task: every review thread on a pull request gets a triage
+    /// disposition before any fix work), read off the same tolerant contract every other marker
+    /// block here already uses.
+    /// </summary>
+    [Fact]
+    public void A_thread_disposition_block_parses_its_tags_and_its_reasoning()
+    {
+        string summary = """
+            Triaged every unresolved thread before touching any code.
+
+            THREAD DISPOSITION: thread=PRRC_1; disposition=decline; kind=bot; author=copilot
+            Reproduced in a scratch repo: git push does update the remote-tracking ref.
+            THREAD DISPOSITION: thread=PRRC_2; disposition=fix; kind=human; author=brianhallmanac
+            Renamed the limiter per the reviewer's suggestion.
+
+            RESOLUTION: fixed
+
+            HANDOFF:
+            nothing surprising here
+            """;
+
+        IReadOnlyList<ReviewThreadOutcome> outcomes = ReviewResultParser.ParseThreadDispositions(summary);
+
+        outcomes.Should().HaveCount(2);
+        outcomes[0].ThreadId.Should().Be("PRRC_1");
+        outcomes[0].Disposition.Should().Be(ReviewThreadDisposition.Decline);
+        outcomes[0].IsHuman.Should().BeFalse();
+        outcomes[0].Author.Should().Be("copilot");
+        outcomes[0].Reasoning.Should().Contain("Reproduced in a scratch repo");
+        outcomes[1].ThreadId.Should().Be("PRRC_2");
+        outcomes[1].Disposition.Should().Be(ReviewThreadDisposition.Fix);
+        outcomes[1].IsHuman.Should().BeTrue();
+        outcomes[1].Reasoning.Should().NotContain(
+            "RESOLUTION", "the marker line ends the block rather than becoming part of the reasoning");
+        outcomes[1].Reasoning.Should().NotContain(
+            "HANDOFF", "the handoff is for the next task, not for the triage record");
+    }
+
+    /// <summary>A block naming no thread id carries nothing this platform can measure against a real thread, so it is dropped.</summary>
+    [Fact]
+    public void A_thread_disposition_block_with_no_thread_id_is_dropped()
+    {
+        ReviewResultParser.ParseThreadDispositions("THREAD DISPOSITION: disposition=fix\nfixed it")
+            .Should().BeEmpty();
+    }
+
+    /// <summary>An unrecognized or absent disposition tag is a fact worth keeping, not a parse failure to hide.</summary>
+    [Fact]
+    public void A_thread_disposition_block_missing_its_disposition_tag_reads_as_unknown()
+    {
+        ReviewThreadOutcome outcome = ReviewResultParser.ParseThreadDispositions(
+            "THREAD DISPOSITION: thread=PRRC_1\nsomething was said")
+            .Should().ContainSingle().Subject;
+
+        outcome.Disposition.Should().Be(ReviewThreadDisposition.Unknown);
+    }
+
+    /// <summary>
+    /// No headers at all is "this run's prompt never taught the vocabulary", not "nothing was
+    /// triaged" — the same reading <see cref="A_summary_with_no_disagreement_block_parses_to_none"/>
+    /// already documents for its own marker.
+    /// </summary>
+    [Fact]
+    public void A_summary_with_no_thread_disposition_block_parses_to_none()
+    {
+        ReviewResultParser.ParseThreadDispositions("Fixed the CI failure.\nRESOLUTION: fixed").Should().BeEmpty();
+        ReviewResultParser.ParseThreadDispositions(null).Should().BeEmpty();
+    }
 }
