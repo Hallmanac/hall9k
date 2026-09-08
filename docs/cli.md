@@ -574,11 +574,14 @@ last one. A task overrides the project's default with `--close-linked-issue` at 
 or `h9k task revise`; `default` clears the override. `--never-close-labels` forces `never` for an
 issue carrying any of the listed labels, regardless of the project's own default — but a task's
 own explicit override still wins over the label. When several tasks link the same issue, the
-final decision at the last one to close is made across every linked task's own recorded rule: an
-explicit `never` on any of them keeps the issue open, otherwise an explicit `on-closeout` or
-`when-all-tasks-close` on any of them closes it, otherwise the label list and then the project
-default apply — so a single override on one sibling is enough to decide the outcome for the whole
-issue. `h9k task show` renders the effective value and whether it is inherited or set explicitly.
+decision is made across every linked task's own recorded rule: an explicit `never` on any of them
+keeps the issue open, otherwise an explicit `on-closeout` or `when-all-tasks-close` on any of them
+closes it, otherwise the label list and then the project default apply — so a single override on
+one sibling is enough to decide the outcome for the whole issue. `when-all-tasks-close` waits for
+this scan until every other linked task has itself reached true closeout or been abandoned, decided
+fresh at the last one; `on-closeout` has no sibling to wait for and runs the same scan immediately,
+so a sibling's explicit `never` still keeps the issue open even though this task's own rule alone
+would have closed it. `h9k task show` renders the effective value and whether it is inherited or set explicitly.
 Jira is untouched: a card's merge comment behaviour does not change, and the card is never
 transitioned or closed.
 

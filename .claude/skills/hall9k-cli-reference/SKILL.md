@@ -506,10 +506,13 @@ immediately when there is nothing to wait for. `h9k task publish --close-linked-
 task revise --close-linked-issue` overrides it per task (`default` clears the override, deferring
 to the project's setting live); `h9k project set <project> --never-close-labels epic,prd,adr`
 forces `never` for an issue carrying any of those labels regardless of the project default. When
-several tasks link one issue, the decision at the last one to close scans every linked task's own
-recorded rule: an explicit `never` anywhere keeps it open, otherwise an explicit close-flavoured
-override anywhere closes it, otherwise the label list and then the project default apply — one
-override on one sibling is enough to decide the whole issue, and recency plays no part. Abandoning
+several tasks link one issue, the decision scans every linked task's own recorded rule: an
+explicit `never` anywhere keeps it open, otherwise an explicit close-flavoured override anywhere
+closes it, otherwise the label list and then the project default apply — one override on one
+sibling is enough to decide the whole issue, and recency plays no part. `when-all-tasks-close`
+runs that scan only once every other linked task has itself reached true closeout or been
+abandoned; `on-closeout` has no sibling to wait for and runs it immediately, so a sibling's
+explicit `never` still keeps the issue open. Abandoning
 a task never closes its issue and posts no note. `h9k task show` renders the effective rule and
 whether it is inherited or set explicitly.
 
