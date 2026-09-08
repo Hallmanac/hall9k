@@ -50,6 +50,14 @@ namespace Hall9k.Tests.Integration;
 /// the same suite started before its small per-seam classes were merged into shared-container
 /// ones (PLAN.md §16 #157).
 /// </para>
+/// <para>
+/// Every class that takes this fixture carries <c>[Trait("Category", "RequiresDocker")]</c>, which
+/// is how CI's windows-latest leg leaves this whole tier out (Windows runners cannot run Linux
+/// containers). It is one of two such traits: <c>Category=PublishesBinary</c> marks the two tests
+/// that shell out to a real <c>dotnet publish</c>, which a cycle gate may filter out and the
+/// mandatory final full pass always runs. <c>tests/Hall9k.Tests/README.md</c> documents both,
+/// including why the publish pair also needs a serial collection of its own.
+/// </para>
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
 {
