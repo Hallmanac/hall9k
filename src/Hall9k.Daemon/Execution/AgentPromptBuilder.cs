@@ -149,8 +149,9 @@ public static class AgentPromptBuilder
         AppendSessionEndsAtFinalMessageRule(prompt);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: one THREAD DISPOSITION block per thread as the");
-        prompt.AppendLine("  triage section above asks for, then which threads you fixed, which you");
-        prompt.AppendLine("  declined or routed and why, and any open questions.");
+        prompt.AppendLine($"  triage section above asks for, then `{ThreadDispositionSummaryMarker}` followed");
+        prompt.AppendLine("  by which threads you fixed, which you declined or routed and why, and any open");
+        prompt.AppendLine("  questions.");
         // R8's outbound milestones (task: agents on an interactive-mode task report outbound):
         // this follow-up dispatches under SessionRoleName.Build (RunLauncher's own sessionRole
         // split), so it is a dispatched build session by the same discriminator the rest of this
@@ -1299,6 +1300,9 @@ public static class AgentPromptBuilder
     /// </summary>
     public const string ThreadDispositionMarker = ReviewResultParser.ThreadDispositionMarker;
 
+    /// <summary>The line that closes the last triage block, taught below so recap and dispute prose is never misread as a thread's own reasoning.</summary>
+    public const string ThreadDispositionSummaryMarker = ReviewResultParser.ThreadDispositionSummaryMarker;
+
     /// <summary>
     /// The triage gate itself (task: every review thread on a pull request gets a triage
     /// disposition before any fix work — origin: two full fix laps in two days bought by false
@@ -1339,11 +1343,18 @@ public static class AgentPromptBuilder
         prompt.AppendLine("<why: the fix's brief restatement, the decline's evidence, or the route's scope reason>");
         prompt.AppendLine("```");
         prompt.AppendLine();
-        prompt.AppendLine("One block per thread, ahead of the RESOLUTION line (if any) and the HANDOFF block.");
+        prompt.AppendLine("Write the actual thread's own node id there — never leave the `<the thread's node");
+        prompt.AppendLine("id>` placeholder text above in place, echoed back.");
+        prompt.AppendLine();
+        prompt.AppendLine("One block per thread, back to back with nothing between them, ahead of the");
+        prompt.AppendLine($"RESOLUTION line (if any) and the HANDOFF block. Put a line reading exactly");
+        prompt.AppendLine($"`{ThreadDispositionSummaryMarker}` right after the last block, before any recap");
+        prompt.AppendLine("text, open questions, or dispute narrative — otherwise that prose is read as the");
+        prompt.AppendLine("last thread's own evidence.");
         prompt.AppendLine("`kind=` is the thread-starter's own provider actor type — `Bot` reads as `bot`,");
         prompt.AppendLine("everything else (`User`, a mannequin, an enterprise account) reads as `human` — read");
         prompt.AppendLine("off the same GraphQL `__typename` the thread-fetch already returns, never guessed");
-        prompt.AppendLine("from the login string.");
+        prompt.AppendLine("from the login string. Leave it off rather than guess if you never fetched it.");
         prompt.AppendLine();
     }
 
@@ -1439,8 +1450,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine($"- Close your summary with a line reading exactly `{DisputeMarker}` (the last");
         prompt.AppendLine("  line of the summary, above the HANDOFF block the section below asks for).");
-        prompt.AppendLine("- Above that line, record BOTH positions: what the reviewer asked for and their");
-        prompt.AppendLine("  reasoning, what you would do instead and yours, and what you already did.");
+        prompt.AppendLine($"- Above that line, under the `{ThreadDispositionSummaryMarker}` line the triage");
+        prompt.AppendLine("  section above asks for, record BOTH positions: what the reviewer asked for and");
+        prompt.AppendLine("  their reasoning, what you would do instead and yours, and what you already did.");
         prompt.AppendLine("- The platform parks the run for a human (NeedsHuman) with that text saved beside");
         prompt.AppendLine("  the run, and nothing is pushed until they decide. They resume it with");
         prompt.AppendLine("  `h9k review resolve`.");
