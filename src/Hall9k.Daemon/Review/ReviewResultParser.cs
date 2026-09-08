@@ -294,6 +294,82 @@ public static class ReviewResultParser
         static string Join(List<string> lines) => string.Join('\n', lines).Trim();
     }
 
+    /// <summary>The header line that opens one thread's triage result (task: every review thread on a pull request gets a triage disposition before any fix work).</summary>
+    public const string ThreadDispositionMarker = "THREAD DISPOSITION:";
+
+    /// <summary>
+    /// Every thread a resolve-review-threads follow-up triaged, in the order the summary wrote
+    /// them. A block runs from its <see cref="ThreadDispositionMarker"/> header to the next
+    /// header, to the <c>RESOLUTION:</c> line, or to the <c>HANDOFF:</c> block — the same closing
+    /// rule <see cref="ParseDisagreements"/> uses, and for the same reason: a triage that also
+    /// disputed one genuinely undecidable thread still writes this block for every other thread
+    /// first.
+    /// <para>
+    /// Tolerant the same way every other marker parser here is: a block with no <c>thread=</c> tag
+    /// carries nothing this platform can measure against a real GitHub thread, so it is dropped
+    /// rather than recorded with a guessed id. A block missing <c>disposition=</c> reads
+    /// <see cref="ReviewThreadDisposition.Unknown"/> — a session that triaged without saying how
+    /// is a fact worth keeping, not a parse failure to hide.
+    /// </para>
+    /// <para>
+    /// Returns empty when the output carries no headers at all, which is not "nothing was
+    /// triaged" — it is "this run's prompt never taught the vocabulary, or nothing here can read
+    /// it" — and the caller decides what that means, the same discipline <see cref="ParseFindings"/>
+    /// already documents for its own empty case.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<ReviewThreadOutcome> ParseThreadDispositions(string? summary)
+    {
+        if (summary.IsBlank())
+        {
+            return [];
+        }
+
+        List<ReviewThreadOutcome> outcomes = [];
+        List<string>? block = null;
+        foreach (string rawLine in summary.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            string trimmed = line.TrimStart();
+            bool opensBlock = trimmed.StartsWith(ThreadDispositionMarker, StringComparison.OrdinalIgnoreCase);
+            bool endsBlocks = trimmed.StartsWith("RESOLUTION:", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("HANDOFF:", StringComparison.OrdinalIgnoreCase);
+            if (opensBlock || endsBlocks)
+            {
+                CloseThreadDisposition(outcomes, block);
+                block = opensBlock ? [trimmed] : null;
+                continue;
+            }
+
+            block?.Add(line);
+        }
+
+        CloseThreadDisposition(outcomes, block);
+        return outcomes;
+    }
+
+    private static void CloseThreadDisposition(List<ReviewThreadOutcome> outcomes, List<string>? block)
+    {
+        if (block is null)
+        {
+            return;
+        }
+
+        Dictionary<string, string> header = HeaderTags(block[0][ThreadDispositionMarker.Length..]);
+        string? threadId = Tag(header, "thread");
+        if (threadId.IsBlank())
+        {
+            return;
+        }
+
+        outcomes.Add(new ReviewThreadOutcome(
+            threadId,
+            ReviewThreadDisposition.Parse(Tag(header, "disposition")),
+            string.Join('\n', block.Skip(1)).Trim(),
+            Tag(header, "author"),
+            string.Equals(Tag(header, "kind"), "human", StringComparison.OrdinalIgnoreCase)));
+    }
+
     public static ReviewVerdict ParseVerdict(string? summary) =>
         LastMarkerValue(summary, "VERDICT:") switch
         {
