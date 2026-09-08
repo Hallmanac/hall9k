@@ -1657,6 +1657,14 @@ public sealed class RunAggregate
         State = RunState.ReviewPending;
     }
 
+    // No-op for the same reason Apply(ExternalInteractionLogged) above is: a triage result
+    // changes nothing this aggregate fences or gates on — a follow-up that pushes no commit is
+    // already the ordinary "no diff to gate" shape. Exists only so this stream replays without a
+    // gap; RunDetails.ReviewThreadOutcomes is the read model.
+    public void Apply(ReviewThreadsTriaged @event)
+    {
+    }
+
     public void Apply(ReviewErrored @event)
     {
         ErroredReviewUrl = @event.ReviewUrl;

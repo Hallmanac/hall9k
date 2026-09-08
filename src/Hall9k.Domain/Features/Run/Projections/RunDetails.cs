@@ -313,6 +313,25 @@ public sealed class RunDetails
     /// </summary>
     public List<ReviewDisagreementReplyDirection> ChangesRequestedReplyDirections { get; set; } = [];
     /// <summary>
+    /// Every thread a resolve-review-threads follow-up on this run has triaged, oldest first
+    /// (task: every review thread on a pull request gets a triage disposition before any fix
+    /// work): fix, decline (with the session's own evidence), or route. One entry per thread per
+    /// follow-up run — a thread left open after a decline can be triaged again on a later
+    /// follow-up, and both entries stay, since this is history rather than a live park. Kept for
+    /// measurement (the decline rate across the run's whole life); <c>h9k task show</c> instead
+    /// renders <see cref="LastReviewThreadOutcomes"/>, since the phase line answers "what happened
+    /// last time", not a running total.
+    /// </summary>
+    public List<ReviewThreadOutcome> ReviewThreadOutcomes { get; set; } = [];
+    /// <summary>
+    /// Only the most recent follow-up's own triage — replaced, not appended, on each
+    /// <see cref="Events.ReviewThreadsTriaged"/> — because <c>h9k task show</c>'s phase line labels
+    /// this "last triage" and a running total across every follow-up this run has ever had would
+    /// make that label false the moment a second triage lands. <see cref="ReviewThreadOutcomes"/>
+    /// is where the full history still lives.
+    /// </summary>
+    public List<ReviewThreadOutcome> LastReviewThreadOutcomes { get; set; } = [];
+    /// <summary>
     /// Every <see cref="Events.ExternalInteractionLogged"/> this run's agents have recorded,
     /// oldest first (the escape-hatch invariant, idea fcaded0b's design rulings 4 and 5): whatever
     /// outside interaction an agent had, logged unconditionally through <c>h9k task log-interaction</c>
@@ -989,6 +1008,12 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<ReviewDisagreementReplyDirected> @event, RunDetails view) =>
         view.ChangesRequestedReplyDirections.Add(new ReviewDisagreementReplyDirection(
             @event.Data.Choice, @event.Data.PostedBody, @event.Data.PostedTarget, @event.Data.DirectedAt));
+
+    public void Apply(IEvent<ReviewThreadsTriaged> @event, RunDetails view)
+    {
+        view.ReviewThreadOutcomes.AddRange(@event.Data.Threads);
+        view.LastReviewThreadOutcomes = [.. @event.Data.Threads];
+    }
 
     public void Apply(IEvent<ReviewParked> @event, RunDetails view)
     {
