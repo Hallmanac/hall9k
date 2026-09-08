@@ -17,7 +17,7 @@ namespace Hall9k.Tests.Cli;
 /// <see cref="TaskDecider.Assign"/> and <see cref="TaskDecider.ClaimInteractively"/> into one
 /// unit, with no session and no append, so the composition itself is pinned here without a
 /// database — the concurrency arbitration this composition feeds is pinned separately, against a
-/// real store, in TaskWorkClaimConcurrencyTests. <see cref="TaskWorkCommand.PrepareInteractiveClaimFromBlocked"/>'s
+/// real store, in Integration.ClaimAndLeaseArbitrationTests. <see cref="TaskWorkCommand.PrepareInteractiveClaimFromBlocked"/>'s
 /// own sibling composition, for the already-Blocked entry (task 0ac72cb8-h9k), is pinned in the
 /// second half of this file — it mirrors TaskStartClaimTests's identical shape, carry-forward case
 /// included: h9k task start's own Blocked entry gained the identical carry-forward behavior in the

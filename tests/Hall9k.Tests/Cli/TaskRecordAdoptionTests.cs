@@ -11,7 +11,7 @@ namespace Hall9k.Tests.Cli;
 /// The pure half of adopting an issue that carries a task record: what the record, this install's
 /// resolution of its cross-install references, and the command line come to together. The
 /// store-backed half — resolving issue numbers to local tasks, an epic title to a local epic —
-/// lives in <c>Integration.CrossInstallTaskRecordTests</c>.
+/// lives in <c>Integration.TaskRecordIntegrationTests</c>.
 /// </summary>
 public sealed class TaskRecordAdoptionTests
 {
