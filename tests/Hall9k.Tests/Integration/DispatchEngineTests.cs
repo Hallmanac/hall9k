@@ -17,6 +17,22 @@ using Xunit;
 
 namespace Hall9k.Tests.Integration;
 
+/// <summary>
+/// The dispatcher's own lease lifecycle: the concurrency cap, the expired-lease sweep and the
+/// requeue behind it, the spend budget that gates claiming independently of the cap, and the
+/// parked run a sweep must refresh rather than requeue.
+/// <para>
+/// Five tests, and still its own class and so its own database, against the rule that a
+/// Postgres-backed class this small is folded into a shared-container class grouped by seam
+/// (PLAN.md §16 #157): every assertion here is about how many runs a node is carrying, so a
+/// sibling seam's leftover lease would be counted as one of them — the identical reason
+/// <see cref="DispatchCeilingTests"/> and <see cref="ProjectRunCeilingDispatchTests"/> each keep
+/// a database of their own, and the reason <see cref="ClaimAndLeaseArbitrationTests"/>, which
+/// reads one named row per assertion, holds all three of them out of its own merge. The tests
+/// that can be written against their own seeded ids rather than a cap already are (see each
+/// one's own note); what cannot be is the cap itself.
+/// </para>
+/// </summary>
 [Trait("Category", "RequiresDocker")]
 public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
