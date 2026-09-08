@@ -1153,7 +1153,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_follow_ups_thread_triage_lands_on_the_stream_even_when_it_also_parks()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token, asFollowUp: true);
 
         const string summary =
@@ -1330,12 +1330,39 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_checks_follow_ups_own_summary_quoting_the_triage_marker_is_not_recorded_as_a_triage()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
             store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.FailingChecks);
 
         const string summary =
             "Fixed the flaky test. The skill file's own triage line reads:\n"
+            + "THREAD DISPOSITION: thread=PRRC_1; disposition=fix; kind=bot; author=copilot";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ReviewThreadOutcomes.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The same guard as above, for the fourth follow-up kind the deny-list this replaced once
+    /// missed (cycle-1 pre-PR review, adversarial finding): a stacked replay's prompt never
+    /// teaches the triage marker either, so a summary quoting it — the skill file that teaches it
+    /// lives in the same repo a replay works in — must not be recorded as this run's own triage.
+    /// </summary>
+    [Fact]
+    public async Task A_stack_replay_follow_ups_own_summary_quoting_the_triage_marker_is_not_recorded_as_a_triage()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.StackReplay);
+
+        const string summary =
+            "Replayed the stacked commits onto the new parent head. The skill file's own triage line reads:\n"
             + "THREAD DISPOSITION: thread=PRRC_1; disposition=fix; kind=bot; author=copilot";
         int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
@@ -1384,7 +1411,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             task.Apply(completed);
             var reopened = TaskDecider.Reopen(
                 task, DomainId.New(), "task/test", "CI checks failing on the pull request.",
-                followUpKind, automatic: true, Now, node.OwnerId);
+                followUpKind, automatic: true, Now, node.OwnerId,
+                stackReplayUpstreamCommit: followUpKind == FollowUpKind.StackReplay ? "0000000000000000000000000000000000000a" : null,
+                stackReplayOntoCommit: followUpKind == FollowUpKind.StackReplay ? "0000000000000000000000000000000000000b" : null);
             task.Apply(reopened);
             reopen = [firstClaim, completed, reopened];
         }

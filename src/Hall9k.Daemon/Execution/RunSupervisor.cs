@@ -1197,10 +1197,17 @@ public sealed class RunSupervisor(
     /// triage disposition before any fix work).
     /// <para>
     /// Gated on the same prompt-selection condition <see cref="ParkedOnThreadDisputeAsync"/>'s own
-    /// doc reads back from <c>RunLauncher</c>: only <c>BuildFollowUp</c> teaches the
-    /// <c>THREAD DISPOSITION:</c> marker, so this is a no-op for a CI-fix, a rebase, or a
-    /// changes-requested-review lap — reading their summaries for the marker would either never
-    /// match (nobody taught it) or, for a changes-requested lap, misread its own differently
+    /// doc reads back from <c>RunLauncher</c>, but as an allow-list rather than a deny-list: only
+    /// <c>BuildFollowUp</c> teaches the <c>THREAD DISPOSITION:</c> marker, and
+    /// <c>RunLauncher</c>'s own prompt-selection condition routes every kind other than
+    /// <see cref="FollowUpKind.ReviewFeedback"/> and <see cref="FollowUpKind.Unknown"/> (reopens
+    /// recorded before this vocabulary existed, treated the same as <c>ReviewFeedback</c>) to a
+    /// different prompt — so this is a no-op for a CI-fix, a rebase, a stacked replay, or a
+    /// changes-requested-review lap. A deny-list here would silently miss a future follow-up kind
+    /// the same way one already missed <see cref="FollowUpKind.StackReplay"/> (cycle-1 pre-PR
+    /// review, adversarial finding); an allow-list fails closed instead of open the next time
+    /// <c>RunLauncher</c> grows a kind. Reading a marker-less summary for the marker would either
+    /// never match (nobody taught it) or, for a changes-requested lap, misread its own differently
     /// shaped <c>DISAGREEMENT:</c> blocks as thread triage they are not. A run that carries no
     /// marker at all — a plain build, or a follow-up whose triage genuinely found nothing to say —
     /// appends nothing, which is the same "no moving parts on the happy path" shape every other
@@ -1225,9 +1232,7 @@ public sealed class RunSupervisor(
 
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
         if (task is null
-            || task.FollowUpKind == FollowUpKind.FailingChecks
-            || task.FollowUpKind == FollowUpKind.Rebase
-            || task.FollowUpKind == FollowUpKind.ReviewRequestedChanges)
+            || (task.FollowUpKind != FollowUpKind.ReviewFeedback && task.FollowUpKind != FollowUpKind.Unknown))
         {
             return;
         }
