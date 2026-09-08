@@ -1709,14 +1709,15 @@ public sealed class CloseoutEngine(
     /// comment on the card or issue carrying the pull request, at the moment the merge is
     /// observed.
     /// <para>
-    /// A comment and not a transition, deliberately, for both providers. Which status a merge
-    /// should move an item to is one team's workflow rather than a fact about software — "Done"
-    /// on one board is "Ready for QA" on the next, and GitHub's own closing keywords (Fixes #42)
-    /// would auto-close an issue at merge, which is exactly the guess this repo refuses to make.
-    /// The comment below is a fixed template (<see cref="MergeComment"/>) naming only the pull
-    /// request's URL, the task id, and the project name — none of them free text a closing
-    /// keyword could hide in — so it mentions the pull request without ever asking GitHub to act
-    /// on it.
+    /// The comment is unconditional and the same fixed template (<see cref="MergeComment"/>) for
+    /// both providers, naming only the pull request's URL, the task id, and the project name —
+    /// none of them free text a closing keyword could hide in — so it mentions the pull request
+    /// without ever asking GitHub to act on it via its own closing keywords (<c>Fixes #42</c>).
+    /// Whether the linked item is ALSO closed is a separate, opt-in decision from there: Jira's
+    /// workflow transition is still a guess this repo refuses to make, so a Jira card is only ever
+    /// commented; a GitHub issue can additionally be closed, under the configurable rule
+    /// <see cref="ShouldCloseGitHubIssueAsync"/> decides (task: a task's linked GitHub issue is
+    /// closed at true closeout under a configurable rule, Decisions Log #154).
     /// </para>
     /// <para>
     /// Best-effort, and loudly so. The merge is already recorded and the dependents are already
@@ -2023,18 +2024,15 @@ public sealed class CloseoutEngine(
                 ? CloseLinkedIssueRule.Never
                 : project.CloseLinkedIssue);
 
-        if (rule == CloseLinkedIssueRule.OnCloseout)
-        {
-            return true;
-        }
-
-        // Never (from a label or the project default) or WhenAllTasksClose: either way the answer
-        // is not settled by this task's own rule alone, because a sibling's explicit override can
-        // still beat an inherited never regardless of which task happens to close last (Decisions
-        // Log #154) — so both cases defer to the same cross-task resolution rather than only the
-        // WhenAllTasksClose one.
+        // Every outcome defers to the same cross-task resolution, because a sibling's explicit
+        // override — most of all an explicit never — can still beat this task's own resolved rule
+        // regardless of which task happens to close last (Decisions Log #154). on-closeout is the
+        // one case that does not WAIT for that resolution: it has no sibling to wait for, so it
+        // skips the "has everyone else closed" gate below and goes straight to the scan, which
+        // still lets an explicit never recorded on any linked task keep the issue open.
         await using IQuerySession session = store.QuerySession();
-        if (!await AllOtherLinkedTasksClosedOutAsync(session, taskId, reference, cancellationToken))
+        if (rule != CloseLinkedIssueRule.OnCloseout
+            && !await AllOtherLinkedTasksClosedOutAsync(session, taskId, reference, cancellationToken))
         {
             return false;
         }
@@ -2105,9 +2103,13 @@ public sealed class CloseoutEngine(
     /// The rule decided across every task linked to this issue, at the moment the last one of
     /// them reaches true closeout or is abandoned: an explicit override recorded on ANY linked
     /// task settles it — <see cref="CloseLinkedIssueRule.Never"/> anywhere keeps the issue open,
-    /// otherwise <see cref="CloseLinkedIssueRule.OnCloseout"/> or
-    /// <see cref="CloseLinkedIssueRule.WhenAllTasksClose"/> anywhere closes it — and only when NO
-    /// linked task carries an explicit override at all does the never-close label list and then
+    /// and so does anything else this build cannot place as a close-flavoured rule (not just the
+    /// canonical <see cref="CloseLinkedIssueRule.Unknown"/> sentinel: a stream can carry literally
+    /// any string, and a rule a future build invented reads exactly the same as a hand-edited one
+    /// once it lands here), since an unreadable rule is read the same as an explicit never rather
+    /// than let it fall through to the project default — otherwise <see cref="CloseLinkedIssueRule.OnCloseout"/>
+    /// or <see cref="CloseLinkedIssueRule.WhenAllTasksClose"/> anywhere closes it — and only when
+    /// NO linked task carries an explicit override at all does the never-close label list and then
     /// the project's own default apply. Recency plays no part: every linked task's own recorded
     /// override is read fresh, not whichever was set most recently.
     /// </summary>
@@ -2127,15 +2129,14 @@ public sealed class CloseoutEngine(
                 .OfType<CloseLinkedIssueRule>(),
         ];
 
-        if (explicitOverrides.Contains(CloseLinkedIssueRule.Never))
+        if (explicitOverrides.Count > 0)
         {
-            return false;
-        }
-
-        if (explicitOverrides.Any(overrideRule =>
-            overrideRule == CloseLinkedIssueRule.OnCloseout || overrideRule == CloseLinkedIssueRule.WhenAllTasksClose))
-        {
-            return true;
+            // Membership in the "closes" set, not the "opens" set: anything recorded that is not
+            // itself close-flavoured — an explicit never, or a rule this build cannot place at
+            // all — keeps the issue open, the same fail-toward-open direction the project-level
+            // default check just below already gives an unrecognized project rule.
+            return explicitOverrides.All(overrideRule =>
+                overrideRule == CloseLinkedIssueRule.OnCloseout || overrideRule == CloseLinkedIssueRule.WhenAllTasksClose);
         }
 
         bool labelForcesNever = project.NeverCloseLabels.Count > 0
