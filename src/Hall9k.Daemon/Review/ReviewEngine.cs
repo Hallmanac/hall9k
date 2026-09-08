@@ -1969,6 +1969,13 @@ public sealed class ReviewEngine(
         // `gh pr view` and a second pair of worktree reads to answer a question already answered.
         if (StackedParentWatch.IsStackedChild(context.Run, context.Project))
         {
+            // Deliberately not wired to DecisionsLogRenumberer here (task: a Decisions Log entry
+            // gets its number at merge time, not at write time — a documented scope limit, not an
+            // oversight): the fork point a transition-shape check needs is "against main", which a
+            // checkpoint replay onto a PARENT branch's head does not carry, and this run's own
+            // mergeBase-against-origin-base is never computed on this path at all. A stacked
+            // child's own placeholder stays unrenumbered until this task's branch is retargeted
+            // onto main (#144/#153) and a later call here takes the unstacked path below instead.
             return await RebaseOntoStackedParentAsync(
                 context, StackedCheckpoint.BeforeFinalPass, cancellationToken);
         }
@@ -2056,6 +2063,7 @@ public sealed class ReviewEngine(
                 ProcessResult rebase = await git("git", ["rebase", $"origin/{baseBranch}"], worktreePath, cancellationToken);
                 if (rebase.ExitCode == 0)
                 {
+                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, cancellationToken);
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased cleanly onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}).",
@@ -2086,6 +2094,7 @@ public sealed class ReviewEngine(
                         worktreePath, context.Run.Branch, $"origin/{baseBranch}", cancellationToken))
                 {
                     string observedOntoCommit = await ResolveObservedOntoCommitAsync(worktreePath, baseBranch, cancellationToken);
+                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, cancellationToken);
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, observedOntoCommit, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(observedOntoCommit)}) — "
@@ -2116,6 +2125,40 @@ public sealed class ReviewEngine(
         return await DispatchRebaseRecoverySessionAsync(context, run, humanGuidance: null, cancellationToken)
             ? RebaseGateOutcome.LoopAgain
             : RebaseGateOutcome.Stop;
+    }
+
+    /// <summary>
+    /// The placeholder-numbering convention's own half of this method (task: a Decisions Log
+    /// entry gets its number at merge time, not at write time): called immediately after a clean
+    /// rebase lands, before <see cref="RecordRebaseOutcomeAsync"/>, so the mandatory gate that
+    /// runs next reads the renumbered tree rather than a placeholder still waiting for its real
+    /// number. <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> does the actual work —
+    /// mechanically, no agent session — against this run's own task short id and the merge-base
+    /// this rebase computed before it ran (the fork point its own transition-shape check reads).
+    /// Best-effort like every other step on this path: a renumbering failure is logged and
+    /// swallowed rather than failing the run, since it is never this run's own work at fault and
+    /// closeout's own guard keeps failing the build honestly if something about the log's tail is
+    /// genuinely wrong.
+    /// </summary>
+    private async Task RenumberDecisionsLogPlaceholderAsync(
+        ReviewContext context, ProcessRunner git, string worktreePath, string forkPointSha, CancellationToken cancellationToken)
+    {
+        try
+        {
+            DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+                git, worktreePath, forkPointSha, DomainId.Short(context.TaskId), cancellationToken);
+            if (result.Outcome == DecisionsLogRenumberOutcome.Renumbered)
+            {
+                logger.LogInformation(
+                    "Run {RunId}: Decisions Log #{OldToken} renumbered to #{NewNumber} ({FilesRewritten} citation file(s) rewritten)",
+                    context.RunId, result.OldToken, result.NewNumber, result.FilesRewritten);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception, "Run {RunId}: the Decisions Log renumbering step failed — proceeding without it", context.RunId);
+        }
     }
 
     /// <summary>
