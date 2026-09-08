@@ -194,6 +194,97 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "the lap's own run is no longer the task's current one, so adoption retires it as a stale candidate");
     }
 
+    /// <summary>
+    /// The good path (task: a do-now session launched by h9k task start is caught within
+    /// seconds): a deliberate headless start's session exits with nobody watching, but the
+    /// worktree it left behind is clean with a commit beyond its base branch — so the platform
+    /// delivers it automatically instead of leaving the task reading "building" forever, exactly
+    /// the origin incident (task ef2fefe5) this closes.
+    /// </summary>
+    [Fact]
+    public async Task Deliberate_headless_start_with_a_clean_committed_tree_is_delivered_automatically()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, string worktreePath) =
+            await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
+
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine));
+        await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+        RunDetails run = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+
+        run.ExitedUnattendedReason.Should().BeNull("a clean, committed tree needs no human flag");
+        run.InputTokens.Should().Be(1200, "the session's own token spend must still be recorded");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunDeliveredAutomatically>().Should().ContainSingle(
+            "the automatic delivery must be recorded on the stream, distinctly from a human's own h9k task deliver");
+        events.OfType<AgentSessionCompleted>().Should().ContainSingle(
+            e => e.DeliveredByNodeId == node.NodeId,
+            "the same hand-off h9k task deliver records, carrying the delivering node's real id");
+
+        Directory.Exists(worktreePath).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The bad path, uncommitted shape: the session exited with nobody watching and left a
+    /// modified, uncommitted file — the platform cannot honestly deliver that on the operator's
+    /// behalf, so it flags the task needs-you instead of showing "building" indefinitely.
+    /// </summary>
+    [Fact]
+    public async Task Deliberate_headless_start_with_a_dirty_tree_is_flagged_needs_you()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId, string worktreePath) =
+            await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: true, cts.Token);
+
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine));
+        await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+        await WaitForEventCountAsync<RunUnattendedExitFlagged>(store, runId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ExitedUnattendedReason.Should().NotBeNull("the dirty file is exactly what a human needs told about");
+        run.ExitedUnattendedReason.Should().Contain("uncommitted");
+        run.State.Should().BeOneOf(RunState.Dispatched, RunState.Running,
+            "the run must stay where h9k task deliver/work/release already expect it — no widened guard needed");
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Claimed, "the three levers this flag names all require Claimed");
+    }
+
+    /// <summary>
+    /// The scoping guard (task: a do-now session launched by h9k task start is caught within
+    /// seconds): an ordinary sentinel-claimed run that is NOT a deliberate headless start — an
+    /// operator's own attended <c>h9k task work</c> claim shares the identical <see cref="Guid.Empty"/>
+    /// NodeId sentinel — must never be swept up here. Nothing should attend, deliver, or flag a
+    /// claim a human is sitting in front of.
+    /// </summary>
+    [Fact]
+    public async Task AdoptDeliberateHeadlessStartsAsync_leaves_an_ordinary_interactive_claim_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        using DocumentStore store = NewStore();
+        (NodeContext node, Guid taskId, Guid runId) = await SeedOpenReviewLapAsync(store, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node, new FakeProcessManager());
+        await supervisor.AdoptDeliberateHeadlessStartsAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Dispatched, "a claim this sweep must never touch stays exactly where it was");
+        run.ExitedUnattendedReason.Should().BeNull();
+        supervisor.ActiveCount.Should().Be(0, "IsDeliberateHeadlessStart is false, so this run was never a candidate");
+    }
+
     [Fact]
     public async Task Daemon_restart_mid_run_adopts_the_orphan_and_completes_it()
     {
@@ -985,6 +1076,84 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         await session.SaveChangesAsync(cancellationToken);
 
         return (node, taskId, runId);
+    }
+
+    /// <summary>
+    /// A <c>h9k task start</c> claim, exactly as <c>TaskStartCommand</c> itself records one:
+    /// claimed deliberately under the ceiling-exempt <see cref="Guid.Empty"/> NodeId sentinel,
+    /// <see cref="RunDispatched.IsDeliberateHeadlessStart"/> true, and
+    /// <see cref="RunDispatched.DispatchingNodeId"/> this node's own — the field
+    /// <see cref="RunSupervisor.AdoptDeliberateHeadlessStartsAsync"/> scopes its sweep by. The
+    /// worktree is a REAL git repository (base branch <c>main</c>, task branch <c>task/test</c>
+    /// checked out), because <c>VerificationRunner.DetectStrandedWorkAsync</c> runs actual `git
+    /// status`/`git rev-list` against it — a plain empty directory (most other seeds in this file)
+    /// would read as "git status unobservable" for every scenario alike, which is a real, distinct
+    /// case of its own but not the one these tests exist to exercise.
+    /// </summary>
+    private async Task<(NodeContext Node, Guid TaskId, Guid RunId, string WorktreePath)> SeedDeliberateHeadlessStartTaskAsync(
+        DocumentStore store, bool withTaskCommit, bool dirty, CancellationToken cancellationToken)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-headless-start-repo-{taskId:N}");
+        string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-headless-start-wt-{taskId:N}");
+        _createdWorktreePaths.Add(worktreePath);
+
+        Directory.CreateDirectory(worktreePath);
+        string commitStep = withTaskCommit
+            ? "git -c user.email=t@t -c user.name=t commit --allow-empty -m work -q && "
+            : string.Empty;
+        string dirtyStep = dirty ? "echo changed > tracked.txt" : "true";
+        await RunShellAsync(
+            worktreePath,
+            "git init -q -b main && git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q && "
+            + "echo original > tracked.txt && git add tracked.txt && "
+            + "git -c user.email=t@t -c user.name=t commit -q -m seed && "
+            + "git checkout -q -b task/test && "
+            + commitStep + dirtyStep,
+            cancellationToken);
+
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"headless-start-{taskId:N}", repositoryPath,
+            new Uri("https://github.com/acme/web"), "main", Now);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Headless start test task", ["it completes"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, node.OwnerId, runId, Now, dependencyOverrideAcknowledged: false, interactiveMode: false);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+            worktreePath, "task/test", ExecutorMode.Subscription, Now,
+            RunDirectory: RunPaths.GlobalDirectory(runId), SessionName: $"{DomainId.Short(taskId)}-build",
+            DispatchingNodeId: node.NodeId, IsDeliberateHeadlessStart: true));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (node, taskId, runId, worktreePath);
+    }
+
+    private static async Task RunShellAsync(string workingDirectory, string script, CancellationToken cancellationToken)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "/bin/sh",
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+        };
+        process.StartInfo.ArgumentList.Add("-c");
+        process.StartInfo.ArgumentList.Add(script);
+        process.Start();
+        await process.WaitForExitAsync(cancellationToken);
+        process.ExitCode.Should().Be(0, $"'{script}' must succeed for the test repo to be usable");
     }
 
     /// <summary>

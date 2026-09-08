@@ -74,13 +74,23 @@ public sealed class RunSupervisor(
     /// <see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.ResolveCurrentDirectory"/>'s own
     /// doc comment and PLAN.md §16 #84.
     /// </summary>
+    /// <param name="isDeliberateHeadlessStart">
+    /// True only for a run <see cref="AdoptDeliberateHeadlessStartsAsync"/> is picking up (task: a
+    /// do-now session launched by h9k task start is caught within seconds) — every other caller
+    /// leaves this at its default false, which keeps the daemon's own ordinary dispatch path
+    /// (<see cref="RunLauncher"/>, and every other <see cref="StartMonitoring"/> caller in this
+    /// file) byte-for-byte unchanged: <see cref="MonitorAsync"/> only branches on it at the two
+    /// points below where the two shapes actually diverge.
+    /// </param>
     public void StartMonitoring(
         Guid runId, string runDirectory, Guid taskId, int processId, DateTimeOffset processStartedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool isDeliberateHeadlessStart = false)
     {
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         _monitors.TryAdd(runId, Task.Run(
-            () => MonitorAsync(runId, resolvedRunDirectory, taskId, processId, processStartedAt, cancellationToken),
+            () => MonitorAsync(
+                runId, resolvedRunDirectory, taskId, processId, processStartedAt, cancellationToken,
+                isDeliberateHeadlessStart),
             cancellationToken));
     }
 
@@ -391,7 +401,7 @@ public sealed class RunSupervisor(
 
     private async Task MonitorAsync(
         Guid runId, string runDirectory, Guid taskId, int processId, DateTimeOffset processStartedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool isDeliberateHeadlessStart = false)
     {
         try
         {
@@ -413,6 +423,18 @@ public sealed class RunSupervisor(
 
                 if (sawResult)
                 {
+                    // A deliberate headless start (h9k task start) never goes through the ordinary
+                    // dispatched-build pipeline below (task: a do-now session launched by h9k task
+                    // start is caught within seconds) — nothing attends it to run h9k task deliver,
+                    // so the platform decides for itself whether to deliver or flag it, instead of
+                    // CompleteRunAsync's error/budget/pr-review/verify-review-PR machinery, none of
+                    // which this unattended shape was ever meant to enter.
+                    if (isDeliberateHeadlessStart)
+                    {
+                        await HandleDeliberateHeadlessStartExitAsync(runId, taskId, runDirectory, result, cancellationToken);
+                        return;
+                    }
+
                     (int ProcessId, DateTimeOffset ProcessStartedAt)? retried =
                         await CompleteRunAsync(runId, runDirectory, taskId, result!, cancellationToken);
                     if (retried is { } resumed)
@@ -441,6 +463,16 @@ public sealed class RunSupervisor(
                     deadSince ??= DateTimeOffset.UtcNow;
                     if (DateTimeOffset.UtcNow - deadSince > DeadProcessGrace)
                     {
+                        if (isDeliberateHeadlessStart)
+                        {
+                            // Same reasoning as the sawResult branch above: a process that died
+                            // without ever writing a result line is not this run kind's ordinary
+                            // FailRunAsync case either — the worktree is the ground truth here,
+                            // not whether the agent got to report anything at all.
+                            await HandleDeliberateHeadlessStartExitAsync(runId, taskId, runDirectory, result: null, cancellationToken);
+                            return;
+                        }
+
                         await FailRunAsync(runId, taskId, ReadStandardErrorTail(runDirectory), cancellationToken);
                         return;
                     }
@@ -619,6 +651,180 @@ public sealed class RunSupervisor(
         }
 
         return null;
+    }
+
+    private static readonly string[] AdoptableDeliberateHeadlessStartStates =
+        [RunState.Dispatched.Value, RunState.Running.Value];
+
+    /// <summary>
+    /// The running-daemon counterpart of <see cref="AdoptOrphansAsync"/> for a shape that sweep
+    /// never sees at all (task: a do-now session launched by h9k task start is caught within
+    /// seconds): a <c>h9k task start</c> claim's own run carries the same ceiling-exempt
+    /// <see cref="Guid.Empty"/> NodeId an operator's own interactive claim does, so it is
+    /// deliberately invisible to every ordinary <c>NodeId == nodeId</c> query — the whole point of
+    /// that sentinel is "a human owns this, not a daemon". But unlike an interactive claim, nothing
+    /// actually attends this one: the CLI process that launched it exits the moment the detached
+    /// agent is confirmed alive (<c>HeadlessLaunch.SpawnDetached</c>'s own doc), so its session can
+    /// finish and exit with no daemon and no human ever noticing — the origin incident this run
+    /// closes (task ef2fefe5: a clean, one-commit session sat undelivered for an hour). Scoped to
+    /// <see cref="RunDetails.DispatchingNodeId"/> rather than <see cref="RunDetails.NodeId"/>, the
+    /// identical reasoning <see cref="SentinelPrReviewCandidatesAsync"/> already applies to its own
+    /// sentinel widening: the sentinel itself carries no node identity, so without this a
+    /// multi-node install sharing one database would let every node's daemon race to adopt the
+    /// same claim.
+    /// <para>
+    /// Called every dispatch cycle, the same cadence <see cref="ResumeStrandedPipelinesAsync"/>
+    /// already runs at (<c>DispatchLoop</c>'s own per-cycle loop) — not only at startup, since a
+    /// session <c>h9k task start</c> just launched can finish and exit while this daemon is
+    /// already running, and nothing else would ever notice. <see cref="RunDetails.ExitedUnattendedReason"/>
+    /// being null is what keeps this from re-adopting (and re-checking the worktree of) a run this
+    /// sweep already flagged on an earlier cycle — once one of the three levers the flag names
+    /// moves <see cref="RunState"/> off Dispatched/Running, the state filter below stops matching
+    /// it anyway, so this condition only ever matters for the brief window between flagging and
+    /// that.
+    /// </para>
+    /// </summary>
+    public async Task AdoptDeliberateHeadlessStartsAsync(CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        Guid nodeId = node.NodeId;
+        IReadOnlyList<RunDetails> candidates = await query.Query<RunDetails>()
+            .Where(r => r.NodeId == Guid.Empty)
+            .Where(r => r.DispatchingNodeId == nodeId)
+            .Where(r => r.IsDeliberateHeadlessStart)
+            .Where(r => r.ExitedUnattendedReason == null)
+            .Where(r => r.ProcessId != null)
+            .Where(r => r.MatchesSql(
+                "d.data ->> 'state' in (?, ?)",
+                AdoptableDeliberateHeadlessStartStates[0], AdoptableDeliberateHeadlessStartStates[1]))
+            .ToListAsync(cancellationToken);
+
+        foreach (RunDetails run in candidates.Where(r => !_monitors.ContainsKey(r.Id)))
+        {
+            logger.LogInformation(
+                "Run {RunId}: a deliberate headless start (h9k task start) with no monitor — watching for its "
+                + "session to exit",
+                run.Id);
+            StartMonitoring(
+                run.Id, run.RunDirectory, run.TaskId, run.ProcessId!.Value, run.ProcessStartedAt ?? default,
+                cancellationToken, isDeliberateHeadlessStart: true);
+        }
+    }
+
+    /// <summary>
+    /// What a deliberate headless start's session actually left behind, decided the moment
+    /// <see cref="MonitorAsync"/> observes it is over — a result line, or the process simply gone
+    /// (task: a do-now session launched by h9k task start is caught within seconds). Reuses
+    /// <see cref="VerificationRunner.DetectStrandedWorkAsync"/> whole: the identical clean-tree-
+    /// with-commits question <c>h9k task deliver</c> already answers by hand, rather than a second,
+    /// independently maintained copy of the same git status and commit-count reads. A clean tree
+    /// with commits beyond its base delivers automatically — push, then the standard pipeline
+    /// (gates, review, pull request) via the same <see cref="AgentSessionCompleted"/> hand-off
+    /// <c>h9k task deliver</c> itself uses, recorded as an automatic delivery with
+    /// <see cref="RunDeliveredAutomatically"/>. Anything else — uncommitted files, no commits at
+    /// all, or a worktree this check could not even read — flags the task needs-you instead
+    /// (<see cref="RunUnattendedExitFlagged"/>), naming what was found and the lever that clears
+    /// it, rather than showing "building" indefinitely.
+    /// </summary>
+    private async Task HandleDeliberateHeadlessStartExitAsync(
+        Guid runId, Guid taskId, string runDirectory, AgentResult? result, CancellationToken cancellationToken)
+    {
+        if (result is not null)
+        {
+            await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        if (run is null || task is null
+            || (run.State != RunState.Dispatched && run.State != RunState.Running)
+            || task.CurrentRunId != runId)
+        {
+            // Already moved on — delivered, released, handed back, or re-entered by a human
+            // between this run's own dispatch and this moment. Nothing here is this sweep's to
+            // decide any more.
+            return;
+        }
+
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (project is null)
+        {
+            return;
+        }
+
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, run.LeaseGeneration, "unattended-exit handling", cancellationToken))
+        {
+            return;
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        VerificationRunner.StrandedWorkCheck check =
+            await verification.DetectStrandedWorkAsync(run, task, project, cancellationToken);
+
+        if (result is not null)
+        {
+            // Mirrors CompleteRunAsync's own identical pairing (and h9k task deliver's own, for the
+            // interactive claim this run kind stands in for): unrecorded otherwise, this run's own
+            // token spend would silently under-count the node's periodic budget regardless of which
+            // path below it takes.
+            session.Events.Append(runId, result.ToTokensRecorded(runId, now, run.Model));
+        }
+
+        if (check.Observed && check.FailureReason is null)
+        {
+            string reason =
+                "h9k task start launched this session unattended; it exited with a clean, committed tree, "
+                + "so the platform delivered it automatically rather than leaving it undelivered.";
+            session.Events.Append(runId, new RunDeliveredAutomatically(runId, now, reason));
+            // The delivering node's own id, exactly as h9k task deliver's own hand-off records it
+            // (AgentSessionCompleted.DeliveredByNodeId's own doc): from here the run travels the
+            // identical daemon-driven pipeline a headless dispatch's own completion hands into, and
+            // NodeLoad's own ceiling measurement counts strictly by NodeId.
+            session.Events.Append(runId, new AgentSessionCompleted(runId, now, run.DispatchingNodeId));
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: lost the generation race delivering run {RunId} automatically — a newer "
+                    + "claim committed first",
+                    taskId, runId);
+                return;
+            }
+
+            logger.LogInformation(
+                "Run {RunId}: h9k task start's session exited unattended with a clean, committed tree — "
+                + "delivered automatically",
+                runId);
+            return;
+        }
+
+        string flaggedReason = check.Observed
+            ? check.FailureReason!
+            : "the platform could not read the worktree's git status after the session exited, so it could "
+              + "not confirm the tree was safe to deliver automatically";
+        session.Events.Append(runId, new RunUnattendedExitFlagged(runId, flaggedReason, now));
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: lost the generation race flagging run {RunId}'s unattended exit — a newer "
+                + "claim committed first",
+                taskId, runId);
+            return;
+        }
+
+        logger.LogWarning(
+            "Run {RunId}: h9k task start's session exited unattended and could not be delivered automatically "
+            + "— flagged needs-you. {Reason}",
+            runId, flaggedReason);
     }
 
     /// <summary>

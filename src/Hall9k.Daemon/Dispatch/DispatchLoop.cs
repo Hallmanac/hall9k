@@ -120,6 +120,11 @@ public sealed class DispatchLoop(
                 // (h9k review resolve) or a branch an operator just delivered interactively
                 // (h9k task deliver) re-enters the pipeline before anything else acts.
                 await supervisor.ResumeStrandedPipelinesAsync(stoppingToken);
+                // A deliberate h9k task start claim carries no lease and no monitor of its own
+                // (task: a do-now session launched by h9k task start is caught within seconds) —
+                // this is what notices its session exiting and either delivers it automatically or
+                // flags it needs-you, on the same cadence ResumeStrandedPipelinesAsync already runs.
+                await supervisor.AdoptDeliberateHeadlessStartsAsync(stoppingToken);
                 await engine.SweepExpiredLeasesAsync(stoppingToken);
                 // Before claiming: whose dependencies have closed out (or died) since last time.
                 await engine.ReevaluateBlockedTasksAsync(stoppingToken);
