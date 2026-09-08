@@ -24,6 +24,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging;
@@ -41,6 +42,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
 
+    // The non-terminal line most scripts below emit first, standing in for the assistant turn a
+    // real session streams before its result.
+    private const string AssistantLine = """{"type":"assistant"}""";
+
     // Shaped like a real cached session: nearly all input arrives as cache reads (log #30).
     private const string ResultLine =
         """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"cache_read_input_tokens":840000,"cache_creation_input_tokens":21000,"output_tokens":300},"total_cost_usd":0.0123}""";
@@ -52,9 +57,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     // NewSupervisor's own construction below. SeedClaimedTaskWithProjectAsync's worktree is a
     // real directory (its own doc comment explains why), so on a machine where `claude` resolves
     // on PATH, any test here whose run actually reaches the review loop would launch a real,
-    // billable agent session. Pinning this off-PATH for the whole class keeps `/bin/sh` starting
-    // (preserving the race-closing timing that real directory exists for) while `exec` always
-    // fails to find the binary, exactly as HeadlessLaunchTests pins it for the same reason.
+    // billable agent session. Pinning this off-PATH for the whole class keeps the spawn's own
+    // shell starting (preserving the race-closing timing that real directory exists for) while
+    // `exec` always fails to find the binary, exactly as HeadlessLaunchTests pins it for the
+    // same reason.
     private readonly string? _previousClaudePath = PinClaudeBinaryOffPath();
     private readonly List<string> _createdWorktreePaths = [];
 
@@ -81,7 +87,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         RunSupervisor supervisor = NewSupervisor(store, node);
         int processId = SpawnFakeAgent(runId,
-            $"sleep 0.3; echo '{{\"type\":\"assistant\"}}'; sleep 0.3; echo '{ResultLine}'");
+            FakeAgentScript.New().Pause(0.3).Emit(AssistantLine).Pause(0.3).Emit(ResultLine));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
@@ -197,7 +203,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         // Agent outlives the "first daemon": takes ~4s, first monitor is killed after ~1s.
         int processId = SpawnFakeAgent(runId,
-            $"echo '{{\"type\":\"assistant\"}}'; sleep 4; echo '{ResultLine}'");
+            FakeAgentScript.New().Emit(AssistantLine).Pause(4).Emit(ResultLine));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         using (CancellationTokenSource firstDaemon = new())
@@ -287,7 +293,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         using DocumentStore store = NewStore();
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
-        int processId = SpawnFakeAgent(runId, "echo '{\"type\":\"assistant\"}'; exit 1");
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Exit(1));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
@@ -319,7 +325,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         // Long-running agent; by the time the "restarted daemon" adopts it the heartbeat
         // already reads as expired — exactly the sleep-through-restart shape.
-        int processId = SpawnFakeAgent(runId, "echo '{\"type\":\"assistant\"}'; sleep 30");
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Pause(30));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -397,7 +403,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             await session.SaveChangesAsync(cts.Token);
         }
 
-        int processId = SpawnFakeAgent(staleRunId, "echo '{\"type\":\"assistant\"}'; exit 1");
+        int processId = SpawnFakeAgent(staleRunId, FakeAgentScript.New().Emit(AssistantLine).Exit(1));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, staleRunId, processId, cts.Token);
 
         ListLogger<RunSupervisor> logger = new();
@@ -460,9 +466,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             await session.SaveChangesAsync(cts.Token);
         }
 
-        int staleProcessId = SpawnFakeAgent(staleRunId, "echo '{\"type\":\"assistant\"}'; sleep 30");
+        int staleProcessId = SpawnFakeAgent(staleRunId, FakeAgentScript.New().Emit(AssistantLine).Pause(30));
         await RecordProcessStartedAsync(store, staleRunId, staleProcessId, cts.Token);
-        int liveProcessId = SpawnFakeAgent(liveRunId, "echo '{\"type\":\"assistant\"}'; sleep 30");
+        int liveProcessId = SpawnFakeAgent(liveRunId, FakeAgentScript.New().Emit(AssistantLine).Pause(30));
         await RecordProcessStartedAsync(store, liveRunId, liveProcessId, cts.Token);
 
         ListLogger<RunSupervisor> logger = new();
@@ -512,7 +518,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         const string budgetResultLine =
             """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached|1762952400"}""";
         int processId = SpawnFakeAgent(runId,
-            $"echo '{{\"type\":\"assistant\"}}'; echo '{budgetResultLine}'");
+            FakeAgentScript.New().Emit(AssistantLine).Emit(budgetResultLine));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
@@ -545,7 +551,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         const string errorResultLine =
             """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Internal server error"}""";
-        int processId = SpawnFakeAgent(runId, $"echo '{{\"type\":\"assistant\"}}'; echo '{errorResultLine}'");
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(errorResultLine));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         ScriptedResumeExecutor resumeExecutor = new(ResultLine);
@@ -589,7 +595,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
         const string errorResultLine =
             """{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Internal server error"}""";
-        int processId = SpawnFakeAgent(runId, $"echo '{{\"type\":\"assistant\"}}'; echo '{errorResultLine}'");
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(errorResultLine));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         ScriptedResumeExecutor resumeExecutor = new(errorResultLine);
@@ -715,9 +721,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         const string disputed =
             "Answered three threads. The fourth asks for a different projection shape.\n"
             + "RESOLUTION: disputed";
-        // printf, not echo: the JSON carries an escaped newline and sh's echo expands it,
-        // which would split the result line in half and leave nothing parseable.
-        int processId = SpawnFakeAgent(runId, $"printf '%s\\n' '{DisputedResultLine(disputed)}'");
+        // The script writes the line verbatim: the JSON carries an escaped newline, and any
+        // spelling that expanded it would split the result line in half and leave nothing
+        // parseable (sh's own `echo` does exactly that, which is why FakeAgentScript uses
+        // `printf` there).
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(disputed)));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
@@ -750,7 +758,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         const string disputed =
             "Rebased cleanly except one file: both branches rewrote the same retry policy.\n"
             + "RESOLUTION: disputed";
-        int processId = SpawnFakeAgent(runId, $"printf '%s\\n' '{DisputedResultLine(disputed)}'");
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(disputed)));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
@@ -802,7 +810,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         const string disputed =
             "Answered three threads. The fourth asks for a different projection shape.\n"
             + "RESOLUTION: disputed";
-        int processId = SpawnFakeAgent(runId, $"printf '%s\\n' '{DisputedResultLine(disputed)}'");
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(disputed)));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         ListLogger<RunSupervisor> logger = new();
@@ -832,8 +840,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         using DocumentStore store = NewStore();
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
-        int processId = SpawnFakeAgent(runId,
-            $"printf '%s\\n' '{DisputedResultLine("Quoting the rules: RESOLUTION: disputed is how a follow-up parks.")}'");
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(
+            DisputedResultLine("Quoting the rules: RESOLUTION: disputed is how a follow-up parks.")));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         NewSupervisor(store, node).StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
@@ -859,8 +867,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
             store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.FailingChecks);
 
-        int processId = SpawnFakeAgent(runId, $"printf '%s\\n' '{DisputedResultLine(
-            "Fixed the flaky test. The skill file's park line reads RESOLUTION: disputed.")}'");
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(
+            "Fixed the flaky test. The skill file's park line reads RESOLUTION: disputed.")));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         NewSupervisor(store, node).StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
@@ -1003,7 +1011,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     /// therefore a real, task-unique temp directory, not just a plausible-looking path.
     /// </para>
     /// <para>
-    /// A real working directory is exactly what makes <c>/bin/sh</c> start rather than throw —
+    /// A real working directory is exactly what makes that spawn's own shell start rather than throw —
     /// on a machine where <c>claude</c> resolves on <c>PATH</c>, that is a real agent session,
     /// not a race-closing no-op. This class's own <c>HALL9K_CLAUDE_PATH</c> pin (see the field
     /// above) is what keeps it inert: the shell still starts, exactly preserving the timing this
@@ -1068,14 +1076,12 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         }
     }
 
-    private int SpawnFakeAgent(Guid runId, string script)
+    private static int SpawnFakeAgent(Guid runId, FakeAgentScript script)
     {
-        Directory.CreateDirectory(RunPaths.GlobalDirectory(runId));
-        Process process = new();
-        process.StartInfo = new ProcessStartInfo { FileName = "/bin/sh", UseShellExecute = false };
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add($"({script}) > \"{RunPaths.StreamFile(RunPaths.GlobalDirectory(runId))}\" 2> \"{RunPaths.StandardErrorFile(RunPaths.GlobalDirectory(runId))}\"");
-        process.Start();
+        string runDirectory = RunPaths.GlobalDirectory(runId);
+        Directory.CreateDirectory(runDirectory);
+        Process process = script.Start(
+            RunPaths.StreamFile(runDirectory), RunPaths.StandardErrorFile(runDirectory));
         return process.Id;
     }
 
@@ -1185,23 +1191,11 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     {
         Environment.SetEnvironmentVariable("HALL9K_HOME", null);
         Environment.SetEnvironmentVariable("HALL9K_CLAUDE_PATH", _previousClaudePath);
-        try
-        {
-            Directory.Delete(_home, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
+        TemporaryTree.TryDelete(_home);
 
         foreach (string worktreePath in _createdWorktreePaths)
         {
-            try
-            {
-                Directory.Delete(worktreePath, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TemporaryTree.TryDelete(worktreePath);
         }
     }
 }
