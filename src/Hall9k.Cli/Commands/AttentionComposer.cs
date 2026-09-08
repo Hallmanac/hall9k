@@ -81,6 +81,26 @@ internal static class AttentionComposer
                 $"h9k task show {id}");
         }
 
+        // A deliberate headless start (h9k task start) whose session exited unattended and could
+        // not be delivered automatically (task: a do-now session launched by h9k task start is
+        // caught within seconds) — checked ahead of the dead-blocker, stalled, and stale-
+        // interactive-claim arms below, all of which this row's own Dispatched/Running state and
+        // Gone/NotApplicable liveness would otherwise also match, each with a less specific or
+        // outright wrong cause (the stale-claim nudge, in particular, would advise re-attaching
+        // with h9k task work as though a terminal were still open to it). RunSupervisor never
+        // moves RunState for this flag, so this reads directly off the recorded reason rather than
+        // any state transition.
+        if (run?.ExitedUnattendedReason is { } exitedUnattendedReason
+            && (run.State == Domain.Features.Run.RunState.Dispatched
+                || run.State == Domain.Features.Run.RunState.Running))
+        {
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                exitedUnattendedReason,
+                $"h9k task deliver {id} (if the work is actually done), h9k task work {id} (to look at it "
+                + $"yourself), or h9k task release {id} (to give it back)");
+        }
+
         if (run?.State == Domain.Features.Run.RunState.ReviewParked)
         {
             return new TaskAttention(

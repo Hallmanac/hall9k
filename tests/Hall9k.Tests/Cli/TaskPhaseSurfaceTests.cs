@@ -117,6 +117,52 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
     }
 
+    /// <summary>
+    /// A deliberate headless start (h9k task start) whose session exited unattended and could
+    /// not be delivered automatically (task: a do-now session launched by h9k task start is
+    /// caught within seconds): the origin incident this closes (task ef2fefe5) is exactly this
+    /// row reading "building" indefinitely instead.
+    /// </summary>
+    [Fact]
+    public void An_unattended_exit_flag_replaces_building_with_needs_your_input()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Running, sessionProcessId: null);
+        run.SessionName = "abcd1234-build";
+        run.ExitedUnattendedReason =
+            "The session ended with uncommitted files still sitting in the worktree: tracked.txt.";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty), run);
+
+        row.Phase.Text.Should().Be("needs your input");
+        row.Phase.Detail.Should().Be(run.ExitedUnattendedReason);
+        row.Phase.Liveness.Should().Be(SessionLiveness.NotApplicable);
+    }
+
+    /// <summary>
+    /// The reason an unattended-exit flag records is never cleared, so once one of the three
+    /// levers it names moves the run past Dispatched/Running — h9k task deliver into Verifying,
+    /// chief among them — the phase line must stop reading "needs your input" over a run that has
+    /// in fact moved on into the gates. Regression for a self-review finding: the first cut of this
+    /// check fired on the reason alone, with no state guard, so a delivered run's phase line stayed
+    /// stuck on "needs your input" forever after.
+    /// </summary>
+    [Fact]
+    public void An_unattended_exit_flag_stops_reading_needs_your_input_once_the_run_moves_on()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Verifying, sessionProcessId: null);
+        run.SessionName = "abcd1234-build";
+        run.ExitedUnattendedReason = "Agent produced no commits: branch holds nothing beyond 'main'.";
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId, claimedByNodeId: Guid.Empty), run);
+
+        row.Phase.Text.Should().Be("gates", "h9k task deliver already moved this run past the flag");
+        row.Phase.Text.Should().NotBe("needs your input");
+    }
+
     [Fact]
     public void A_run_that_records_no_session_never_reads_as_one_that_is_running()
     {
