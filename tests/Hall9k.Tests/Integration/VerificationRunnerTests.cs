@@ -24,6 +24,7 @@ using Microsoft.Extensions.Options;
 using Xunit;
 
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 
 namespace Hall9k.Tests.Integration;
 
@@ -34,6 +35,16 @@ namespace Hall9k.Tests.Integration;
 public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
+
+    // The signature GateInfrastructureFailureClassifier recognizes as the container failing
+    // rather than the work failing; the gates below that stand in for a flaky environment have
+    // to emit it verbatim.
+    private const string ConnectionRefused = "Npgsql.NpgsqlException: Connection refused";
+
+    // VSTest's own end-of-run summary, which a scoped gate has to emit for the run to read the
+    // attempt as having actually executed tests.
+    private const string PassedSummaryLine =
+        "Passed!  - Failed: 0, Passed: 3, Skipped: 0, Total: 3, Duration: 1 s";
 
     private readonly string _home = SetTempHome();
     private readonly string _worktree = Path.Combine(Path.GetTempPath(), $"hall9k-vt-{Guid.NewGuid():N}");
@@ -51,7 +62,11 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("hello", "echo hello-from-gate"), new VerifyCommand("truth", "true")], cts.Token);
+            [
+                new VerifyCommand("hello", GateScript.New().Print("hello-from-gate").Command),
+                new VerifyCommand("truth", GateScript.Passes),
+            ],
+            cts.Token);
 
         await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -84,7 +99,12 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("ok", "true"), new VerifyCommand("boom", "echo exploding; exit 3"), new VerifyCommand("never", "true")], cts.Token);
+            [
+                new VerifyCommand("ok", GateScript.Passes),
+                new VerifyCommand("boom", GateScript.New().Print("exploding").Exit(3).Command),
+                new VerifyCommand("never", GateScript.Passes),
+            ],
+            cts.Token);
 
         await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -129,7 +149,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         try
         {
             (Guid taskId, Guid runId) = await SeedAsync(
-                store, [new VerifyCommand("broken", "echo unconditionally-broken; exit 1")], cts.Token,
+                store, [new VerifyCommand("broken", GateScript.New().Print("unconditionally-broken").Exit(1).Command)], cts.Token,
                 repositoryPath: cleanBase);
 
             await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -143,7 +163,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
         finally
         {
-            Directory.Delete(cleanBase, recursive: true);
+            TemporaryTree.Delete(cleanBase);
         }
     }
 
@@ -164,7 +184,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         try
         {
             (Guid taskId, Guid runId) = await SeedAsync(
-                store, [new VerifyCommand("broken", "echo unconditionally-broken; exit 1")], cts.Token,
+                store, [new VerifyCommand("broken", GateScript.New().Print("unconditionally-broken").Exit(1).Command)], cts.Token,
                 repositoryPath: uncleanBase);
 
             await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -180,7 +200,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
         finally
         {
-            Directory.Delete(uncleanBase, recursive: true);
+            TemporaryTree.Delete(uncleanBase);
         }
     }
 
@@ -204,7 +224,9 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             File.WriteAllText(Path.Combine(_worktree, "bug-marker"), "this run's own branch introduced a bug\n");
             (Guid taskId, Guid runId) = await SeedAsync(
                 store,
-                [new VerifyCommand("regressed", "test -f bug-marker && exit 1 || exit 0")],
+                [new VerifyCommand(
+                    "regressed",
+                    GateScript.New().BranchOnFile("bug-marker", GateScript.New().Exit(1), GateScript.New().Exit(0)).Command)],
                 cts.Token,
                 repositoryPath: cleanBase);
 
@@ -219,7 +241,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
         finally
         {
-            Directory.Delete(cleanBase, recursive: true);
+            TemporaryTree.Delete(cleanBase);
         }
     }
 
@@ -248,10 +270,18 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         {
             Guid projectId = DomainId.New();
             Guid nodeId = DomainId.New();
+            // One line appended per comparison, rather than an incrementing number: counting
+            // lines needs nothing but append-and-echo, where shell arithmetic would need a
+            // different spelling in each dialect for no gain.
             VerifyCommand gate = new(
                 "broken",
-                $"if [ -d .git ]; then c=$(cat '{counterFile}' 2>/dev/null || echo 0); " +
-                $"echo $((c+1)) > '{counterFile}'; fi; echo unconditionally-broken; exit 1");
+                GateScript.New()
+                    .BranchOnDirectory(
+                        ".git",
+                        GateScript.New().AppendTo("compared", counterFile),
+                        GateScript.New().Print("not the comparison checkout"))
+                    .Print("unconditionally-broken")
+                    .Exit(1).Command);
 
             (Guid taskId1, Guid runId1) = await SeedAsync(
                 store, [gate], cts.Token, repositoryPath: cleanBase, projectId: projectId, nodeId: nodeId);
@@ -269,12 +299,12 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 "also fails when run against a clean checkout of 'main'",
                 "the second run's failure reason comes from the cached verdict, not a fresh comparison");
 
-            File.ReadAllText(counterFile).Trim().Should().Be(
-                "1", "the clean-base comparison itself only actually ran once across both runs");
+            File.ReadAllLines(counterFile).Should().ContainSingle(
+                "the clean-base comparison itself only actually ran once across both runs");
         }
         finally
         {
-            Directory.Delete(cleanBase, recursive: true);
+            TemporaryTree.Delete(cleanBase);
             File.Delete(counterFile);
         }
     }
@@ -305,10 +335,13 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             Guid nodeId = DomainId.New();
             VerifyCommand gate = new(
                 "broken",
-                $"if [ -d .git ]; then " +
-                $"if [ -f '{markerFile}' ]; then echo unconditionally-broken; exit 1; " +
-                $"else touch '{markerFile}'; sleep 30; fi; " +
-                "else echo unconditionally-broken; exit 1; fi");
+                GateScript.New().BranchOnDirectory(
+                    ".git",
+                    GateScript.New().BranchOnFile(
+                        markerFile,
+                        GateScript.New().Print("unconditionally-broken").Exit(1),
+                        GateScript.New().CreateFile(markerFile).Pause(TimeSpan.FromSeconds(30))),
+                    GateScript.New().Print("unconditionally-broken").Exit(1)).Command);
 
             VerificationRunner runner = new(
                 store,
@@ -336,7 +369,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
         finally
         {
-            Directory.Delete(cleanBase, recursive: true);
+            TemporaryTree.Delete(cleanBase);
             File.Delete(markerFile);
         }
     }
@@ -353,9 +386,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using DocumentStore store = NewStore();
         string marker = Path.Combine(_worktree, "retry-marker");
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("flaky",
-                $"if test -f {marker}; then echo ok; exit 0; " +
-                $"else touch {marker}; echo 'Npgsql.NpgsqlException: Connection refused'; exit 1; fi")],
+            [new VerifyCommand("flaky", GateScript.New().BranchOnFile(
+                marker,
+                GateScript.New().Print("ok").Exit(0),
+                GateScript.New().CreateFile(marker).Print(ConnectionRefused).Exit(1)).Command)],
             cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -393,7 +427,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("dead", "echo 'Npgsql.NpgsqlException: Connection refused'; exit 1")], cts.Token);
+            [new VerifyCommand("dead", GateScript.New().Print(ConnectionRefused).Exit(1).Command)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -424,7 +458,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("dead", "echo 'Npgsql.NpgsqlException: Connection refused'; exit 1")], cts.Token);
+            [new VerifyCommand("dead", GateScript.New().Print(ConnectionRefused).Exit(1).Command)], cts.Token);
 
         // The crash window: a prior daemon lifetime committed the retry and then died before
         // this gate's outcome was ever recorded — no VerificationFailed/VerificationPassed
@@ -459,10 +493,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("flaky",
-                "echo 'Npgsql.NpgsqlException: Connection refused'; " +
-                "for i in $(seq 1 100); do echo 'padding line long enough to push the marker past a 400-character tail'; done; " +
-                "exit 1")],
+            [new VerifyCommand("flaky", GateScript.New()
+                .Print(ConnectionRefused)
+                .PrintRepeated("padding line long enough to push the marker past a 400-character tail", 100)
+                .Exit(1).Command)],
             cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -492,9 +526,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using DocumentStore store = NewStore();
         string marker = Path.Combine(_worktree, "retry-marker");
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("flaky",
-                $"if test -f {marker}; then echo 'Assert.Equal() Failure: Expected 3, Actual 4'; exit 1; " +
-                $"else touch {marker}; echo 'Npgsql.NpgsqlException: Connection refused'; exit 1; fi")],
+            [new VerifyCommand("flaky", GateScript.New().BranchOnFile(
+                marker,
+                GateScript.New().Print("Assert.Equal() Failure: Expected 3, Actual 4").Exit(1),
+                GateScript.New().CreateFile(marker).Print(ConnectionRefused).Exit(1)).Command)],
             cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -528,7 +563,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
-        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("slow", "sleep 30")], cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("slow", GateScript.New().Pause(TimeSpan.FromSeconds(30)).Command)], cts.Token);
 
         VerificationRunner runner = new(
             store,
@@ -558,9 +593,11 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using DocumentStore store = NewStore();
         string marker = Path.Combine(_worktree, "retry-marker");
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("flaky",
-                $"if test -f {marker}; then echo ok; exit 0; " +
-                $"else touch {marker}; echo 'Npgsql.NpgsqlException: Connection refused'; sleep 30; fi")],
+            [new VerifyCommand("flaky", GateScript.New().BranchOnFile(
+                marker,
+                GateScript.New().Print("ok").Exit(0),
+                GateScript.New().CreateFile(marker).Print(ConnectionRefused)
+                    .Pause(TimeSpan.FromSeconds(30))).Command)],
             cts.Token);
 
         VerificationRunner runner = new(
@@ -604,13 +641,18 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using DocumentStore store = NewStore();
         string marker = Path.Combine(_worktree, "retry-marker");
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("flaky",
-                $"if test -f {marker}; then echo ok; exit 0; " +
-                $"else touch {marker}; " +
-                "echo 'Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate " +
-                "(3s elapsed, 4 max concurrent)' > " +
-                $"\"${GateInfrastructureFailureClassifier.GateWaitEvidenceDirectoryEnvironmentVariable}/waiting.txt\"; " +
-                "sleep 30; fi")],
+            [new VerifyCommand("flaky", GateScript.New().BranchOnFile(
+                marker,
+                GateScript.New().Print("ok").Exit(0),
+                GateScript.New()
+                    .CreateFile(marker)
+                    .PrintTo(
+                        "Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate "
+                        + "(3s elapsed, 4 max concurrent)",
+                        GateScript.EnvironmentPath(
+                            GateInfrastructureFailureClassifier.GateWaitEvidenceDirectoryEnvironmentVariable,
+                            "waiting.txt"))
+                    .Pause(TimeSpan.FromSeconds(30))).Command)],
             cts.Token);
 
         VerificationRunner runner = new(
@@ -636,7 +678,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using DocumentStore store = NewStore();
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -659,7 +701,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
-        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -682,7 +724,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token, trackedFile: "stranded.txt");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "stranded.txt"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -713,7 +755,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await File.WriteAllTextAsync(
             Path.Combine(_worktree, "src", "Hall9k.Connectors", "NewFeature.cs"), "brand new", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -741,7 +783,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await File.WriteAllTextAsync(
             Path.Combine(_worktree, "tests", "Hall9k.Tests", "NewFeatureTests.cs"), "brand new test", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -771,7 +813,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         Directory.CreateDirectory(Path.Combine(_worktree, "tests", "Hall9k.Tests", "TestResults"));
         await File.WriteAllTextAsync(
             Path.Combine(_worktree, "tests", "Hall9k.Tests", "TestResults", "host.trx"), "gate byproduct", cts.Token);
-        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -795,7 +837,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -834,7 +876,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using DocumentStore store = NewStore();
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
         await File.WriteAllTextAsync(Path.Combine(_worktree, "TestResults.trx"), "gate byproduct", cts.Token);
-        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -850,7 +892,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using DocumentStore store = NewStore();
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("truth", "true")], cts.Token, TaskType.Research);
+            [new VerifyCommand("truth", GateScript.Passes)], cts.Token, TaskType.Research);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -870,7 +912,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token, trackedFile: "notes.md");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "notes.md"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("truth", "true")], cts.Token, TaskType.Research);
+            [new VerifyCommand("truth", GateScript.Passes)], cts.Token, TaskType.Research);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -895,7 +937,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using DocumentStore store = NewStore();
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
-        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
         CommittingRecoveryExecutor recovery = new(_worktree);
 
         bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -934,7 +976,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -975,7 +1017,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
         DiscardingRecoveryExecutor recovery = new(_worktree, "half-done.cs");
 
         bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -1016,7 +1058,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         File.Delete(Path.Combine(_worktree, "half-done.cs"));
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
         DiscardingRecoveryExecutor recovery = new(_worktree, "half-done.cs");
 
         bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -1059,31 +1101,33 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         Directory.CreateDirectory(submoduleSource);
         try
         {
-            await RunShellAsync(
-                submoduleSource,
-                "git init -q -b main && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init",
-                cts.Token);
+            await TestGit.RunAsync(submoduleSource, ["init", "-q", "-b", "main"], cts.Token);
+            await TestGit.RunAsync(
+                submoduleSource, TestGit.CommitAs("commit", "-q", "--allow-empty", "-m", "init"), cts.Token);
 
             Directory.CreateDirectory(_worktree);
-            await RunShellAsync(
+            await TestGit.RunAsync(_worktree, ["init", "-q", "-b", "main"], cts.Token);
+            await TestGit.RunAsync(
+                _worktree, TestGit.CommitAs("commit", "-q", "--allow-empty", "-m", "init"), cts.Token);
+            await TestGit.RunAsync(_worktree, ["checkout", "-q", "-b", "task/verify"], cts.Token);
+            await TestGit.RunAsync(
                 _worktree,
-                "git init -q -b main && " +
-                "git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init && " +
-                "git checkout -q -b task/verify && " +
-                $"git -c protocol.file.allow=always submodule add {submoduleSource} sub && " +
-                "git -c user.email=t@t -c user.name=t commit -q -m addsub",
+                ["-c", "protocol.file.allow=always", "submodule", "add", submoduleSource, "sub"],
                 cts.Token);
+            await TestGit.RunAsync(_worktree, TestGit.CommitAs("commit", "-q", "-m", "addsub"), cts.Token);
 
             // Advance the submodule's own history and move the parent's checked-out pointer to
             // it without committing that bump — the shape `git status` reports as ` M sub`, never
             // a deletion, the way a submodule bump always reads.
-            await RunShellAsync(
-                submoduleSource, "git -c user.email=t@t -c user.name=t commit -q --allow-empty -m second", cts.Token);
-            string submoduleHead = (await RunShellCapturingAsync(submoduleSource, "git rev-parse HEAD", cts.Token)).Trim();
-            await RunShellAsync(
-                Path.Combine(_worktree, "sub"), $"git fetch -q origin && git checkout -q {submoduleHead}", cts.Token);
+            await TestGit.RunAsync(
+                submoduleSource, TestGit.CommitAs("commit", "-q", "--allow-empty", "-m", "second"), cts.Token);
+            string submoduleHead =
+                (await TestGit.CaptureAsync(submoduleSource, ["rev-parse", "HEAD"], cts.Token)).Trim();
+            string submodulePath = Path.Combine(_worktree, "sub");
+            await TestGit.RunAsync(submodulePath, ["fetch", "-q", "origin"], cts.Token);
+            await TestGit.RunAsync(submodulePath, ["checkout", "-q", submoduleHead], cts.Token);
 
-            (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", "true")], cts.Token);
+            (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
             CommittingRecoveryExecutor recovery = new(_worktree);
 
             bool passed =
@@ -1101,13 +1145,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
         finally
         {
-            try
-            {
-                Directory.Delete(submoduleSource, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TemporaryTree.TryDelete(submoduleSource);
         }
     }
 
@@ -1128,7 +1166,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
         bool passed = await NewRunner(store, new SpawnFailureExecutor())
             .VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
@@ -1161,7 +1199,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], cts.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.Append(runId, new RunUncommittedWorkRecoveryAttempted(
@@ -1196,7 +1234,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: true, hardStop.Token, trackedFile: "half-done.cs");
         await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", hardStop.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("never", "echo should-not-run")], hardStop.Token);
+            [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], hardStop.Token);
 
         FakeProcessManager processManager = new();
         using CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(hardStop.Token);
@@ -1225,7 +1263,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         using DocumentStore store = NewStore();
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("boom", "echo exploding; exit 3")], cts.Token);
+            [new VerifyCommand("boom", GateScript.New().Print("exploding").Exit(3).Command)], cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -1301,7 +1339,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand(
                 "test",
-                "dotnet test --help; echo 'Passed!  - Failed: 0, Passed: 3, Skipped: 0, Total: 3, Duration: 1 s'")],
+                GateScript.New().Run("dotnet test --help").Print(PassedSummaryLine).Command)],
             cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", cts.Token);
@@ -1339,7 +1377,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await CommitAsync(
             "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
-            [new VerifyCommand("test", "dotnet test --help; echo 'No test matches the given testcase filter'")], cts.Token);
+            [new VerifyCommand(
+                "test",
+                GateScript.New().Run("dotnet test --help")
+                    .Print("No test matches the given testcase filter").Command)], cts.Token);
 
         ListLogger<VerificationRunner> logger = new();
         VerificationRunner runner = new(
@@ -1379,10 +1420,13 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n    public int Count;\n}\n", "fix widget", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [
-                new VerifyCommand("unit", "dotnet test --help; echo 'No test matches the given testcase filter'"),
+                new VerifyCommand(
+                    "unit",
+                    GateScript.New().Run("dotnet test --help")
+                        .Print("No test matches the given testcase filter").Command),
                 new VerifyCommand(
                     "integration",
-                    "dotnet test --help; echo 'Passed!  - Failed: 0, Passed: 3, Skipped: 0, Total: 3, Duration: 1 s'"),
+                    GateScript.New().Run("dotnet test --help").Print(PassedSummaryLine).Command),
             ],
             cts.Token);
 
@@ -1450,7 +1494,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
             using DocumentStore store = NewStore();
             (Guid taskId, Guid runId) = await SeedAsync(
-                store, [new VerifyCommand("envcheck", PrintEnvironmentVariableCommand(VariableName))], cts.Token);
+                store, [new VerifyCommand("envcheck", GateScript.PrintEnvironmentVariable(VariableName))], cts.Token);
 
             bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
 
@@ -1518,9 +1562,6 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 "the project's own inline assignment overrides the platform default");
     }
 
-    private static string PrintEnvironmentVariableCommand(string variableName) =>
-        OperatingSystem.IsWindows() ? $"echo %{variableName}%" : $"echo ${variableName}";
-
     /// <summary>
     /// Seeds the worktree as a real repo shaped like this one — `main`, a task branch ahead of it
     /// (the same shape <see cref="InitGitWorktreeAsync"/> gives the uncommitted-files tests,
@@ -1533,16 +1574,16 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     private async Task<string> InitScopableRepoAsync(CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(_worktree);
-        await RunShellAsync(_worktree, "git init -q -b main", cancellationToken);
-        await RunShellAsync(
-            _worktree, "git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q", cancellationToken);
-        await RunShellAsync(_worktree, "git checkout -q -b task/verify", cancellationToken);
+        await TestGit.RunAsync(_worktree, ["init", "-q", "-b", "main"], cancellationToken);
+        await TestGit.RunAsync(
+            _worktree, TestGit.CommitAs("commit", "--allow-empty", "-m", "init", "-q"), cancellationToken);
+        await TestGit.RunAsync(_worktree, ["checkout", "-q", "-b", "task/verify"], cancellationToken);
         await CommitAsync("src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n}\n", "add widget", cancellationToken);
         await CommitAsync(
             "tests/Hall9k.Tests/WidgetTests.cs",
             "public sealed class WidgetTests\n{\n    private readonly Widget _widget = new();\n}\n",
             "add widget tests", cancellationToken);
-        return (await RunShellCapturingAsync(_worktree, "git rev-parse HEAD", cancellationToken)).Trim();
+        return (await TestGit.CaptureAsync(_worktree, ["rev-parse", "HEAD"], cancellationToken)).Trim();
     }
 
     /// <summary>
@@ -1555,10 +1596,9 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     private static async Task InitializeCleanCheckoutAsync(string directory, string branch, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(directory);
-        await RunShellAsync(
-            directory,
-            $"git init -q -b {branch} && git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q",
-            cancellationToken);
+        await TestGit.RunAsync(directory, ["init", "-q", "-b", branch], cancellationToken);
+        await TestGit.RunAsync(
+            directory, TestGit.CommitAs("commit", "--allow-empty", "-m", "init", "-q"), cancellationToken);
     }
 
     private async Task CommitAsync(string relativePath, string content, string message, CancellationToken cancellationToken)
@@ -1566,45 +1606,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         string fullPath = Path.Combine(_worktree, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         await File.WriteAllTextAsync(fullPath, content, cancellationToken);
-        await RunShellAsync(_worktree, "git add -A", cancellationToken);
-        await RunShellAsync(
-            _worktree, $"git -c user.email=t@t -c user.name=t commit -q -m \"{message}\"", cancellationToken);
-    }
-
-    private static async Task RunShellAsync(string workingDirectory, string script, CancellationToken cancellationToken)
-    {
-        using System.Diagnostics.Process process = new();
-        process.StartInfo = new System.Diagnostics.ProcessStartInfo
-        {
-            FileName = "/bin/sh",
-            WorkingDirectory = workingDirectory,
-            UseShellExecute = false,
-        };
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add(script);
-        process.Start();
-        await process.WaitForExitAsync(cancellationToken);
-        process.ExitCode.Should().Be(0, $"'{script}' must succeed for the test repo to be usable");
-    }
-
-    private static async Task<string> RunShellCapturingAsync(
-        string workingDirectory, string script, CancellationToken cancellationToken)
-    {
-        using System.Diagnostics.Process process = new();
-        process.StartInfo = new System.Diagnostics.ProcessStartInfo
-        {
-            FileName = "/bin/sh",
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-        };
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add(script);
-        process.Start();
-        string output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        process.ExitCode.Should().Be(0, $"'{script}' must succeed for the test repo to be usable");
-        return output;
+        await TestGit.RunAsync(_worktree, ["add", "-A"], cancellationToken);
+        await TestGit.RunAsync(_worktree, TestGit.CommitAs("commit", "-q", "-m", message), cancellationToken);
     }
 
     /// <summary>
@@ -1618,28 +1621,22 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         bool withTaskCommit, CancellationToken cancellationToken, string? trackedFile = null)
     {
         Directory.CreateDirectory(_worktree);
-        string seedTrackedFile = trackedFile is null
-            ? string.Empty
-            : $"echo original > {trackedFile} && git add {trackedFile} && ";
-        string script =
-            "git init -q -b main && " +
-            seedTrackedFile +
-            "git -c user.email=t@t -c user.name=t commit --allow-empty -m init -q && " +
-            "git checkout -q -b task/verify" +
-            (withTaskCommit ? " && git -c user.email=t@t -c user.name=t commit --allow-empty -m work -q" : "");
-
-        using System.Diagnostics.Process process = new();
-        process.StartInfo = new System.Diagnostics.ProcessStartInfo
+        await TestGit.RunAsync(_worktree, ["init", "-q", "-b", "main"], cancellationToken);
+        if (trackedFile is not null)
         {
-            FileName = "/bin/sh",
-            WorkingDirectory = _worktree,
-            UseShellExecute = false,
-        };
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add(script);
-        process.Start();
-        await process.WaitForExitAsync(cancellationToken);
-        process.ExitCode.Should().Be(0, "the test repo must seed cleanly");
+            await File.WriteAllTextAsync(
+                Path.Combine(_worktree, trackedFile), "original\n", cancellationToken);
+            await TestGit.RunAsync(_worktree, ["add", trackedFile], cancellationToken);
+        }
+
+        await TestGit.RunAsync(
+            _worktree, TestGit.CommitAs("commit", "--allow-empty", "-m", "init", "-q"), cancellationToken);
+        await TestGit.RunAsync(_worktree, ["checkout", "-q", "-b", "task/verify"], cancellationToken);
+        if (withTaskCommit)
+        {
+            await TestGit.RunAsync(
+                _worktree, TestGit.CommitAs("commit", "--allow-empty", "-m", "work", "-q"), cancellationToken);
+        }
     }
 
     private DocumentStore NewStore() => DocumentStore.For(opts =>
@@ -1709,9 +1706,9 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
             Spawns.Add(request);
-            await RunShellAsync(worktree, "git add -A", cancellationToken);
-            await RunShellAsync(
-                worktree, "git -c user.email=t@t -c user.name=t commit -q -m recovered", cancellationToken);
+            await TestGit.RunAsync(worktree, ["add", "-A"], cancellationToken);
+            await TestGit.RunAsync(
+                worktree, TestGit.CommitAs("commit", "-q", "-m", "recovered"), cancellationToken);
 
             string runDirectory = RunPaths.ResolveCurrentDirectory(request.RunDirectory);
             Directory.CreateDirectory(runDirectory);
@@ -1740,7 +1737,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
-            await RunShellAsync(worktree, $"git checkout -- {discardedFile}", cancellationToken);
+            await TestGit.RunAsync(worktree, ["checkout", "--", discardedFile], cancellationToken);
 
             string runDirectory = RunPaths.ResolveCurrentDirectory(request.RunDirectory);
             Directory.CreateDirectory(runDirectory);
@@ -1857,13 +1854,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         Environment.SetEnvironmentVariable("HALL9K_HOME", null);
         foreach (string dir in new[] { _home, _worktree })
         {
-            try
-            {
-                Directory.Delete(dir, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
+            TemporaryTree.TryDelete(dir);
         }
     }
 }
