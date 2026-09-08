@@ -757,14 +757,20 @@ public sealed class RunSupervisor(
     /// (task: a do-now session launched by h9k task start is caught within seconds). Reuses
     /// <see cref="VerificationRunner.DetectStrandedWorkAsync"/> whole: the identical clean-tree-
     /// with-commits question <c>h9k task deliver</c> already answers by hand, rather than a second,
-    /// independently maintained copy of the same git status and commit-count reads. A clean tree
-    /// with commits beyond its base delivers automatically — push, then the standard pipeline
-    /// (gates, review, pull request) via the same <see cref="AgentSessionCompleted"/> hand-off
-    /// <c>h9k task deliver</c> itself uses, recorded as an automatic delivery with
-    /// <see cref="RunDeliveredAutomatically"/>. Anything else — uncommitted files, no commits at
-    /// all, or a worktree this check could not even read — flags the task needs-you instead
-    /// (<see cref="RunUnattendedExitFlagged"/>), naming what was found and the lever that clears
-    /// it, rather than showing "building" indefinitely.
+    /// independently maintained copy of the same git status and commit-count reads. Also confirms
+    /// the worktree is actually checked out on <c>run.Branch</c> (<see cref="VerificationRunner.GetCurrentBranchAsync"/>),
+    /// the same guard <c>h9k task deliver</c> runs by hand before it ever pushes — without it, a
+    /// session that died mid-recompose rebase could leave a clean, committed, but DETACHED tree,
+    /// which would gate one tree while the pipeline later pushes and opens a pull request over a
+    /// different one (independent pre-PR review, cycle 1, both lenses). A clean tree on its claim
+    /// branch, with commits beyond its base, is handed straight into the standard pipeline (gates,
+    /// review, then push and pull request — this handler itself never pushes) via the same
+    /// <see cref="AgentSessionCompleted"/> hand-off <c>h9k task deliver</c> itself uses, recorded as
+    /// an automatic delivery with <see cref="RunDeliveredAutomatically"/>. Anything else —
+    /// uncommitted files, no commits at all, the wrong branch checked out, or a worktree this check
+    /// could not even read — flags the task needs-you instead (<see cref="RunUnattendedExitFlagged"/>),
+    /// naming what was found and the lever that clears it, rather than showing "building"
+    /// indefinitely.
     /// </summary>
     private async Task HandleDeliberateHeadlessStartExitAsync(
         Guid runId, Guid taskId, string runDirectory, AgentResult? result, CancellationToken cancellationToken)
@@ -908,7 +914,19 @@ public sealed class RunSupervisor(
         VerificationRunner.StrandedWorkCheck check =
             await verification.DetectStrandedWorkAsync(run, task, project, cancellationToken);
 
-        if (check.Observed && check.FailureReason is null)
+        // DetectStrandedWorkAsync counts commits and reads status against whatever HEAD happens
+        // to be — it never confirms HEAD is actually run.Branch. h9k task deliver runs this exact
+        // extra guard by hand before it ever pushes (TaskDeliverCommand.cs), because a clean,
+        // committed, but DETACHED tree — a session that died mid-recompose rebase, between
+        // applied picks — would otherwise sail through the check above and let the pipeline gate
+        // one tree while PullRequestOpener pushes and opens a pull request over a different,
+        // pre-rebase one (independent pre-PR review, cycle 1, both lenses). Null, not mismatched,
+        // when git could not answer at all: never guessed at as either matching or not, the same
+        // "never guess" convention DetectStrandedWorkAsync's own reads already follow.
+        string? currentBranch = await VerificationRunner.GetCurrentBranchAsync(run.WorktreePath, cancellationToken);
+        bool onClaimBranch = currentBranch is null || currentBranch == run.Branch;
+
+        if (check.Observed && check.FailureReason is null && onClaimBranch)
         {
             string reason =
                 "a deliberate headless start (h9k task start, or h9k task handback --now) launched this "
@@ -954,10 +972,18 @@ public sealed class RunSupervisor(
             return;
         }
 
-        string flaggedReason = check.Observed
-            ? check.FailureReason!
-            : "the platform could not read the worktree's git status after the session exited, so it could "
-              + "not confirm the tree was safe to deliver automatically";
+        string flaggedReason = !onClaimBranch
+            ? "a deliberate headless start (h9k task start, or h9k task handback --now) launched this "
+              + "session unattended; the worktree was left checked out to "
+              + (currentBranch!.Length == 0 ? "a detached commit" : $"'{currentBranch}'")
+              + $", not its claim branch '{run.Branch}', so the platform could not confirm the tree it would "
+              + "gate and open a pull request over is the tree the session actually left behind. Check out "
+              + $"'{run.Branch}' in the worktree, then use whichever of h9k task deliver, handback, or "
+              + "release fits."
+            : check.Observed
+                ? check.FailureReason!
+                : "the platform could not read the worktree's git status after the session exited, so it could "
+                  + "not confirm the tree was safe to deliver automatically";
         session.Events.Append(
             runId, expectedVersion: runStreamState.Version + 1, new RunUnattendedExitFlagged(runId, flaggedReason, now));
         try
