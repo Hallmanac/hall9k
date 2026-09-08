@@ -169,8 +169,8 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
   load on demand rather than assuming a session was pre-briefed on the whole CLI surface
 - **orchestrator-recipe-generator** — write or regenerate a node's or project's orchestrator
   recipe (`recipes/orchestrator.md` and the scoped-session recipes) against the platform's own
-  contract; it never writes `recipes/launch-anchor.md` or `recipes/settings.json`, which the
-  platform renders itself, always overwritten. Ships as a first draft (§16 #147)
+  contract; the platform alone renders `recipes/launch-anchor.md` and `recipes/settings.json`,
+  always overwritten, and the skill never writes either one (Decisions Log #147, #155)
 
 There is deliberately no create-pr skill: PRs are opened by the daemon (`PullRequestOpener`),
 never by agents.
