@@ -14,31 +14,35 @@ namespace Hall9k.Tests.Cli;
 /// applied and could in principle clobber it, so this is the regression net for that, mirroring
 /// <see cref="PublishExcludesDevelopmentSettingsTests"/>'s own reasoning for the identical kind
 /// of assumption about Development settings files.
+/// <para>
+/// Trait and collection as on that sibling, and for the same two reasons — see its doc comment.
+/// This is also the reason the pair cannot collapse into one shared published output: the two
+/// publish different projects (the daemon there, the CLI here) with different MSBuild properties
+/// (this one's whole subject is an override the other must not carry), so what they share is the
+/// warm build cache underneath, not the output.
+/// </para>
 /// </summary>
+[Trait("Category", "PublishesBinary")]
+[Collection("PublishesBinary")]
 public sealed class PublishStampsInformationalVersionTests : IDisposable
 {
     private readonly string directory = Directory.CreateTempSubdirectory("h9k-publish-version-").FullName;
-    private readonly string artifactsPath = Directory.CreateTempSubdirectory("h9k-publish-version-artifacts-").FullName;
 
     public void Dispose()
     {
         PublishTestSupport.TryDelete(directory);
-        PublishTestSupport.TryDelete(artifactsPath);
     }
 
     [Fact]
     public async Task A_published_binary_reports_the_informational_version_override_with_metadata_stripped()
     {
         string repoRoot = PublishTestSupport.FindRepositoryRoot();
-        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(5));
 
         PublishTestSupport.ExecResult publish = await PublishTestSupport.RunPublishAsync(
             repoRoot,
             "Hall9k.Cli",
             directory,
-            artifactsPath,
-            ["-p:InformationalVersion=0.2.0-12-gabc1234"],
-            timeout.Token);
+            ["-p:InformationalVersion=0.2.0-12-gabc1234"]);
 
         publish.AssertSucceeded();
         InstallCommand.ReadPublishedVersion(directory).Should().Be("0.2.0-12-gabc1234",
