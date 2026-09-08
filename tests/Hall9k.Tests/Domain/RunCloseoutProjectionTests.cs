@@ -64,6 +64,50 @@ public sealed class RunCloseoutProjectionTests
     }
 
     /// <summary>
+    /// A follow-up's own triage (task: every review thread on a pull request gets a triage
+    /// disposition before any fix work) lands on <see cref="RunDetails.ReviewThreadOutcomes"/>
+    /// without moving <see cref="RunDetails.State"/> — it is informational, the same way
+    /// <see cref="RunDetails.ChangesRequestedDisagreements"/> already is. A second triage on the
+    /// same run keeps appending to <see cref="RunDetails.ReviewThreadOutcomes"/> (the full
+    /// history, kept for measurement) but *replaces* <see cref="RunDetails.LastReviewThreadOutcomes"/>
+    /// — the field <c>h9k task show</c> actually renders as "last triage" — proving the phase line
+    /// cannot regress into reporting a running total under a "last" label.
+    /// </summary>
+    [Fact]
+    public void Review_threads_triaged_records_each_outcome_without_moving_state()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = AwaitingReviewRun(projection, id);
+
+        projection.Apply(new FakeEvent<ReviewFeedbackReceived>(
+            new ReviewFeedbackReceived(id, 2, Now, UnresolvedHumanThreadCount: 1)), view);
+
+        projection.Apply(new FakeEvent<ReviewThreadsTriaged>(new ReviewThreadsTriaged(
+            id,
+            [
+                new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo evidence", "copilot"),
+                new ReviewThreadOutcome("PRRC_2", ReviewThreadDisposition.Route, "filed as idea abc123", "brianhallmanac", IsHuman: true),
+            ],
+            Now.AddMinutes(5))), view);
+
+        view.State.Should().Be(RunState.ReviewPending, "a triage record answers what happened, not whether the run advanced");
+        view.ReviewThreadOutcomes.Should().HaveCount(2);
+        view.ReviewThreadOutcomes[0].Disposition.Should().Be(ReviewThreadDisposition.Decline);
+        view.ReviewThreadOutcomes[1].IsHuman.Should().BeTrue();
+        view.LastReviewThreadOutcomes.Should().HaveCount(2);
+
+        projection.Apply(new FakeEvent<ReviewThreadsTriaged>(new ReviewThreadsTriaged(
+            id,
+            [new ReviewThreadOutcome("PRRC_3", ReviewThreadDisposition.Fix, "applied the suggested fix")],
+            Now.AddMinutes(10))), view);
+
+        view.ReviewThreadOutcomes.Should().HaveCount(3, "the full history keeps every follow-up's own entries");
+        view.LastReviewThreadOutcomes.Should().ContainSingle()
+            .Which.ThreadId.Should().Be("PRRC_3", "the latest triage replaces the previous one rather than accumulating");
+    }
+
+    /// <summary>
     /// An observation written before reviewers other than Copilot were counted never looked at
     /// authorship, so it replays as unknown rather than as "no humans" (Decisions Log #62, and
     /// the never-guess rule).

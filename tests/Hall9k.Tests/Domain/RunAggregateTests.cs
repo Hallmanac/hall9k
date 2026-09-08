@@ -2100,6 +2100,32 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// A follow-up's own triage (task: every review thread on a pull request gets a triage
+    /// disposition before any fix work) replays the identical way <see cref="ExternalInteractionLogged"/>
+    /// does — it moves nothing this aggregate fences or gates on, since a follow-up that pushes no
+    /// commit because every thread declined or routed is already the ordinary "no diff to gate"
+    /// shape. <see cref="RunDetails.ReviewThreadOutcomes"/> is the read model.
+    /// </summary>
+    [Fact]
+    public void Review_threads_triaged_replays_as_a_pure_no_op()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+
+        Action act = () => run.Apply(new ReviewThreadsTriaged(
+            id,
+            [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo evidence", "copilot")],
+            Now));
+
+        act.Should().NotThrow();
+        run.State.Should().Be(RunState.Dispatched, "recording a triage never advances the run's own state");
+    }
+
+    /// <summary>
     /// Closeout's mechanical rebase fast path (recommendation 3, idea fc85f609): a clean apply
     /// records the four fields and leaves State untouched (still AwaitingReview) so the very next
     /// sweep re-inspects the pushed head — the sibling PullRequestConflictObserved handler two
