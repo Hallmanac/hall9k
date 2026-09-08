@@ -153,8 +153,8 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
   autosquash + tree-identity check) so the PR branch stays authored history
 - **commit-plan** — organize the working tree into cohesive, buildable commits ordered for PR review
 - **resolve-review-threads** - triage every unresolved review thread on an existing PR,
-  whoever opened it (Copilot, a teammate, or the author's own self-review): fix, reply
-  in-thread, resolve. Supersedes the Copilot-only `resolve-copilot-reviews` skill (§16 #62)
+  whoever opened it, before any fix: fix, decline with evidence, or route; reply and
+  resolve per disposition and author kind (§16 #62, #159)
 - **rebase-onto-main** — bring a PR branch conflicting with its base current: replay its own
   commits onto the moved base, resolve conflicts with judgment, never leave a conflict marker,
   re-run the gates against the rebased tree. The inverse of absorb-review-fixes (backlog 44)
