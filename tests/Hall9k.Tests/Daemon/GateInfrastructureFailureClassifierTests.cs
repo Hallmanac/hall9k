@@ -9,8 +9,9 @@ namespace Hall9k.Tests.Daemon;
 /// (backlog 53): only the literal, recognizable shape of a connection-class failure — Npgsql
 /// connection refused/reset/timeout, the SSLRequest handshake mismatch, Testcontainers itself
 /// failing to start — or MSBuild's own MSB4166 child-node-exited-prematurely shape (Windows
-/// field report item 3, ruled 2026-09-01) classifies as infrastructure. Anything else,
-/// including a test's own assertion output, stays a real failure.
+/// field report item 3, ruled 2026-09-01), or a test's own `dotnet publish` missing its
+/// wall-clock budget (the Windows full-suite baseline of 2026-09-08) classifies as
+/// infrastructure. Anything else, including a test's own assertion output, stays a real failure.
 /// </summary>
 public sealed class GateInfrastructureFailureClassifierTests
 {
@@ -55,6 +56,9 @@ public sealed class GateInfrastructureFailureClassifierTests
     [InlineData("Gate 'test' exited 1. Output: Npgsql.PostgresException: 23505: duplicate key value violates unique constraint")]
     [InlineData(
         "Gate 'test' exited 1. Output: Xunit.Sdk.EqualException: expected the log to mention MSBuild, but it did not")]
+    [InlineData(
+        "Gate 'test' exited 1. Output: Xunit.Sdk.FalseException: the publish output should not have "
+        + "carried appsettings.Development.json, but it did")]
     public void A_test_assertion_or_build_error_stays_a_real_failure(string gateOutput) =>
         GateInfrastructureFailureClassifier.IsInfrastructureFailure(gateOutput).Should().BeFalse();
 
@@ -90,6 +94,27 @@ public sealed class GateInfrastructureFailureClassifierTests
 
         excerpt.Should().NotBeNull();
         excerpt!.IndexOf("MSB4166", StringComparison.OrdinalIgnoreCase).Should().BeGreaterThanOrEqualTo(0);
+    }
+
+    /// <summary>
+    /// A `dotnet publish` inside a test missing its own wall-clock budget (the Windows full-suite
+    /// baseline of 2026-09-08): the publish reported nothing about the product, so the miss is the
+    /// machine's load, not the agent's work. Composed from the classifier's own constant rather
+    /// than a typed literal, and with the marker kept out of this method's name, for the reason
+    /// <see cref="A_child_node_crash_classifies_as_infrastructure"/> documents — a marker in a
+    /// display name or an <c>[InlineData]</c> argument renders into this test's own failure output
+    /// and gets that `dotnet test` run misclassified as the very failure the test recognizes.
+    /// </summary>
+    [Fact]
+    public void A_publish_that_ran_out_its_budget_classifies_as_infrastructure()
+    {
+        string gateOutput = "Gate 'test' exited 1. Output: Hall9k.Tests.Cli.PublishBudgetExceededException : "
+            + GateInfrastructureFailureClassifier.PublishBudgetExceededMarker
+            + ": publishing Hall9k.Daemon did not finish inside its 300s budget (300.4s elapsed "
+            + "before the process tree was killed). Load at the miss: 15 dotnet-family processes "
+            + "(MSBuild 2, dotnet 9, testhost 4).";
+
+        GateInfrastructureFailureClassifier.IsInfrastructureFailure(gateOutput).Should().BeTrue();
     }
 
     // A directory rather than a captured-output string, deliberately: the gate's own console
