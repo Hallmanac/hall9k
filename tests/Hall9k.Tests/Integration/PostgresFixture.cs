@@ -1,3 +1,6 @@
+using Hall9k.Domain.Infrastructure.Persistence;
+using JasperFx;
+using Marten;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -32,11 +35,20 @@ namespace Hall9k.Tests.Integration;
 /// membership, and bounds it for a class added next month with no extra annotation to remember —
 /// the corresponding guard, <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>, fails
 /// the build if any test class starts a Postgres container any other way. Four is chosen
-/// conservatively: it is nowhere near the eleven that caused the OOM, while still giving the
-/// suite's largest tier (37 classes as of this writing — re-observed during this task's own
-/// review, task e507c143; #108's original "29" went stale as the suite grew and was carried
-/// forward unre-observed here) real parallel throughput rather than serializing it outright —
-/// see PLAN.md §16 #108 for the measured wall-clock cost of the bound.
+/// conservatively: it is nowhere near the eleven that caused the OOM, while still giving this
+/// tier real parallel throughput rather than serializing it outright — see PLAN.md §16 #108 for
+/// the measured wall-clock cost of the bound.
+/// </para>
+/// <para>
+/// The counts, re-observed on 2026-09-08 by the test-suite runtime task and not to be carried
+/// forward unre-observed (#108's own "29" and its successor "37" both went stale that way): 25
+/// test classes take this fixture. Twelve of them carry <c>[Collection("Hall9kHome")]</c> and so
+/// run one at a time, inside a collection of 45 classes in total; the other thirteen sit in
+/// xUnit's implicit per-class collections and run in parallel up to
+/// <see cref="MaxConcurrentContainers"/>. That is 25 permit acquisitions and 25 container starts
+/// per full run — one per class, since the fixture's lifetime is the class's — against the 50
+/// the same suite started before its small per-seam classes were merged into shared-container
+/// ones (PLAN.md §16 #157).
 /// </para>
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
@@ -46,14 +58,14 @@ public sealed class PostgresFixture : IAsyncLifetime
     // The permit is held for a class's entire run, not just its container startup (see
     // InitializeAsync/DisposeAsync below). Every Postgres-backed class declares
     // IClassFixture<PostgresFixture> for itself, and xUnit builds one instance per test class, so
-    // the permit is acquired and released at every class boundary: the tier makes 29 acquisitions
-    // (the 13 standalone classes plus the Hall9kHome collection's 16), not one per collection.
+    // the permit is acquired and released at every class boundary: 25 acquisitions per run (see
+    // the count paragraph on the type), not one per collection.
     //
     // There is deliberately no timeout on the wait itself. A fixed deadline was tried and removed:
     // it was sized against this one process's own tier duration (PLAN.md §16 #108's measured
     // 7m29s-8m4s), which stopped being the right number the moment the gate went cross-process —
     // N overlapping dotnet test invocations queue behind each other's permits too, not just this
-    // process's own 37 acquisitions, so the same deadline that was generous for one process starts
+    // process's own 25 acquisitions, so the same deadline that was generous for one process starts
     // firing under two or three and misreports genuine contention as "the gate or the Docker daemon
     // is genuinely stuck". GitWorktreeManager.AcquireCrossProcessLockAsync already settled this for
     // the same shape of wait: "there is no safe value to time this out to". What that wait uses
@@ -123,7 +135,58 @@ public sealed class PostgresFixture : IAsyncLifetime
     // to enforce.
     private IAsyncDisposable? _gatePermit;
 
+    // Built on first use rather than in InitializeAsync, because holding this fixture is not the
+    // same as wanting a Marten store: DatabaseDoctorTests's two schema-presence cases
+    // both open with "a reachable server with no schema yet says so", which an eagerly built store
+    // would already have answered for them by applying one (AutoCreate.All below). Lazy rather
+    // than a bare ??= because whether a class's tests can overlap is xUnit's guarantee to give,
+    // not this fixture's to assume — two of them racing a plain null check would build two stores
+    // and leak the one that lost.
+    private readonly Lazy<DocumentStore> _store;
+
+    public PostgresFixture() =>
+        _store = new Lazy<DocumentStore>(
+            () => DocumentStore.For(opts =>
+            {
+                opts.Connection(ConnectionString);
+                opts.ConfigureHall9k(AutoCreate.All);
+            }),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+
     public string ConnectionString => _container.GetConnectionString();
+
+    /// <summary>
+    /// The one Marten <see cref="DocumentStore"/> a test class gets, shared by every test in it —
+    /// which is the same reach the class's database already had, since xUnit builds one fixture
+    /// per class and every test in that class has always talked to this one container. Per-test
+    /// isolation comes from fresh domain ids, as it always did; what a per-test store bought on
+    /// top of that was nothing, and what it cost was a full Marten bootstrap each time — the ten
+    /// inline projections in <see cref="MartenConfiguration.ConfigureHall9k"/> are compiled per
+    /// store, and that compilation was about a second of every test in this tier (measured on the
+    /// building node, 2026-09-08: 1.13 s per test in the lightest Postgres-backed class in the
+    /// suite, whose tests do almost nothing else).
+    /// <para>
+    /// A test that genuinely needs a store of its own — one that has to observe first-touch schema
+    /// creation, say — still builds one from <see cref="ConnectionString"/> directly; nothing here
+    /// forbids it. What is gone is building one by default.
+    /// </para>
+    /// <para>
+    /// Deliberately no <c>GeneratedCodeMode</c> here, unlike
+    /// <c>Hall9k.Cli.Infrastructure.CliStore</c>. That store sets <c>TypeLoadMode.Auto</c> because
+    /// h9k is execute-and-exit, so every invocation is a cold start and pays this bootstrap again;
+    /// <c>Auto</c> only avoids the work when pre-generated types are already compiled into the
+    /// store's application assembly, and the only pre-generated set this repository has
+    /// (<c>src/Hall9k.Cli/Internal/Generated</c>) holds document-storage providers and the event
+    /// storage — not one line of projection code, which is exactly what the ten inline projections
+    /// above make the store compile. Setting <c>Auto</c> on this store would therefore fall
+    /// straight through to dynamic generation and change nothing measurable, unless the test
+    /// project also turned on source-code writing and started generating sources into itself: a
+    /// build-order coupling this repository does not have, in exchange for 25 bootstraps a run
+    /// (see the count paragraph on the type) that sharing the store already brought down from
+    /// roughly 560.
+    /// </para>
+    /// </summary>
+    public DocumentStore Store => _store.Value;
 
     public async Task InitializeAsync()
     {
@@ -190,11 +253,24 @@ public sealed class PostgresFixture : IAsyncLifetime
     {
         try
         {
-            await _container.DisposeAsync();
+            // Before the container, not after: the store holds an Npgsql pool against it, and
+            // closing the pool once the server is already gone logs connection failures that
+            // belong to nothing.
+            if (_store.IsValueCreated)
+            {
+                _store.Value.Dispose();
+            }
         }
         finally
         {
-            await ReleaseGateAsync();
+            try
+            {
+                await _container.DisposeAsync();
+            }
+            finally
+            {
+                await ReleaseGateAsync();
+            }
         }
     }
 

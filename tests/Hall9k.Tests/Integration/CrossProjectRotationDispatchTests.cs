@@ -11,10 +11,8 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -46,7 +44,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
     public async Task Two_projects_with_ready_work_split_a_node_of_two_one_and_one_and_hold_that_split()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2, logger);
@@ -89,7 +87,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
     public async Task A_project_takes_a_second_slot_only_once_the_other_has_nothing_ready()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -119,7 +117,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
     public async Task A_node_of_one_alternates_task_by_task_so_a_lone_task_cuts_in_at_the_first_boundary()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1, logger);
@@ -158,7 +156,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
     public async Task One_project_on_the_node_is_oldest_first_with_no_setting_at_all()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2, logger);
@@ -183,7 +181,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
     public async Task A_higher_tier_wins_every_free_slot_and_releases_itself_when_its_queue_drains()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1, logger);
@@ -222,7 +220,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
     public async Task A_tier_set_mid_flight_reorders_the_next_free_slot_and_never_a_live_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
 
@@ -261,7 +259,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
     public async Task A_focused_project_that_cannot_claim_is_skipped_rather_than_holding_the_slot()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2, logger);
@@ -288,7 +286,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
     public async Task A_queue_first_marked_task_takes_the_next_free_slot_across_projects()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         ListLogger<DispatchEngine> logger = new();
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1, logger);
@@ -312,11 +310,6 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
             "the marker cleared with its own claim, so the tier decides the next slot");
     }
 
-    private DocumentStore Store() => DocumentStore.For(opts =>
-    {
-        opts.Connection(postgres.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.All);
-    });
 
     private static async Task<NodeContext> FreshNodeAsync(IDocumentStore store, CancellationToken cancellationToken)
     {

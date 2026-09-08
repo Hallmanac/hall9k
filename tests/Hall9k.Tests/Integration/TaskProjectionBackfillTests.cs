@@ -12,7 +12,6 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -41,7 +40,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task A_task_projected_before_the_lifecycle_split_is_re_projected_and_claimable_again()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         DispatchEngine engine = NewEngine(store, node);
 
@@ -89,7 +88,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task A_task_that_genuinely_has_no_owner_is_not_re_projected_on_every_start()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         Guid draft = DomainId.New();
         await using (IDocumentSession seed = store.LightweightSession())
@@ -107,7 +106,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task A_dependent_projected_before_the_recovery_keeps_the_hold_its_stream_still_records()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         Guid first = DomainId.New();
         Guid second = DomainId.New();
@@ -148,7 +147,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task A_dependent_already_carrying_its_recorded_reasons_is_not_re_projected_on_every_start()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         Guid first = DomainId.New();
         Guid second = DomainId.New();
@@ -172,7 +171,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task A_failure_projected_before_the_status_redesign_still_says_why_before_the_backfill_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         Guid taskId = DomainId.New();
         // The launch-failure path fails a task whose run stream was never started (RunLauncher),
@@ -225,7 +224,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task A_resolve_projected_before_the_archiving_rule_still_carries_its_run_id_after_the_backfill_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         Guid taskId = DomainId.New();
         Guid ownerId = DomainId.New();
@@ -276,7 +275,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task An_untracked_attestation_projected_before_the_marker_landed_is_restored_after_the_backfill_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         Guid taskId = DomainId.New();
         Guid ownerId = DomainId.New();
@@ -325,7 +324,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task A_retry_projected_before_the_pending_marker_landed_is_restored_after_the_backfill_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         Guid taskId = DomainId.New();
         Guid ownerId = DomainId.New();
@@ -390,7 +389,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     public async Task A_stale_unmarked_document_does_not_outrank_a_marked_one_before_or_after_the_backfill()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         // A ceiling of 1 makes the ordering the only thing deciding which task gets claimed, so
         // this test needs the node to start with no lease already occupying that one slot — which
@@ -525,11 +524,6 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
         id, DomainId.New(), objective, ["it is done"], TaskType.Chore,
         null, null, null, Now, DomainId.New());
 
-    private DocumentStore NewStore() => DocumentStore.For(opts =>
-    {
-        opts.Connection(postgres.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.All);
-    });
 
     private DispatchEngine NewEngine(DocumentStore store, NodeContext node, int maxConcurrentRuns = 100) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),

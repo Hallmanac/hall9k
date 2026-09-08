@@ -1,14 +1,13 @@
-using Hall9k.Domain.Infrastructure.Storage;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json;
 using FluentAssertions;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
-using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -21,11 +20,10 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -82,7 +80,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Fake_agent_stream_is_tailed_to_completion_with_tokens_recorded()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node);
@@ -119,7 +117,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Startup_adoption_leaves_an_open_review_lap_alone()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedOpenReviewLapAsync(store, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node, new FakeProcessManager());
@@ -150,7 +148,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Startup_adoption_does_not_let_an_abandoned_laps_flag_shield_a_later_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid lapRunId) = await SeedOpenReviewLapAsync(store, cts.Token);
 
         // The reviewer walks away: h9k task release requeues the task, which is the only way to
@@ -205,7 +203,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Deliberate_headless_start_with_a_clean_committed_tree_is_delivered_automatically()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, string worktreePath) =
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
 
@@ -244,7 +242,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Deliberate_headless_start_whose_process_vanishes_without_a_result_is_flagged_needs_you()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, _) =
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
 
@@ -286,7 +284,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Deliberate_headless_start_with_a_dirty_tree_is_flagged_needs_you()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, string worktreePath) =
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: true, cts.Token);
 
@@ -329,7 +327,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Deliberate_headless_start_with_no_commits_beyond_base_is_flagged_needs_you()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, _) =
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: false, dirty: false, cts.Token);
 
@@ -370,7 +368,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Deliberate_headless_start_with_a_clean_but_detached_tree_is_flagged_needs_you()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, _) = await SeedDeliberateHeadlessStartTaskAsync(
             store, withTaskCommit: true, dirty: false, cts.Token, detached: true);
 
@@ -411,7 +409,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Deliberate_headless_start_with_a_budget_exhausted_result_parks_rather_than_delivers()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, _) =
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
 
@@ -451,7 +449,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Deliberate_headless_start_with_a_generic_error_result_is_flagged_needs_you()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, _) =
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
 
@@ -495,7 +493,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task AdoptDeliberateHeadlessStartsAsync_leaves_a_reentered_claim_alone()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, _) =
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
 
@@ -537,7 +535,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task AdoptDeliberateHeadlessStartsAsync_leaves_a_delegated_claim_alone()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId, _) =
             await SeedDeliberateHeadlessStartTaskAsync(store, withTaskCommit: true, dirty: false, cts.Token);
 
@@ -584,7 +582,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task AdoptDeliberateHeadlessStartsAsync_leaves_an_ordinary_interactive_claim_alone()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedOpenReviewLapAsync(store, cts.Token);
 
         RunSupervisor supervisor = NewSupervisor(store, node, new FakeProcessManager());
@@ -601,7 +599,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Daemon_restart_mid_run_adopts_the_orphan_and_completes_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
         // Agent outlives the "first daemon": takes ~4s, first monitor is killed after ~1s.
@@ -645,7 +643,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Resume_stranded_pipelines_adopts_an_interactively_delivered_run_by_its_delivering_node()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
@@ -693,7 +691,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Agent_dying_without_a_result_fails_run_and_task_and_releases_the_lease()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
         int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Exit(1));
@@ -723,7 +721,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Catch_up_adoption_of_a_live_process_refreshes_the_lease_so_the_sweep_never_requeues_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
         // Long-running agent; by the time the "restarted daemon" adopts it the heartbeat
@@ -789,7 +787,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_stale_generations_run_dying_does_not_fail_the_live_generations_task_or_lease()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid staleRunId) = await SeedClaimedTaskAsync(store, cts.Token);
 
         // A requeue-and-reclaim moved the task on to generation 2 under a fresh run while
@@ -840,7 +838,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Two_non_terminal_runs_on_one_task_adopt_the_live_generation_and_retire_the_stale_one()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid staleRunId) = await SeedClaimedTaskAsync(store, cts.Token);
 
         // A requeue-and-reclaim moved the task on to generation 2 under a fresh run while the
@@ -915,7 +913,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_budget_exhausted_result_parks_the_run_and_leaves_the_task_claimed()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
         const string budgetResultLine =
@@ -949,7 +947,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_primary_sessions_error_result_is_retried_once_and_then_succeeds()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
 
         const string errorResultLine =
@@ -993,7 +991,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_second_consecutive_error_on_the_primary_session_fails_the_run()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
 
         const string errorResultLine =
@@ -1031,7 +1029,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task Daemon_restart_mid_backoff_finishes_the_pending_build_session_retry_instead_of_treating_it_as_done()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
 
         // The exact durable commit CompleteRunAsync makes before the backoff wait even starts —
@@ -1072,7 +1070,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_claim_that_moved_on_during_the_backoff_retires_the_run_instead_of_resuming_or_failing_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
@@ -1118,7 +1116,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_follow_up_that_disputes_a_review_thread_parks_instead_of_pushing()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token, asFollowUp: true);
 
         const string disputed =
@@ -1154,7 +1152,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_follow_up_that_disputes_a_rebase_conflict_parks_with_its_own_artifact_and_reason()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
             store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.Rebase);
 
@@ -1193,7 +1191,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_stale_generations_thread_dispute_park_retires_the_run_instead_of_leaving_it_live()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token, asFollowUp: true);
 
         // A requeue-and-reclaim moved the task on to generation 2 under a different run while
@@ -1240,7 +1238,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task The_dispute_marker_is_read_only_from_follow_up_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
         int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(
@@ -1266,7 +1264,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     public async Task A_checks_follow_up_quoting_the_marker_is_not_read_as_a_dispute()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = NewStore();
+        DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
             store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.FailingChecks);
 
@@ -1295,11 +1293,6 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             usage = new { input_tokens = 10, output_tokens = 10 },
         });
 
-    private DocumentStore NewStore() => DocumentStore.For(opts =>
-    {
-        opts.Connection(postgres.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.All);
-    });
 
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskAsync(
         DocumentStore store, CancellationToken cancellationToken,

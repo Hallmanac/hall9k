@@ -1,13 +1,13 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
-using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -19,11 +19,9 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -166,11 +164,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_requeued_task_whose_pull_request_already_merged_closes_out_instead_of_redispatching()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         // The incident shape: the task completed with a PR, a follow-up was queued, its
@@ -269,11 +263,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_reopened_tasks_foreign_repository_pull_request_never_reaches_the_merge_check()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -347,11 +337,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_review_feedback_reopens_pull_request_head_seeds_the_follow_up_runs_opening_review_scope()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -421,11 +407,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_retried_follow_up_tasks_operator_reason_reaches_the_dispatched_prompt_file()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -522,11 +504,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_follow_up_dispatched_without_a_retry_reason_carries_no_operator_guidance_section()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -615,11 +593,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_launch_under_a_stale_generation_does_not_close_out_the_live_generations_task()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -756,11 +730,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_dispatched_run_spawns_on_the_resolved_model_and_records_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -828,11 +798,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_stacked_child_is_cut_from_its_parents_branch_and_records_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid parentTaskId = DomainId.New();
@@ -927,11 +893,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_child_stacked_on_a_remote_pull_request_is_cut_from_its_head_branch_and_records_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid childTaskId = DomainId.New();
@@ -1003,11 +965,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task An_unstacked_dispatch_records_no_base_branch_of_its_own()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -1112,11 +1070,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_follow_up_on_a_stacked_child_carries_the_recorded_fork_point_forward()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -1209,11 +1163,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_follow_up_on_a_stacked_child_blanks_a_fork_point_its_branch_never_landed_on()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -1314,11 +1264,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_rebase_follow_up_on_a_stacked_child_is_told_to_replay_from_its_fork_point()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid parentTaskId = DomainId.New();
@@ -1433,11 +1379,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_retry_that_resumes_a_stacked_childs_branch_carries_the_recorded_fork_point_forward()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid parentTaskId = DomainId.New();
@@ -1532,11 +1474,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_follow_up_on_a_stacked_child_keeps_its_recorded_base_after_the_parent_closed_out()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid parentTaskId = DomainId.New();
@@ -1677,11 +1615,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_pr_review_task_dispatches_the_adversarial_lens_into_an_untrusted_checkout()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -1756,11 +1690,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_pr_review_task_always_records_full_pipeline_regardless_of_the_projects_own_reduced_composition()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -1839,11 +1769,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_run_dispatched_ahead_of_the_render_sweep_lands_under_the_tasks_existing_directory()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
@@ -1939,11 +1865,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     public async Task A_reopened_task_still_sitting_in_the_archive_directory_redispatches_beside_its_real_directory()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();

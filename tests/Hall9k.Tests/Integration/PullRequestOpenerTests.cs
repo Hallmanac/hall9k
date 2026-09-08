@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using FluentAssertions;
+using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
-using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -11,14 +11,11 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
-using JasperFx;
+using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
-
-using Hall9k.Tests.Fakes;
-using Hall9k.Tests.TestSupport;
 
 namespace Hall9k.Tests.Integration;
 
@@ -42,11 +39,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     public async Task Local_origin_flow_pushes_branch_completes_task_and_removes_worktree()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         // Real repo with a local bare origin, real worktree, and a real "agent" commit.
         Directory.CreateDirectory(_root);
@@ -122,11 +115,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     public async Task A_stale_generations_push_does_not_complete_the_live_generations_task_or_lease()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, "origin.git");
@@ -200,11 +189,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     {
         const string pullRequestUrl = "https://github.com/x/y/pull/7";
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, "origin.git");
@@ -300,11 +285,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     {
         const string pullRequestUrl = "https://github.com/x/y/pull/9";
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, "origin.git");
@@ -408,11 +389,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     public async Task A_retried_non_follow_up_run_with_a_diverged_recompose_still_lands_via_force_with_lease()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, "origin.git");
@@ -514,11 +491,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     public async Task A_stale_tracking_ref_for_a_branch_origin_no_longer_has_still_lands_via_force_with_lease()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, "origin.git");
@@ -617,11 +590,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     public async Task A_foreign_tip_on_origin_refuses_the_push_and_leaves_origin_untouched()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, "origin.git");
@@ -722,11 +691,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     public async Task An_unreadable_origin_at_push_time_fails_the_run_rather_than_guessing_it_has_nothing()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, "origin.git");
@@ -878,7 +843,6 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         RecordingRerequestInspector inspector = new();
         (Guid taskId, Guid runId, DocumentStore store) =
             await RunChangesRequestedFollowUpAsync(inspector, cts.Token);
-        using IDisposable storeLifetime = store;
 
         Hall9k.Daemon.Closeout.PullRequestReviewer asked =
             inspector.Rerequested.Should().ContainSingle().Subject;
@@ -908,7 +872,6 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         (Guid taskId, Guid runId, DocumentStore store) =
             await RunChangesRequestedFollowUpAsync(new RecordingRerequestInspector(refuse: true), cts.Token);
-        using IDisposable storeLifetime = store;
 
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be("Done");
@@ -925,11 +888,7 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         Hall9k.Daemon.Closeout.IPullRequestInspector inspector, CancellationToken cancellationToken)
     {
         const string pullRequestUrl = "https://github.com/x/y/pull/11";
-        DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         Directory.CreateDirectory(_root);
         string originPath = Path.Combine(_root, "origin.git");

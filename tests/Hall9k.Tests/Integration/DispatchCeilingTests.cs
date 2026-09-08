@@ -11,11 +11,9 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -81,7 +79,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
     public async Task The_ceiling_defers_the_rest_of_the_queue_oldest_first_and_publishes_what_it_carries()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -136,7 +134,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         // (Decisions Log #24) — which is exactly why counting leases would let one abandoned
         // review hold a slot on a two-run laptop until someone came back to it.
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
 
@@ -153,7 +151,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         // over: recording that is what keeps the live-run count from drifting up by one every
         // time an agent dies, until a daemon restart's orphan adoption notices.
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
 
@@ -198,7 +196,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         // record a failure for a pipeline executing at that moment, and the next event that
         // pipeline appends would silently undo it (pre-PR review, 2026-08-22).
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
 
@@ -244,7 +242,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         // finished successfully, which the monitor's own events would then silently undo
         // (pre-PR review, 2026-08-22).
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
 
@@ -292,7 +290,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         // run here would hide it from its own node's startup adoption, so the live session is
         // never re-monitored and its work is thrown away (pre-PR review, 2026-08-22).
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
 
@@ -322,7 +320,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         // refreshing it, so the expiry sweep never finds it, and with no run document, startup
         // adoption cannot either (pre-PR review, 2026-08-22).
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
 
@@ -355,7 +353,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         // is behind one drafted and assigned last week — which ordering by AddedAt alone gets
         // backwards, and which only becomes visible once the ceiling makes the tail wait.
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
 
@@ -387,7 +385,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
     public async Task The_deferred_queue_serves_a_marked_task_before_an_older_assignment()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = Store();
+        DocumentStore store = postgres.Store;
         NodeContext node = await FreshNodeAsync(store, cts.Token);
         DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 1);
 
@@ -412,11 +410,6 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
         (await engine.ClaimEligibleAsync(cts.Token)).Select(work => work.TaskId).Should().Equal(assignedFirst);
     }
 
-    private DocumentStore Store() => DocumentStore.For(opts =>
-    {
-        opts.Connection(postgres.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.All);
-    });
 
     /// <summary>
     /// An empty database and a freshly bootstrapped node. The class shares one container, and

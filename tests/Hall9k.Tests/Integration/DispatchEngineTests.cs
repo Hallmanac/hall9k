@@ -8,10 +8,8 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
-using JasperFx;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -28,11 +26,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
     public async Task Cap_sweep_and_reclaim_walk_the_full_lease_lifecycle()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
@@ -130,11 +124,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
     public async Task Period_spend_gates_claims_and_ignores_a_prior_periods_recorded_spend()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
@@ -213,11 +203,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
     public async Task An_expired_lease_on_a_review_parked_run_is_refreshed_and_never_requeued()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
@@ -289,11 +275,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
     public async Task An_expired_lease_on_a_budget_parked_run_is_refreshed_and_never_requeued()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
@@ -365,11 +347,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
     public async Task Retried_failed_task_is_claimed_again_with_the_next_lease_generation()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        using DocumentStore store = DocumentStore.For(opts =>
-        {
-            opts.Connection(postgres.ConnectionString);
-            opts.ConfigureHall9k(AutoCreate.All);
-        });
+        DocumentStore store = postgres.Store;
 
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
