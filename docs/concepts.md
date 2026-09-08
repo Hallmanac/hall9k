@@ -600,7 +600,12 @@ Per poll, in priority order:
   that carries no changes-requested verdict — a reviewer whose only review is a comment, a bot's,
   or threads left behind with no review state at all. A comment a reviewer leaves *after* asking
   for changes is not one of those: their verdict is read as the one that stands until they
-  themselves approve or dismiss it, so it stays on the lap above.
+  themselves approve or dismiss it, so it stays on the lap above. Before touching any code, this
+  lap gives every thread exactly one disposition — fix, decline (with reproduction-grade evidence),
+  or route (filed as a card) — so a wrong or already-addressed thread no longer buys a full fix
+  lap. A decline or a route still gets an in-thread reply, but only a bot-authored thread may then
+  be resolved by the agent; a human-authored one stays open for the human to close, so a lap can
+  legitimately push nothing at all. The decline rate is recorded per thread on the run stream.
 - **An errored Copilot review.** Re-requested exactly once through the provider's API, because an
   errored review produces zero threads and thread count alone would read as a clean pass.
 
