@@ -26,8 +26,13 @@ namespace Hall9k.Tests.Domain;
 /// alone and matches on raw lines rather than stripped text, since each of its four scans reads a
 /// call's own argument list within a few lines of it (a whole-line comment is skipped instead) — so
 /// it needs <see cref="SourceDirectory"/> and <see cref="IsBuildOutput"/> but not
-/// <see cref="StripCommentsAndStrings"/>. This is now the full list of consumers and is meant to
-/// be kept current whenever a new one is added.
+/// <see cref="StripCommentsAndStrings"/>.
+/// <see cref="Hall9k.Tests.Domain.PublishLaneGuardTests"/> is a seventh: it walks the whole
+/// <c>tests/</c> directory like <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>, and
+/// uses all three members — but matches the stripped text for the call it looks for and the
+/// <em>raw</em> text for the two attributes that call site then has to carry, since an
+/// attribute's own arguments are string literals the stripping removes. This is now the full
+/// list of consumers and is meant to be kept current whenever a new one is added.
 /// </para>
 /// </summary>
 internal static class TestSourceTree
