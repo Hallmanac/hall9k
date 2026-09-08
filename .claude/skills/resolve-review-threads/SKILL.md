@@ -1,11 +1,11 @@
 ---
 name: resolve-review-threads
-description: Triage every unresolved review thread on a pull request, whoever wrote it, applying valid fixes, replying in-thread, and resolving. Use when a PR has unresolved review comments from Copilot, a teammate, or the author's own self-review.
+description: Triage every unresolved review thread on a pull request, whoever wrote it, into fix, decline (with evidence), or route — before any fix work — then apply, reply in-thread, and resolve. Use when a PR has unresolved review comments from Copilot, a teammate, or the author's own self-review.
 ---
 
 # Resolve pull-request review threads
 
-Read every unresolved review thread on a pull request, judge it, act on it, reply in the thread, and resolve it. This replaces the older `resolve-copilot-reviews` skill: Copilot is one reviewer among many, not the definition of review, and a teammate's unresolved thread is feedback on exactly the same footing (PLAN.md Decisions Log #62).
+Read every unresolved review thread on a pull request, give it a disposition, act on it, reply in the thread, and resolve it per that disposition. This replaces the older `resolve-copilot-reviews` skill: Copilot is one reviewer among many, not the definition of review, and a teammate's unresolved thread is feedback on exactly the same footing (PLAN.md Decisions Log #62, #159).
 
 This skill works on an **existing** PR only. Never open a PR from an agent session: the Hall9k daemon opens PRs (`PullRequestOpener`), and agents are forbidden from doing so.
 
@@ -58,37 +58,50 @@ Two consequences worth stating:
 
 3. **Take every unresolved thread.** No author filter. Sort them so human threads come first: a person is waiting on an answer, a bot is not.
 
-4. **Judge each thread**, reading the diff around it so you know what the code actually does:
-   - **What it is**: a defect claim, a suggestion, a question, or a design disagreement.
-   - **Verdict**: accept and fix, answer without changing code, or dismiss with reasoning.
-   - **Reasoning**: brief, citing repo constraints (AGENTS.md, PLAN.md decisions, TASK-MODEL.md) or existing patterns where relevant.
+4. **Triage every thread before touching any code.** Read the thread and the diff around it, then give each one exactly one disposition (task: every review thread on a pull request gets a triage disposition before any fix work — origin: PR #199 and PR #229, two full fix laps in two days bought by Copilot claims that turned out false on inspection, both resolved by hand on Brian's word after evidence, with no way for the lifecycle to do that itself):
 
-   Dismissal guidance: a suggestion to refactor something that follows an established codebase pattern is usually dismissed for this PR; a suggestion that would break functionality is dismissed with an explanation; a valid-but-out-of-scope suggestion is dismissed and flagged as a follow-up, in the reply and in your summary.
+   - **fix** — the finding is real and in scope. The only disposition that earns a code change.
+   - **decline** — you have reproduction-grade evidence it does not hold up: a scratch-repo demonstration (`mktemp -d`, reproduce the claim, show the actual behavior), or a pointer to the code path that already handles it. Disagreeing is not evidence. "I don't think that's right" is not a decline; "here is the command and its output" is.
+   - **route** — real, but out of this task's own scope. File it rather than growing this diff: `h9k idea add "<text>" --project <name>`.
 
-5. **Human threads get more care than bot threads.** Same mechanics, higher bar:
-   - **A question gets an answer, not a code change.** If the honest answer is "yes, deliberately, because X", that reply *is* the resolution. Inventing a change to look responsive is worse than saying nothing.
-   - **Never resolve a human's thread without replying substantively.** A resolved thread with no answer in it is worse than an open one: it reads as handled. Reply first, resolve after.
-   - **One honest attempt per thread.** Say your piece once, with reasoning. Never re-litigate a point a previous run already answered.
-   - **A design disagreement you cannot honestly judge is not yours to settle.** Do not pick a side to close the thread. Hand it to a human (see below).
+   Do not apply any fix until every thread has a disposition. A triage where every thread comes back decline or route pushes nothing — that is a legitimate outcome of this gate, not a failure to find work, and the run returns to watching the pull request exactly as if nothing had changed.
 
-6. **Apply accepted changes** before replying, so the reply describes something that exists.
+   Dismissal is now decline or route, not a third bucket: a suggestion to refactor something that follows an established codebase pattern is a decline citing the pattern; a suggestion that would break functionality is a decline citing why; a valid-but-out-of-scope suggestion is a route, filed as an idea rather than only mentioned in a reply.
+
+5. **Human threads get more care than bot threads, at every disposition.** Same mechanics, higher bar:
+   - **A question gets an answer, not a code change.** If the honest answer is "yes, deliberately, because X", that reply *is* the resolution — usually a decline whose evidence is the answer itself, occasionally a fix if the honest answer turns out to be "you're right". Inventing a change to look responsive is worse than saying nothing.
+   - **Never resolve a human's thread without replying substantively.** A resolved thread with no answer in it is worse than an open one: it reads as handled.
+   - **One honest attempt per thread.** Say your piece once, with reasoning and evidence. Never re-litigate a point a previous run already answered.
+   - **A design disagreement you cannot honestly judge with evidence is not yours to settle.** That is different from decline: decline disproves a claim, this is a genuine "both positions are defensible." Do not pick a side to close the thread. Hand it to a human (see below).
+
+6. **Apply fixes** before replying to their threads, so the reply describes something that exists. Threads disposed decline or route get no code change.
 
 7. **Reply in the thread**, because feedback is answered where it lives. `$COMMENT_ID` is the numeric `databaseId` of a comment in the thread (the first one is the reviewer's, and replying under it is what puts your answer in that thread), never the `PRRC_…` node id:
    ```bash
    gh api "repos/$SLUG/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" -f body="…"
    ```
-   Accepted: acknowledge and state what was fixed. Dismissed: explain why, citing the pattern, constraint, or decision. Answered: give the answer. Concise and technical; never rude, even when the suggestion is wrong.
+   Fix: acknowledge and state what was fixed. Decline: state the evidence — the scratch-repo output or the code path — not just the disagreement. Route: name the idea filed and why it sits outside this task. Concise and technical; never rude, even when the finding is wrong.
 
 8. **Answer a review BODY with a top-level comment.** A review's body text is not a thread and GitHub gives you nothing to reply inside. Use `gh pr comment "$PR_NUMBER" --body "…"`, naming the review it answers (its author and URL from step 2) and summarising what you did about each point. Never leave a review body unanswered, and never leave an unanchored comment the reviewer has to connect back themselves. (Origin: the PR #20 human review was answered only through the work itself, with no visible reply on the PR.)
 
-9. **Resolve the thread** once its reply is posted:
+9. **Resolve the thread**, once its reply is posted, per its disposition and its author:
+   - **fix**: resolve it, bot-authored or human-authored — a fix invites no argument.
+   - **decline or route, bot-authored**: resolve it. The evidence (or the routing note) is what a bot needed; there is nobody left to answer.
+   - **decline or route, human-authored**: leave it open. The evidence is posted, but closing a person's thread for them is not yours to do — they read it and resolve it themselves. **Agents never close a human's thread on a decline or a route.**
    ```bash
    gh api graphql -f query='mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}) { thread { isResolved } } }' -f id="$THREAD_ID"
    ```
 
-10. **Commit any changes** following the repo's rules: the `commit-plan` skill, or `absorb-review-fixes` when the branch uses the narrative commit style. Agents never push: the platform verifies and pushes follow-up branches.
+10. **Commit any changes** following the repo's rules: the `commit-plan` skill, or `absorb-review-fixes` when the branch uses the narrative commit style. Agents never push: the platform verifies and pushes follow-up branches. A triage with nothing disposed fix has nothing to commit — that is expected, not an error.
 
-11. **Report**: a summary table (thread, author, verdict, reasoning) plus any follow-ups worth tracking.
+11. **Report**: one `THREAD DISPOSITION:` block per thread —
+
+    ```
+    THREAD DISPOSITION: thread=<node id>; disposition=fix|decline|route; kind=human|bot; author=<login>
+    <why: the fix's brief restatement, the decline's evidence, or the route's scope reason>
+    ```
+
+    — so the platform can record the decline rate, followed by a plain-language summary and any follow-ups worth tracking. When running as a Hall9k follow-up, this is what `AgentPromptBuilder.BuildFollowUp`'s own summary instructions already ask for; running the skill standalone, write the same blocks anyway — they are what makes the triage measurable rather than only remembered.
 
 ## Handing a disagreement to a human
 
