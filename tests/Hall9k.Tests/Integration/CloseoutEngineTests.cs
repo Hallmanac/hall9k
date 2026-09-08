@@ -4133,6 +4133,81 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// on-closeout has no sibling to wait for, but it is not exempt from the cross-task scan
+    /// itself — an explicit never recorded on any linked task still keeps the issue open even
+    /// though this task's own rule alone would have closed it immediately (independent pre-PR
+    /// review, cycle 1, adversarial lens: the on-closeout short-circuit used to return before ever
+    /// consulting a sibling).
+    /// </summary>
+    [Fact]
+    public async Task On_closeout_still_loses_to_a_siblings_explicit_never()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#8");
+        (Guid task1Id, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, externalReference: reference);
+        Guid projectId = await ProjectIdAsync(store, task1Id, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.OnCloseout, null, cts.Token);
+
+        await SeedLinkedButNotStartedTaskAsync(
+            store, projectId, node.OwnerId, reference, cts.Token, closeLinkedIssueOverride: "never");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        RecordingProcessRunner github = GitHubCloseoutRunner(isOpen: true);
+        await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
+
+        github.Calls.Should().Contain(call => call.Arguments.Contains("comment"));
+        github.Calls.Should().NotContain(call => call.Arguments.Contains("close"),
+            "task2's explicit never keeps the issue open even though task1's own rule resolves to "
+            + "on-closeout, which has no sibling to wait for but still runs the cross-task scan");
+    }
+
+    /// <summary>
+    /// A task-level override this build cannot recognize — a rule a newer build wrote, or a
+    /// hand-edited stream — is read the same as an explicit never by the cross-task scan, so it
+    /// fails toward leaving the issue open instead of falling through to the project default
+    /// (independent pre-PR review, cycle 1, conformance and adversarial lenses;
+    /// <see cref="CloseLinkedIssueRule.Unknown"/>'s own contract).
+    /// </summary>
+    [Fact]
+    public async Task An_unrecognized_task_override_fails_toward_leaving_the_issue_open()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        using IDisposable storeLifetime = store;
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#9"),
+            rawCloseLinkedIssueOverride: "CloseAtEpicClose");
+        Guid projectId = await ProjectIdAsync(store, taskId, cts.Token);
+        // The project default is the close-flavoured one deliberately: were the unrecognized
+        // task override not honored, the project default alone would close the issue, masking
+        // the defect this test exists to catch.
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.WhenAllTasksClose, null, cts.Token);
+
+        RecordingProcessRunner github = GitHubCloseoutRunner(isOpen: true);
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
+
+        github.Calls.Should().Contain(call => call.Arguments.Contains("comment"));
+        github.Calls.Should().NotContain(call => call.Arguments.Contains("close"),
+            "an unrecognized task override is read as never, not as falling through to the "
+            + "project's own when-all-tasks-close default");
+    }
+
+    /// <summary>
     /// A never-close label forces never for an issue carrying it, regardless of the project's own
     /// default — but a task's own explicit override still wins over the label (task: a task's
     /// linked GitHub issue is closed at true closeout under a configurable rule).
@@ -4397,7 +4472,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         string? priorObstructionSummary = null,
         PreApprovalMode? preApproval = null,
         Guid? existingProjectId = null,
-        string? closeLinkedIssueOverride = null)
+        string? closeLinkedIssueOverride = null,
+        string? rawCloseLinkedIssueOverride = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -4415,13 +4491,18 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         // TaskSeed.Start's own Publish carries no close-linked-issue override, so a test needing
         // one builds the same three-event lifecycle by hand rather than widening a helper every
-        // other integration test in this repo also calls.
+        // other integration test in this repo also calls. rawCloseLinkedIssueOverride is the
+        // narrower sibling of closeLinkedIssueOverride: it patches the recorded value in after
+        // TaskDecider.Publish runs, the only way to put a value ParseOverride would refuse on the
+        // stream at all — the same shape a newer build or a hand-edited stream could leave behind.
         Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
             taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
             externalReference, Now, ownerId);
-        (TaskAggregate task, object[] lifecycle) = closeLinkedIssueOverride is null
-            ? TaskSeed.Start(added, ownerId, Now)
-            : StartWithCloseLinkedIssueOverride(added, ownerId, Now, closeLinkedIssueOverride);
+        (TaskAggregate task, object[] lifecycle) = rawCloseLinkedIssueOverride is not null
+            ? StartWithRawCloseLinkedIssueOverride(added, ownerId, Now, rawCloseLinkedIssueOverride)
+            : closeLinkedIssueOverride is null
+                ? TaskSeed.Start(added, ownerId, Now)
+                : StartWithCloseLinkedIssueOverride(added, ownerId, Now, closeLinkedIssueOverride);
         List<object> taskEvents = [.. lifecycle];
 
         if (preApproval is not null)
@@ -4519,6 +4600,34 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         Hall9k.Domain.Features.Tasks.Events.TaskPublished published = TaskDecider.Publish(
             task, TaskDependencyGraph.Empty, at, ownerId,
             closeLinkedIssue: Optional<string?>.Of(closeLinkedIssueOverride));
+        task.Apply(published);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskAssigned assigned = TaskDecider.Assign(
+            task, ownerId, TaskDependencyGraph.Empty.Resolve(task.BlockedBy), at, ownerId);
+        task.Apply(assigned);
+
+        return (task, [added, published, assigned]);
+    }
+
+    /// <summary>
+    /// <see cref="StartWithCloseLinkedIssueOverride"/>'s unchecked twin: records a
+    /// close-linked-issue value <see cref="CloseLinkedIssueRule.ParseOverride"/> would refuse
+    /// outright — <see cref="TaskDecider.Publish"/> has no way to produce this, so the event is
+    /// patched after the fact with the raw implicit string conversion <see cref="CloseLinkedIssueRule"/>
+    /// exposes for reading whatever a stream actually carries, the same shape a newer build or a
+    /// hand-edited stream could leave behind (<see cref="CloseLinkedIssueRule.Unknown"/>'s own contract).
+    /// </summary>
+    private static (TaskAggregate Task, object[] Events) StartWithRawCloseLinkedIssueOverride(
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added, Guid ownerId, DateTimeOffset at, string rawCloseLinkedIssueValue)
+    {
+        TaskAggregate task = new();
+        task.Apply(added);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, at, ownerId) with
+        {
+            CloseLinkedIssue = Optional<CloseLinkedIssueRule?>.Of((CloseLinkedIssueRule)rawCloseLinkedIssueValue),
+        };
         task.Apply(published);
 
         Hall9k.Domain.Features.Tasks.Events.TaskAssigned assigned = TaskDecider.Assign(
