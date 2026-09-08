@@ -1999,6 +1999,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         string log = GitOutput(worktreePath, "log --oneline -5");
         log.Should().Contain(
             "chore: assign Decisions Log #1 to placeholder", "the renumbering step commits mechanically, with no agent in the loop");
+
+        // Independent pre-PR review, cycle 3, conformance lens: a renumbering commit moves HEAD
+        // past whatever this run's tip was last gated at, exactly like a real rebase does, so the
+        // outcome recorded for it must not read as a no-op — a wasNoOp: true here would never raise
+        // RunAggregate.PreFinalPassRebaseAwaitingGate, leaving the renumbered tree ungated before
+        // the pull request opens.
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().Contain(
+            e => !e.WasNoOp, "the renumbering commit that actually landed must not be recorded as a no-op");
     }
 
     /// <summary>

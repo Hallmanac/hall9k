@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Hall9k.Connectors.Processes;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Review;
@@ -28,10 +29,12 @@ public sealed record DecisionsLogRenumberResult(
 /// afternoon). A branch writes its own PLAN.md §16 entry
 /// under a placeholder derived from its task's short id
 /// (<see cref="DecisionsLogPlaceholder"/>) rather than guessing the log's true next number and
-/// racing every other branch reading the same tail. Once <c>ReviewEngine.EnsureRebasedBeforeFinalPassAsync</c>
-/// has rebased the branch cleanly onto its current base, it calls
-/// <see cref="RenumberIfNeededAsync"/> right there, before the mandatory gate re-runs — no agent
-/// session ever picks the number or edits a citation by hand.
+/// racing every other branch reading the same tail. <c>ReviewEngine.EnsureRebasedBeforeFinalPassAsync</c>
+/// calls <see cref="RenumberIfNeededAsync"/> right there, before the mandatory gate re-runs, for
+/// every outcome that leaves the branch current with its base — a clean rebase, a stuck-pipe
+/// rebase confirmed landed, and the no-op case where the base had not moved at all (which is also
+/// the shape a conflict already resolved by hand takes once the loop re-enters here) — not only a
+/// clean apply. No agent session ever picks the number or edits a citation by hand.
 /// <para>
 /// <b>Two shapes, one outcome.</b> The ordinary shape is a placeholder entry belonging to THIS
 /// branch's own task sitting at the log's tail: it is unconditionally assigned the next free
@@ -128,6 +131,22 @@ public static class DecisionsLogRenumberer
                 return NoAction();
             }
 
+            // Only the transition shape ever reads forkPointSha or baseTipSha — the ordinary
+            // placeholder shape above never calls ReadFileAtRevisionAsync at all — so the check is
+            // scoped here rather than before the caller even knows which shape it has: a caller
+            // whose baseTipSha could not be resolved (most often
+            // ReviewEngine.ResolveObservedOntoCommitAsync's own UnreadableCommit fallback after a
+            // stuck output pipe) must never reach RewriteCitationsAsync's transition branch, which
+            // hands baseTipSha to git as a literal revision — and by the time that call would
+            // throw, this method has already rewritten PLAN.md's heading to disk, leaving a
+            // half-applied rewrite for the mandatory final pass to read (independent pre-PR
+            // review, cycle 3, adversarial lens). Checked before ANY write below, not only before
+            // this one read, so a bad forkPointSha is caught here on the identical terms.
+            if (forkPointSha == RunRebasedOntoBase.UnreadableCommit || baseTipSha == RunRebasedOntoBase.UnreadableCommit)
+            {
+                return NoAction();
+            }
+
             string forkPointPlan = await ReadFileAtRevisionAsync(
                 git, worktreePath, forkPointSha, PlanMarkdownFileName, cancellationToken);
             if (ContainsRealEntryNumber(forkPointPlan, tailNumber))
@@ -150,7 +169,12 @@ public static class DecisionsLogRenumberer
         // the very sentence recording what it did (independent pre-PR review, cycle 1, both
         // lenses). This also preserves the entry's own body: unlike a full rebuild that assumes a
         // one-line entry, the region between the old heading and the boundary is carried forward
-        // untouched (bar a prior placement note, dropped so this pass's own note replaces it).
+        // untouched, in full, including any placement note already there — whether hand-authored
+        // under the repo's own pre-existing convention or left by an earlier run of this same
+        // mechanical step — since this pass's own note is always appended after it, never
+        // overwriting older history (independent pre-PR review, cycle 3, conformance lens: an
+        // earlier version of this pass matched the marker text and discarded whatever followed it,
+        // which destroyed hand-authored, multi-paragraph provenance carried by 24 existing entries).
         (string[] headingOnlyLines, int insertionIndex) = RewriteHeadingPreservingBody(
             lines, scan, sectionEnd, newNumber, taskShortId, oldCitationToken);
         await File.WriteAllTextAsync(
@@ -276,8 +300,6 @@ public static class DecisionsLogRenumberer
         return false;
     }
 
-    private const string PlacementNoteMarker = "> Renumbering placement note:";
-
     /// <summary>
     /// Rewrites just the tail entry's own heading (its leading token to the new number) and
     /// returns, alongside the rewritten lines, the line index where
@@ -285,9 +307,9 @@ public static class DecisionsLogRenumberer
     /// full rebuild that assumes a one-line entry, everything between the heading and the section
     /// boundary is carried forward untouched, because a Decisions Log entry routinely runs to
     /// several blank-line-separated paragraphs (e.g. #59) and discarding them would silently
-    /// destroy authored decision text. The one thing dropped from that span is a PRIOR placement
-    /// note (recognized by <see cref="PlacementNoteMarker"/>) — a leftover from an earlier
-    /// renumbering of this same entry — since this call's own note replaces it.
+    /// destroy authored decision text — including any placement note already sitting in that span,
+    /// hand-authored or left by an earlier run of this same mechanical step: nothing in that span
+    /// is ever dropped, only appended to, by <see cref="InsertPlacementNote"/>.
     /// </summary>
     private static (string[] Lines, int InsertionIndex) RewriteHeadingPreservingBody(
         string[] lines, TailScan scan, int sectionEnd, int newNumber, string taskShortId, string oldCitationToken)
@@ -303,8 +325,7 @@ public static class DecisionsLogRenumberer
         int boundaryLine = scan.DividerLine >= 0 ? scan.DividerLine : sectionEnd;
 
         int bodyStart = scan.TailLine + 1;
-        int priorNoteStart = FindPriorPlacementNoteStart(lines, bodyStart, boundaryLine);
-        int bodyEnd = priorNoteStart >= 0 ? priorNoteStart : boundaryLine;
+        int bodyEnd = boundaryLine;
         while (bodyEnd > bodyStart && lines[bodyEnd - 1].Trim().Length == 0)
         {
             bodyEnd--;
@@ -318,19 +339,6 @@ public static class DecisionsLogRenumberer
         rebuilt.AddRange(lines[boundaryLine..]);
 
         return ([.. rebuilt], insertionIndex);
-    }
-
-    private static int FindPriorPlacementNoteStart(string[] lines, int start, int end)
-    {
-        for (int i = start; i < end; i++)
-        {
-            if (lines[i].StartsWith(PlacementNoteMarker, StringComparison.Ordinal))
-            {
-                return i;
-            }
-        }
-
-        return -1;
     }
 
     /// <summary>

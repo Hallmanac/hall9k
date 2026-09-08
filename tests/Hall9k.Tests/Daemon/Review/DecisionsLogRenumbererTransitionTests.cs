@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.Run.Events;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon.Review;
@@ -174,6 +175,99 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
 
         result.Outcome.Should().Be(DecisionsLogRenumberOutcome.NoActionNeeded,
             "the tail entry (#3) is not itself a duplicate, so this branch's own rebase has nothing to renumber");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial lens: a fork point one of this rebase's
+    /// own callers could not resolve (<see cref="RunRebasedOntoBase.UnreadableCommit"/>, most
+    /// often <c>ReviewEngine.ResolveObservedOntoCommitAsync</c>'s own fallback after a stuck
+    /// output pipe) must never reach <c>git show</c> as a literal revision — caught before any
+    /// write, so the transition-shape duplicate this call cannot safely resolve is left exactly
+    /// as committed, for a later attempt or the guard to catch, rather than leaving a half-applied
+    /// rewrite on disk.
+    /// </summary>
+    [Fact]
+    public async Task A_transition_shape_with_an_unreadable_fork_point_is_skipped_before_any_write()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Hand-numbered before the convention shipped.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, RunRebasedOntoBase.UnreadableCommit, forkPointSha, "6df5f975",
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.NoActionNeeded,
+            "an unresolved fork point must never be handed to git as a literal revision");
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(_repoPath, "PLAN.md"));
+        plan.Should().Contain(
+            "3. **This branch's own entry.**", "skipped before any write — the duplicate is left exactly as committed");
+        (await RunGitCapturingAsync(["status", "--porcelain"])).Should().BeEmpty("no half-applied rewrite is ever left on disk");
+    }
+
+    /// <summary>The same guard, for an unreadable base tip — the value the citation sweep's transition branch reads.</summary>
+    [Fact]
+    public async Task A_transition_shape_with_an_unreadable_base_tip_is_skipped_before_any_write()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Hand-numbered before the convention shipped.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, RunRebasedOntoBase.UnreadableCommit, "6df5f975",
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.NoActionNeeded,
+            "an unresolved base tip must never be handed to git as a literal revision");
+        (await RunGitCapturingAsync(["status", "--porcelain"])).Should().BeEmpty("no half-applied rewrite is ever left on disk");
+    }
+
+    /// <summary>
+    /// The ordinary placeholder shape never reads either parameter, so an unreadable base tip
+    /// must not block it — a blanket guard checked before the shape is known would also skip the
+    /// common case for a value it never needed (caught in this same task's own self-check pass).
+    /// </summary>
+    [Fact]
+    public async Task A_placeholder_shape_still_renumbers_even_when_the_base_tip_is_unreadable()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+        ]);
+
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "PLACEHOLDER-6df5f975. **This branch's own decision.** Body.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, RunRebasedOntoBase.UnreadableCommit, "6df5f975",
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.NewNumber.Should().Be(2);
     }
 
     private async Task<string> CommitPlanAsync(string message, IReadOnlyList<string> entries)
