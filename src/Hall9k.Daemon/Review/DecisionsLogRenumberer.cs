@@ -66,6 +66,19 @@ public static class DecisionsLogRenumberer
     private static readonly string[] ExcludedDirectoryNames = [".git", "bin", "obj", "node_modules"];
 
     /// <summary>
+    /// The span of a genuine Decisions Log citation to a real (non-placeholder) entry number, in
+    /// this repository's own house style: <c>Decisions Log #N</c> or <c>§16 #N</c>, optionally
+    /// followed by a comma-separated list or a hyphenated range of further numbers (<c>Decisions
+    /// Log #26, #103, #104</c>; <c>§16 #38-#58</c>). <see cref="RewriteCitationsAsync"/>'s transition
+    /// shape only ever rewrites a <c>#&lt;oldNumber&gt;</c> occurrence that falls inside a match of
+    /// this pattern — never a bare <c>#&lt;oldNumber&gt;</c> anywhere else on the line, which this
+    /// repository's own number space (pull request numbers, issue numbers) can share by pure
+    /// coincidence with a Decisions Log entry's own number.
+    /// </summary>
+    private static readonly Regex CitationQualifierPattern = new(
+        @"(?:Decisions Log|§16)\s+#\d+(?:\s*[-,]\s*#?\d+)*", RegexOptions.Compiled);
+
+    /// <summary>
     /// Renumbers the Decisions Log's tail entry in <paramref name="worktreePath"/>'s PLAN.md, if
     /// it needs it, and commits the rewrite as its own commit. <paramref name="forkPointSha"/> is
     /// the merge-base this branch's own rebase computed <b>before</b> it ran — the fork point the
@@ -378,6 +391,35 @@ public static class DecisionsLogRenumberer
         return [.. rebuilt];
     }
 
+    /// <summary>
+    /// Every line index belonging to a placement note block <see cref="InsertPlacementNote"/> has
+    /// ever written — a contiguous run of <c>"&gt; "</c>-prefixed lines starting with the marker
+    /// text, wherever it appears in the file (there is no bound on how many times one entry has
+    /// been renumbered, and each pass's own note stays wherever <see cref="InsertPlacementNote"/>
+    /// left it). Used to keep <see cref="RewriteCitationsAsync"/>'s numeric sweep from mistaking a
+    /// past pass's own historical mention of the old number for a citation to rewrite.
+    /// </summary>
+    private static HashSet<int> FindPlacementNoteLines(string[] lines)
+    {
+        HashSet<int> indices = [];
+        for (int i = 0; i < lines.Length; i++)
+        {
+            if (indices.Contains(i) || !lines[i].StartsWith("> Renumbering placement note:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            int j = i;
+            while (j < lines.Length && lines[j].StartsWith(">", StringComparison.Ordinal))
+            {
+                indices.Add(j);
+                j++;
+            }
+        }
+
+        return indices;
+    }
+
     private static async Task<List<string>> RewriteCitationsAsync(
         ProcessRunner git,
         string worktreePath,
@@ -442,13 +484,59 @@ public static class DecisionsLogRenumberer
                     SplitPreservingLineEnding(content);
                 string baseTipContent = await ReadFileAtRevisionAsync(
                     git, worktreePath, baseTipSha, relativePath, cancellationToken);
-                HashSet<string> baseTipLines = [.. SplitPreservingLineEnding(baseTipContent).Lines];
+
+                // A multiset, not a HashSet: line CONTENT alone cannot tell a base-tip line apart
+                // from a branch-added line that happens to be byte-identical to some OTHER,
+                // unrelated line already present at the base tip (this repo's own docs repeat
+                // fixed phrases like "Depth: Decisions Log #N." verbatim throughout a file). A
+                // HashSet-membership test would excuse every occurrence past the first as "already
+                // at the base tip" even when this branch added more of them than the base tip ever
+                // had; counting occurrences and consuming them in document order excuses only as
+                // many as the base tip actually contained (independent pre-PR review, cycle 1,
+                // conformance lens).
+                Dictionary<string, int> baseTipLineCounts = [];
+                foreach (string baseLine in SplitPreservingLineEnding(baseTipContent).Lines)
+                {
+                    baseTipLineCounts[baseLine] = baseTipLineCounts.GetValueOrDefault(baseLine) + 1;
+                }
+
+                // A prior renumbering's own placement note (InsertPlacementNote, possibly from an
+                // earlier pass over this very entry) is carried forward untouched by
+                // RewriteHeadingPreservingBody and can itself mention the old number in prose
+                // ("assigned **#155**") — this branch's own addition, so absent from baseTipLines
+                // exactly like a genuine citation, but it is a historical record of what a past
+                // pass did, not a reference to rewrite. Excluded here rather than left for the
+                // sweep to mistake for a citation, which silently falsified an entry renumbered
+                // twice: the older note ended up claiming the mechanical step assigned a number it
+                // never assigned (independent pre-PR review, cycle 5, adversarial lens).
+                HashSet<int> placementNoteLines = FindPlacementNoteLines(contentLines);
+                Dictionary<string, int> seenLineCounts = [];
                 bool anyLineChanged = false;
                 for (int i = 0; i < contentLines.Length; i++)
                 {
-                    if (citationPattern.IsMatch(contentLines[i]) && !baseTipLines.Contains(contentLines[i]))
+                    string originalLine = contentLines[i];
+                    int seenSoFar = seenLineCounts.GetValueOrDefault(originalLine);
+                    seenLineCounts[originalLine] = seenSoFar + 1;
+                    bool presentAtBaseTip = seenSoFar < baseTipLineCounts.GetValueOrDefault(originalLine);
+
+                    if (placementNoteLines.Contains(i) || presentAtBaseTip)
                     {
-                        contentLines[i] = citationPattern.Replace(contentLines[i], newCitation);
+                        continue;
+                    }
+
+                    // A bare `#<number>` sweep would also rewrite an unrelated mention of the same
+                    // digits this branch's own prose happens to carry — a pull request number, an
+                    // issue number, anything sharing this repository's own number space with the
+                    // Decisions Log — so only a match sitting inside one of this repo's own
+                    // citation forms ("Decisions Log #N[, #M...]" or "§16 #N[, #M...]", including a
+                    // hyphenated range) is ever rewritten; every other occurrence on the line is
+                    // left exactly as this branch itself wrote it (independent pre-PR review, cycle
+                    // 1, adversarial lens).
+                    string rewrittenLine = CitationQualifierPattern.Replace(
+                        originalLine, match => citationPattern.Replace(match.Value, newCitation));
+                    if (rewrittenLine != originalLine)
+                    {
+                        contentLines[i] = rewrittenLine;
                         anyLineChanged = true;
                     }
                 }
