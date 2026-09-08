@@ -2002,13 +2002,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         // Independent pre-PR review, cycle 3, conformance lens: a renumbering commit moves HEAD
         // past whatever this run's tip was last gated at, exactly like a real rebase does, so the
-        // outcome recorded for it must not read as a no-op — a wasNoOp: true here would never raise
-        // RunAggregate.PreFinalPassRebaseAwaitingGate, leaving the renumbered tree ungated before
-        // the pull request opens.
+        // outcome recorded for it must still raise RunAggregate.PreFinalPassRebaseAwaitingGate.
+        // Cycle 5's adversarial lens found that forcing this by lying about WasNoOp
+        // (`wasNoOp: !renumberCommitted`) broke RunAggregate's own trailing-no-op guard on the
+        // post-recovery re-entry — origin genuinely never moved, so WasNoOp stays true, and
+        // DecisionsLogRenumbered is the honest, separate signal that still earns the gate.
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<RunRebasedOntoBase>().Should().Contain(
-            e => !e.WasNoOp, "the renumbering commit that actually landed must not be recorded as a no-op");
+            e => e.WasNoOp && e.DecisionsLogRenumbered,
+            "origin never moved, but the renumbering commit that landed must still raise the gate flag");
     }
 
     /// <summary>

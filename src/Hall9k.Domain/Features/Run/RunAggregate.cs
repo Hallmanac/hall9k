@@ -138,8 +138,11 @@ public sealed class RunAggregate
     /// gated" would force a redundant full gate on every such settle forever, not just the one
     /// this flag actually exists to catch. Set by a non-no-op <see cref="Events.RunRebasedOntoBase"/>
     /// (whether it applied cleanly on its own or only after a recovery session resolved its
-    /// conflict) and cleared by the very next full-scope <see cref="Events.VerificationPassed"/>,
-    /// whichever event lands later on the stream.
+    /// conflict) — or by a no-op one whose <see cref="Events.RunRebasedOntoBase.DecisionsLogRenumbered"/>
+    /// is true, since that renumbering commit also moves this branch's tip past whatever was last
+    /// gated even though origin's base itself never moved — and cleared by the very next
+    /// full-scope <see cref="Events.VerificationPassed"/>, whichever event lands later on the
+    /// stream.
     /// </summary>
     public bool PreFinalPassRebaseAwaitingGate { get; private set; }
 
@@ -1781,8 +1784,13 @@ public sealed class RunAggregate
         // recovery session merely claimed to — is exactly when this branch's own commits have not
         // been gated at their new, possibly-rebased position (see PreFinalPassRebaseAwaitingGate's
         // own doc): worth an extra full gate to confirm even when the claim behind it turns out to
-        // be false, since that gate is what would catch the false claim in the first place.
-        if (!@event.WasNoOp)
+        // be false, since that gate is what would catch the false claim in the first place. A
+        // no-op rebase that still committed a Decisions Log renumbering earns the same gate for
+        // the same reason — the renumbering commit moved this branch's tip too — without needing
+        // WasNoOp itself to lie about whether origin's base actually moved (independent pre-PR
+        // review, cycle 5, adversarial lens: the earlier `wasNoOp: !renumberCommitted` shape broke
+        // the trailing-no-op guard just below, which reads WasNoOp for its own, unrelated purpose).
+        if (!@event.WasNoOp || @event.DecisionsLogRenumbered)
         {
             PreFinalPassRebaseAwaitingGate = true;
         }

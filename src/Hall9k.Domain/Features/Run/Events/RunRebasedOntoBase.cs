@@ -40,6 +40,18 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// judgment; false for a no-op or a rebase git applied cleanly on its own.
 /// </param>
 /// <param name="Detail">What actually happened, readable from <c>h9k task show</c>.</param>
+/// <param name="DecisionsLogRenumbered">
+/// True when the mechanical pre-final-pass rebase step committed a Decisions Log renumbering on
+/// this otherwise-no-op check — origin's base had not moved (<paramref name="WasNoOp"/> stays
+/// true, an honest fact), but the renumbering commit itself moved this branch's tip past whatever
+/// was last gated, so <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> must still be
+/// raised. Kept as its own field rather than folded into <paramref name="WasNoOp"/> so that field
+/// keeps its one meaning ("did origin's base move") for every existing reader — overloading it to
+/// also mean "gate again" silently defeated
+/// <see cref="RunAggregate"/>'s own trailing-no-op guard on the post-recovery re-entry
+/// (independent pre-PR review, cycle 5, adversarial lens). Defaults to false so every call site
+/// that never renumbers — which is most of them — is unaffected.
+/// </param>
 public sealed record RunRebasedOntoBase(
     Guid Id,
     string RebasedFromCommit,
@@ -47,7 +59,8 @@ public sealed record RunRebasedOntoBase(
     bool WasNoOp,
     bool RecoveredByAgentSession,
     string Detail,
-    DateTimeOffset RebasedAt)
+    DateTimeOffset RebasedAt,
+    bool DecisionsLogRenumbered = false)
 {
     /// <summary>
     /// What <see cref="RebasedFromCommit"/> and <see cref="RebasedOntoCommit"/> carry when the read

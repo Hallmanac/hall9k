@@ -1501,6 +1501,48 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 5, adversarial lens: the post-recovery re-entry can also
+    /// carry a Decisions Log renumbering commit (<see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>)
+    /// on top of the trailing no-op. Before this fix, the only way to still raise
+    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> for that renumbering commit was to
+    /// mark the event <c>WasNoOp: false</c>, which defeated the trailing-no-op guard above and
+    /// permanently overwrote the recorded recovery, and left <see cref="RunAggregate.RebaseRecoveryRounds"/>
+    /// unreset even though the very check that landed this event had just confirmed origin's base
+    /// was genuinely behind this branch. <see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>
+    /// lets <c>WasNoOp</c> stay true (an honest fact) while still earning the gate.
+    /// </summary>
+    [Fact]
+    public void A_renumbering_commit_on_the_trailing_no_op_still_gates_without_clobbering_the_recovery_record()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new PreFinalPassRebaseRecoveryDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown, "abc1234", "def5678", "rebase-recovery"));
+        run.RebaseRecoveryRounds.Should().Be(1);
+
+        run.Apply(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: true,
+            "Resolved by a narrow recovery session (rebase-onto-main skill), from abc1234567 to def7654321.", Now));
+        run.LastPreFinalPassRebaseRecovered.Should().BeTrue();
+
+        run.Apply(new RunRebasedOntoBase(
+            id, "def7654321", "def7654321", WasNoOp: true, RecoveredByAgentSession: false,
+            "origin/main has not moved since this branch's own merge base, but the Decisions Log's "
+            + "tail entry still needed the mechanical rebase step's own renumbering commit.",
+            Now, DecisionsLogRenumbered: true));
+
+        run.LastPreFinalPassRebaseRecovered.Should().BeTrue(
+            "the renumbering re-check carries no new information about the earlier recovery and must not overwrite it");
+        run.RebaseRecoveryRounds.Should().Be(0,
+            "the observed no-op resets the round count the same as any other confirmed no-op");
+        run.PreFinalPassRebaseAwaitingGate.Should().BeTrue(
+            "the renumbering commit itself moved this branch's tip past whatever was last gated");
+    }
+
+    /// <summary>
     /// Task: a run rebases its branch onto the current base branch, independent pre-PR review,
     /// cycle 1, conformance lens finding: a recovery session resolves a real conflict with
     /// judgment, not a mechanical apply, so — unlike a clean rebase — it must earn one more

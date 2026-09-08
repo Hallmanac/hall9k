@@ -2079,20 +2079,25 @@ public sealed class ReviewEngine(
                     DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
                         context, git, worktreePath, transitionForkPointSha, originTip, cancellationToken);
 
-                    // A renumbering commit moves HEAD past whatever this run's tip was last gated
-                    // at, exactly like a real rebase does, so it must not be recorded as a no-op:
-                    // wasNoOp: true never raises RunAggregate.PreFinalPassRebaseAwaitingGate, which
-                    // left the renumbered tree — and the numbering guard it is supposed to satisfy
-                    // — ungated on the single most common settle shape (independent pre-PR review,
-                    // cycle 3, conformance lens).
+                    // origin's base genuinely did not move, so WasNoOp stays true — that field keeps
+                    // its one meaning ("did origin's base move") for every existing reader, including
+                    // RunAggregate's own trailing-no-op guard, which the post-recovery re-entry relies
+                    // on to keep a recorded recovery from being clobbered by this very check. A
+                    // renumbering commit still moves HEAD past whatever this run's tip was last gated
+                    // at, exactly like a real rebase does, so it must not go ungated: DecisionsLogRenumbered
+                    // is what raises RunAggregate.PreFinalPassRebaseAwaitingGate on this otherwise-no-op
+                    // outcome, without WasNoOp itself having to lie about whether origin moved
+                    // (independent pre-PR review, cycle 3 conformance lens raised the gate; cycle 5
+                    // adversarial lens found the earlier `wasNoOp: !renumberCommitted` shape broke the
+                    // trailing-no-op guard to do it).
                     bool renumberCommitted = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
                     await RecordRebaseOutcomeAsync(
-                        context.RunId, mergeBase, originTip, wasNoOp: !renumberCommitted, recoveredByAgentSession: false,
+                        context.RunId, mergeBase, originTip, wasNoOp: true, recoveredByAgentSession: false,
                         renumberCommitted
                             ? $"origin/{baseBranch} has not moved since this branch's own merge base, but the Decisions " +
                               "Log's tail entry still needed the mechanical rebase step's own renumbering commit."
                             : $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
-                        checkpointSpend: null, cancellationToken);
+                        checkpointSpend: null, decisionsLogRenumbered: renumberCommitted, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2103,7 +2108,7 @@ public sealed class ReviewEngine(
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased cleanly onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}).",
-                        checkpointSpend: null, cancellationToken);
+                        checkpointSpend: null, decisionsLogRenumbered: false, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2135,7 +2140,7 @@ public sealed class ReviewEngine(
                         context.RunId, mergeBase, observedOntoCommit, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(observedOntoCommit)}) — "
                         + "the rebase itself exited 0 before a background process's stuck output pipe timed the call out.",
-                        checkpointSpend: null, cancellationToken);
+                        checkpointSpend: null, decisionsLogRenumbered: false, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2203,8 +2208,18 @@ public sealed class ReviewEngine(
         ReviewContext context, ProcessRunner git, string worktreePath, string forkPointSha, string baseTipSha,
         CancellationToken cancellationToken)
     {
+        string? preRenumberHead = null;
         try
         {
+            // Captured before RenumberIfNeededAsync ever touches the worktree, so the catch below
+            // has a known-good ref to compare against and, if the commit never landed, to reset
+            // back to (independent pre-PR review, cycle 1, conformance lens: this call's own git
+            // runner can throw ProcessOutputStuckException/TimeoutException the same way the
+            // rebase call above does, and by the time RenumberIfNeededAsync would throw one it has
+            // already written PLAN.md — and, on the transition shape, citation files too).
+            ProcessResult preRenumberHeadResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+            preRenumberHead = preRenumberHeadResult.ExitCode == 0 ? preRenumberHeadResult.StandardOutput.Trim() : null;
+
             DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
                 git, worktreePath, forkPointSha, baseTipSha, DomainId.Short(context.TaskId), cancellationToken);
             if (result.Outcome == DecisionsLogRenumberOutcome.Renumbered)
@@ -2218,9 +2233,88 @@ public sealed class ReviewEngine(
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            // Exit 0 with a stuck output pipe is exactly as possible on this step's own `git add`/
+            // `git commit` calls as it is on the rebase call above — so a thrown exception here
+            // does not by itself mean the renumbering commit never landed, and recording
+            // DecisionsLogRenumbered: false for a renumbering that actually did land would let its
+            // moved tip go ungated into the mandatory final pass (the exact hole this field exists
+            // to close).
+            if (preRenumberHead is not null
+                && await RenumberCommitLandedAsync(git, worktreePath, preRenumberHead, cancellationToken))
+            {
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: the Decisions Log renumbering step's own git call failed after its commit had already landed — treating it as renumbered",
+                    context.RunId);
+                return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.Renumbered, null, null, 0);
+            }
+
+            // The commit did not land, so whatever RenumberIfNeededAsync wrote to disk before it
+            // threw — a rewritten heading, rewritten citation files, or both — is a half-applied
+            // rewrite sitting uncommitted (or staged) in the worktree. Left in place, it would push
+            // without the renumbering and hand closeout's own mechanical rebase a dirty worktree;
+            // discarded here the same way a failed rebase attempt already is above.
             logger.LogWarning(
                 exception, "Run {RunId}: the Decisions Log renumbering step failed — proceeding without it", context.RunId);
+            await RestoreRenumberWorktreeBestEffortAsync(git, worktreePath, preRenumberHead, cancellationToken);
             return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.NoActionNeeded, null, null, 0);
+        }
+    }
+
+    /// <summary>
+    /// Whether the renumbering step's own commit actually landed despite the exception
+    /// <see cref="RenumberDecisionsLogPlaceholderAsync"/> just caught — a worktree left clean, with
+    /// HEAD past <paramref name="preRenumberHead"/>, is only possible if `git commit` really did
+    /// land even though the call that ran it never returned normally. A read failure reads as "not
+    /// confirmed" (false), the same stance <see cref="RebaseActuallyLandedAsync"/> already takes
+    /// for the identical shape on the rebase call above.
+    /// </summary>
+    private static async Task<bool> RenumberCommitLandedAsync(
+        ProcessRunner git, string worktreePath, string preRenumberHead, CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProcessResult statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
+            if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
+            {
+                return false;
+            }
+
+            ProcessResult headCheck = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+            return headCheck.ExitCode == 0 && headCheck.StandardOutput.Trim() != preRenumberHead;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Discards whatever <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> left on disk
+    /// when its own commit never landed — unlike <see cref="RestoreRebaseWorktreeBestEffortAsync"/>,
+    /// which only resets when HEAD itself has moved, this step's failure mode is a dirty worktree
+    /// with HEAD unchanged (a rewritten PLAN.md, and possibly rewritten citation files, sitting
+    /// modified or staged but never committed), so the reset always runs rather than being gated on
+    /// HEAD having diverged.
+    /// </summary>
+    private async Task RestoreRenumberWorktreeBestEffortAsync(
+        ProcessRunner git, string worktreePath, string? preRenumberHead, CancellationToken cancellationToken)
+    {
+        if (preRenumberHead is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await git("git", ["reset", "--hard", preRenumberHead], worktreePath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Decisions Log renumbering recovery failed to restore {Path} back to {Head}",
+                worktreePath, preRenumberHead);
         }
     }
 
@@ -2600,6 +2694,7 @@ public sealed class ReviewEngine(
             new StackedCheckpointRebased(
                 context.TaskId, context.RunId, checkpoint, parentBranch, verdict.UpstreamCommit,
                 verdict.OntoCommit, DateTimeOffset.UtcNow),
+            decisionsLogRenumbered: false,
             cancellationToken);
 
     /// <summary>
@@ -2757,14 +2852,25 @@ public sealed class ReviewEngine(
     /// no budget at all — passed explicitly rather than defaulted, so the cancellation token stays
     /// this method's last parameter (AGENTS.md; conformance review, cycle 1).
     /// </param>
+    /// <param name="decisionsLogRenumbered">
+    /// See <see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>. True only on the no-op-rebase
+    /// call site, and only when its own renumbering call actually landed a commit — the one outcome
+    /// where <paramref name="wasNoOp"/> alone does not already raise the mandatory gate. The
+    /// clean-rebase and stuck-pipe-rebase call sites always pass false here, even on a rebase whose
+    /// own renumbering call did land a commit, because their <paramref name="wasNoOp"/>: false
+    /// already raises that gate; this field is not a general "did this rebase renumber the
+    /// Decisions Log" audit flag, only the one gap wasNoOp itself can't cover (independent pre-PR
+    /// review, cycle 1, conformance lens).
+    /// </param>
     private async Task RecordRebaseOutcomeAsync(
         Guid runId, string rebasedFromCommit, string rebasedOntoCommit, bool wasNoOp, bool recoveredByAgentSession,
-        string detail, StackedCheckpointRebased? checkpointSpend, CancellationToken cancellationToken)
+        string detail, StackedCheckpointRebased? checkpointSpend, bool decisionsLogRenumbered,
+        CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunRebasedOntoBase(
             runId, rebasedFromCommit, rebasedOntoCommit, wasNoOp, recoveredByAgentSession, detail,
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow, decisionsLogRenumbered));
         if (checkpointSpend is not null)
         {
             // No expectedVersion fence: this is a counter, not a state change (the shape
