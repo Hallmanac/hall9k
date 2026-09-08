@@ -34,15 +34,19 @@ namespace Hall9k.Tests.Domain;
 /// <see cref="ContainerRoutingGuardTests"/>'s single exemption:
 /// <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed"/> itself, which is where the one legitimate
 /// direct construction lives, and
-/// <c>tests/Hall9k.Tests/Integration/CardPublicationEngineTests.cs</c>, whose
+/// <c>tests/Hall9k.Tests/Integration/RenderSweepTests.cs</c>, whose
 /// <c>The_loop_waits_for_this_node_to_have_an_identity_before_its_first_sweep</c> case deliberately
 /// keeps its own direct construction and a deferred <c>InitializeAsync</c> call — the test exists
 /// to exercise the loop's pre-bootstrap window, so the initialization has to happen on its own
 /// schedule rather than bundled inside <c>NewNodeAsync</c> — made gh-safe instead by calling
 /// <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed.SeedGitHubConnectionAsync"/> explicitly,
-/// immediately before it (PLAN.md §16 #110). Both exemptions are file-wide rather than
-/// case-specific: a second direct construction added anywhere else in
-/// <c>CardPublicationEngineTests.cs</c> is not caught.
+/// immediately before it (PLAN.md §16 #110). Neither exemption is file-wide: each names the exact
+/// number of direct constructions its file is exempt for — one apiece — so a second one added
+/// anywhere else in either file still fails the build, and so does deleting the case an exemption
+/// was granted for while leaving the exemption behind. Origin: the exemption was file-wide, and
+/// folding <c>CardPublicationEngineTests</c> and <c>ProjectHomeRenderEngineTests</c> into one
+/// <c>RenderSweepTests.cs</c> extended it over a second class's worth of tests that had never
+/// been exempt (independent pre-PR review, cycle 1, adversarial lens).
 /// </para>
 /// <para>
 /// Its own blind spot, stated the way both sibling guards state theirs: the marker names two
@@ -77,17 +81,23 @@ public sealed class NodeBootstrapConventionGuardTests
 
         // Relative to the repository root rather than a bare filename, so a differently-located
         // file that merely happens to share one of these names is not silently exempted along with
-        // the real ones.
-        string[] exemptRelativePaths =
-        [
-            Path.Combine("tests", "Hall9k.Tests", "Fakes", "NodeBootstrapSeed.cs"),
-            Path.Combine("tests", "Hall9k.Tests", "Integration", "CardPublicationEngineTests.cs"),
-        ];
+        // the real ones — and an exact count rather than a bare path, so the exemption covers the
+        // one construction each file is exempt FOR rather than the whole file. A file-wide
+        // exemption was what this held before, and merging two classes into
+        // RenderSweepTests.cs silently widened it over the render-sweep half that had never been
+        // exempt (independent pre-PR review, cycle 1, adversarial lens). The count is asserted
+        // exactly, not as a ceiling: an allowance left standing after its own case is deleted
+        // re-widens the same blind spot, so a file that drops below its allowance is reported
+        // here rather than quietly carrying a licence it no longer uses.
+        Dictionary<string, int> allowedDirectConstructions = new(StringComparer.Ordinal)
+        {
+            [Path.Combine("tests", "Hall9k.Tests", "Fakes", "NodeBootstrapSeed.cs")] = 1,
+            [Path.Combine("tests", "Hall9k.Tests", "Integration", "RenderSweepTests.cs")] = 1,
+        };
 
         string[] files =
         [
             .. Directory.EnumerateFiles(testsDirectory, "*.cs", SearchOption.AllDirectories)
-               .Where(file => !exemptRelativePaths.Contains(Path.GetRelativePath(repositoryRoot, file)))
                .Where(file => !TestSourceTree.IsBuildOutput(testsDirectory, file)),
         ];
 
@@ -110,9 +120,14 @@ public sealed class NodeBootstrapConventionGuardTests
                 continue;
             }
 
-            if (DirectConstructionMarker.IsMatch(code))
+            int constructions = DirectConstructionMarker.Matches(code).Count;
+            int allowed = allowedDirectConstructions.GetValueOrDefault(relativePath);
+
+            if (constructions != allowed)
             {
-                offenders.Add(relativePath);
+                offenders.Add(allowed == 0
+                    ? relativePath
+                    : $"{relativePath} <{constructions} direct constructions, and exactly {allowed} is exempt here>");
             }
         }
 
