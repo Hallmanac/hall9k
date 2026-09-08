@@ -7,8 +7,8 @@ namespace Hall9k.Tests.Daemon.Review;
 
 /// <summary>
 /// Covers the narrower, transition-only shape <see cref="DecisionsLogRenumberer"/> handles
-/// besides its ordinary placeholder path (task: a Decisions Log entry gets its number at merge
-/// time, not at write time — acceptance criterion 3): a branch cut before this convention
+/// besides its ordinary placeholder path (Decisions Log #PLACEHOLDER-6df5f975, acceptance
+/// criterion 3): a branch cut before this convention
 /// shipped, which chose a real number by hand at write time and now collides with an entry that
 /// reached the base after this branch's own fork point. That parallel-merge shape is renumbered
 /// exactly once, mechanically; every other duplicate shape is left alone for
@@ -53,7 +53,7 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
         ]);
 
         DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
-            ExternalProcess.Runner, _repoPath, forkPointSha, "6df5f975", CancellationToken.None);
+            ExternalProcess.Runner, _repoPath, forkPointSha, forkPointSha, "6df5f975", CancellationToken.None);
 
         result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
         result.OldToken.Should().Be("3");
@@ -63,6 +63,62 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
         plan.Should().Contain("3. **Base's own entry.**", "the base's own #3 is untouched — only this branch's own tail entry moves");
         plan.Should().Contain("4. **This branch's own entry.**");
         plan.Should().NotContain("3. **This branch's own entry.**");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, conformance lens: ownership of a citation line must be
+    /// decided against the base's own tip once this branch is current with it, never against the
+    /// fork point — content the base added between the fork point and now is equally absent from
+    /// the fork point as this branch's own additions are, so a fork-point filter cannot tell them
+    /// apart and would rewrite the base's own citation for its own #3 to point at this branch's
+    /// decision instead.
+    /// </summary>
+    [Fact]
+    public async Task A_citation_the_base_added_after_the_fork_point_is_never_mistaken_for_this_branchs_own()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+        File.WriteAllText(Path.Combine(_repoPath, "BaseNotes.md"), "Baseline notes, no citation yet.\n");
+        await RunGitAsync(["add", "-A"]);
+        await RunGitAsync(["commit", "-q", "-m", "fork point side file"]);
+
+        // The base independently landed its own #3 AND a citation of it, after this branch's own
+        // fork point — this is baseTipSha, what the branch is rebased onto.
+        File.WriteAllText(
+            Path.Combine(_repoPath, "BaseNotes.md"), "Baseline notes, now citing Decisions Log #3.\n");
+        string baseTipSha = await CommitPlanAsync("base's own entry and citation, after the fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+        ]);
+
+        // This branch's own rebase then replays its hand-numbered #3 and its own citation on top.
+        File.WriteAllText(
+            Path.Combine(_repoPath, "BranchNotes.md"), "This branch's own notes, citing Decisions Log #3.\n");
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Hand-numbered before the convention shipped.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, baseTipSha, "6df5f975", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.NewNumber.Should().Be(4);
+
+        string baseNotes = await File.ReadAllTextAsync(Path.Combine(_repoPath, "BaseNotes.md"));
+        baseNotes.Should().Contain("#3", "the base's own citation, already present at baseTipSha, is not this branch's to rewrite");
+
+        string branchNotes = await File.ReadAllTextAsync(Path.Combine(_repoPath, "BranchNotes.md"));
+        branchNotes.Should().Contain("#4", "this branch's own citation, added since baseTipSha, is this branch's to rewrite");
+        branchNotes.Should().NotContain("#3");
     }
 
     [Fact]
@@ -86,7 +142,7 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
         ]);
 
         DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
-            ExternalProcess.Runner, _repoPath, forkPointSha, "6df5f975", CancellationToken.None);
+            ExternalProcess.Runner, _repoPath, forkPointSha, forkPointSha, "6df5f975", CancellationToken.None);
 
         result.Outcome.Should().Be(DecisionsLogRenumberOutcome.NoActionNeeded,
             "the guard should fail this collision honestly rather than have the mechanical step paper over it");
@@ -114,7 +170,7 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
         ]);
 
         DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
-            ExternalProcess.Runner, _repoPath, forkPointSha, "6df5f975", CancellationToken.None);
+            ExternalProcess.Runner, _repoPath, forkPointSha, forkPointSha, "6df5f975", CancellationToken.None);
 
         result.Outcome.Should().Be(DecisionsLogRenumberOutcome.NoActionNeeded,
             "the tail entry (#3) is not itself a duplicate, so this branch's own rebase has nothing to renumber");

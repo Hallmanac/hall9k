@@ -23,9 +23,9 @@ public sealed record DecisionsLogRenumberResult(
 
 /// <summary>
 /// The mechanical pre-final-pass rebase step's own half of the placeholder-numbering convention
-/// (task: a Decisions Log entry gets its number at merge time, not at write time; the idea's
-/// origin is Windows's 24940ccd of 2026-09-07, drafted here after three Windows branches and two
-/// Mac branches all wrote #148 the same afternoon). A branch writes its own PLAN.md §16 entry
+/// (Decisions Log #PLACEHOLDER-6df5f975; the idea's origin is Windows's 24940ccd of 2026-09-07,
+/// drafted here after three Windows branches and two Mac branches all wrote #148 the same
+/// afternoon). A branch writes its own PLAN.md §16 entry
 /// under a placeholder derived from its task's short id
 /// (<see cref="DecisionsLogPlaceholder"/>) rather than guessing the log's true next number and
 /// racing every other branch reading the same tail. Once <c>ReviewEngine.EnsureRebasedBeforeFinalPassAsync</c>
@@ -66,16 +66,22 @@ public static class DecisionsLogRenumberer
     /// Renumbers the Decisions Log's tail entry in <paramref name="worktreePath"/>'s PLAN.md, if
     /// it needs it, and commits the rewrite as its own commit. <paramref name="forkPointSha"/> is
     /// the merge-base this branch's own rebase computed <b>before</b> it ran — the fork point the
-    /// transition shape's "reached the base after this branch's fork point" test reads against.
-    /// <paramref name="taskShortId"/> is this run's own task's short id
-    /// (<c>DomainId.Short(context.TaskId)</c>) — the only placeholder this call may ever assign a
-    /// number to, since a placeholder belonging to some OTHER task is that task's own branch's
-    /// job, not this one's.
+    /// transition shape's "was this number already taken when the branch wrote it" test reads
+    /// against. <paramref name="baseTipSha"/> is the base branch's own tip <b>after</b> this
+    /// branch is current with it (the base commit this branch's own commits now sit on top of) —
+    /// the revision the citation sweep's "is this line the base's own, or this branch's" test
+    /// reads against, which is deliberately not <paramref name="forkPointSha"/>: content the base
+    /// added after the fork point but before this call is the base's own, never this branch's,
+    /// even though it is equally absent from the fork point. <paramref name="taskShortId"/> is
+    /// this run's own task's short id (<c>DomainId.Short(context.TaskId)</c>) — the only
+    /// placeholder this call may ever assign a number to, since a placeholder belonging to some
+    /// OTHER task is that task's own branch's job, not this one's.
     /// </summary>
     public static async Task<DecisionsLogRenumberResult> RenumberIfNeededAsync(
         ProcessRunner git,
         string worktreePath,
         string forkPointSha,
+        string baseTipSha,
         string taskShortId,
         CancellationToken cancellationToken)
     {
@@ -85,7 +91,8 @@ public static class DecisionsLogRenumberer
             return NoAction();
         }
 
-        string[] lines = await File.ReadAllLinesAsync(planPath, cancellationToken);
+        string planText = await File.ReadAllTextAsync(planPath, cancellationToken);
+        (string[] lines, string planNewline, bool planTrailingNewline) = SplitPreservingLineEnding(planText);
         (int sectionStart, int sectionEnd) = FindSection(lines);
         if (sectionStart < 0 || sectionEnd < 0)
         {
@@ -134,19 +141,40 @@ public static class DecisionsLogRenumberer
         }
 
         int newNumber = scan.MaxRealNumber + 1;
-        string[] rewrittenLines = RewritePlanMarkdown(lines, scan, sectionEnd, newNumber, taskShortId, oldCitationToken);
-        await File.WriteAllLinesAsync(planPath, rewrittenLines, cancellationToken);
 
-        int filesRewritten = await RewriteCitationsAsync(
-            git, worktreePath, forkPointSha, taskShortId, oldCitationToken, newNumber, scan.TailIsPlaceholder, cancellationToken);
+        // The heading is rewritten and committed to disk BEFORE the citation sweep runs, and the
+        // placement note is inserted only AFTER it, in a second write — never in the same pass.
+        // The transition-shape note's own text names the old number (`#{oldCitationToken}`), and
+        // the sweep below cannot tell that mention apart from a genuine citation once it is on
+        // disk; writing it after the sweep has already run is what keeps the sweep from rewriting
+        // the very sentence recording what it did (independent pre-PR review, cycle 1, both
+        // lenses). This also preserves the entry's own body: unlike a full rebuild that assumes a
+        // one-line entry, the region between the old heading and the boundary is carried forward
+        // untouched (bar a prior placement note, dropped so this pass's own note replaces it).
+        (string[] headingOnlyLines, int insertionIndex) = RewriteHeadingPreservingBody(
+            lines, scan, sectionEnd, newNumber, taskShortId, oldCitationToken);
+        await File.WriteAllTextAsync(
+            planPath, JoinPreservingLineEnding(headingOnlyLines, planNewline, planTrailingNewline), cancellationToken);
+
+        List<string> citationFilesRewritten = await RewriteCitationsAsync(
+            git, worktreePath, baseTipSha, taskShortId, oldCitationToken, newNumber, scan.TailIsPlaceholder,
+            cancellationToken);
+
+        string postSweepPlanText = await File.ReadAllTextAsync(planPath, cancellationToken);
+        (string[] postSweepLines, _, _) = SplitPreservingLineEnding(postSweepPlanText);
+        string[] finalLines = InsertPlacementNote(
+            postSweepLines, insertionIndex, newNumber, taskShortId, scan.TailIsPlaceholder, oldCitationToken);
+        await File.WriteAllTextAsync(
+            planPath, JoinPreservingLineEnding(finalLines, planNewline, planTrailingNewline), cancellationToken);
 
         string commitMessage = scan.TailIsPlaceholder
             ? $"chore: assign Decisions Log #{newNumber} to placeholder PLACEHOLDER-{taskShortId}"
             : $"chore: renumber Decisions Log #{oldCitationToken} to #{newNumber}";
-        await RunGitAsync(git, worktreePath, ["add", "-A"], cancellationToken);
+        await RunGitAsync(
+            git, worktreePath, ["add", "--", PlanMarkdownFileName, .. citationFilesRewritten], cancellationToken);
         await RunGitAsync(git, worktreePath, ["commit", "-m", commitMessage], cancellationToken);
 
-        return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.Renumbered, oldCitationToken, newNumber, filesRewritten);
+        return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.Renumbered, oldCitationToken, newNumber, citationFilesRewritten.Count);
 
         static DecisionsLogRenumberResult NoAction() => new(DecisionsLogRenumberOutcome.NoActionNeeded, null, null, 0);
     }
@@ -248,7 +276,20 @@ public static class DecisionsLogRenumberer
         return false;
     }
 
-    private static string[] RewritePlanMarkdown(
+    private const string PlacementNoteMarker = "> Renumbering placement note:";
+
+    /// <summary>
+    /// Rewrites just the tail entry's own heading (its leading token to the new number) and
+    /// returns, alongside the rewritten lines, the line index where
+    /// <see cref="InsertPlacementNote"/> should later insert the freshly generated note. Unlike a
+    /// full rebuild that assumes a one-line entry, everything between the heading and the section
+    /// boundary is carried forward untouched, because a Decisions Log entry routinely runs to
+    /// several blank-line-separated paragraphs (e.g. #59) and discarding them would silently
+    /// destroy authored decision text. The one thing dropped from that span is a PRIOR placement
+    /// note (recognized by <see cref="PlacementNoteMarker"/>) — a leftover from an earlier
+    /// renumbering of this same entry — since this call's own note replaces it.
+    /// </summary>
+    private static (string[] Lines, int InsertionIndex) RewriteHeadingPreservingBody(
         string[] lines, TailScan scan, int sectionEnd, int newNumber, string taskShortId, string oldCitationToken)
     {
         // The heading regex anchors at the start of the line (^), so the token to drop is always
@@ -257,7 +298,51 @@ public static class DecisionsLogRenumberer
         string oldHeadingToken = scan.TailIsPlaceholder ? DecisionsLogPlaceholder.TokenFor(taskShortId) : oldCitationToken;
         string rewrittenHeading = newNumber.ToString() + lines[scan.TailLine][oldHeadingToken.Length..];
 
-        string[] placementNote = scan.TailIsPlaceholder
+        // Everything from the divider onward (or, lacking one, from the section-closing heading
+        // onward) is preserved verbatim.
+        int boundaryLine = scan.DividerLine >= 0 ? scan.DividerLine : sectionEnd;
+
+        int bodyStart = scan.TailLine + 1;
+        int priorNoteStart = FindPriorPlacementNoteStart(lines, bodyStart, boundaryLine);
+        int bodyEnd = priorNoteStart >= 0 ? priorNoteStart : boundaryLine;
+        while (bodyEnd > bodyStart && lines[bodyEnd - 1].Trim().Length == 0)
+        {
+            bodyEnd--;
+        }
+
+        var rebuilt = new List<string>(lines.Length);
+        rebuilt.AddRange(lines[..scan.TailLine]);
+        rebuilt.Add(rewrittenHeading);
+        rebuilt.AddRange(lines[bodyStart..bodyEnd]);
+        int insertionIndex = rebuilt.Count;
+        rebuilt.AddRange(lines[boundaryLine..]);
+
+        return ([.. rebuilt], insertionIndex);
+    }
+
+    private static int FindPriorPlacementNoteStart(string[] lines, int start, int end)
+    {
+        for (int i = start; i < end; i++)
+        {
+            if (lines[i].StartsWith(PlacementNoteMarker, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Inserts the freshly generated placement note at <paramref name="insertionIndex"/> — always
+    /// called AFTER <see cref="RewriteCitationsAsync"/> has already run and rewritten this same
+    /// file on disk, so the note's own mention of the old number (transition shape only) is never
+    /// itself mistaken for a citation to rewrite.
+    /// </summary>
+    private static string[] InsertPlacementNote(
+        string[] lines, int insertionIndex, int newNumber, string taskShortId, bool tailIsPlaceholder, string oldCitationToken)
+    {
+        string[] placementNote = tailIsPlaceholder
             ?
             [
                 $"> Renumbering placement note: this entry was appended under placeholder",
@@ -275,27 +360,20 @@ public static class DecisionsLogRenumberer
                 $"> fork point to `#{newNumber}` in the same commit.",
             ];
 
-        // Everything from the divider onward (or, lacking one, from the section-closing heading
-        // onward) is preserved verbatim — only the region between the entry itself and that
-        // boundary (blank lines plus whatever placement note, stale or absent, used to sit there)
-        // is replaced.
-        int boundaryLine = scan.DividerLine >= 0 ? scan.DividerLine : sectionEnd;
-
-        var rebuilt = new List<string>(lines.Length + placementNote.Length);
-        rebuilt.AddRange(lines[..scan.TailLine]);
-        rebuilt.Add(rewrittenHeading);
+        var rebuilt = new List<string>(lines.Length + placementNote.Length + 2);
+        rebuilt.AddRange(lines[..insertionIndex]);
         rebuilt.Add("");
         rebuilt.AddRange(placementNote);
         rebuilt.Add("");
-        rebuilt.AddRange(lines[boundaryLine..]);
+        rebuilt.AddRange(lines[insertionIndex..]);
 
         return [.. rebuilt];
     }
 
-    private static async Task<int> RewriteCitationsAsync(
+    private static async Task<List<string>> RewriteCitationsAsync(
         ProcessRunner git,
         string worktreePath,
-        string forkPointSha,
+        string baseTipSha,
         string taskShortId,
         string oldCitationToken,
         int newNumber,
@@ -307,7 +385,7 @@ public static class DecisionsLogRenumberer
             : new Regex($"(?<!\\d)#{Regex.Escape(oldCitationToken)}(?!\\d)");
         string newCitation = $"#{newNumber}";
 
-        int filesRewritten = 0;
+        List<string> filesRewritten = [];
         foreach (string path in EnumerateTextFiles(worktreePath))
         {
             // PLAN.md is deliberately NOT skipped: its own tail entry heading was already
@@ -343,30 +421,38 @@ public static class DecisionsLogRenumberer
             else
             {
                 // A real number's citations are ambiguous by construction (that is the collision
-                // itself) — only a citation line this branch itself added since its fork point,
-                // never one already present there, is this branch's own to rewrite.
-                string forkPointContent = await ReadFileAtRevisionAsync(
-                    git, worktreePath, forkPointSha, relativePath, cancellationToken);
-                HashSet<string> forkPointLines = [.. NormalizeLineEndings(forkPointContent).Split('\n')];
+                // itself) — only a citation line this branch itself added is this branch's own to
+                // rewrite. That line's OWN branch is what "added" means here, so ownership is
+                // decided against baseTipSha — the base's tip once this branch is current with it
+                // — never forkPointSha: content the base added between the fork point and now is
+                // the base's own, even though, like this branch's own additions, it is equally
+                // absent from the fork point. Reading against the fork point here would treat the
+                // base's own newly-landed citations for the SAME colliding number as this
+                // branch's, and rewrite them to point at this branch's decision instead
+                // (independent pre-PR review, cycle 1, conformance lens).
+                (string[] contentLines, string contentNewline, bool contentTrailingNewline) =
+                    SplitPreservingLineEnding(content);
+                string baseTipContent = await ReadFileAtRevisionAsync(
+                    git, worktreePath, baseTipSha, relativePath, cancellationToken);
+                HashSet<string> baseTipLines = [.. SplitPreservingLineEnding(baseTipContent).Lines];
                 bool anyLineChanged = false;
-                string[] contentLines = NormalizeLineEndings(content).Split('\n');
                 for (int i = 0; i < contentLines.Length; i++)
                 {
-                    if (citationPattern.IsMatch(contentLines[i]) && !forkPointLines.Contains(contentLines[i]))
+                    if (citationPattern.IsMatch(contentLines[i]) && !baseTipLines.Contains(contentLines[i]))
                     {
                         contentLines[i] = citationPattern.Replace(contentLines[i], newCitation);
                         anyLineChanged = true;
                     }
                 }
 
-                rewritten = string.Join('\n', contentLines);
+                rewritten = JoinPreservingLineEnding(contentLines, contentNewline, contentTrailingNewline);
                 changed = anyLineChanged;
             }
 
             if (changed)
             {
                 await File.WriteAllTextAsync(path, rewritten, cancellationToken);
-                filesRewritten++;
+                filesRewritten.Add(relativePath);
             }
         }
 
@@ -390,12 +476,53 @@ public static class DecisionsLogRenumberer
 
     private static string NormalizeLineEndings(string text) => text.Replace("\r\n", "\n");
 
+    /// <summary>Splits text into lines without losing what its own line ending or trailing newline were, so a rewrite can restore them rather than forcing every file to LF.</summary>
+    private static (string[] Lines, string Newline, bool TrailingNewline) SplitPreservingLineEnding(string text)
+    {
+        string newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        string normalized = NormalizeLineEndings(text);
+        bool trailingNewline = normalized.Length > 0 && normalized[^1] == '\n';
+        string body = trailingNewline ? normalized[..^1] : normalized;
+        string[] lines = body.Length == 0 ? [] : body.Split('\n');
+        return (lines, newline, trailingNewline);
+    }
+
+    private static string JoinPreservingLineEnding(IReadOnlyList<string> lines, string newline, bool trailingNewline)
+    {
+        string content = string.Join(newline, lines);
+        return trailingNewline ? content + newline : content;
+    }
+
+    /// <summary>
+    /// Reads <paramref name="relativePath"/> as it stood at <paramref name="revision"/>. Git's
+    /// <c>&lt;rev&gt;:&lt;path&gt;</c> syntax walks the tree on forward slashes only, so
+    /// <paramref name="relativePath"/> is normalized to them regardless of the OS this runs on —
+    /// on Windows, an OS-separated path here would make every <c>git show</c> call fail and, left
+    /// undistinguished from genuine absence, silently treat every line in the file as newly added
+    /// (independent pre-PR review, cycle 1, both lenses). A path genuinely absent at that
+    /// revision — this branch (or the base) added the file itself since — is the one failure this
+    /// method is entitled to swallow as empty; any other git failure is surfaced rather than
+    /// coerced into the same "nothing was there" reading, since the caller's ownership test
+    /// depends on that distinction being honest.
+    /// </summary>
     private static async Task<string> ReadFileAtRevisionAsync(
         ProcessRunner git, string worktreePath, string revision, string relativePath, CancellationToken cancellationToken)
     {
-        ProcessResult result = await git(
-            "git", ["show", $"{revision}:{relativePath}"], worktreePath, cancellationToken);
-        return result.ExitCode == 0 ? result.StandardOutput : "";
+        string treePath = relativePath.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
+        ProcessResult result = await git("git", ["show", $"{revision}:{treePath}"], worktreePath, cancellationToken);
+        if (result.ExitCode == 0)
+        {
+            return result.StandardOutput;
+        }
+
+        if (result.StandardError.Contains("does not exist in", StringComparison.Ordinal)
+            || result.StandardError.Contains("exists on disk, but not in", StringComparison.Ordinal))
+        {
+            return "";
+        }
+
+        throw new InvalidOperationException(
+            $"git show {revision}:{treePath} failed in {worktreePath}: {result.StandardError}");
     }
 
     private static async Task RunGitAsync(

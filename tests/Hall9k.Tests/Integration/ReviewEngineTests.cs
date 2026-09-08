@@ -1949,6 +1949,59 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses: a placeholder Decisions Log entry must
+    /// still get its real number even when origin's base has not moved — the no-op path used to
+    /// return before ever calling the renumberer, which is exactly the shape a branch that needs
+    /// no rebase (and a branch whose conflict a recovery session already resolved by hand before
+    /// the loop re-entered here) both take, so it was also the shape most likely to merge its own
+    /// placeholder into main unrenumbered.
+    /// </summary>
+    [Fact]
+    public async Task Pre_final_pass_rebase_no_op_still_assigns_the_placeholders_real_number()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        string taskShortId = DomainId.Short(taskId);
+        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
+        plan.Should().Contain("1. **A test decision.**",
+            "the no-op rebase path must still renumber the tail placeholder rather than let it merge unrenumbered");
+        plan.Should().NotContain(
+            $"#PLACEHOLDER-{taskShortId}", "no citation of the placeholder may survive once the mandatory final pass has run");
+        plan.Should().Contain(
+            "Renumbering placement note:", "the placement note deliberately keeps naming the old placeholder as history");
+
+        string log = GitOutput(worktreePath, "log --oneline -5");
+        log.Should().Contain(
+            "chore: assign Decisions Log #1 to placeholder", "the renumbering step commits mechanically, with no agent in the loop");
+    }
+
+    /// <summary>
     /// Task: a run rebases its branch onto the current base branch (independent pre-PR review,
     /// cycle 1, both lenses). A follow-up run reuses whatever pull request the task already has
     /// open, and that pull request's base can have been retargeted away from the project's own

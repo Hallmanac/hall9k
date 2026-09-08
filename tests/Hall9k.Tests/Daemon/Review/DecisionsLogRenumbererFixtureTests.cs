@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Daemon.Review;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon.Review;
@@ -10,8 +11,8 @@ namespace Hall9k.Tests.Daemon.Review;
 /// Drives <see cref="DecisionsLogRenumberer"/> directly against a real git repository fixture —
 /// no daemon, no Postgres, no agent session — standing in for the shape a unit test cannot
 /// otherwise exercise: two installs, each with its own Postgres and no shared allocator, merging
-/// branches in their own order against one shared repository (task: a Decisions Log entry gets
-/// its number at merge time, not at write time; walked with Brian 2026-09-07 20:11-20:15 EDT).
+/// branches in their own order against one shared repository (Decisions Log
+/// #PLACEHOLDER-6df5f975; walked with Brian 2026-09-07 20:11-20:15 EDT).
 /// Ten branches all fork from the same commit, each appending exactly one placeholder Decisions
 /// Log entry and one citation of it in its own file, and are fed through the renumberer one at a
 /// time in a shuffled order — the same "this branch's own rebase just landed cleanly" state
@@ -29,16 +30,7 @@ public sealed class DecisionsLogRenumbererFixtureTests : IDisposable
 
     public DecisionsLogRenumbererFixtureTests() => Directory.CreateDirectory(_repoPath);
 
-    public void Dispose()
-    {
-        try
-        {
-            Directory.Delete(_repoPath, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
-    }
+    public void Dispose() => TemporaryTree.TryDelete(_repoPath);
 
     private readonly record struct CitationSite(string RelativePath, string AnchorMarker, Func<string, string> RenderCitation);
 
@@ -70,8 +62,11 @@ public sealed class DecisionsLogRenumbererFixtureTests : IDisposable
             await RunGitAsync(["add", "-A"]);
             await RunGitAsync(["commit", "-q", "-m", $"task {branch.TaskShortId}: append Decisions Log entry"]);
 
+            // Every branch here takes the placeholder shape, which needs no base-tip filter at
+            // all (its own token is unique by construction) — forkPointSha stands in for both
+            // parameters since baseTipSha is simply unread on this path.
             DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
-                ExternalProcess.Runner, _repoPath, forkPointSha, branch.TaskShortId, CancellationToken.None);
+                ExternalProcess.Runner, _repoPath, forkPointSha, forkPointSha, branch.TaskShortId, CancellationToken.None);
 
             result.Outcome.Should().Be(
                 DecisionsLogRenumberOutcome.Renumbered, $"task {branch.TaskShortId}'s own placeholder was at the tail");
@@ -110,6 +105,59 @@ public sealed class DecisionsLogRenumbererFixtureTests : IDisposable
                 $"#{assignedNumbers[branch.TaskShortId]}", $"{branch.Site.RelativePath} cites task {branch.TaskShortId}'s own entry");
             siteContent.Should().NotContain($"PLACEHOLDER-{branch.TaskShortId}");
         }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens: a Decisions Log entry routinely runs
+    /// to several blank-line-separated paragraphs after its own heading (e.g. #59 in PLAN.md
+    /// itself), and a renumbering rebuild that assumes a one-line entry silently discards every
+    /// paragraph between the heading and the section's own trailing divider. This pins that the
+    /// body survives, word for word, with only the heading's own leading token changed.
+    /// </summary>
+    [Fact]
+    public async Task A_multi_paragraph_placeholder_entrys_body_survives_renumbering()
+    {
+        await RunGitAsync(["init", "-q", "-b", "main"]);
+        await RunGitAsync(["config", "user.email", "test@hall9k.local"]);
+        await RunGitAsync(["config", "user.name", "Hall9k Test"]);
+
+        string taskShortId = "6df5f975";
+        WriteFile("PLAN.md", string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            "1. **First seeded decision.** Baseline text.",
+            "",
+            $"PLACEHOLDER-{taskShortId}. **A multi-paragraph decision.** First paragraph, the heading's own sentence.",
+            "",
+            "**Second paragraph.** Body text that must survive renumbering untouched.",
+            "",
+            "**Third paragraph.** More body text, also must survive.",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        await RunGitAsync(["add", "-A"]);
+        await RunGitAsync(["commit", "-q", "-m", "fork point"]);
+        string forkPointSha = (await RunGitCapturingAsync(["rev-parse", "HEAD"])).Trim();
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, forkPointSha, taskShortId, CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.NewNumber.Should().Be(2);
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(_repoPath, "PLAN.md"));
+        plan.Should().Contain("2. **A multi-paragraph decision.** First paragraph, the heading's own sentence.");
+        plan.Should().Contain("**Second paragraph.** Body text that must survive renumbering untouched.",
+            "the entry's own second paragraph must not be discarded by the renumbering rebuild");
+        plan.Should().Contain("**Third paragraph.** More body text, also must survive.",
+            "the entry's own third paragraph must not be discarded by the renumbering rebuild");
+        plan.Should().Contain("Renumbering placement note:", "the mechanically generated note must still be appended");
     }
 
     private static readonly string[] CitationSitePaths =
