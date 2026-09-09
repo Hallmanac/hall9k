@@ -33,9 +33,9 @@ public static class PendingBackgroundTaskParser
     /// Phrases that turn "background" from something still pending into something explicitly
     /// avoided or already resolved: "rather than backgrounding it", "instead of the background
     /// run" — neither carries one of the standalone negation words below, so each is matched as
-    /// its own fixed cue instead. Checked within the same clause as "background" itself, not the
-    /// whole summary, so a negation elsewhere in a long summary cannot silently suppress a genuine
-    /// pending-task clause later on.
+    /// its own fixed cue instead. Checked within the same sub-clause as the pending-task claim
+    /// (see <see cref="HasNegationCue"/>), not the whole summary, so a negation elsewhere in a
+    /// long summary cannot silently suppress a genuine pending-task clause later on.
     /// </summary>
     private static readonly string[] NegationPhraseCues = ["rather than", "instead of"];
 
@@ -51,9 +51,32 @@ public static class PendingBackgroundTaskParser
     /// (independent pre-PR review, cycle 1, adversarial lens). "n't" is checked separately since a
     /// contraction like "isn't"/"wasn't" has no word boundary before its own "n't" for the regex
     /// to anchor on.
+    /// <para>
+    /// This pattern alone is not enough to decide a negation applies: <see cref="HasNegationCue"/>
+    /// only counts a match found in the same sub-clause as the pending-task claim it would negate
+    /// (see that method's own remarks) — a negation word anywhere else in a longer clause, denying
+    /// something unrelated ("There's no way to shorten the test run, so it's still running in the
+    /// background..."), must not suppress a genuine still-in-flight mention later in the same
+    /// period-delimited clause (independent pre-PR review, cycle 2, adversarial lens).
+    /// </para>
     /// </summary>
     private static readonly Regex NegationWordPattern = new(
         @"\b(no|not|nothing|never|without)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Splits a clause into narrower sub-clauses at commas and at coordinating/subordinating
+    /// conjunctions that typically introduce a new independent statement ("so", "but", "while",
+    /// ...). Used only to scope negation matching (see <see cref="HasNegationCue"/>): a negation
+    /// earlier in the sentence should not reach across one of these boundaries to suppress a
+    /// pending-task claim in a later, unrelated part of the same sentence. Deliberately excludes
+    /// "and"/"or" — both commonly conjoin two verb phrases describing the same ongoing action
+    /// ("no build or test was left running") rather than starting an unrelated statement, and
+    /// splitting on them would reintroduce the same false-negative risk this pattern exists to
+    /// avoid.
+    /// </summary>
+    private static readonly Regex SubClauseSeparatorPattern = new(
+        @",|\b(?:so|but|yet|while|because|since|although|though)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static bool NamesPendingBackgroundTask(string? summary)
     {
@@ -83,8 +106,35 @@ public static class PendingBackgroundTaskParser
         return false;
     }
 
-    private static bool HasNegationCue(string clause) =>
-        NegationWordPattern.IsMatch(clause)
-        || clause.Contains("n't", StringComparison.OrdinalIgnoreCase)
-        || NegationPhraseCues.Any(cue => clause.Contains(cue, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// True only when a negation is found in the same sub-clause (see
+    /// <see cref="SubClauseSeparatorPattern"/>) as either the "background" mention or a
+    /// still-in-flight word — i.e. in the same narrow span as whatever the negation would need to
+    /// be denying. A sub-clause that names neither is skipped outright: a negation word there is
+    /// denying something else in the sentence entirely and must not reach across the boundary to
+    /// suppress a genuine pending-task claim elsewhere in the same period-delimited clause.
+    /// </summary>
+    private static bool HasNegationCue(string clause)
+    {
+        foreach (string segment in SubClauseSeparatorPattern.Split(clause))
+        {
+            bool namesPendingTaskClaim =
+                segment.Contains("background", StringComparison.OrdinalIgnoreCase)
+                || StillInFlightWords.Any(word => segment.Contains(word, StringComparison.OrdinalIgnoreCase));
+
+            if (!namesPendingTaskClaim)
+            {
+                continue;
+            }
+
+            if (NegationWordPattern.IsMatch(segment)
+                || segment.Contains("n't", StringComparison.OrdinalIgnoreCase)
+                || NegationPhraseCues.Any(cue => segment.Contains(cue, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
