@@ -42,6 +42,22 @@ internal sealed record LifecycleState
     public static readonly LifecycleState Delivered = new("Delivered", "magenta");
 
     /// <summary>
+    /// A posted pull-request review waiting on its author (task: a pr-review task stays open while
+    /// the pull request's review threads are unresolved). The reviewer's work is done and the
+    /// review is out there; what has not happened is the author answering it, so the story is
+    /// neither Working (nothing of ours is running) nor Done (a review nobody has answered is not
+    /// a review that is over).
+    /// <para>
+    /// Its own word rather than <see cref="Delivered"/>'s, even though both mean "an open pull
+    /// request is being watched", because the two wait on opposite things: Delivered waits for a
+    /// merge of OUR work, and a reader scanning it is asking "is it my turn to merge". This one
+    /// waits for somebody else's reply on somebody else's pull request, and the answer to "is it
+    /// my turn" is no until the watch says otherwise.
+    /// </para>
+    /// </summary>
+    public static readonly LifecycleState Waiting = new("Waiting", "cyan");
+
+    /// <summary>
     /// True closeout: the merge was observed, or the task was closed with no pull request to
     /// watch. This is the same bar the dependency rule uses (TASK-MODEL.md §2.3), which is the
     /// point — the board and the blocker rule finally agree on the word.
@@ -59,7 +75,7 @@ internal sealed record LifecycleState
 
     /// <summary>The whole vocabulary, in lifecycle order — what --state offers and --help lists.</summary>
     public static readonly IReadOnlyList<LifecycleState> All =
-        [Draft, Published, Working, Delivered, Done, Failed, Archived];
+        [Draft, Published, Working, Delivered, Waiting, Done, Failed, Archived];
 
     /// <summary>The word itself, as every surface prints it.</summary>
     public string Word { get; }

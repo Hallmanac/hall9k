@@ -245,6 +245,14 @@ internal enum AttentionBucket
     /// </summary>
     Delivered,
 
+    /// <summary>
+    /// A posted pull-request review whose author has not answered yet (task: a pr-review task
+    /// stays open while the pull request's review threads are unresolved). Nothing is being asked
+    /// of the reviewer while the ball is in the author's court — the moment it comes back, the
+    /// row moves to <see cref="NeedsYou"/> with a line naming what changed.
+    /// </summary>
+    Waiting,
+
     /// <summary>Assigned with every dependency met: the dispatcher has not claimed it yet.</summary>
     Queued,
 

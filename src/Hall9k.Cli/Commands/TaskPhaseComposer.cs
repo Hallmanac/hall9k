@@ -50,9 +50,62 @@ internal static class TaskPhaseComposer
             return Working(task, run, session);
         }
 
+        if (state == LifecycleState.Waiting)
+        {
+            return AwaitingAuthor(task);
+        }
+
         return state == LifecycleState.Delivered
             ? Delivered(task, run, session, held, heldByTracker)
             : TaskPhase.None;
+    }
+
+    /// <summary>
+    /// A posted review waiting on its author (task: a pr-review task stays open while the pull
+    /// request's review threads are unresolved). The line names the pull request and how many of
+    /// the reviewer's own threads are still unresolved, which are the two facts a reader wants —
+    /// "waiting" alone sends them to GitHub to find out what for.
+    /// <para>
+    /// Liveness is <see cref="SessionLiveness.NotApplicable"/> and no session is named, because
+    /// none exists: the run that produced the review has completed, and the watch is the daemon's
+    /// own poll rather than a process anything can observe. Saying anything else here would
+    /// reassure a reader about a session that is not there.
+    /// </para>
+    /// <para>
+    /// Before the first poll has looked, the line says exactly that rather than reporting zero
+    /// open threads — an unlooked-at pull request and one with nothing outstanding are different
+    /// facts, and only one of them is Done's business (AGENTS.md, the never-guess rule).
+    /// </para>
+    /// </summary>
+    private static TaskPhase AwaitingAuthor(TaskListItem task)
+    {
+        // owner/repo#42, the form every other pr-review surface prints, off the one derived reader
+        // both this line and the attention line beside it read (TaskListItem.AdoptedPullRequestReference).
+        // The recorded URL is the fallback and "the pull request" the last resort — never a
+        // fabricated number.
+        string pullRequest = task.AdoptedPullRequestReference
+            ?? task.PrReviewFollowThroughPullRequestUrl ?? "the pull request";
+        if (!task.PrReviewFollowThroughObserved)
+        {
+            return new TaskPhase(
+                $"your review is posted on {pullRequest}", SessionLiveness.NotApplicable,
+                "the closeout watcher has not looked at it yet");
+        }
+
+        string threads = task.PrReviewOpenThreadCount switch
+        {
+            0 => "none of your threads are still open",
+            1 => "1 of your threads is still open",
+            var count => $"{count} of your threads are still open",
+        };
+        // A newly-requested re-review wakes the reviewer now (needs-you, not Waiting), so a
+        // WAITING row carrying this flag is a stream the older behaviour left mid-wait — the
+        // request was recorded and never surfaced. Rendered anyway, and deliberately: dropping the
+        // suffix would leave exactly those rows saying nothing about the one thing being asked of
+        // them (independent pre-PR review, cycle 1, adversarial lens).
+        string reReview = task.PrReviewReReviewRequested ? "; a re-review is requested of you" : string.Empty;
+        return new TaskPhase(
+            $"waiting on {pullRequest}'s author", SessionLiveness.NotApplicable, threads + reReview);
     }
 
     /// <summary>

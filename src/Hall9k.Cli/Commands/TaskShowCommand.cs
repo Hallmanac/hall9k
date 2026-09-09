@@ -1715,6 +1715,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 + $"h9k task unassign {shortId} [dim]→[/] h9k task draft {shortId} [dim]→[/] h9k task revise {shortId} --clear-dependencies"
                 + $" [dim]— or claim across the open dependency yourself:[/] h9k task work {shortId} --acknowledge-unmet-dependencies",
             "Queued" => $"[dim]Waiting for a dispatch cycle on one of the assignee's nodes. To take it back:[/] h9k task unassign {shortId}",
+            // A posted review waiting on its author (task: a pr-review task stays open while the
+            // pull request's review threads are unresolved). Nothing is being asked of the
+            // reviewer, so the hint says what the platform is doing and names the one lever that
+            // stops it — never h9k task resolve, which refuses anything but a Failed task, or
+            // h9k review resolve, whose park has already been resolved to get here.
+            "AwaitingAuthor" => "[dim]The closeout watcher polls the pull request on its own cadence and flags "
+                + "this needs-you the moment its author replies, pushes, or re-requests your review. It reaches "
+                + "Done when every thread you opened is resolved, or the pull request merges or closes. "
+                + $"To stop watching:[/] h9k task abandon {shortId}",
             _ => null,
         };
 

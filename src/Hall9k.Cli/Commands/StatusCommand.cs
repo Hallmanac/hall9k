@@ -133,6 +133,13 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // pull request or the merge is the only thing left (origin incident, 2026-08-22, PR 24).
         listed += Section(rows, AttentionBucket.Delivered, "attention-delivered",
             "[magenta]Delivered[/] [dim]— pushed; the merge has not been observed[/]", now);
+        // A posted review waiting on its author is listed rather than counted for the same reason
+        // Delivered work is: it is where "is it my turn yet?" gets answered, and the origin
+        // incident this feature exists for (2026-09-08, arx-platform #2023) was a review that
+        // went Done and left nothing on the board watching the pull request at all. Each row's
+        // phase line names the pull request and how many of the reviewer's threads are still open.
+        listed += Section(rows, AttentionBucket.Waiting, "attention-waiting",
+            "[cyan]Waiting[/] [dim]— your review is posted; its author has not answered yet[/]", now);
         // The queue is normally a count in the header — it needs nothing from anyone. It earns a
         // section when the node is at its concurrency ceiling (Decisions Log #64), when a project
         // is at its own cap or paused (#140), or when this node's spend budget for the period is

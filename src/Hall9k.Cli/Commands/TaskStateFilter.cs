@@ -6,7 +6,7 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// Reads --state against the three surfaces a row now carries (Decisions Log #66):
 /// <list type="number">
-/// <item>a <b>lifecycle state</b> (Draft, Published, Working, Delivered, Done, Failed, Archived)
+/// <item>a <b>lifecycle state</b> (Draft, Published, Working, Delivered, Waiting, Done, Failed, Archived)
 /// selects exactly what the Status column shows;</item>
 /// <item>an <b>attention group</b> (needs-you, stalled, attention-working, …) selects the whole
 /// group h9k status and the rollups count by;</item>
@@ -23,10 +23,11 @@ namespace Hall9k.Cli.Commands;
 /// Done), and each returned a set the column contradicted — <c>--state delivered</c> answered
 /// with the rows counted under the Delivered group and silently left out the pushed row parked
 /// on a question, which the Status column calls Delivered just the same. The vocabulary that
-/// loses a word gets a spelling of its own rather than an unreachable entry in --help: the four
+/// loses a word gets a spelling of its own rather than an unreachable entry in --help: the five
 /// groups the column shadowed are spelled <c>attention-working</c>, <c>attention-delivered</c>,
-/// <c>attention-draft</c> and <c>attention-done</c>, and the fifth, Ready, has its own name
-/// already and no longer answers to <c>published</c>. Origin incident (2026-08-20): the
+/// <c>attention-waiting</c>, <c>attention-draft</c> and <c>attention-done</c>, and Ready, which
+/// the column shadowed under a different word, has its own name already and no longer answers to
+/// <c>published</c>. Origin incident (2026-08-20): the
 /// pull-request group was first spelled awaiting-review, which normalized onto the AwaitingReview
 /// run state, so <c>--state AwaitingReview</c> silently returned the ChecksFailing and
 /// ReviewPending rows too and the state advertised in --help could not be selected at all.
@@ -51,6 +52,9 @@ internal static class TaskStateFilter
         // bare because neither word is one the Status column prints.
         ["active"] = AttentionBucket.Working,
         ["attentiondelivered"] = AttentionBucket.Delivered,
+        // The bare word "waiting" is the Status column's (LifecycleState.Waiting), so the group
+        // takes the attention- spelling exactly as the other groups the column shadowed already do.
+        ["attentionwaiting"] = AttentionBucket.Waiting,
         ["inreview"] = AttentionBucket.Delivered,
         ["queued"] = AttentionBucket.Queued,
         ["blocked"] = AttentionBucket.Blocked,
@@ -72,8 +76,8 @@ internal static class TaskStateFilter
     /// split added three groups to this filter and the help text kept the pre-split seven.
     /// </summary>
     internal const string AttentionSpelling =
-        "needs-you, stalled, attention-working, attention-delivered, queued, blocked, ready, "
-        + "attention-draft, attention-done, closed";
+        "needs-you, stalled, attention-working, attention-delivered, attention-waiting, queued, "
+        + "blocked, ready, attention-draft, attention-done, closed";
 
     /// <summary>
     /// The lifecycle vocabulary the Status column prints (Decisions Log #66). Every word here is
