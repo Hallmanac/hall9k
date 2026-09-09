@@ -478,15 +478,30 @@ internal static class AttentionComposer
         // before this run can ever reach AwaitingReview carrying a thread left open on purpose,
         // since only Decline/Route ever leaves one open (Decisions Log #159; Fix either lands or the
         // thread stays counted as outstanding and keeps buying follow-ups instead of idling here).
+        //
+        // Scoped to IsHuman == true, not every Decline/Route outcome: the design this field
+        // exists to reflect (Decisions Log #159) only ever leaves a HUMAN-authored thread open on
+        // purpose — a bot-authored one (Copilot, another agent) is resolved by this same triage
+        // run before it ever pushes (resolve-review-threads skill step 9), so it stops being
+        // genuinely unresolved the moment this run reaches AwaitingReview. LastReviewThreadOutcomes
+        // itself is never revisited after that point (Apply(ReviewThreadsTriaged) only ever fires
+        // on this run's own triage), so counting every outcome regardless of author kind would
+        // report an already-closed bot thread as still blocking the merge for the entire remaining
+        // life of this run (independent pre-PR review, cycle 6, adversarial finding). This mirrors
+        // CloseoutEngine's own scoping of its "already answered" exclusion to human threads
+        // (CloseoutEngine.cs, snapshot.HumanThreadIds) — that gate reads a live GitHub actor-type
+        // classification instead of this outcome's own self-reported IsHuman, because a live
+        // provider read is available there; this composer has no live snapshot to read at command
+        // time, so the self-report is the only signal on hand, and using it here is a read for
+        // display, not the "may an agent resolve this thread" decision IsHuman's own doc warns
+        // against trusting it for.
         IReadOnlyList<ReviewThreadOutcome> openThreads = [.. run.LastReviewThreadOutcomes
-            .Where(outcome => outcome.Disposition == ReviewThreadDisposition.Decline
-                || outcome.Disposition == ReviewThreadDisposition.Route)];
+            .Where(outcome => (outcome.Disposition == ReviewThreadDisposition.Decline
+                    || outcome.Disposition == ReviewThreadDisposition.Route)
+                && outcome.IsHuman == true)];
         if (openThreads.Count > 0)
         {
-            int human = openThreads.Count(outcome => outcome.IsHuman == true);
-            waitingOn.Add(human > 0
-                ? $"{openThreads.Count} unresolved review thread(s) ({human} from a human) to close"
-                : $"{openThreads.Count} unresolved review thread(s) to close");
+            waitingOn.Add($"{openThreads.Count} unresolved review thread(s) ({openThreads.Count} from a human) to close");
         }
 
         // Named rather than reported as an anonymous "human approval" wherever the last observation
