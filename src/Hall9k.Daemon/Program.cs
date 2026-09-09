@@ -170,6 +170,13 @@ builder.Services.AddSingleton<StackedParentWatch>();
 builder.Services.AddSingleton<IRemoteParentReader>(services =>
     new GitHubRemoteParentReader(services.GetRequiredService<ProcessRunner>()));
 builder.Services.AddSingleton<RemoteStackedParentSweep>();
+// The read a posted review's follow-through polls with (task: a pr-review task stays open while
+// the pull request's review threads are unresolved). Its own seam, in Connectors rather than
+// beside IPullRequestInspector, because h9k pr review --since-my-review needs the identical read
+// from the CLI process — see IReviewConversationReader's own doc.
+builder.Services.AddSingleton<IReviewConversationReader>(services =>
+    new GitHubReviewThreads(services.GetRequiredService<ProcessRunner>()));
+builder.Services.AddSingleton<PrReviewFollowThroughEngine>();
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();

@@ -1458,7 +1458,60 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         RunAggregate run = (await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token))!;
         run.State.Should().Be(RunState.Completed, "the task still finalizes — only the cleanups are skipped");
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
-        task.State.Value.Should().Be("Done");
+        task.State.Value.Should().Be(
+            "AwaitingAuthor",
+            "a posted review is not the ending any more (task: a pr-review task stays open while the pull "
+            + "request's review threads are unresolved) — the checkout half of finalize is what --no-worktree "
+            + "changes, not the state it lands the task in");
+    }
+
+    /// <summary>
+    /// The transition the whole follow-through feature turns on (task: a pr-review task stays open
+    /// while the pull request's review threads are unresolved): the owner's verdict reaches
+    /// finalize and the task parks on the pull request instead of going Done. All three delivery
+    /// routes reach this same finalize — <c>h9k pr approve</c>, <c>h9k pr request-changes</c>, and
+    /// <c>h9k review resolve --merge-ready</c> for a review the owner posted by hand — so the one
+    /// covered here (the resolve, which is what <see cref="SeedDeliveredPrReviewRunAsync"/> seeds)
+    /// is the one they all share.
+    /// <para>
+    /// Origin incident (2026-09-08, arx-platform #2023, task 2402246b): this went Done the moment
+    /// the review was posted, and nothing on the board watched the pull request from then on.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Finalize_parks_a_delivered_review_on_the_pull_request_rather_than_completing_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedDeliveredPrReviewRunAsync(store, node, cts.Token);
+
+        NoOpWorktreeManager worktrees = new();
+        PrReviewEngine engine = NewPrReviewEngine(
+            store, new RefusingExecutor("Finalize dispatches nothing."), new FakeProcessManager(), worktrees);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate run = (await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token))!;
+        run.State.Should().Be(
+            RunState.Completed, "the RUN is over — it is the task that keeps watching the pull request");
+        worktrees.Removed.Should().ContainSingle(
+            path => path.Contains(runId.ToString("N")),
+            "the checkout is still released; nothing about the wait needs it");
+
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        task.State.Should().Be(TaskState.AwaitingAuthor);
+        task.PrReviewFollowThroughOpen.Should().BeTrue();
+        task.PrReviewFollowThroughPullRequestUrl.Should().Be("https://github.com/acme/web/pull/42");
+        task.PrReviewFollowThroughRunId.Should().Be(
+            runId, "the scoped lap reads the original findings report off the run that produced the review");
+        task.PrReviewFollowThroughObserved.Should().BeFalse(
+            "finalize spends no gh read — the closeout watcher's own poll establishes the baseline");
+
+        (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull(
+            "a waiting review holds no lease: nothing is running, and the watch is the daemon's own poll");
     }
 
     /// <summary>
