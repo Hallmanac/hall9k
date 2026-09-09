@@ -106,6 +106,15 @@ public sealed class ProjectDetails
     /// <summary>A label list that forces <see cref="CloseLinkedIssueRule.Never"/> for an issue carrying any of them at closeout time.</summary>
     public List<string> NeverCloseLabels { get; set; } = [];
     /// <summary>
+    /// How prose an agent composes for people has to read on this project (task: every piece of
+    /// prose the daemon posts to GitHub under the owner's login obeys the project's writing
+    /// conventions). A document written before this field existed has no key for it and reads the
+    /// initialised default, <see cref="Project.WritingConventions.Default"/>, which is also the
+    /// value that changes nothing, so no backfill is needed; the same reasoning
+    /// <see cref="Priority"/> already documents.
+    /// </summary>
+    public WritingConventions WritingConventions { get; set; } = WritingConventions.Default;
+    /// <summary>
     /// Where this project lives on disk (backlog 47). None for a project registered before homes
     /// existed, or one whose home has not been created on this machine.
     /// </summary>
@@ -265,6 +274,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.NeverCloseLabels.HasValue)
         {
             view.NeverCloseLabels = [.. @event.Data.NeverCloseLabels.Value ?? []];
+        }
+
+        if (@event.Data.WritingConventions.HasValue)
+        {
+            view.WritingConventions = @event.Data.WritingConventions.Value ?? WritingConventions.Default;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
