@@ -344,7 +344,8 @@ public sealed class PrReviewEngine(
         string baseBranch = run.PrReviewBaseRefName.IsNotBlank() ? run.PrReviewBaseRefName : project.BaseBranch;
 
         Guid sessionId = DomainId.New();
-        string prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, run.Branch, ReviewLens.Conformance, baseBranch);
+        string prompt = AgentPromptBuilder.BuildPrReviewLens(
+            task, project, run.Branch, ReviewLens.Conformance, baseBranch, commandTimeout: _options.VerifyGateTimeout);
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
         // pr-review has no cycle loop — one adversarial pass (the run's own primary session)
         // and one conformance pass — so this reads as cycle 1 always, never RunDetails.ReviewCycle,

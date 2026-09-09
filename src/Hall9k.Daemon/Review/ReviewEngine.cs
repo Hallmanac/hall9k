@@ -1487,7 +1487,8 @@ public sealed class ReviewEngine(
             priorBoundaryApprovals: context.PriorBoundaryApprovals,
             interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName,
             interactiveModeEnabledOverride: interactiveModeEnabled,
-            priorHumanFixes: context.PriorHumanFixes);
+            priorHumanFixes: context.PriorHumanFixes,
+            commandTimeout: _options.VerifyGateTimeout);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) — except
         // the mandatory FinalFullPass, which resolves its own knob (task: completing the per-stage
