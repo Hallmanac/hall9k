@@ -4,7 +4,7 @@ namespace Hall9k.Domain.Shared.ValueObjects;
 
 /// <summary>
 /// The placeholder-numbering convention PLAN.md §16's v0 Decisions Log entries use while a
-/// branch is in flight (Decisions Log #PLACEHOLDER-6df5f975). A branch writing its own entry has
+/// branch is in flight (Decisions Log #162). A branch writing its own entry has
 /// no way to know the log's true next number without racing every other branch reading the same
 /// tail, so it cites its own task's short id instead
 /// — unique by construction (<c>DomainId.Short</c>) — and the mechanical pre-final-pass rebase

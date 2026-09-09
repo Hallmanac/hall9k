@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Daemon.Review;
 /// no daemon, no Postgres, no agent session — standing in for the shape a unit test cannot
 /// otherwise exercise: two installs, each with its own Postgres and no shared allocator, merging
 /// branches in their own order against one shared repository (Decisions Log
-/// #PLACEHOLDER-6df5f975; walked with Brian 2026-09-07 20:11-20:15 EDT).
+/// #162; walked with Brian 2026-09-07 20:11-20:15 EDT).
 /// Ten branches all fork from the same commit, each appending exactly one placeholder Decisions
 /// Log entry and one citation of it in its own file, and are fed through the renumberer one at a
 /// time in a shuffled order — the same "this branch's own rebase just landed cleanly" state

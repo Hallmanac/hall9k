@@ -1982,7 +1982,7 @@ public sealed class ReviewEngine(
         if (await IsCurrentlyStackedChildAsync(context, cancellationToken))
         {
             // Deliberately not wired to DecisionsLogRenumberer here (Decisions Log
-            // #PLACEHOLDER-6df5f975 — a documented scope limit, not an oversight): the fork point
+            // #162 — a documented scope limit, not an oversight): the fork point
             // a transition-shape check needs is "against main", which a
             // checkpoint replay onto a PARENT branch's head does not carry, and this run's own
             // mergeBase-against-origin-base is never computed on this path at all. A stacked
@@ -2213,7 +2213,7 @@ public sealed class ReviewEngine(
 
     /// <summary>
     /// The placeholder-numbering convention's own half of this method (Decisions Log
-    /// #PLACEHOLDER-6df5f975): called for every outcome that leaves this branch current with
+    /// #162): called for every outcome that leaves this branch current with
     /// origin's base — a clean rebase, a stuck-pipe rebase confirmed landed, AND the no-op case
     /// where origin had not moved — before <see cref="RecordRebaseOutcomeAsync"/>, so the
     /// mandatory gate that runs next reads the renumbered tree rather than a placeholder still

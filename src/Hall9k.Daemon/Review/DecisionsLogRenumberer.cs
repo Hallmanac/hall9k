@@ -24,7 +24,7 @@ public sealed record DecisionsLogRenumberResult(
 
 /// <summary>
 /// The mechanical pre-final-pass rebase step's own half of the placeholder-numbering convention
-/// (Decisions Log #PLACEHOLDER-6df5f975; the idea's origin is Windows's 24940ccd of 2026-09-07,
+/// (Decisions Log #162; the idea's origin is Windows's 24940ccd of 2026-09-07,
 /// drafted here after three Windows branches and two Mac branches all wrote #148 the same
 /// afternoon). A branch writes its own PLAN.md §16 entry
 /// under a placeholder derived from its task's short id
