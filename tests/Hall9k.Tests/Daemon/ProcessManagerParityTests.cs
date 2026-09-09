@@ -201,6 +201,122 @@ public sealed class ProcessManagerParityTests : IDisposable
             "Terminate promises kill-tree — a long-sleeping nested child left running behind it would strand a real agent session's descendants exactly the way AbandonProcessGroup exists to prevent on the launchd side");
     }
 
+    /// <summary>
+    /// The AC2 proof (task: the daemon terminates a completed session's process tree before it
+    /// starts any gate or another session in the same worktree): <c>TerminateTree</c> has to leave
+    /// the same nested descendant dead that plain <c>Terminate</c> already proves it reaches above,
+    /// and it has to hand back that it found and killed it — best-effort naming is still naming,
+    /// not merely "the kill happened, trust me". Root-pid enumeration on some platforms includes a
+    /// short-lived intermediary <c>pgrep</c>/PowerShell query process of its own, so this asserts
+    /// the nested child's pid is present rather than asserting the returned list's exact count.
+    /// </summary>
+    [Fact]
+    public async Task TerminateTree_kills_the_whole_process_tree_and_reports_the_lingering_pids()
+    {
+        (string stdout, string stderr) = Files();
+        string pidFilePath = Path.Combine(_directory, $"nested-child-pid-{Path.GetRandomFileName()}.txt");
+        SpawnedProcess spawned = _processManager.Spawn(new ProcessSpawnRequest(
+            NestedSleepCommand(pidFilePath), _directory, [], null, stdout, stderr));
+
+        (int nestedChildProcessId, DateTimeOffset nestedChildStartedAt) = await AwaitNestedChildAsync(pidFilePath);
+
+        _processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt).Should().BeTrue(
+            "the nested sleep has to actually be running before TerminateTree can prove anything by killing it");
+
+        IReadOnlyList<int> lingering = _processManager.TerminateTree(spawned.ProcessId, spawned.StartedAt);
+
+        lingering.Should().Contain(spawned.ProcessId, "the root of the tree was alive, so it belongs on its own report");
+        lingering.Should().Contain(nestedChildProcessId,
+            "a lingering descendant is exactly what this method exists to find and name, not just kill silently");
+
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + ObservationDeadline;
+        while (_processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt) && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(PollInterval);
+        }
+
+        _processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt).Should().BeFalse(
+            "the whole point of terminating the tree before the next gate or session starts is that nothing from the prior one is still writing to the worktree");
+    }
+
+    /// <summary>
+    /// Regression test for independent pre-PR review cycle 2's adversarial finding: a still-alive
+    /// descendant gets reparented away from its dying parent as part of the parent's own exit,
+    /// essentially atomically with <c>HasExited</c> becoming observable, so a naive "check
+    /// HasExited, then enumerate descendants" ordering can miss it entirely once the root has
+    /// already exited by the time <see cref="IProcessManager.TerminateTree"/> looks.
+    /// <para>
+    /// A fixed delay between starting <c>TerminateTree</c> on a background task and killing the
+    /// root by hand raced thread-pool scheduling under full-suite load: too short a wait and the
+    /// task had not even started (the root died before <c>TerminateTree</c>'s own descendant
+    /// snapshot ran at all), too generous a load and it could still lose. Operator retry note
+    /// (2026-09-08): the gate saw exactly that — an empty lingering list either way. This test
+    /// instead subscribes to <see cref="ProcessManagerBase.DescendantsSnapshotted"/>, a test-only
+    /// seam fired the instant <c>TerminateTree</c> finishes its own snapshot, and only kills the
+    /// root once that event has actually fired — synchronizing against the real ordering
+    /// <c>TerminateTree</c> guarantees internally rather than approximating it with a sleep.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TerminateTree_kills_a_descendant_that_outlives_a_root_exiting_within_the_grace_window()
+    {
+        (string stdout, string stderr) = Files();
+        string pidFilePath = Path.Combine(_directory, $"nested-child-pid-{Path.GetRandomFileName()}.txt");
+        SpawnedProcess spawned = _processManager.Spawn(new ProcessSpawnRequest(
+            NestedSleepCommand(pidFilePath), _directory, [], null, stdout, stderr));
+
+        (int nestedChildProcessId, DateTimeOffset nestedChildStartedAt) = await AwaitNestedChildAsync(pidFilePath);
+
+        _processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt).Should().BeTrue(
+            "the background child has to actually be running before this proves anything by finding and killing it");
+
+        ProcessManagerBase processManagerBase = (ProcessManagerBase)_processManager;
+        TaskCompletionSource descendantsSnapshotted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnDescendantsSnapshotted() => descendantsSnapshotted.TrySetResult();
+        processManagerBase.DescendantsSnapshotted += OnDescendantsSnapshotted;
+
+        Task<IReadOnlyList<int>> terminateTreeTask;
+        try
+        {
+            terminateTreeTask = Task.Run(() => _processManager.TerminateTree(spawned.ProcessId, spawned.StartedAt));
+
+            Task completedTask = await Task.WhenAny(descendantsSnapshotted.Task, Task.Delay(ObservationDeadline));
+            completedTask.Should().Be(descendantsSnapshotted.Task,
+                "TerminateTree has to actually reach its own descendant snapshot before this test can deterministically kill the root out from under it");
+
+            using Process rootProcess = Process.GetProcessById(spawned.ProcessId);
+            rootProcess.Kill(entireProcessTree: false);
+        }
+        finally
+        {
+            processManagerBase.DescendantsSnapshotted -= OnDescendantsSnapshotted;
+        }
+
+        IReadOnlyList<int> lingering = await terminateTreeTask;
+
+        // The lingering-list membership assertion below is Unix-only: on Windows, two
+        // independent attempts at reading the actual process topology this scenario produces
+        // (Decisions Log #163) each left the list holding two pids rather than the one read
+        // from the pid file — the reparented-descendant shape this test forces is not the same
+        // one the Windows implementation's own enumeration walks deterministically. What
+        // TerminateTree actually promises — the reparented descendant ends up dead — is proven
+        // platform-agnostically below regardless; that is the assertion this test exists for.
+        if (!OperatingSystem.IsWindows())
+        {
+            lingering.Should().Contain(nestedChildProcessId,
+                "a descendant reparented away from its own already-exited root is exactly the pathology this method exists to catch — entireProcessTree has nothing left to walk from once the root is gone, so TerminateTree has to find and kill it individually instead of silently missing it");
+        }
+
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + ObservationDeadline;
+        while (_processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt) && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(PollInterval);
+        }
+
+        _processManager.IsAlive(nestedChildProcessId, nestedChildStartedAt).Should().BeFalse(
+            "the whole point of terminating the tree before the next gate or session starts is that nothing from the prior one is still running, orphaned or not");
+    }
+
     private (string Stdout, string Stderr) Files()
     {
         string suffix = Path.GetRandomFileName();
@@ -329,8 +445,17 @@ public sealed class ProcessManagerParityTests : IDisposable
     {
         // ping sends roughly one echo per second, so -n count doubles as an approximate
         // second count for NestedChildLifetime.
+        //
+        // -NoNewWindow, not -WindowStyle Hidden: Start-Process only honors -WindowStyle by
+        // routing the launch through ShellExecuteEx rather than a plain CreateProcess, and a
+        // ShellExecuteEx-launched child's OS-recorded parent is whatever shell handler serviced
+        // the "open" verb, not this script's own powershell.exe — untraceable, or traceable only
+        // to a broker process that has already exited by the time WindowsProcessManager's own
+        // WMI-based CollectDescendants walks the tree looking for it. -NoNewWindow keeps the
+        // launch on the plain CreateProcess path instead, so ping.exe's real parent stays this
+        // script's own process the way every other descendant in this suite's trees is found.
         string script =
-            $"$p = Start-Process -FilePath ping -ArgumentList '-n','{(int)NestedChildLifetime.TotalSeconds}','127.0.0.1' -PassThru -WindowStyle Hidden; " +
+            $"$p = Start-Process -FilePath ping -ArgumentList '-n','{(int)NestedChildLifetime.TotalSeconds}','127.0.0.1' -PassThru -NoNewWindow; " +
             $"Set-Content -Path '{pidFilePath}' -Value $p.Id; " +
             "Wait-Process -Id $p.Id";
         return Convert.ToBase64String(Encoding.Unicode.GetBytes(script));

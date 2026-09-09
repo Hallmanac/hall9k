@@ -391,6 +391,9 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
             throw new IOException("the session's stream could not be read");
 
         public void Terminate(int processId, DateTimeOffset startedAt) => processes.Terminate(processId, startedAt);
+
+        public IReadOnlyList<int> TerminateTree(int processId, DateTimeOffset startedAt) =>
+            processes.TerminateTree(processId, startedAt);
     }
 
     /// <summary>

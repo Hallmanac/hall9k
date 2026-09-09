@@ -49,4 +49,42 @@ public sealed class WindowsProcessManager : ProcessManagerBase
 
         return new SpawnedProcess(process.Id, ReadStartedAt(process));
     }
+
+    /// <summary>
+    /// Queries WMI's <c>Win32_Process</c> through PowerShell's own CIM cmdlets — no bundled .NET
+    /// API exposes a process's children, and <c>wmic</c> is no longer guaranteed present, so this
+    /// shells out the same way <see cref="UnixProcessManager"/> shells out to <c>pgrep</c>. Any
+    /// failure is swallowed and reads as "no children found" — best-effort naming only, never the
+    /// kill decision itself (<see cref="ProcessManagerBase.CollectDescendants"/>'s own doc).
+    /// </summary>
+    protected override IReadOnlyList<int> CollectDescendants(int processId) =>
+        CollectDescendantsBreadthFirst(processId, ChildrenOf);
+
+    private static IEnumerable<int> ChildrenOf(int parentProcessId)
+    {
+        try
+        {
+            using Process query = new()
+            {
+                StartInfo = new ProcessStartInfo("powershell.exe")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                },
+            };
+            query.StartInfo.ArgumentList.Add("-NoProfile");
+            query.StartInfo.ArgumentList.Add("-NonInteractive");
+            query.StartInfo.ArgumentList.Add("-Command");
+            query.StartInfo.ArgumentList.Add(
+                $"(Get-CimInstance Win32_Process -Filter \"ParentProcessId={parentProcessId}\").ProcessId");
+            query.Start();
+            return ParsePids(ReadOutputWithBoundedWait(query, ChildProcessQueryTimeout));
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return [];
+        }
+    }
 }
