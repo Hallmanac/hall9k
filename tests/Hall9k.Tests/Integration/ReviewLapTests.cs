@@ -441,6 +441,47 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     }
 
     /// <summary>
+    /// The note and every line comment go out in one review under the reviewer's own login, so
+    /// both halves obey the project's writing conventions (task 412afe6c). The review lap's own
+    /// briefing promises exactly that to the session drafting them, and a check that covered only
+    /// the note would leave the half a reviewer reads in the diff unguarded.
+    /// </summary>
+    [Fact]
+    public async Task An_em_dash_in_the_note_or_a_finding_never_reaches_the_posted_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedParkedPrReviewTaskAsync(store, node, findingsReport: null, cts.Token);
+        RecordingGh gh = new(PullRequestJson, ReviewUrl);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            await PullRequestReviewVerdict.DeliverAsync(
+                session, seeded.TaskId, ReviewerVerdict.ChangesRequested,
+                "Two real defects — both in the closeout path.",
+                [
+                    PullRequestReviewLineComment.Parse(
+                        "src/Hall9k.Daemon/Closeout/CloseoutEngine.cs:88: the fence is read after the load — "
+                        + "that inverts the guard."),
+                ],
+                new GitHubPullRequestSurface(gh.Runner), cts.Token);
+        }
+
+        JsonDocument payload = JsonDocument.Parse(gh.ReviewPayload!);
+        string body = payload.RootElement.GetProperty("body").GetString()!;
+        string comment = payload.RootElement.GetProperty("comments")[0].GetProperty("body").GetString()!;
+        body.Should().NotContain("—").And.Be("Two real defects, both in the closeout path.");
+        comment.Should().NotContain("—")
+            .And.Be("the fence is read after the load; that inverts the guard.");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(seeded.TaskId, cts.Token))!;
+        details.ReviewerVerdictNote.Should().NotContain("—", "the stream says what the reviewer posted");
+        details.ReviewerVerdictFindings.Should().ContainSingle().Which.Should().NotContain("—");
+    }
+
+    /// <summary>
     /// The post-before-record ordering, from the other side: a second verdict on a task that
     /// already delivered one must be refused before anything reaches GitHub, or a reviewer who
     /// re-runs the command out of habit posts a duplicate review under their own login.
@@ -1863,17 +1904,70 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
         RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{}");
         await ResolveWithDoorbellAsync(
             store, taskId,
-            new ReviewResolveCommand.Settings { MergeReady = true, PostReply = "Fair point — let me think on it." },
+            new ReviewResolveCommand.Settings { MergeReady = true, PostReply = "Fair point; let me think on it." },
             gh, cts.Token);
 
         gh.Calls.Should().ContainSingle().Which.Arguments.Should().Contain(
-            "body=Fair point — let me think on it.");
+            "body=Fair point; let me think on it.");
 
         await using IQuerySession query = store.QuerySession();
         ReviewDisagreementReplyDirection directed = (await query.LoadAsync<RunDetails>(runId, cts.Token))!
             .ChangesRequestedReplyDirections.Should().ContainSingle().Subject;
         directed.Choice.Should().Be(ReviewDisagreementReplyChoice.Edited);
-        directed.PostedBody.Should().Be("Fair point — let me think on it.");
+        directed.PostedBody.Should().Be("Fair point; let me think on it.");
+    }
+
+    /// <summary>
+    /// The whole point of task 412afe6c, end to end: a review-feedback follow-up whose session
+    /// drafted its answer with em dashes, resolved as written, and the comment the reviewer
+    /// actually reads carries none.
+    /// <para>
+    /// Origin incident (2026-09-09): follow-up run 01a085d9 of arx-platform task 01a083d8 answered
+    /// a Copilot review on AgelessRx/arx-platform#2042 with a top-level comment under Brian's login
+    /// carrying em dashes in most of its paragraphs. So the disagreement here is the one with no
+    /// thread id, which is exactly that shape: a review BODY is unthreadable, so the answer is a
+    /// top-level <c>gh pr comment</c>.
+    /// </para>
+    /// <para>
+    /// The recorded direction is asserted too, not only the gh call. The run's own stream is what
+    /// <c>h9k task show</c> reads back, and a record holding the draft while GitHub holds the
+    /// rewrite would say the reviewer read words they never saw.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task An_em_dash_in_the_drafted_reply_never_reaches_the_pull_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid taskId, Guid runId) = await SeedParkedDisagreementAsync(
+            store, node, cts.Token,
+            disagreements:
+            [
+                new ReviewDisagreement(
+                    "the review's own body", "the reset is per window by contract",
+                    "The limiter resets per window — that is the documented contract, and it is deliberate.",
+                    Location: null, ThreadId: null, ReviewUrl: DisagreementReviewUrl),
+            ]);
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("{}");
+        await ResolveWithDoorbellAsync(
+            store, taskId, new ReviewResolveCommand.Settings { MergeReady = true, PostReplyAsWritten = true },
+            gh, cts.Token);
+
+        (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) call =
+            gh.Calls.Should().ContainSingle().Subject;
+        call.Arguments.Should().Contain("comment", "a review body has no thread to reply inside");
+        string body = call.Arguments.Single(
+            argument => argument.Contains("The limiter resets", StringComparison.Ordinal));
+        body.Should().NotContain("—", "no em dash reaches a reviewer under the owner's login")
+            .And.Contain("The limiter resets per window; that is the documented contract");
+
+        await using IQuerySession query = store.QuerySession();
+        ReviewDisagreementReplyDirection directed = (await query.LoadAsync<RunDetails>(runId, cts.Token))!
+            .ChangesRequestedReplyDirections.Should().ContainSingle().Subject;
+        directed.PostedBody.Should().NotBeNull();
+        directed.PostedBody!.Should().NotContain("—", "the record says what the reviewer actually read");
     }
 
     /// <summary>Choice three: the reviewer hears nothing, and the record says so plainly.</summary>
@@ -2435,8 +2529,14 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
         gh.Calls.Should().ContainSingle().Which.Arguments.Should().Contain("threadId=PRRT_abc");
     }
 
+    /// <summary>
+    /// Deliberately already clean against the platform's default writing conventions (task
+    /// 412afe6c): every arm below asserts the posted body verbatim, and a draft carrying an em dash
+    /// would have those arms testing the rewrite rather than the thing they were written for. The
+    /// rewrite has its own test, <see cref="An_em_dash_in_the_drafted_reply_never_reaches_the_pull_request"/>.
+    /// </summary>
     private const string ProposedReply =
-        "Good catch on the naming — the reset really is per window, deliberately: PLAN.md 12.3 sets the contract.";
+        "Good catch on the naming; the reset really is per window, deliberately: PLAN.md 12.3 sets the contract.";
 
     private const string DisagreementPullRequestUrl = "https://github.com/x/y/pull/7";
 

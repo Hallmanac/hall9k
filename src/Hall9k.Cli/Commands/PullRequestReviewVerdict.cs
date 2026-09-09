@@ -166,16 +166,37 @@ internal static class PullRequestReviewVerdict
                 + $"h9k review resolve {taskId} --merge-ready if the review no longer needs delivering.");
         }
 
+        // The last thing before the irreversible half, and the last place this note is still
+        // editable by anything but a human (task 412afe6c): what gets posted is what the project's
+        // own writing conventions allow, and what has no mechanical fix stops the command here,
+        // with nothing posted and nothing recorded, exactly like every other refusal above it. The
+        // recorded note below is the vetted one, so the task's stream says what GitHub says.
+        string vettedNote = PostedProse.Vet(note, project.WritingConventions, "the review's own note");
+
+        // Each line comment goes through the same gate, for the same reason: GitHub posts all of
+        // them in one review under the reviewer's login, and the review lap's own briefing tells
+        // the drafting session the conventions govern "the note and each finding". Vetting only
+        // the note would leave that promise half kept, on the half a reviewer reads in the diff.
+        // Before the post, like the note, so a refusal here still leaves nothing sent.
+        PullRequestReviewLineComment[] vettedFindings =
+        [
+            .. findings.Select(finding => finding with
+            {
+                Body = PostedProse.Vet(
+                    finding.Body, project.WritingConventions,
+                    $"the line comment on {finding.Path}:{finding.Line}"),
+            }),
+        ];
         PostedPullRequestReview posted = await github.PostReviewAsync(
-            repository, number, pullRequest.HeadSha, verdict, note, findings, project.RepositoryPath,
+            repository, number, pullRequest.HeadSha, verdict, vettedNote, vettedFindings, project.RepositoryPath,
             cancellationToken);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, new PullRequestReviewVerdictDelivered(
-            taskId, verdict, note, [.. findings.Select(finding => finding.ToString())],
+            taskId, verdict, vettedNote, [.. vettedFindings.Select(finding => finding.ToString())],
             posted.HeadSha, posted.ReviewUrl, now, context.OwnerId));
         session.Events.Append(runId, expectedVersion: runFence.Version + 1, new PrReviewDelivered(
-            runId, DescribeForRunStream(verdict, note, findings.Count), now, context.OwnerId));
+            runId, DescribeForRunStream(verdict, vettedNote, vettedFindings.Length), now, context.OwnerId));
 
         // The run is no longer parked, so the expiry sweep's parked-run shield no longer covers
         // this lease; a fresh heartbeat holds the task while the daemon wakes. Exactly what
