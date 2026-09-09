@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
@@ -30,20 +32,28 @@ public static class PendingBackgroundTaskParser
     /// <summary>
     /// Phrases that turn "background" from something still pending into something explicitly
     /// avoided or already resolved: "rather than backgrounding it", "instead of the background
-    /// run", "no longer running in the background", "nothing is left running in the background",
-    /// "no background monitors were set" — the last two are the most natural way a session that
-    /// obeyed the foreground-gates rule affirms it left nothing behind, and without a cue for that
-    /// shape a clean ending reads as the exact violation it is denying (independent pre-PR review,
-    /// cycle 1, adversarial lens). Checked within the same clause as "background" itself, not the
+    /// run" — neither carries one of the standalone negation words below, so each is matched as
+    /// its own fixed cue instead. Checked within the same clause as "background" itself, not the
     /// whole summary, so a negation elsewhere in a long summary cannot silently suppress a genuine
     /// pending-task clause later on.
     /// </summary>
-    private static readonly string[] NegationCues =
-    [
-        "rather than", "instead of", "no longer", "not backgrounding", "without backgrounding",
-        "never backgrounded", "nothing is left", "nothing left", "nothing is running",
-        "no background monitor", "no background task", "no background job", "no background process",
-    ];
+    private static readonly string[] NegationPhraseCues = ["rather than", "instead of"];
+
+    /// <summary>
+    /// Standalone negation words, matched on word boundaries so "no"/"not"/etc. inside an
+    /// unrelated word (e.g. "ignore", "monitor", "notify") never counts. Covers any clause that
+    /// denies a pending background task in its own words — "no background monitors were set",
+    /// "nothing is left running in the background", "no build or test was left running in the
+    /// background", "I am not waiting on anything in the background" — rather than only the
+    /// handful of fixed phrasings a session happens to reuse verbatim: the second and fourth of
+    /// those are exactly how a compliant session naturally affirms it left nothing behind, and a
+    /// cue list narrow enough to miss them reads that affirmation back as the violation it denies
+    /// (independent pre-PR review, cycle 1, adversarial lens). "n't" is checked separately since a
+    /// contraction like "isn't"/"wasn't" has no word boundary before its own "n't" for the regex
+    /// to anchor on.
+    /// </summary>
+    private static readonly Regex NegationWordPattern = new(
+        @"\b(no|not|nothing|never|without)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static bool NamesPendingBackgroundTask(string? summary)
     {
@@ -59,7 +69,7 @@ public static class PendingBackgroundTaskParser
                 continue;
             }
 
-            if (NegationCues.Any(cue => clause.Contains(cue, StringComparison.OrdinalIgnoreCase)))
+            if (HasNegationCue(clause))
             {
                 continue;
             }
@@ -72,4 +82,9 @@ public static class PendingBackgroundTaskParser
 
         return false;
     }
+
+    private static bool HasNegationCue(string clause) =>
+        NegationWordPattern.IsMatch(clause)
+        || clause.Contains("n't", StringComparison.OrdinalIgnoreCase)
+        || NegationPhraseCues.Any(cue => clause.Contains(cue, StringComparison.OrdinalIgnoreCase));
 }

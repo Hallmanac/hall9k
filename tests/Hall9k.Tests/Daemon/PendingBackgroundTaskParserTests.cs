@@ -55,6 +55,8 @@ public sealed class PendingBackgroundTaskParserTests
     [Theory]
     [InlineData("Ran the gates in the foreground. Nothing is left running in the background.")]
     [InlineData("Ran the gates in the foreground; no background monitors were set.")]
+    [InlineData("Ran the gates in the foreground; no build or test was left running in the background.")]
+    [InlineData("The suite finished; I am not waiting on anything in the background.")]
     public void A_compliant_summary_that_affirms_nothing_was_left_behind_is_not_a_match(string summary) =>
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(summary).Should().BeFalse();
 }
