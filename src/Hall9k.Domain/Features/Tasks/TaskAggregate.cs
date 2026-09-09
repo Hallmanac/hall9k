@@ -527,6 +527,124 @@ public sealed class TaskAggregate
     public ReviewerVerdict ReviewerVerdict { get; private set; } = ReviewerVerdict.Unknown;
 
     /// <summary>
+    /// Whether this pr-review task's posted review is being followed through — true from
+    /// <see cref="Apply(Events.PullRequestReviewFollowThroughOpened)"/> until the task reaches
+    /// Done or a human walks away from it (task: a pr-review task stays open while the pull
+    /// request's review threads are unresolved). It is what the closeout watcher's own
+    /// follow-through sweep selects on, alongside the state: a NeedsHuman pr-review task with
+    /// this flag clear is an ordinary findings park waiting to be walked, and polling GitHub for
+    /// it would be a read nobody asked for.
+    /// </summary>
+    public bool PrReviewFollowThroughOpen { get; private set; }
+
+    /// <summary>
+    /// The pull request the follow-through is watching, as the review was posted against it —
+    /// kept separately from <see cref="PullRequestUrl"/>, which stays null on a pr-review task
+    /// until its own <see cref="Apply(TaskCompleted)"/> records it, precisely so a waiting task
+    /// can be read for the number without borrowing a field that means "the pull request this
+    /// task's own work opened" everywhere else.
+    /// </summary>
+    public string? PrReviewFollowThroughPullRequestUrl { get; private set; }
+
+    /// <summary>
+    /// The run whose posted review this follow-through belongs to — the run that had just completed
+    /// when the wait began. Read rather than <see cref="CurrentRunId"/> by everything that has to
+    /// name a run while the task waits, so a follow-through's own completion is attributed to the
+    /// run that produced the review even if something later nulls the current one.
+    /// </summary>
+    public Guid? PrReviewFollowThroughRunId { get; private set; }
+
+    /// <summary>
+    /// Whether the follow-through poll has looked at the pull request at least once since the wait
+    /// began. It is what tells "no threads outstanding" from "not looked at yet" — two different
+    /// facts, and only one of them is Done's business — so every surface that would otherwise
+    /// print a count of zero says "not looked at yet" instead.
+    /// <para>
+    /// It is deliberately NOT a gate on notifying. The first look counts replies like any other,
+    /// because a reviewer's own comments are not replies to them and so there is no self-wake to
+    /// suppress — where suppressing that whole first look lost every answer that beat it to the
+    /// pull request (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
+    /// </summary>
+    public bool PrReviewFollowThroughObserved { get; private set; }
+
+    /// <summary>
+    /// The GitHub login whose review threads this follow-through is about, as the last poll read
+    /// it back from <c>gh</c>, or null before the first poll has looked. Never a configured name
+    /// (the same discipline <c>AutoPrReviewEngine</c> keeps): it is re-read every sweep, and this
+    /// is only the record of what the last one saw.
+    /// </summary>
+    public string? PrReviewReviewerLogin { get; private set; }
+
+    /// <summary>
+    /// The reviewer's own threads on the watched pull request as the last poll counted them —
+    /// the comparison point that tells the next poll "somebody answered" from "nothing has
+    /// happened since". Empty before the first poll, and empty afterwards for a pull request where
+    /// the reviewer opened no threads at all (an approval with only a note, a review posted by
+    /// hand as a plain comment).
+    /// </summary>
+    private readonly List<PrReviewThreadWatermark> _prReviewThreads = [];
+    public IReadOnlyList<PrReviewThreadWatermark> PrReviewThreads => _prReviewThreads;
+
+    /// <summary>How many of <see cref="PrReviewThreads"/> the last poll found still unresolved — what holds the follow-through open.</summary>
+    public int PrReviewOpenThreadCount => _prReviewThreads.Count(thread => !thread.IsResolved);
+
+    /// <summary>
+    /// The reviewer's threads as the FIRST poll of this follow-through counted them, and the one
+    /// thing here that does not move (self-review, round one) — which is what makes it the record
+    /// <c>h9k pr review --since-my-review</c> reads a thread's own RESOLUTION against: resolved
+    /// since your review is news even on a thread that gained no comment, and
+    /// <see cref="PrReviewThreads"/> cannot say it, because it advances with every poll.
+    /// <para>
+    /// The COMMENTS a scoped lap shows are not diffed against it — those are the thread's own
+    /// comments after the reviewer's last word in it, read live
+    /// (<c>ReviewThread.FirstReplyIndexFor</c>). This anchor could not answer that half honestly:
+    /// it is taken a poll interval after the review was posted, so a reply that beat the first
+    /// poll there is already inside it, and skipping past it hid exactly that reply (independent
+    /// pre-PR review, cycle 1, adversarial lens).
+    /// </para>
+    /// <para>
+    /// The first poll rather than the review itself, because that is the earliest thread state
+    /// this platform actually observed: the verdict is posted through GitHub and the response
+    /// carries no thread ids, so nothing at delivery time knows what the review left behind. A
+    /// scoped lap opened before any poll has run finds this empty, which reads as "no resolution
+    /// change observed" — the honest answer rather than a guess.
+    /// </para>
+    /// </summary>
+    private readonly List<PrReviewThreadWatermark> _prReviewReviewedThreads = [];
+    public IReadOnlyList<PrReviewThreadWatermark> PrReviewReviewedThreads => _prReviewReviewedThreads;
+
+    /// <summary>
+    /// The head the review itself was posted against, as <see cref="Events.PullRequestReviewFollowThroughOpened"/>
+    /// recorded it, or null when no verdict recorded one (a review closed the older way, with
+    /// nothing posted from here). The fixed half of the same pair as
+    /// <see cref="PrReviewReviewedThreads"/>: <see cref="PrReviewObservedHeadSha"/> advances with
+    /// every poll, so a scoped lap diffing the code half against THAT would ask git for
+    /// <c>head..head</c> and report no commits at all right after a push was announced.
+    /// </summary>
+    public string? PrReviewReviewedHeadSha { get; private set; }
+
+    /// <summary>Whether the last poll found a review request outstanding for <see cref="PrReviewReviewerLogin"/> — the second reason a follow-through stays open.</summary>
+    public bool PrReviewReReviewRequested { get; private set; }
+
+    /// <summary>The watched pull request's head as the last poll read it, or null before the first poll — what a moved head is compared against.</summary>
+    public string? PrReviewObservedHeadSha { get; private set; }
+
+    /// <summary>
+    /// How many commits the watched pull request carried at the last poll, or null when the
+    /// provider reported no count — an honest absence that costs the next poll its "new commits"
+    /// number and nothing else.
+    /// </summary>
+    public int? PrReviewObservedCommitCount { get; private set; }
+
+    /// <summary>
+    /// What the most recent <see cref="Apply(Events.PullRequestReviewAuthorResponded)"/> said the
+    /// author had done, or null when the author has not answered since the review was posted.
+    /// The one line every surface shows for a follow-through that needs the reviewer back.
+    /// </summary>
+    public string? PrReviewAuthorActivitySummary { get; private set; }
+
+    /// <summary>
     /// Blocker ids a human has already acknowledged as open and chosen to claim across anyway
     /// (<see cref="Handlers.TaskDecider.ClaimDeliberately"/>'s or
     /// <see cref="Handlers.TaskDecider.ClaimInteractively"/>'s own Blocked-entry branch,
@@ -1014,6 +1132,10 @@ public sealed class TaskAggregate
         // --merge-ready, no verdict posted) reaches Done with the flag still true, and h9k task
         // show would report an open lap on a finished task.
         EndAnyOpenReviewLap();
+        // Done is where every follow-through ends: every thread the reviewer opened resolved, or
+        // the pull request merged or closed. Leaving the flag standing would keep the closeout
+        // watcher spending a gh read per interval on a task nothing will act on again.
+        EndAnyPrReviewFollowThrough();
     }
 
     public void Apply(TaskReopened @event)
@@ -1076,6 +1198,10 @@ public sealed class TaskAggregate
         // moments later, same as every sibling event.
         CurrentRunId = State == TaskState.Blocked ? @event.PreviousRunId : null;
         EndAnyOpenReviewLap();
+        // TaskDecider.Reopen refuses a pr-review task outright, so this is defence rather than a
+        // reachable path today — but a reopen lands the task Queued or Blocked, and a
+        // follow-through flag surviving into either would advertise a watch nothing is doing.
+        EndAnyPrReviewFollowThrough();
     }
 
     /// <summary>
@@ -1176,6 +1302,14 @@ public sealed class TaskAggregate
         QueuePriorityMarked = false;
         // Same case as Apply(TaskCompleted): a lap left open on a task closed the older way.
         EndAnyOpenReviewLap();
+        // Same case again, reached the one way Resolve can reach it: a waiting review's own later
+        // run failed — a scoped lap that died — leaving the follow-through flag standing on a
+        // FAILED task, which is the only state TaskDecider.Resolve accepts (Decisions Log #27).
+        // Resolve is therefore never the reviewer's lever for ending a live follow-through, and
+        // nothing on this feature advertises it as one (independent pre-PR review, cycle 1, both
+        // lenses); it is the attestation exit from that failure, and Done ends the watch on the
+        // way through.
+        EndAnyPrReviewFollowThrough();
     }
 
     public void Apply(TaskRetried @event)
@@ -1300,6 +1434,107 @@ public sealed class TaskAggregate
         ReviewerVerdict = @event.Verdict;
     }
 
+    // The one place a pr-review task's own finalize now lands instead of Done (task: a pr-review
+    // task stays open while the pull request's review threads are unresolved). CurrentRunId is
+    // deliberately kept: the run has ended, but it is what the scoped lap
+    // (h9k pr review --since-my-review) reads the original findings report from, and clearing it
+    // would leave a waiting task unable to name the review it is waiting on.
+    public void Apply(PullRequestReviewFollowThroughOpened @event)
+    {
+        PrReviewFollowThroughOpen = true;
+        PrReviewFollowThroughPullRequestUrl = @event.PullRequestUrl;
+        PrReviewFollowThroughRunId = @event.RunId;
+        PrReviewFollowThroughObserved = false;
+        PrReviewReviewerLogin = null;
+        PrReviewReReviewRequested = false;
+        PrReviewAuthorActivitySummary = null;
+        PrReviewObservedCommitCount = null;
+        _prReviewThreads.Clear();
+        _prReviewReviewedThreads.Clear();
+        PrReviewObservedHeadSha = @event.HeadSha;
+        PrReviewReviewedHeadSha = @event.HeadSha;
+        State = TaskState.AwaitingAuthor;
+        // Same dead end Apply(TaskCompleted) reasons about: a marker bought for a dispatch slot
+        // that a waiting task will not take must not survive into the state it waits in.
+        QueuePriorityMarked = false;
+        EndAnyOpenReviewLap();
+    }
+
+    // State is never touched here (see the event's own doc): this is the watermark a LATER poll
+    // compares against, and what moves the task is the PullRequestReviewAuthorResponded appended
+    // beside it, or an ordinary TaskCompleted.
+    public void Apply(PullRequestReviewFollowThroughObserved @event)
+    {
+        // The FIRST observation of this follow-through fixes the review's own anchor and no later
+        // one touches it again (see PrReviewReviewedThreads): that is what the scoped lap diffs
+        // against, and advancing it with the poll would erase exactly the replies the needs-you
+        // line was about.
+        if (!PrReviewFollowThroughObserved)
+        {
+            _prReviewReviewedThreads.AddRange(@event.Threads);
+        }
+
+        PrReviewFollowThroughObserved = true;
+        PrReviewReviewerLogin = @event.ReviewerLogin;
+        _prReviewThreads.Clear();
+        _prReviewThreads.AddRange(@event.Threads);
+        PrReviewReReviewRequested = @event.ReReviewRequested;
+        PrReviewObservedHeadSha = @event.HeadSha;
+        PrReviewObservedCommitCount = @event.CommitCount;
+    }
+
+    // Ordered after the observation it rides with, which is why nothing about the watermark is
+    // touched here: that event already re-baselined it, so the same replies cannot fire a second
+    // notification on the next poll.
+    public void Apply(PullRequestReviewAuthorResponded @event)
+    {
+        PrReviewAuthorActivitySummary = @event.Summary;
+        State = TaskState.NeedsHuman;
+    }
+
+    /// <summary>
+    /// Stops the follow-through, because whatever reaches here has ended it: Done
+    /// (<see cref="Apply(TaskCompleted)"/>, <see cref="Apply(TaskResolved)"/>) or a human walking
+    /// away (<see cref="Apply(TaskAbandoned)"/>). What it clears is everything that would go on
+    /// speaking as if the watch were live — the open flag, an outstanding re-review request, the
+    /// author-activity line, and the two thread watermarks a scoped lap diffs against. Left
+    /// standing, the flag alone would keep the closeout watcher's follow-through sweep spending a
+    /// <c>gh</c> read per interval, forever, on a task nothing will act on again — and the
+    /// summary would keep a stale "the author replied" line on a row whose story is over.
+    /// <para>
+    /// The rest is deliberately left alone, the same choice <see cref="EndAnyOpenReviewLap"/>
+    /// makes for the lap's own run and worktree: <see cref="PrReviewFollowThroughPullRequestUrl"/>,
+    /// <see cref="PrReviewFollowThroughRunId"/>, <see cref="PrReviewFollowThroughObserved"/>,
+    /// <see cref="PrReviewReviewerLogin"/>, <see cref="PrReviewReviewedHeadSha"/>,
+    /// <see cref="PrReviewObservedHeadSha"/> and <see cref="PrReviewObservedCommitCount"/> are
+    /// provenance — which pull request was followed through, on whose behalf, whether it was ever
+    /// looked at, and what the last look actually saw — and a reader of a closed-out task wants
+    /// those facts more than they want the fields blank. None of them can restart anything,
+    /// because every reader of them gates on the follow-through being open first.
+    /// </para>
+    /// </summary>
+    private void EndAnyPrReviewFollowThrough()
+    {
+        PrReviewFollowThroughOpen = false;
+        PrReviewReReviewRequested = false;
+        PrReviewAuthorActivitySummary = null;
+        _prReviewThreads.Clear();
+        _prReviewReviewedThreads.Clear();
+    }
+
+    /// <summary>
+    /// Whether this task's own <c>--from-pr</c> adoption should be answered by naming THIS task
+    /// rather than minting a second one (task: a pr-review task stays open while the pull
+    /// request's review threads are unresolved). Both a waiting review and a completed one
+    /// qualify: the waiting one is genuinely still live on that pull request, and the completed
+    /// one is the record of a review whose findings and verdict a second adoption would abandon.
+    /// </summary>
+    public bool HoldsPullRequestForRepeatAdoption =>
+        Type == TaskType.PrReview
+        && (State == TaskState.AwaitingAuthor
+            || State == TaskState.Done
+            || (State == TaskState.NeedsHuman && PrReviewFollowThroughOpen));
+
     private void ClearPendingJiraWrite()
     {
         PendingJiraWriteId = null;
@@ -1330,6 +1565,10 @@ public sealed class TaskAggregate
         QueuePriorityMarked = false;
         // Same case, and the same dead end: an abandoned task has no lap open on it.
         EndAnyOpenReviewLap();
+        // And the same dead end for the follow-through: abandoning a waiting pr-review task is
+        // exactly how a reviewer says they are done watching that pull request, so the watch
+        // must stop rather than outlive the task that owned it.
+        EndAnyPrReviewFollowThrough();
 
         // A publication nobody has started yet is one of those markers, for the reason
         // TaskDecider.RequestWorkItemPublication refuses to make one: filing a card for abandoned

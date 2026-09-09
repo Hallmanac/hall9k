@@ -23,6 +23,24 @@ public sealed record TaskState
     public static readonly TaskState Blocked = new("Blocked");
     public static readonly TaskState Claimed = new("Claimed");
     public static readonly TaskState NeedsHuman = new("NeedsHuman");
+    /// <summary>
+    /// A pr-review task whose review is posted and whose author has not answered it yet (task: a
+    /// pr-review task stays open while the pull request's review threads are unresolved). Not
+    /// Done, because a review nobody has answered is not a review that is over; not NeedsHuman,
+    /// because nothing is being asked of the reviewer while the ball is in the author's court.
+    /// The follow-through poll moves it on: to NeedsHuman when the author replies, pushes, or
+    /// re-requests the review — the last of those being the one explicit ask of the reviewer in
+    /// the set — and to <see cref="Done"/> when every thread the reviewer opened is resolved or
+    /// the pull request merges or closes.
+    /// <para>
+    /// Origin incident (2026-09-08, arx-platform PR #2023, task 2402246b): the pr-review task
+    /// went Done the moment the review was posted, so when the author answered all five threads
+    /// and pushed revisions the next day, nothing on the board watched the pull request and the
+    /// reviewer heard it from GitHub first. There was no state between Done and a fresh
+    /// <c>--from-pr</c> adoption, and this is it.
+    /// </para>
+    /// </summary>
+    public static readonly TaskState AwaitingAuthor = new("AwaitingAuthor");
     public static readonly TaskState Done = new("Done");
     public static readonly TaskState Failed = new("Failed");
     public static readonly TaskState Abandoned = new("Abandoned");

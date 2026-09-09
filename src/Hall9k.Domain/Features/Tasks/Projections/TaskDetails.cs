@@ -352,6 +352,26 @@ public sealed class TaskDetails
     public string? ReviewerVerdictReviewUrl { get; set; }
     /// <summary>The line comments posted with a changes-requested review, verbatim; empty for an approval.</summary>
     public List<string> ReviewerVerdictFindings { get; set; } = [];
+    /// <summary>Mirrors <see cref="TaskAggregate.PrReviewFollowThroughOpen"/> — the posted review is still being followed through (task: a pr-review task stays open while the pull request's review threads are unresolved).</summary>
+    public bool PrReviewFollowThroughOpen { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.PrReviewFollowThroughPullRequestUrl"/> — the pull request the follow-through watches.</summary>
+    public string? PrReviewFollowThroughPullRequestUrl { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.PrReviewReviewerLogin"/> — the login whose threads are being watched, as the last poll read it back from gh; null before the first poll.</summary>
+    public string? PrReviewReviewerLogin { get; set; }
+    /// <summary>How many of the reviewer's own threads the last poll found unresolved.</summary>
+    public int PrReviewOpenThreadCount { get; set; }
+    /// <summary>How many of the reviewer's own threads the last poll found in total, resolved ones included.</summary>
+    public int PrReviewThreadCount { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.PrReviewReReviewRequested"/> — a re-review is outstanding for the reviewer.</summary>
+    public bool PrReviewReReviewRequested { get; set; }
+    /// <summary>Whether any poll has looked at the watched pull request yet — what tells "no threads outstanding" from "not looked at yet".</summary>
+    public bool PrReviewFollowThroughObserved { get; set; }
+    /// <summary>When the last follow-through poll looked, or null before the first one did.</summary>
+    public DateTimeOffset? PrReviewObservedAt { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.PrReviewAuthorActivitySummary"/> — what the author did, or null while they have said nothing.</summary>
+    public string? PrReviewAuthorActivitySummary { get; set; }
+    /// <summary>The registered interactive session the most recent author-response line was addressed to, or null when none was registered against the review's run.</summary>
+    public string? PrReviewAuthorActivitySessionAddress { get; set; }
 }
 
 public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, Guid>
@@ -759,6 +779,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.CompletedAt;
         EndAnyOpenReviewLap(view);
+        ForgetPrReviewFollowThrough(view);
     }
 
     // ResolvedReason survives here on purpose (adversarial review, backlog 51 cycle 8): it is a
@@ -791,6 +812,10 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         // would drop CloseoutEngine's watch of the pull request a Blocked landing just parked
         // behind an open dependency (adversarial review, cycle 1, on h9k task start).
         view.CurrentRunId = view.State == TaskState.Blocked ? @event.Data.PreviousRunId : null;
+        // TaskDecider.Reopen refuses a pr-review task, so this is defence rather than a reachable
+        // path — but a reopen lands Queued or Blocked, and a follow-through flag surviving into
+        // either would advertise a watch nothing is doing.
+        ForgetPrReviewFollowThrough(view);
         view.FinishedAt = null;
         EndAnyOpenReviewLap(view);
     }
@@ -866,6 +891,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.ResolvedAt;
         EndAnyOpenReviewLap(view);
+        ForgetPrReviewFollowThrough(view);
     }
 
     // FailureReason survives here as well: abandoning a Failed task records the walk-away
@@ -887,6 +913,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.State = TaskState.Abandoned;
         view.FinishedAt = @event.Data.AbandonedAt;
         EndAnyOpenReviewLap(view);
+        ForgetPrReviewFollowThrough(view);
 
         // The publication request goes with them when no session has been dispatched, which is
         // the aggregate's rule and matters most here: this view is what the daemon's sweep
@@ -1010,6 +1037,55 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     /// left alone, as provenance of a lap that happened.
     /// </summary>
     private static void EndAnyOpenReviewLap(TaskDetails view) => view.ReviewLapOpen = false;
+
+    // Mirrors TaskAggregate.Apply(PullRequestReviewFollowThroughOpened): the pr-review task's own
+    // ending is a wait on the pull request now, not Done. FinishedAt is deliberately NOT set —
+    // nothing has finished, and h9k task show renders it as the closeout stamp.
+    public void Apply(IEvent<PullRequestReviewFollowThroughOpened> @event, TaskDetails view)
+    {
+        view.PrReviewFollowThroughOpen = true;
+        view.PrReviewFollowThroughPullRequestUrl = @event.Data.PullRequestUrl;
+        view.PrReviewFollowThroughObserved = false;
+        view.PrReviewObservedAt = null;
+        view.PrReviewReviewerLogin = null;
+        view.PrReviewOpenThreadCount = 0;
+        view.PrReviewThreadCount = 0;
+        view.PrReviewReReviewRequested = false;
+        view.PrReviewAuthorActivitySummary = null;
+        view.PrReviewAuthorActivitySessionAddress = null;
+        view.State = TaskState.AwaitingAuthor;
+        EndAnyOpenReviewLap(view);
+    }
+
+    public void Apply(IEvent<PullRequestReviewFollowThroughObserved> @event, TaskDetails view)
+    {
+        view.PrReviewFollowThroughObserved = true;
+        view.PrReviewObservedAt = @event.Data.ObservedAt;
+        view.PrReviewReviewerLogin = @event.Data.ReviewerLogin;
+        view.PrReviewThreadCount = @event.Data.Threads.Count;
+        view.PrReviewOpenThreadCount = @event.Data.Threads.Count(thread => !thread.IsResolved);
+        view.PrReviewReReviewRequested = @event.Data.ReReviewRequested;
+    }
+
+    public void Apply(IEvent<PullRequestReviewAuthorResponded> @event, TaskDetails view)
+    {
+        view.PrReviewAuthorActivitySummary = @event.Data.Summary;
+        view.PrReviewAuthorActivitySessionAddress = @event.Data.InteractiveSessionAddress;
+        view.State = TaskState.NeedsHuman;
+    }
+
+    /// <summary>
+    /// Mirrors <c>TaskAggregate.EndAnyPrReviewFollowThrough</c> — see that method for the
+    /// reasoning. The pull request URL and the last observation's own facts stay as provenance of
+    /// what was watched; what goes is everything that would advertise a watch still running.
+    /// </summary>
+    private static void ForgetPrReviewFollowThrough(TaskDetails view)
+    {
+        view.PrReviewFollowThroughOpen = false;
+        view.PrReviewReReviewRequested = false;
+        view.PrReviewAuthorActivitySummary = null;
+        view.PrReviewAuthorActivitySessionAddress = null;
+    }
 
     // Requested, then zero or more auth failures, then finally a success or a terminal failure —
     // the same shape the aggregate applies (TaskAggregate.Apply(JiraWriteFailed)'s own comment
