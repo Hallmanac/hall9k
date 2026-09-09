@@ -2564,6 +2564,53 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The already-answered exclusion above is scoped to a HUMAN-authored thread on purpose
+    /// (Decisions Log #159: only a human-authored thread stays open by design — a bot-authored one
+    /// is resolved by the follow-up itself). A bot thread that is still unresolved despite an
+    /// earlier decline — its resolveReviewThread mutation never landed, say — must keep buying a
+    /// follow-up (and eventually the per-obstruction cap's own park) rather than stalling this run
+    /// forever with no dispatch, no park, and no merge (independent pre-PR review, cycle 3,
+    /// adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_thread_already_declined_but_bot_authored_still_dispatches_when_still_unresolved()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        await using (IDocumentSession triageSession = store.LightweightSession())
+        {
+            triageSession.Events.Append(runId, new ReviewThreadsTriaged(
+                runId,
+                [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "copilot-pull-request-reviewer", IsHuman: false)],
+                Now));
+            await triageSession.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 0,
+                UnresolvedReviewThreadIds = ["PRRC_1"],
+                UnresolvedHumanThreadIds = [],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.Superseded, "a bot thread still unresolved after a decline is not left open by design — it must keep buying a follow-up");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+    }
+
+    /// <summary>
     /// The countersign is off unless someone said otherwise: nothing about a quiet pull
     /// request should spend review quota by default (Decisions Log #62).
     /// </summary>
