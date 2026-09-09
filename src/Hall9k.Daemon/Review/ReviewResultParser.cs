@@ -432,11 +432,21 @@ public static class ReviewResultParser
             _ => ReviewVerdict.Unknown,
         };
 
+    /// <summary>
+    /// The named-Unknown fallback (task: a headless build, fix, or recovery session never ends its
+    /// turn while a gate it started is still running in the background): a fix session that never
+    /// stated a <c>RESOLUTION:</c> marker at all is still Unknown by default, but one whose final
+    /// message names a pending background task — <see cref="PendingBackgroundTaskParser"/> — reads
+    /// as <see cref="ReviewFixOutcome.WaitingOnBackgroundGate"/> instead, so <c>h9k task show</c>
+    /// and the run log can say why, rather than reporting every unmarked ending the same
+    /// undifferentiated "(undeclared)" way.
+    /// </summary>
     public static ReviewFixOutcome ParseFixOutcome(string? summary) =>
         LastMarkerValue(summary, "RESOLUTION:") switch
         {
             { } value when value.Contains("disputed", StringComparison.OrdinalIgnoreCase) => ReviewFixOutcome.Disputed,
             { } value when value.Contains("fixed", StringComparison.OrdinalIgnoreCase) => ReviewFixOutcome.Fixed,
+            _ when PendingBackgroundTaskParser.NamesPendingBackgroundTask(summary) => ReviewFixOutcome.WaitingOnBackgroundGate,
             _ => ReviewFixOutcome.Unknown,
         };
 

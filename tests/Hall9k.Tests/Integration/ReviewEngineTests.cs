@@ -753,6 +753,96 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// The end-to-end proof for this task (a headless build, fix, or recovery session never ends
+    /// its turn while a gate it started is still running in the background): a fix session ends
+    /// its turn with a modified-but-uncommitted tracked file still sitting in the worktree and a
+    /// final message naming a pending background task, with a descendant process still alive
+    /// behind it — the exact shape all three origin incidents took (2026-09-07/08). Driven through
+    /// <see cref="ReviewEngine"/>, the supervisor of the fix/reverify loop, this asserts all three
+    /// halves of the fix at once: the named outcome (not "(undeclared)"), the automatic recovery
+    /// dispatched rather than the run failing before its gates, and the fix session's own
+    /// lingering process torn down before the reverify gate — the recovery session that commits
+    /// the stranded file — ever touches the same worktree.
+    /// </summary>
+    [Fact]
+    public async Task A_fix_session_ending_on_a_dirty_tree_and_a_pending_background_task_names_the_outcome_and_recovers()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+
+        // A tracked file the fix session can leave modified-but-uncommitted, the same shape
+        // VerificationRunnerTests' own recovery coverage uses.
+        File.WriteAllText(Path.Combine(worktreePath, "half-done.cs"), "class HalfDone { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m half-done");
+
+        ScriptedExecutor executor = new(
+            "1. `Auth.cs:42` — the limiter never resets.\n\nVERDICT: needs-fixes",
+            "Nothing survived verification.\n\nVERDICT: merge-ready",
+            // Spawn 2: the fix session. No RESOLUTION marker at all — it ends naming a
+            // background task instead, exactly as all three origin incidents' sessions did.
+            "The full dotnet test run is still running in the background.",
+            // Spawn 3: the automatic uncommitted-work recovery this leaves stranded, dispatched
+            // before the reverify gate is allowed to fail the run on it.
+            "Committed the stranded file.",
+            // Cycle 2: only conformance is still active, so it gets one Verify pass.
+            "Criteria met.\n\nVERDICT: merge-ready",
+            // Cycle 3: the mandatory final full pass, both lenses fresh.
+            "Confirmed clean.\n\nVERDICT: merge-ready",
+            "Confirmed clean too.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[2] = () =>
+            File.WriteAllText(Path.Combine(worktreePath, "half-done.cs"), "left behind, uncommitted\n");
+        executor.OnSpawnByIndex[3] = () =>
+        {
+            Git(worktreePath, "add -A");
+            Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m recovered");
+        };
+
+        // The fix session's own process (pid 6002, the third spawn) left a background dotnet test
+        // still running behind it — a descendant process still alive when its final message
+        // arrived (task: the daemon terminates a completed session's process tree before it
+        // starts any gate or another session in the same worktree).
+        const int fixSessionProcessId = 6_002;
+        const int lingeringDescendantProcessId = 6_999;
+        executor.Processes.MarkDescendant(fixSessionProcessId, lingeringDescendantProcessId);
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the recovery session committed the stranded file, so the gates and the rest of the loop proceed normally");
+        executor.Spawns.Should().HaveCount(
+            7, "the cycle's two passes, the fix session, the automatic recovery it earned, the cycle-2 "
+                + "verify pass, and the final full pass's two fresh reads");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+
+        // The named outcome: h9k task show and the run log say the session ended waiting on a
+        // background gate rather than reporting the fix as undeclared.
+        run.LastFixEndedWaitingOnBackgroundGate.Should().BeTrue();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFixCompleted>().Should().ContainSingle().Which.Outcome.Should().Be(
+            ReviewFixOutcome.WaitingOnBackgroundGate, "not the generic Unknown every other undeclared ending shares");
+
+        // The recovery dispatch: the fix leg earned its own automatic recovery rather than the
+        // run failing before its gates.
+        run.UncommittedWorkRecoveries.Should().ContainSingle().Which.Leg.Should().Be(RunSessionLeg.Fix);
+        run.UncommittedWorkRecoveries.Single().RecoveredCleanly.Should().BeTrue(
+            "the scripted recovery session actually committed the stranded file");
+        run.State.Should().NotBe(RunState.Failed, "the automatic recovery resolved the dirty tree before any gate could fail on it");
+
+        // The process-tree cleanup: the fix session's own lingering descendant is gone before the
+        // reverify gate — which the recovery session that commits the stranded file runs ahead
+        // of — ever touches the same worktree.
+        executor.Processes.TreeTerminations.Should().Contain(
+            termination => termination.ProcessId == fixSessionProcessId
+                && termination.Lingering.Contains(lingeringDescendantProcessId),
+            "the fix session's own backgrounded test run is torn down the instant its terminal result arrives");
+        executor.Processes.IsAlive(lingeringDescendantProcessId, Now).Should().BeFalse(
+            "a lingering child gone before the next gate starts is exactly what this task requires");
+    }
+
+    /// <summary>
     /// Copilot review, PR #62: a HEAD match alone cannot tell "the same gates ran" from "a human
     /// changed the project's verify commands between the last full gate and now" — the tip stays
     /// put, but the gates about to be trusted at Settling never themselves ran at full scope.
@@ -5857,6 +5947,76 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// AC3's own named gap (task: a headless build, fix, or recovery session never ends its turn
+    /// while a gate it started is still running in the background — origin incident, task
+    /// 6df5f975, run 01a08028, 2026-09-08 09:53 EDT): a human-resolved fix session
+    /// (<c>h9k review resolve --needs-fixes</c>, <see cref="DispatchFixSessionAsync"/>'s
+    /// <c>humanFindings.IsNotBlank()</c> branch) ends its turn with a modified-but-uncommitted
+    /// tracked file still sitting in the worktree, and gets the identical automatic recovery an
+    /// ordinary review-fix leg already earns — the production gap was exactly this leg getting
+    /// none, and the run failing before its gates instead of a human retry ever being needed.
+    /// </summary>
+    [Fact]
+    public async Task A_human_resolved_fix_session_ending_on_a_dirty_tree_earns_its_own_automatic_recovery()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+
+        File.WriteAllText(Path.Combine(worktreePath, "half-done.cs"), "class HalfDone { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m half-done");
+
+        // No review cycle runs first: an operator's own `h9k review resolve --needs-fixes` reaches
+        // this leg on a freshly-claimed run exactly as readily as it does on a parked one — the
+        // event is what puts the run into ReviewPhase.FixNeeded, regardless of what came before it.
+        const string humanFindings = "The limiter finding is real; fix it as the reviewer described.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanFindings, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor fixExecutor = new(
+            // The human-resolved fix session: no RESOLUTION marker, ends naming a background task.
+            "The full dotnet test run is still running in the background.",
+            // The automatic uncommitted-work recovery this leaves stranded.
+            "Committed the stranded file.",
+            // Whatever review cycle follows (a fresh Discovery pass over both tracks, since this
+            // run never dispatched one before the human resolved it) — this test's own point is
+            // already proven by the two spawns above; these just let the loop reach a real end
+            // rather than the scripted queue running dry underneath it.
+            "Clean.\n\nVERDICT: merge-ready",
+            "Clean too.\n\nVERDICT: merge-ready");
+        fixExecutor.OnSpawnByIndex[0] = () =>
+            File.WriteAllText(Path.Combine(worktreePath, "half-done.cs"), "left behind, uncommitted\n");
+        fixExecutor.OnSpawnByIndex[1] = () =>
+        {
+            Git(worktreePath, "add -A");
+            Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m recovered");
+        };
+
+        await NewEngine(store, fixExecutor).ReviewAsync(runId, taskId, cts.Token);
+
+        fixExecutor.Spawns.Should().HaveCountGreaterThanOrEqualTo(
+            2, "the human-resolved fix session, plus the automatic recovery its own dirty ending earned");
+        fixExecutor.Spawns[0].Prompt.Should().Contain(
+            humanFindings, "the human-resolved leg reads the operator's own reason, not a merged findings document");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastFixEndedWaitingOnBackgroundGate.Should().BeTrue(
+            "h9k task show and the run log must say this leg ended waiting on a background gate, not undeclared");
+        run.UncommittedWorkRecoveries.Should().ContainSingle().Which.Leg.Should().Be(RunSessionLeg.Fix);
+        run.UncommittedWorkRecoveries.Single().RecoveredCleanly.Should().BeTrue(
+            "the scripted recovery session actually committed the stranded file");
+        run.State.Should().NotBe(
+            RunState.Failed, "the automatic recovery resolved the dirty tree before any gate could fail the run on it — "
+                + "the production gap this task closes had this leg failing before its gates instead");
+    }
+
+    /// <summary>
     /// Adversarial review finding (cycle 1): a fix session dispatched over a human's own
     /// <c>h9k review resolve --needs-fixes</c> reason reads only that text
     /// (<see cref="DispatchFixSessionAsync"/>'s <c>humanFindings.IsNotBlank()</c> branch) — it
@@ -7279,8 +7439,22 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         mergeReady.Should().BeTrue("the transient error is retried once, not failed");
         executor.Spawns.Should().HaveCount(3, "conformance's error costs one extra spawn; adversarial dispatches once");
-        executor.Processes.Terminations.Should().BeEmpty(
-            "the sibling adversarial pass must never be terminated on the other lens's account");
+
+        // Every completed session's own process is now routinely torn down the instant its
+        // result arrives (task: the daemon terminates a completed session's process tree before
+        // it starts any gate or another session in the same worktree) — pid 6000 (the errored
+        // conformance attempt) and 6002 (its retry) both show up here on that account alone. What
+        // this test actually guards, still true: pid 6001, the sibling adversarial pass, is never
+        // torn down BECAUSE OF the other lens's error — it is torn down once, on its own natural
+        // completion, exactly like every other session, never a second time as collateral damage.
+        executor.Processes.Terminations.Should().OnlyContain(
+            termination => new[] { 6_000, 6_001, 6_002 }.Contains(termination.ProcessId),
+            "only the three sessions this cycle actually spawned may ever be torn down");
+        executor.Processes.Terminations.Should().Contain(
+            termination => termination.ProcessId == 6_001,
+            "the adversarial pass is torn down once, on its own routine completion");
+        executor.Processes.Terminations.Count(termination => termination.ProcessId == 6_001).Should().Be(
+            1, "the sibling adversarial pass must never be terminated a second time on the other lens's account");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -7438,10 +7612,21 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeFalse();
-        executor.Processes.Terminations.Should().ContainSingle(
-            "both passes had already concluded, so the fix session is all that is still in flight");
-        executor.Processes.Terminations.Single().ProcessId.Should().Be(
-            6_002, "the fix session, dispatched after the cycle's two passes");
+        // Every completed session's own process is now routinely torn down the instant its
+        // result arrives (task: the daemon terminates a completed session's process tree before
+        // it starts any gate or another session in the same worktree) — pids 6000 and 6001, the
+        // cycle's two already-concluded passes, show up here on that account alone. Pid 6002, the
+        // fix session, is torn down TWICE: once by that same routine cleanup the moment its
+        // result arrived, and again by the crash sweep below, which still finds the stream
+        // showing it in flight because the crash happened before RecordFixResultAsync ever
+        // cleared that bookkeeping — the redundant second kill-tree call is harmless (idempotent
+        // on an already-dead pid), and this test's own point survives unchanged: the crash sweep
+        // reaches the fix session specifically, not only review passes.
+        executor.Processes.Terminations.Select(termination => termination.ProcessId).Should().Contain(
+            [6_000, 6_001, 6_002],
+            "every session this cycle spawned is torn down, the fix session (still in flight when the crash hit) among them");
+        executor.Processes.Terminations.Count(termination => termination.ProcessId == 6_002).Should().Be(
+            2, "the routine post-completion cleanup and the crash sweep both reach the fix session");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;

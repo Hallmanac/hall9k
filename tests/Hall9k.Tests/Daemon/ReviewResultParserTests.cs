@@ -49,6 +49,27 @@ public sealed class ReviewResultParserTests
         ReviewResultParser.ParseFixOutcome(summary).Value.Should().Be(expected);
 
     /// <summary>
+    /// Task: a headless build, fix, or recovery session never ends its turn while a gate it
+    /// started is still running in the background. A fix session that names no RESOLUTION marker
+    /// at all is still Unknown by default (undeclared, plainly) — this named case only fires when
+    /// the summary itself explains why: it is still waiting on something backgrounded.
+    /// </summary>
+    [Theory]
+    [InlineData("I'm waiting on the background dotnet test run (task ID b5ej6atfz) to complete before finishing this session.")]
+    [InlineData("The full dotnet test run is still running in the background.")]
+    [InlineData("Test suite is running in the background; I've set a monitor to notify me.")]
+    public void A_fix_session_naming_a_pending_background_task_parses_as_that_named_outcome(string summary) =>
+        ReviewResultParser.ParseFixOutcome(summary).Should().Be(ReviewFixOutcome.WaitingOnBackgroundGate);
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("Done, all good.")]
+    [InlineData("For background context, this fixes the off-by-one from finding 2.")]
+    public void An_unmarked_ending_with_no_pending_background_task_stays_the_plain_unknown_sentinel(string? summary) =>
+        ReviewResultParser.ParseFixOutcome(summary).Should().Be(ReviewFixOutcome.Unknown);
+
+    /// <summary>
     /// The block a changes-requested fix lap parks with (task: a changes-requested pull-request
     /// review from a human becomes a fix lap) — three positions and the two tags that say where a
     /// reply would go and which review it answers.

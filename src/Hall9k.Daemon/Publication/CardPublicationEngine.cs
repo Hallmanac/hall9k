@@ -765,6 +765,16 @@ public sealed class CardPublicationEngine(
         budget.CancelAfter(_options.CardPublicationTimeout);
         try
         {
+            // Deliberately no post-result TerminateTree here, unlike the run pipeline's own
+            // dispatch-and-await seams (task: the daemon terminates a completed session's process
+            // tree before it starts any gate or another session in the same worktree): this
+            // method is shared with AdoptAsync's own reattachment of a session this daemon
+            // instance never spawned, and that path's whole point is that a live session is
+            // picked back up rather than killed on any account (Stranded's own doc, "That session
+            // is detached, so it can outlive the daemon, and killing it would throw away a card it
+            // may be halfway through creating"). Unlike a run's own build/fix/review/rebase
+            // sessions, this session is not about to be followed by a gate or another dispatch
+            // into the same worktree, so there is nothing here for a lingering process to race.
             result = await SessionResultWaiter.WaitAsync(
                 RunPaths.StreamFile(RunPaths.GlobalDirectory(sessionId)), agent.ProcessId, agent.StartedAt,
                 processManager, onOutput: null, budget.Token);

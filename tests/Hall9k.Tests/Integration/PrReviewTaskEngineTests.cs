@@ -1314,10 +1314,20 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
 
-        executor.Processes.Terminations.Should().ContainSingle(
-            "the conformance session was still recorded in flight when the loop crashed writing its findings file");
-        executor.Processes.Terminations.Single().ProcessId.Should().Be(
-            7_000, "the conformance lens's own session, the only one this run ever dispatches");
+        // Every completed session's own process is now routinely torn down the instant its
+        // result arrives (task: the daemon terminates a completed session's process tree before
+        // it starts any gate or another session in the same worktree) — pid 7000 is torn down
+        // TWICE here: once by that routine cleanup the moment its result arrived, and again by
+        // the crash sweep, which still finds the stream showing it in flight because the crash
+        // happened before PrReviewConformanceCompleted ever cleared that bookkeeping. The
+        // redundant second kill-tree call is harmless (idempotent on an already-dead pid), and
+        // this test's own point survives unchanged: the crash sweep reaches the conformance
+        // session specifically.
+        executor.Processes.Terminations.Should().OnlyContain(
+            termination => termination.ProcessId == 7_000,
+            "the conformance lens's own session is the only one this run ever dispatches");
+        executor.Processes.Terminations.Count.Should().Be(
+            2, "the routine post-completion cleanup and the crash sweep both reach it");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;

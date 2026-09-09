@@ -437,6 +437,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             WriteUnfixedFindings(newestRun);
             WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
+            WriteBackgroundGateWait(newestRun);
             WriteSessionErrorRetries(newestRun);
             WriteUncommittedWorkRecovery(newestRun);
 
@@ -682,6 +683,26 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             : $"[yellow]{composition.Value.EscapeMarkup()}[/]";
 
     /// <summary>
+    /// Names the most recent fix session ending on a pending background task explicitly (task: a
+    /// headless build, fix, or recovery session never ends its turn while a gate it started is
+    /// still running in the background) — the named outcome this task adds so a reader sees why
+    /// the fix session left no resolution, rather than only the generic "(undeclared)" every other
+    /// unmarked ending shares. The dirty tree it usually leaves behind, if any, is its own line
+    /// just below (<see cref="WriteUncommittedWorkRecovery"/>).
+    /// </summary>
+    private static void WriteBackgroundGateWait(RunDetails? run)
+    {
+        if (run is not { LastFixEndedWaitingOnBackgroundGate: true })
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine(
+            "\n[bold]Fix session outcome[/]  [yellow]ended waiting on a background gate[/] "
+            + "[dim]— its own final message named a background task the platform will never receive a result from[/]");
+    }
+
+    /// <summary>
     /// Every session-error retry the newest run recorded (task: a session that reports an error
     /// result is retried once in place) — a leg that reported a generic error and was
     /// redispatched fresh after a short backoff rather than failing the run outright. The
@@ -717,16 +738,19 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     }
 
     /// <summary>
-    /// The one automatic uncommitted-work recovery the newest run may have gotten (task: when a
-    /// session ends with finished work uncommitted, the daemon recovers on its own) — a
-    /// commit-only session spawned onto the retained worktree before the run was allowed to fail
-    /// on a dirty tree. The outcome is read from the recovery's own recorded verdict — a fresh
-    /// re-detection of the worktree, taken at the time the recovery session ended, never inferred
-    /// from whatever the run's own state happens to be by the time this renders: a run that
-    /// recovered cleanly can still fail later for an unrelated reason (a downstream gate, a push
-    /// refusal), and reading that as "the recovery also ended dirty" would be false (independent
-    /// pre-PR review, cycle 1, both lenses). A null <see cref="UncommittedWorkRecoveryRecord.RecoveredCleanly"/>
-    /// is ambiguous on its own — it is also what a completed recovery records when its own
+    /// Every automatic uncommitted-work recovery the newest run has gotten (task: when a session
+    /// ends with finished work uncommitted, the daemon recovers on its own) — a commit-only
+    /// session spawned onto the retained worktree before the run was allowed to fail on a dirty
+    /// tree, at most one per leg (task: a headless build, fix, or recovery session never ends its
+    /// turn while a gate it started is still running in the background — a run's build leg
+    /// spending its own attempt must not read as the whole run having spent its only one). The
+    /// outcome is read from each recovery's own recorded verdict — a fresh re-detection of the
+    /// worktree, taken at the time that recovery session ended, never inferred from whatever the
+    /// run's own state happens to be by the time this renders: a run that recovered cleanly can
+    /// still fail later for an unrelated reason (a downstream gate, a push refusal), and reading
+    /// that as "the recovery also ended dirty" would be false (independent pre-PR review, cycle 1,
+    /// both lenses). A null <see cref="UncommittedWorkRecoveryRecord.RecoveredCleanly"/> is
+    /// ambiguous on its own — it is also what a completed recovery records when its own
     /// re-detection could not read `git status` — so this reads <see cref="UncommittedWorkRecoveryRecord.CompletedAt"/>
     /// too, to tell "not finished yet" apart from "finished, but genuinely unobservable" rather than
     /// rendering both as "outcome not yet recorded" (independent pre-PR review, cycle 3, conformance
@@ -738,45 +762,62 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </summary>
     private static void WriteUncommittedWorkRecovery(RunDetails? run)
     {
-        if (run?.UncommittedWorkRecovery is not { } recovery)
+        if (run is not { UncommittedWorkRecoveries.Count: > 0 })
         {
             return;
         }
 
-        string outcome = recovery switch
+        foreach (UncommittedWorkRecoveryRecord recovery in run.UncommittedWorkRecoveries)
         {
-            { RecoveredCleanly: true } => "[green]recovered — the run reached its gates[/]",
-            { RecoveredCleanly: false, DiscardedFiles.Count: > 0 } =>
-                "[red]discarded stranded work rather than committing it[/]",
-            { RecoveredCleanly: false } => "[red]still did not leave the tree clean[/]",
-            { CompletedAt: null } => "[yellow]outcome not yet recorded[/]",
-            _ => "[yellow]recovery finished, but its own re-check could not read the worktree — outcome unknown[/]",
-        };
+            string outcome = recovery switch
+            {
+                { RecoveredCleanly: true } => "[green]recovered — the run reached its gates[/]",
+                { RecoveredCleanly: false, DiscardedFiles.Count: > 0 } =>
+                    "[red]discarded stranded work rather than committing it[/]",
+                { RecoveredCleanly: false } => "[red]still did not leave the tree clean[/]",
+                { CompletedAt: null } => "[yellow]outcome not yet recorded[/]",
+                _ => "[yellow]recovery finished, but its own re-check could not read the worktree — outcome unknown[/]",
+            };
+            string legLabel = LegLabel(recovery.Leg) is { } label ? $" ({label})" : string.Empty;
 
-        AnsiConsole.MarkupLine(
-            $"\n[bold]Uncommitted-work recovery[/]  attempted {recovery.AttemptedAt.ToLocalTime():g} "
-            + $"({recovery.StrandedFiles.Count} file(s)) {outcome}");
-
-        if (recovery.DiscardedFiles.Count > 0)
-        {
             AnsiConsole.MarkupLine(
-                $"  [red]discarded rather than committed:[/] {string.Join(", ", recovery.DiscardedFiles).EscapeMarkup()}");
+                $"\n[bold]Uncommitted-work recovery[/]{legLabel.EscapeMarkup()}  attempted {recovery.AttemptedAt.ToLocalTime():g} "
+                + $"({recovery.StrandedFiles.Count} file(s)) {outcome}");
+
+            if (recovery.DiscardedFiles.Count > 0)
+            {
+                AnsiConsole.MarkupLine(
+                    $"  [red]discarded rather than committed:[/] {string.Join(", ", recovery.DiscardedFiles).EscapeMarkup()}");
+            }
         }
     }
 
     private static string SessionErrorRetryLabel(SessionErrorRetryRecord retry)
     {
-        string label = retry.Leg == RunSessionLeg.Build
-            ? "build session"
-            : retry.Leg == RunSessionLeg.Fix
-                ? "fix session"
-                : retry.Leg == RunSessionLeg.RebaseRecovery
-                    ? "rebase-recovery session"
-                    : retry.Lens is { } lens && lens != ReviewLens.Unknown
-                        ? $"{lens.Value.ToLowerInvariant()} review pass"
-                        : "review pass";
+        string label = LegLabel(retry.Leg)
+            ?? (retry.Lens is { } lens && lens != ReviewLens.Unknown
+                ? $"{lens.Value.ToLowerInvariant()} review pass"
+                : "review pass");
         return retry.Cycle is { } cycle ? $"{label} (cycle {cycle})" : label;
     }
+
+    /// <summary>
+    /// The human label for a <see cref="RunSessionLeg"/> shared between
+    /// <see cref="SessionErrorRetryLabel"/> and <see cref="WriteUncommittedWorkRecovery"/> — the
+    /// two renderers that name which leg a run event belongs to. Null for
+    /// <see cref="RunSessionLeg.ReviewPass"/> and <see cref="RunSessionLeg.Unknown"/>: a review
+    /// pass names itself by lens instead (<see cref="SessionErrorRetryLabel"/>'s own fallback),
+    /// and Unknown is what a pre-this-field stream reads as (<see cref="UncommittedWorkRecoveryRecord"/>'s
+    /// own doc) — a caller decides what "no leg recorded" should say rather than this guessing one.
+    /// </summary>
+    private static string? LegLabel(RunSessionLeg leg) =>
+        leg == RunSessionLeg.Build
+            ? "build session"
+            : leg == RunSessionLeg.Fix
+                ? "fix session"
+                : leg == RunSessionLeg.RebaseRecovery
+                    ? "rebase-recovery session"
+                    : null;
 
     /// <summary>
     /// Every changes-requested review this task's pull request has taken, and what each fix lap
