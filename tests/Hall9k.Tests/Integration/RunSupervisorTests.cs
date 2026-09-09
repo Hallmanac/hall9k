@@ -103,7 +103,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
-    /// Decisions Log #PLACEHOLDER-f481c576: the pull request the build session composed for itself
+    /// Decisions Log #163: the pull request the build session composed for itself
     /// is a second marked block on the same terminal result the handoff comes from, captured at
     /// the one moment that result is in hand.
     /// </summary>

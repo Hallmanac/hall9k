@@ -428,7 +428,7 @@ public sealed class WorkPromptBuilderTests
             isInteractive: isInteractive, isDeliberateHeadlessStart: isDeliberateHeadlessStart);
 
     /// <summary>
-    /// Decisions Log #PLACEHOLDER-f481c576: the build session composes the pull request itself, so
+    /// Decisions Log #163: the build session composes the pull request itself, so
     /// the marker and the skill order have to be in the prompt that asks for it, not only in the
     /// parser that reads it back.
     /// </summary>

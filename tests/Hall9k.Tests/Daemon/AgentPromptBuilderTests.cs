@@ -2493,7 +2493,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// Decisions Log #PLACEHOLDER-f481c576: a fix session refreshes the pull request's own summary
+    /// Decisions Log #163: a fix session refreshes the pull request's own summary
     /// opportunistically, so the sentence has to ask rather than require, and has to say what
     /// silence means so a session that writes nothing knows it has not dropped anything.
     /// </summary>

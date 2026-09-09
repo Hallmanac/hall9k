@@ -12,7 +12,7 @@ or `gh pr edit`, and never open a PR** — the Hall9k daemon opens PRs (`PullReq
 are forbidden from doing so.
 
 **The primary use is a build session's own closing `PR SUMMARY:` block** (Decisions Log
-#PLACEHOLDER-f481c576). The headless build prompt's last step asks for it, and the daemon puts what
+#163). The headless build prompt's last step asks for it, and the daemon puts what
 you write straight into the pull request it opens: your title becomes the pull request's title, and
 your body sits verbatim between the platform's own bookkeeping. Write it into the final message
 under a line reading exactly `PR SUMMARY:`, placed before the `HANDOFF:` block, with `Title: <one

@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Daemon;
 
 /// <summary>
 /// The run directory's <c>pr-summary.md</c> and what the opener makes of it (Decisions Log
-/// #PLACEHOLDER-f481c576). Both call sites that write it — the build session's capture in
+/// #163). Both call sites that write it — the build session's capture in
 /// <c>RunSupervisor</c> and a review-fix session's refresh in <c>ReviewEngine</c> — go through
 /// <see cref="PrSummaryArtifact"/>, so the write rules are exercised once here and each call site
 /// is pinned separately in its own integration test.
