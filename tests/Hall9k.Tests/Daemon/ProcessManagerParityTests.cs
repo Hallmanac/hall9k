@@ -296,7 +296,7 @@ public sealed class ProcessManagerParityTests : IDisposable
 
         // The lingering-list membership assertion below is Unix-only: on Windows, two
         // independent attempts at reading the actual process topology this scenario produces
-        // (Decisions Log #163) each left the list holding two pids rather than the one read
+        // (Decisions Log #PLACEHOLDER-9a6d594d) each left the list holding two pids rather than the one read
         // from the pid file — the reparented-descendant shape this test forces is not the same
         // one the Windows implementation's own enumeration walks deterministically. What
         // TerminateTree actually promises — the reparented descendant ends up dead — is proven
