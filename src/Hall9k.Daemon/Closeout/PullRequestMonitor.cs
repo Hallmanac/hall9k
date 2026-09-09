@@ -32,6 +32,7 @@ namespace Hall9k.Daemon.Closeout;
 public sealed class PullRequestMonitor(
     CloseoutEngine engine,
     RemoteStackedParentSweep remoteStackedParents,
+    PrReviewFollowThroughEngine prReviewFollowThrough,
     IOptions<DaemonOptions> options,
     ILogger<PullRequestMonitor> logger) : BackgroundService
 {
@@ -55,12 +56,32 @@ public sealed class PullRequestMonitor(
                 await SweepRemoteStackedParentsAsync(stoppingToken);
 
                 CloseoutSweepResult sweep = await engine.PollOnceAsync(stoppingToken);
-                sweepFailed = IsSweepFailure(sweep);
+                PrReviewFollowThroughResult followThrough = await SweepPrReviewFollowThroughAsync(stoppingToken);
+                // Folded into ONE backoff verdict rather than judged apart, unlike the
+                // stacked-parent sweep above: a waiting review's pull request is one of the pull
+                // requests this node itself watches, read from this node's own gh on this same
+                // cadence, so "every attempted inspection failed" has to mean every one of them.
+                // Judging the two separately would let a real gh outage that happened to leave
+                // this node with only waiting reviews sit at the base interval forever.
+                sweepFailed = IsSweepFailure(sweep with
+                {
+                    RunsInspected = sweep.RunsInspected + followThrough.Inspected,
+                    Failures = sweep.Failures + followThrough.Failures,
+                });
                 if (sweep.RunsInspected > 0)
                 {
                     logger.LogDebug(
                         "Closeout sweep inspected {Count} pull request(s), observed {Merges} merge(s)",
                         sweep.RunsInspected, sweep.MergesObserved);
+                }
+
+                if (followThrough.Inspected > 0 || followThrough.Failures > 0)
+                {
+                    logger.LogDebug(
+                        "Pr-review follow-through sweep looked at {Count} waiting review(s): {Surfaced} now "
+                        + "need you, {Concluded} closed out, {Failures} failed",
+                        followThrough.Inspected, followThrough.Surfaced, followThrough.Concluded,
+                        followThrough.Failures);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -129,6 +150,38 @@ public sealed class PullRequestMonitor(
         catch (Exception exception)
         {
             logger.LogWarning(exception, "Remote stacked-parent sweep failed; will retry next tick");
+        }
+    }
+
+    /// <summary>
+    /// One look at every posted review this node is following through on, on this same cadence
+    /// (task: a pr-review task stays open while the pull request's review threads are unresolved —
+    /// "the closeout watcher polls the pull request on its existing cadence", and this monitor is
+    /// it).
+    /// <para>
+    /// It never throws out of here, for the same reason the stacked-parent sweep above does not: a
+    /// follow-through that could not be read must not cost this tick its closeout sweep. Its own
+    /// per-task failures are already counted inside <see cref="PrReviewFollowThroughResult"/>, so
+    /// the only thing this catch can be hiding is the sweep's own listing query — which is
+    /// reported as one failure so the backoff verdict still sees it rather than reading the tick
+    /// as clean.
+    /// </para>
+    /// </summary>
+    private async Task<PrReviewFollowThroughResult> SweepPrReviewFollowThroughAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            return await prReviewFollowThrough.SweepOnceAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Pr-review follow-through sweep failed; will retry next tick");
+            return new PrReviewFollowThroughResult(0, 0, 0, Failures: 1);
         }
     }
 

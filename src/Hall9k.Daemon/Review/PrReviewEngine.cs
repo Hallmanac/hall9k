@@ -581,9 +581,30 @@ public sealed class PrReviewEngine(
             ? new GitHubPullRequestProvider().WebUrl(ExternalReference.Parse(task.ExternalReference))?.ToString()
             : null;
 
+        // The posted review is not the ending any more (task: a pr-review task stays open while
+        // the pull request's review threads are unresolved): the task parks on the pull request
+        // and the closeout watcher's own follow-through sweep decides when it is actually over —
+        // every thread the reviewer opened resolved, or the pull request merged or closed. Which
+        // of the three delivery routes got here (h9k pr approve, h9k pr request-changes, or a
+        // review the owner posted by hand and then closed with h9k review resolve --merge-ready)
+        // is deliberately not re-derived: what the follow-through watches is the pull request, and
+        // it says the same thing whoever typed the review. A review with nothing outstanding on it
+        // — an approval with no threads, a findings report dismissed without posting anything —
+        // reaches Done on the very first poll, which is one poll interval later than the immediate
+        // Done this used to take and is the cost of not spending an irreversible-adjacent gh read
+        // here, where nothing would retry it.
+        //
+        // Done stays the answer for a pr-review task whose own reference cannot be read: there is
+        // genuinely nothing to poll, so waiting would park it forever on a watch nothing performs.
         if (fenced is { } current && current.Task.State == TaskState.Claimed)
         {
-            session.Events.Append(taskId, expectedVersion: current.Version + 1, TaskDecider.Complete(current.Task, runId, pullRequestUrl, now));
+            session.Events.Append(
+                taskId,
+                expectedVersion: current.Version + 1,
+                pullRequestUrl is not null
+                    ? TaskDecider.OpenPrReviewFollowThrough(
+                        current.Task, runId, pullRequestUrl, ReviewedHeadShaOf(task), now)
+                    : TaskDecider.Complete(current.Task, runId, pullRequestUrl, now));
         }
 
         session.Events.Append(runId, new RunCompleted(runId, now));
@@ -600,8 +621,23 @@ public sealed class PrReviewEngine(
             return;
         }
 
-        logger.LogInformation("Run {RunId} task {TaskId}: pull-request review delivered — task complete, no merge ever observed", runId, taskId);
+        logger.LogInformation(
+            "Run {RunId} task {TaskId}: pull-request review delivered — {Ending}",
+            runId, taskId,
+            pullRequestUrl is not null
+                ? "the task now waits on the pull request's author, and the closeout watcher polls it"
+                : "task complete, no readable pull-request reference left to watch");
     }
+
+    /// <summary>
+    /// The head the review was posted against, or null when no verdict recorded one — a review
+    /// closed the older way (<c>h9k review resolve --merge-ready</c>, nothing posted from here)
+    /// carries none. It is the follow-through's own starting point for "has the author pushed",
+    /// and a null simply means the first poll establishes that baseline instead, which is what it
+    /// does for the thread counts either way.
+    /// </summary>
+    private static string? ReviewedHeadShaOf(TaskDetails task) =>
+        task.ReviewerVerdictHeadSha.IsNotBlank() ? task.ReviewerVerdictHeadSha : null;
 
     private async Task FailAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
     {
