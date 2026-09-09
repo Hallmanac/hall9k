@@ -591,18 +591,22 @@ public sealed partial class VerificationRunner(
 
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         string streamFile = RunPaths.SessionStreamFile(runDirectory, SessionRoleName.CommitRecovery);
-        // Scoped to the Fix leg alone (independent pre-PR review, cycle 1, conformance lens):
-        // RunDetailsProjection only ever sets LastFixEndedWaitingOnBackgroundGate from
-        // ReviewFixCompleted, and never clears it on any other leg's own completion, so a later
-        // leg's recovery — a rebase-recovery session that itself ended dirty, say — would
-        // otherwise be handed a prompt asserting its own immediate predecessor said something
-        // only an earlier, unrelated Fix session actually said (AGENTS.md's never-guess rule).
-        // For the Fix leg itself the flag is always current: it is set exactly once, from the
-        // most recent ReviewFixCompleted, and this recovery only ever dispatches right after
-        // that same leg's own VerifyAsync call reads it.
+        // Scoped to the two fix-family legs alone (independent pre-PR review, cycle 1, conformance
+        // lens, and this task's own class sweep): RunDetailsProjection only ever sets
+        // LastFixEndedWaitingOnBackgroundGate from ReviewFixCompleted, and never clears it on any
+        // other leg's own completion, so a later leg's recovery — a rebase-recovery session that
+        // itself ended dirty, say — would otherwise be handed a prompt asserting its own
+        // immediate predecessor said something only an earlier, unrelated fix session actually
+        // said (AGENTS.md's never-guess rule). Both RunSessionLeg.Fix and
+        // RunSessionLeg.HumanResolvedFix read ReviewFixCompleted's identical flag: the projection
+        // does not distinguish which findings drove the fix session that just completed, only
+        // that one did, so the flag is current for either leg itself — it is only a DIFFERENT
+        // leg's own recovery this guards against.
         string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(
             task, strandedFiles,
-            priorSessionReportedBackgroundWait: leg == RunSessionLeg.Fix && run.LastFixEndedWaitingOnBackgroundGate,
+            priorSessionReportedBackgroundWait:
+                (leg == RunSessionLeg.Fix || leg == RunSessionLeg.HumanResolvedFix)
+                && run.LastFixEndedWaitingOnBackgroundGate,
             commandTimeout: options.Value.VerifyGateTimeout);
 
         SpawnedAgent? unfinished = null;

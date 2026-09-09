@@ -23,6 +23,18 @@ public sealed record RunSessionLeg
     public static readonly RunSessionLeg Fix = new("Fix");
 
     /// <summary>
+    /// The fix session dispatched over a human's own <c>h9k review resolve --needs-fixes</c>
+    /// reason rather than the review loop's own automated findings document — its own leg, not
+    /// <see cref="Fix"/> (independent pre-PR review, conformance lens): the automatic
+    /// uncommitted-work recovery bound is scoped per leg specifically so an earlier leg spending
+    /// its own attempt never leaves a later, different leg on the same run with none of its own,
+    /// and a review-fix round and a human-resolved round are different legs by that same
+    /// reasoning — collapsing them let a run's ordinary review-fix leg spend the one automatic
+    /// recovery a later human-resolved-fix leg on that same run still owed itself.
+    /// </summary>
+    public static readonly RunSessionLeg HumanResolvedFix = new("HumanResolvedFix");
+
+    /// <summary>
     /// The narrow recovery session dispatched when a plain rebase onto the base branch conflicts
     /// immediately before the mandatory final full pass (task: a run rebases its branch onto the
     /// current base branch). Its own leg, not <see cref="Fix"/>: an error-retry on this leg must

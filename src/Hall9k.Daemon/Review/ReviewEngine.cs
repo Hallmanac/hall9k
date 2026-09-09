@@ -552,7 +552,7 @@ public sealed class ReviewEngine(
                                     : "mandatory final full pass: nothing merges on scoped green alone",
                                 run.PreFinalPassRebaseAwaitingGate || run.PreFinalPassRebaseAwaitingReview
                                     ? RunSessionLeg.RebaseRecovery
-                                    : RunSessionLeg.Fix,
+                                    : CurrentFixLeg(run),
                                 cancellationToken))
                             {
                                 return false;
@@ -938,7 +938,7 @@ public sealed class ReviewEngine(
                         && run.LastGateHeadSha == await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken)
                         && await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
                     if (!reverifyGateAlreadyRan && !await verification.VerifyAsync(
-                        context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, RunSessionLeg.Fix,
+                        context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, CurrentFixLeg(run),
                         cancellationToken))
                     {
                         // VerificationRunner already failed the run and task honestly.
@@ -1661,6 +1661,22 @@ public sealed class ReviewEngine(
             context.RunId, LensLabel(verdictless.Lens), run.ReviewCycle, resumeSessionId, agent.ProcessId);
         return true;
     }
+
+    /// <summary>
+    /// Which leg to gate the tip a fix session just left behind under: <see cref="RunSessionLeg.HumanResolvedFix"/>
+    /// when the most recently dispatched fix round ran over a human's own <c>h9k review resolve
+    /// --needs-fixes</c> reason, <see cref="RunSessionLeg.Fix"/> otherwise (independent pre-PR
+    /// review, conformance lens — a human-resolved round sharing the ordinary review-fix leg's
+    /// automatic uncommitted-work recovery meant a run whose review-fix leg had already spent it
+    /// left a later human-resolved-fix leg on the very same run with none of its own).
+    /// <see cref="RunAggregate.LastFixRoundHumanFindings"/> is read rather than
+    /// <see cref="RunAggregate.PendingHumanFindings"/>: the latter is already cleared by the time
+    /// either caller of this method runs (<see cref="RunAggregate.Apply(Events.ReviewFixCompleted)"/>),
+    /// while the former is paired to — and survives past — the exact round that just dispatched
+    /// (that field's own doc).
+    /// </summary>
+    private static RunSessionLeg CurrentFixLeg(RunAggregate run) =>
+        run.LastFixRoundHumanFindings.IsNotBlank() ? RunSessionLeg.HumanResolvedFix : RunSessionLeg.Fix;
 
     /// <summary>
     /// Dispatches a fix session over the cycle's merged findings — or, after a needs-fixes
