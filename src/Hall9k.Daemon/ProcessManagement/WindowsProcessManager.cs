@@ -53,14 +53,24 @@ public sealed class WindowsProcessManager : ProcessManagerBase
     /// <summary>
     /// Queries WMI's <c>Win32_Process</c> through PowerShell's own CIM cmdlets — no bundled .NET
     /// API exposes a process's children, and <c>wmic</c> is no longer guaranteed present, so this
-    /// shells out the same way <see cref="UnixProcessManager"/> shells out to <c>pgrep</c>. Any
+    /// shells out the same way <see cref="UnixProcessManager"/> shells out to <c>pgrep</c>. One
+    /// query fetches every process's own pid/parent-pid pair rather than one query per tree node
+    /// (independent pre-PR review, cycle 1, conformance lens): the breadth-first walk this
+    /// still does is over the map already read into memory, not over fresh PowerShell start-ups —
+    /// a several-hundred-millisecond cost <see cref="ProcessManagerBase.TerminateTree"/> otherwise
+    /// paid once per process in the tree, twice over on its root-still-alive branch, on the thread
+    /// that just parsed a session's terminal result and is about to start the next gate. Any
     /// failure is swallowed and reads as "no children found" — best-effort naming only, never the
     /// kill decision itself (<see cref="ProcessManagerBase.CollectDescendants"/>'s own doc).
     /// </summary>
-    protected override IReadOnlyList<int> CollectDescendants(int processId) =>
-        CollectDescendantsBreadthFirst(processId, ChildrenOf);
+    protected override IReadOnlyList<int> CollectDescendants(int processId)
+    {
+        ILookup<int, int> childrenByParentId = QueryAllProcessParentPairs()
+            .ToLookup(pair => pair.ParentProcessId, pair => pair.ProcessId);
+        return CollectDescendantsBreadthFirst(processId, parentId => childrenByParentId[parentId]);
+    }
 
-    private static IEnumerable<int> ChildrenOf(int parentProcessId)
+    private static IEnumerable<(int ProcessId, int ParentProcessId)> QueryAllProcessParentPairs()
     {
         try
         {
@@ -78,13 +88,25 @@ public sealed class WindowsProcessManager : ProcessManagerBase
             query.StartInfo.ArgumentList.Add("-NonInteractive");
             query.StartInfo.ArgumentList.Add("-Command");
             query.StartInfo.ArgumentList.Add(
-                $"(Get-CimInstance Win32_Process -Filter \"ParentProcessId={parentProcessId}\").ProcessId");
+                "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId)\" }");
             query.Start();
-            return ParsePids(ReadOutputWithBoundedWait(query, ChildProcessQueryTimeout));
+            return ParseProcessParentPairs(ReadOutputWithBoundedWait(query, ChildProcessQueryTimeout));
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
             return [];
+        }
+    }
+
+    private static IEnumerable<(int ProcessId, int ParentProcessId)> ParseProcessParentPairs(string output)
+    {
+        foreach (string line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] parts = line.Split(',');
+            if (parts.Length == 2 && int.TryParse(parts[0], out int processId) && int.TryParse(parts[1], out int parentProcessId))
+            {
+                yield return (processId, parentProcessId);
+            }
         }
     }
 }
