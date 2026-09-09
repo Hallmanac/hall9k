@@ -100,6 +100,7 @@ public sealed class FakeProcessManager : IProcessManager
     private IReadOnlyList<int> CollectDescendants(int rootProcessId)
     {
         List<int> descendants = [];
+        HashSet<int> enqueued = [rootProcessId];
         Queue<int> frontier = new();
         frontier.Enqueue(rootProcessId);
         while (frontier.Count > 0)
@@ -112,6 +113,11 @@ public sealed class FakeProcessManager : IProcessManager
 
             foreach (int child in children)
             {
+                if (!enqueued.Add(child))
+                {
+                    continue;
+                }
+
                 descendants.Add(child);
                 frontier.Enqueue(child);
             }
