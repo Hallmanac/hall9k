@@ -381,6 +381,12 @@ configures with `h9k project set --verify "name=command"`. For this repository t
 output recorded, fails the task with it, and releases the lease. Nothing automatic follows: the
 task is `Failed` and waiting on one of the three human exits.
 
+Every headless session runs these gates in the foreground and never with a background tool
+(`run_in_background`, `Monitor`, `ScheduleWakeup`) still pending when its turn ends — the session's
+process is killed the instant it finishes, so a backgrounded gate is left waiting on a
+notification that never arrives, and the daemon tears down a completed session's own process tree
+before the next gate or session touches the same worktree (PLAN.md §16 #163).
+
 Each gate is also validated once, at `h9k project set --verify` time, against a clean checkout of
 the project's own base branch — a gate that cannot pass there refuses the whole `project set`
 outright (`--accept-broken-gate` records it anyway, with a loud warning). A run that later fails a
