@@ -32,10 +32,15 @@ namespace Hall9k.Tests.Domain;
 /// than guessing a real number, and the mechanical pre-final-pass rebase step
 /// (<c>DecisionsLogRenumberer</c>) assigns the true number once the branch is current with main —
 /// no agent session, and no number two branches could ever race for, since a task's short id is
-/// unique by construction. This guard recognizes exactly one such placeholder at the log's own
-/// tail as correctly waiting for its number, not a defect; two placeholders, or one buried
-/// somewhere other than the tail, are exactly the sort of authoring mistake this guard exists to
-/// catch, so both still fail it.
+/// unique by construction. This guard recognizes one such placeholder — or a whole chain of them,
+/// each belonging to a different task in a stacked pull-request edge (a child's branch is cut from
+/// its parent's branch head before the parent has reached its own mandatory final pass, so the
+/// child inherits the parent's own still-unrenumbered placeholder alongside its own) — sitting
+/// contiguously at the log's own tail as correctly waiting for its number, not a defect. Any
+/// placeholder with a real entry after it, whether that real entry sits alone or between two
+/// placeholders, is exactly the sort of authoring mistake this guard exists to catch (independent
+/// pre-PR review, cycle 3, conformance lens — the original "at most one placeholder" rule failed a
+/// stacked child's own first build on this exact legitimate shape).
 /// </para>
 /// </summary>
 public sealed class DecisionsLogNumberingGuardTests
@@ -83,23 +88,25 @@ public sealed class DecisionsLogNumberingGuardTests
     }
 
     [Fact]
-    public void Two_placeholder_entries_fail_even_when_the_tasks_differ()
+    public void A_chain_of_placeholder_entries_at_the_log_s_tail_is_accepted()
     {
+        // A stacked child's branch is cut from its parent's branch head before the parent has
+        // reached its own mandatory final pass, so the child inherits the parent's own
+        // still-unrenumbered placeholder in addition to the one the child's own session appends
+        // at the tail — nothing else can land between the two on a single branch's own history,
+        // so the chain is always contiguous.
         string[] lines = FixtureSection(
             RealEntry(1, "First."),
-            PlaceholderEntry("6df5f975", "First in-flight branch."),
-            PlaceholderEntry("aaaaaaaa", "Second in-flight branch."));
+            PlaceholderEntry("6df5f975", "The parent's own in-flight branch."),
+            PlaceholderEntry("aaaaaaaa", "The stacked child's own in-flight branch."));
 
         DecisionsLogScan scan = Scan(lines);
+        AssertWellFormed(scan);
         scan.Placeholders.Should().HaveCount(2);
-
-        Action act = () => AssertWellFormed(scan);
-
-        act.Should().Throw<Exception>().WithMessage("*at most one placeholder*");
     }
 
     [Fact]
-    public void A_placeholder_entry_not_at_the_log_s_tail_fails()
+    public void A_placeholder_entry_with_a_real_entry_after_it_fails()
     {
         string[] lines = FixtureSection(
             RealEntry(1, "First."),
@@ -109,6 +116,26 @@ public sealed class DecisionsLogNumberingGuardTests
         DecisionsLogScan scan = Scan(lines);
         scan.Placeholders.Should().ContainSingle();
         scan.Placeholders[0].Line.Should().NotBe(scan.LastEntryLine);
+
+        Action act = () => AssertWellFormed(scan);
+
+        act.Should().Throw<Exception>().WithMessage("*log's own tail*");
+    }
+
+    [Fact]
+    public void A_real_entry_between_two_placeholder_entries_fails()
+    {
+        // Not a legitimate stacked chain: a real entry can never land between a parent's own
+        // placeholder and a child's, since nothing else touches PLAN.md on the child's own
+        // history between the two appends — a real entry there means the chain is broken, most
+        // likely a rebase gone wrong, not a stacked pull-request edge.
+        string[] lines = FixtureSection(
+            PlaceholderEntry("6df5f975", "First in-flight branch."),
+            RealEntry(1, "Landed between the two placeholders."),
+            PlaceholderEntry("aaaaaaaa", "Second in-flight branch."));
+
+        DecisionsLogScan scan = Scan(lines);
+        scan.Placeholders.Should().HaveCount(2);
 
         Action act = () => AssertWellFormed(scan);
 
@@ -156,19 +183,28 @@ public sealed class DecisionsLogNumberingGuardTests
             "until one is renumbered and every citation is updated by meaning. " +
             PlaceholderConventionExplanation);
 
-        scan.Placeholders.Should().HaveCountLessThanOrEqualTo(1,
-            "a branch carries at most one placeholder Decisions Log entry — derived from its own " +
-            "task's short id (PLACEHOLDER-<shortid>) — so the mechanical rebase step never has two " +
-            "candidates to choose between when it assigns the real next number");
+        // Not "at most one placeholder, and it must sit at the tail" — a stacked child's branch is
+        // cut from its parent's branch head before the parent has reached its own mandatory final
+        // pass, so the child's PLAN.md carries the parent's own still-unrenumbered placeholder in
+        // addition to the one the child's own session appends at the tail per AGENTS.md's Working
+        // agreement (independent pre-PR review, cycle 3, conformance lens — origin: a stacked
+        // child's own first `dotnet test` gate failed this assertion on a branch that had done
+        // nothing wrong). What actually matters is unchanged: every placeholder must still sit
+        // where the mechanical rebase step can reach it without colliding with a real entry, which
+        // for a CHAIN of placeholders (parent's, then child's, appended in fork order — nothing
+        // else can land between them on a single branch's own history) means the whole chain sits
+        // contiguously at the log's own tail, with no real entry after any of them. A placeholder
+        // with a real entry after it is still exactly the authoring mistake this guard exists to
+        // catch, whether that real entry sits alone or between two placeholders.
+        List<PlaceholderEntryLocation> buriedPlaceholders =
+            [.. scan.Placeholders.Where(placeholder => placeholder.Line < scan.LastRealEntryLine)];
 
-        if (scan.Placeholders.Count == 1)
-        {
-            scan.Placeholders[0].Line.Should().Be(scan.LastEntryLine,
-                "a placeholder entry must sit at the log's own tail — the mechanical rebase step " +
-                "assigns it the next free number by reading the tail, and a placeholder buried " +
-                "earlier in the log would be assigned a number that collides with whatever real " +
-                "entry actually follows it");
-        }
+        buriedPlaceholders.Should().BeEmpty(
+            "a placeholder entry — and every placeholder in a chain the same branch inherited from " +
+            "a parent it is stacked on — must sit at the log's own tail, with no real entry after " +
+            "it: the mechanical rebase step assigns the next free number by reading the tail, and a " +
+            "placeholder buried behind a real entry would be assigned a number that collides with " +
+            "whatever real entry actually follows it");
     }
 
     private readonly record struct PlaceholderEntryLocation(string Token, int Line);
@@ -179,7 +215,8 @@ public sealed class DecisionsLogNumberingGuardTests
         Dictionary<int, List<int>> LineNumbersByDecisionNumber,
         List<string> UnboldedEntryLookingLines,
         List<PlaceholderEntryLocation> Placeholders,
-        int LastEntryLine);
+        int LastEntryLine,
+        int LastRealEntryLine);
 
     private static DecisionsLogScan Scan(string[] lines)
     {
@@ -192,6 +229,7 @@ public sealed class DecisionsLogNumberingGuardTests
         List<string> unboldedEntryLookingLines = [];
         List<PlaceholderEntryLocation> placeholders = [];
         int lastEntryLine = -1;
+        int lastRealEntryLine = -1;
 
         if (sectionStart >= 0 && sectionEnd > sectionStart)
         {
@@ -225,11 +263,13 @@ public sealed class DecisionsLogNumberingGuardTests
 
                 entryLineNumbers.Add(i + 1);
                 lastEntryLine = i + 1;
+                lastRealEntryLine = i + 1;
             }
         }
 
         return new DecisionsLogScan(
-            sectionStart, sectionEnd, lineNumbersByDecisionNumber, unboldedEntryLookingLines, placeholders, lastEntryLine);
+            sectionStart, sectionEnd, lineNumbersByDecisionNumber, unboldedEntryLookingLines, placeholders,
+            lastEntryLine, lastRealEntryLine);
     }
 
     private static string[] FixtureSection(params string[] entries) =>
