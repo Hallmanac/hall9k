@@ -328,7 +328,11 @@ public sealed class RunDetails
     /// <see cref="Events.ReviewThreadsTriaged"/> — because <c>h9k task show</c>'s phase line labels
     /// this "last triage" and a running total across every follow-up this run has ever had would
     /// make that label false the moment a second triage lands. <see cref="ReviewThreadOutcomes"/>
-    /// is where the full history still lives.
+    /// is where the full history still lives. Also read by <c>CloseoutEngine</c>, which is not a
+    /// display concern: a later sweep excludes a thread from its dispatch decision when it is both
+    /// still unresolved and named here (among the human-authored subset) with a Decline or Route
+    /// disposition, so this field decides whether a follow-up is dispatched at all, not only what
+    /// a phase line prints (Decisions Log #159's dispatch-suppression clause).
     /// </summary>
     public List<ReviewThreadOutcome> LastReviewThreadOutcomes { get; set; } = [];
     /// <summary>
