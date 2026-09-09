@@ -319,6 +319,21 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "default; a task's explicit --close-linked-issue override still wins over a label. "
             + "Replaces the whole list. Pass an empty string to clear it")]
         public string? NeverCloseLabels { get; init; }
+
+        [CommandOption("--writing-conventions <TEXT>")]
+        [Description(
+            "How prose an agent composes for people has to read on this project, in your own words. "
+            + "It is pasted verbatim into every prompt that asks a session to write something posted to "
+            + "GitHub under your login: a pull request's title and body, the summary comment and thread "
+            + "replies a review-feedback lap writes, and the note a review lap drafts for h9k pr approve "
+            + "or h9k pr request-changes. The two rules the default text states that a machine can also "
+            + "check (no em dash, no AI attribution) are enforced again on the way out, immediately "
+            + "before the platform posts anything it composed, and only where your own text bans them: "
+            + "a house style that mentions em dashes to allow them leaves that rewrite off. The default is: "
+            + "no em dashes (U+2014), full sentences over telegraphic fragments, and no AI attribution "
+            + "such as \"Generated with Claude\" or a Co-Authored-By trailer. 'default' (or an empty "
+            + "value) restores it")]
+        public string? WritingConventions { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -520,7 +535,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             neverCloseLabels: settings.NeverCloseLabels is { } neverCloseLabels
                 ? Optional<IReadOnlyList<string>>.Of(
                     neverCloseLabels.IsBlank() ? [] : neverCloseLabels.Split(',', StringSplitOptions.TrimEntries))
-                : Optional<IReadOnlyList<string>>.None);
+                : Optional<IReadOnlyList<string>>.None,
+            // 'default' is mapped here beside the option that documents it, the --branch-template
+            // idiom: it is a perfectly legal house style on its own (a project could genuinely want
+            // its conventions to read "default"), so the word can only mean "restore the platform's"
+            // at the level that says so. Blank already parses to the default inside the decider,
+            // which is what makes a bare --writing-conventions "" restore it too.
+            writingConventions: settings.WritingConventions is { } conventions
+                ? Optional<WritingConventions>.Of(DefaultWord(conventions)
+                    ? WritingConventions.Default
+                    : WritingConventions.Parse(conventions))
+                : Optional<WritingConventions>.None);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 
@@ -823,6 +848,14 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     /// </summary>
     private static bool ClearingWord(string value) =>
         value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The <see cref="ClearingWord"/> sibling for a setting whose restore word is "default" rather
+    /// than "none" — the writing conventions, where "none" would read as "this project has no
+    /// conventions" and the truth is that it falls back to the platform's.
+    /// </summary>
+    private static bool DefaultWord(string value) =>
+        value.Trim().Equals("default", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Runs every gate about to be recorded once against a clean checkout of the project's own

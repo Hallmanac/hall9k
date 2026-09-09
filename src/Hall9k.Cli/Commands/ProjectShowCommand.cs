@@ -171,6 +171,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : string.Join(", ", project.NeverCloseLabels.Select(label => label.EscapeMarkup()))
               + " [dim]— an issue carrying any of these never closes at closeout time, regardless of "
               + "the close-linked-issue default; a task's own override still wins over the label[/]");
+        table.AddRow("Writing conventions", WritingConventionsRow(
+            project, history.WasRecorded(change => change.WritingConventions)));
         table.AddRow("Settings changed", project.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
@@ -185,6 +187,24 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// choice of the default.
     /// </summary>
     private static string OriginNote(bool recorded) => recorded ? "explicit" : "default — nothing recorded here";
+
+    /// <summary>
+    /// The house style every composition prompt pastes verbatim, printed whole rather than
+    /// summarized: it is the one setting whose exact wording is the setting, so a row that only
+    /// said "customized" would tell a reader nothing they could act on. Its origin is always
+    /// named, the always-printed rule auto pr-review and the claim gate already follow (Decisions
+    /// Log #161) — the platform's default text and the identical text typed by hand are different
+    /// facts, and only the second one survives a change to the default.
+    /// </summary>
+    internal static string WritingConventionsRow(ProjectDetails project, bool recorded)
+    {
+        string text = project.WritingConventions.Value.EscapeMarkup();
+        return recorded
+            ? $"{text} [dim]— explicit; restore the platform's: h9k project set "
+              + $"{project.Name.EscapeMarkup()} --writing-conventions default[/]"
+            : $"[dim]{text} ({OriginNote(recorded)}); state your own: h9k project set "
+              + $"{project.Name.EscapeMarkup()} --writing-conventions \"<how prose has to read>\"[/]";
+    }
 
     /// <summary>
     /// Whether dispatched agents run with <c>--dangerously-skip-permissions</c>, and whether that
