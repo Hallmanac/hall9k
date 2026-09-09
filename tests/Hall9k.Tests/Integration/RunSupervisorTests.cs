@@ -1323,7 +1323,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
     /// <summary>
     /// The triage marker contract is taught only to <c>BuildFollowUp</c>'s own prompt (Decisions
-    /// Log #156): a CI-fix follow-up's summary that happens to quote it — the skill file lives in
+    /// Log #159): a CI-fix follow-up's summary that happens to quote it — the skill file lives in
     /// the repo it is working in — must not be read as this run's own triage.
     /// </summary>
     [Fact]

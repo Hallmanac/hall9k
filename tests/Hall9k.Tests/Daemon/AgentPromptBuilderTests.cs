@@ -701,7 +701,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// <summary>
     /// Every review thread on a pull request gets a triage disposition before any fix work (task:
     /// every review thread on a pull request gets a triage disposition before any fix work,
-    /// PLAN.md Decisions Log #156). The gate, the three dispositions, the evidence bar for a
+    /// PLAN.md Decisions Log #159). The gate, the three dispositions, the evidence bar for a
     /// decline, and the marker contract the platform reads back are all taught in one place.
     /// </summary>
     [Fact]
@@ -725,7 +725,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The reply-and-resolve asymmetry a triage disposition earns (Decisions Log #156): a fix
+    /// The reply-and-resolve asymmetry a triage disposition earns (Decisions Log #159): a fix
     /// invites no argument, but a declined or routed thread only ever gets resolved by the agent
     /// when its author is a bot — a human's stays open for them to close.
     /// </summary>
