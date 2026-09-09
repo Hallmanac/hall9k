@@ -70,12 +70,26 @@ internal static class PullRequestReviewVerdict
                 + "task's own review park takes.");
         }
 
-        if (task.ReviewerVerdict != ReviewerVerdict.Unknown)
+        // A verdict already on record refuses a SECOND one only while no lap is open to carry it
+        // (task: a pr-review task stays open while the pull request's review threads are
+        // unresolved). Before this feature the verdict ended the task, so a recorded verdict and
+        // "no lap is running" were the same fact and one check served both. Now a scoped lap
+        // (h9k pr review --since-my-review) legitimately reopens the same task to answer the
+        // author, and its whole point is a second review on the same pull request — the flag this
+        // guard is really about is the lap, so that is what it reads. ReviewLapOpen is false on
+        // every pre-lap path this guard used to protect (an automated review's parked run, taken
+        // straight to h9k pr approve), and on those the verdict is Unknown anyway.
+        if (task.ReviewerVerdict != ReviewerVerdict.Unknown && !task.ReviewLapOpen)
         {
+            // Both routes out name the PULL REQUEST rather than this task id, because that is what
+            // h9k pr review's argument is: a task-id fragment there would be refused, or — when
+            // the fragment happens to be all digits — silently read as a pull-request number
+            // (self-review, round two).
             throw new DomainConflictException(
-                $"Task {taskId} already delivered a {task.ReviewerVerdict.Value} verdict — the lap it belonged "
-                + "to has ended. Review the pull request again with h9k pr review to open a fresh lap (a Done "
-                + "pr-review task does not hold its pull request hostage).");
+                $"Task {taskId} already delivered a {task.ReviewerVerdict.Value} verdict and no lap is open to "
+                + "carry another. Open a lap on the pull request first: h9k pr review <pull request> "
+                + "--since-my-review reads only what has changed since that verdict, and without the flag it "
+                + $"reads the pull request whole. h9k task show {taskId} names the pull request.");
         }
 
         Guid runId = task.CurrentRunId

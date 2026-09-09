@@ -25,6 +25,80 @@ public sealed record ReviewLapAuthorRun(
     IReadOnlyList<string> Rulings);
 
 /// <summary>
+/// One of the reviewer's own review threads, with only what arrived on it since their review
+/// (task: a pr-review task stays open while the pull request's review threads are unresolved).
+/// <para>
+/// <see cref="NewComments"/> is verbatim, because paraphrasing the author's answer is exactly the
+/// thing a scoped lap must not do: the reviewer is reading a reply, and a summary of a reply is a
+/// different artefact. An empty list on a thread that IS listed means the thread's own state
+/// changed without a comment — resolved, most often — which is news of its own.
+/// </para>
+/// </summary>
+/// <param name="Location">Where the thread sits, as a reviewer names one: <c>path:line</c>.</param>
+/// <param name="IsResolved">Whether it is resolved right now.</param>
+/// <param name="NewComments">Everything said in it after the reviewer's own last word, verbatim.</param>
+/// <param name="UnreadCommentCount">
+/// How many comments on this thread the provider's own per-thread page cap left unread, and so
+/// absent from <paramref name="NewComments"/> — always the newest ones, which on a scoped lap are
+/// the very comments it was opened to read. Zero for every thread inside the cap. Carried rather
+/// than dropped because a packet that showed the comments it happened to have and said nothing
+/// about the rest reads exactly like a complete one.
+/// </param>
+public sealed record ScopedReviewThreadDelta(
+    string Location, bool IsResolved, IReadOnlyList<string> NewComments, int UnreadCommentCount = 0);
+
+/// <summary>
+/// The whole packet a scoped lap reads (<c>h9k pr review --since-my-review</c>): the thread
+/// deltas since the reviewer's last review, and the commits pushed since it. Nothing else — no
+/// objective, no blast radius, no CI, no earlier findings report — because the reviewer has
+/// already read all of that once, and re-reading a docs pull request end to end for five reply
+/// threads is exactly the waste this flag exists to avoid (the origin gap, 2026-09-08: the reply
+/// analysis was run as a read-only side agent outside hall9k because <c>--from-pr</c> had no way
+/// to scope it).
+/// <para>
+/// Every "could not read" here is carried as a stated absence with the command that answers it,
+/// never as silence: a diff the range could not resolve (a force-push that dropped the reviewed
+/// commit) is a fact the reviewer needs, and a packet that simply omitted it would read as
+/// "nothing changed in the code".
+/// </para>
+/// </summary>
+/// <param name="ReviewerLogin">The login whose threads and review this packet is scoped to, read back from gh.</param>
+/// <param name="ReviewedHeadSha">The head the reviewer's own review was posted against, or null when none was recorded.</param>
+/// <param name="CurrentHeadSha">The head right now.</param>
+/// <param name="Threads">The reviewer's threads that moved. Empty when none did.</param>
+/// <param name="UnchangedThreadCount">How many of the reviewer's threads did not move, so the packet's scope is stated rather than implied.</param>
+/// <param name="NewCommits">One line per commit pushed since the review, oldest first. Empty when none were.</param>
+/// <param name="Diff">The diff of those commits, or null when the range could not be read.</param>
+/// <param name="DiffNote">Why the diff is absent or shortened, or null when it is neither.</param>
+/// <param name="ThreadPageTruncated">
+/// Whether the provider's own thread page was capped, which makes <paramref name="Threads"/> and
+/// <paramref name="UnchangedThreadCount"/> a floor rather than a count: threads of the reviewer's
+/// own may be missing from this packet entirely. Stated in the briefing for the same reason every
+/// other short read here is — silence would read as "these are all your threads" (independent
+/// pre-PR review, cycle 2).
+/// </param>
+/// <param name="ReReviewRequested">
+/// Whether a review request stands against <paramref name="ReviewerLogin"/> right now — the author
+/// has asked them back. Carried because it is the one thing that can summon a scoped lap with
+/// nothing in either half of the packet: an author who resolves the reviewer's threads themselves
+/// and re-requests the review, with no reply and no push, leaves a packet that shows nothing and a
+/// reviewer who was nonetheless asked to look again (independent pre-PR review, cycle 1,
+/// adversarial lens). Stated rather than inferred, for the same reason every other short read here
+/// is stated.
+/// </param>
+public sealed record ScopedReviewPacket(
+    string ReviewerLogin,
+    string? ReviewedHeadSha,
+    string? CurrentHeadSha,
+    IReadOnlyList<ScopedReviewThreadDelta> Threads,
+    int UnchangedThreadCount,
+    IReadOnlyList<string> NewCommits,
+    string? Diff,
+    string? DiffNote,
+    bool ThreadPageTruncated = false,
+    bool ReReviewRequested = false);
+
+/// <summary>
 /// Everything the opening briefing states, gathered by the caller so the composition itself is
 /// pure and testable. Every field is either an observed fact or an admitted absence — there is
 /// no field here the builder is allowed to fill in.
@@ -45,6 +119,11 @@ public sealed record ReviewLapAuthorRun(
 /// which is a legitimate way to run a lap and not a missing prerequisite.
 /// </param>
 /// <param name="AuthorRun">See <see cref="ReviewLapAuthorRun"/>; null when this node cannot read the author's run.</param>
+/// <param name="SinceMyReview">
+/// The scoped packet (<c>h9k pr review --since-my-review</c>), or null for an ordinary lap. When
+/// it is present the briefing is composed from it INSTEAD of the objective, blast-radius, checks,
+/// findings-report and author-run sections — see <see cref="ScopedReviewPacket"/> for why.
+/// </param>
 public sealed record ReviewLapBriefing(
     Guid TaskId,
     PullRequestSurface PullRequest,
@@ -55,7 +134,8 @@ public sealed record ReviewLapBriefing(
     IReadOnlyList<string> AcceptanceCriteria,
     string? AuthorTaskShortId,
     string? FindingsReport,
-    ReviewLapAuthorRun? AuthorRun);
+    ReviewLapAuthorRun? AuthorRun,
+    ScopedReviewPacket? SinceMyReview = null);
 
 /// <summary>
 /// The opening briefing a reviewer's own review lap starts with (<c>h9k pr review</c>, Decisions
@@ -97,11 +177,23 @@ public static class ReviewLapPromptBuilder
             + $"`{ShortSha(pullRequest.HeadSha)}`. It is not yours: nothing you do in this lap writes to it.");
         prompt.AppendLine();
 
-        AppendObjectiveSection(prompt, briefing);
-        AppendBlastRadiusSection(prompt, pullRequest);
-        AppendChecksSection(prompt, pullRequest);
-        AppendFindingsReportSection(prompt, briefing);
-        AppendAuthorRunSection(prompt, briefing.AuthorRun);
+        if (briefing.SinceMyReview is { } scoped)
+        {
+            // The five sections below are deliberately skipped whole, not trimmed: the reviewer
+            // has read the objective, the blast radius, the checks and the machines' findings once
+            // already, and re-stating them is what makes a second full pass out of a question
+            // about five replies. What replaces them is the packet and nothing else.
+            AppendSinceMyReviewSection(prompt, briefing, scoped);
+        }
+        else
+        {
+            AppendObjectiveSection(prompt, briefing);
+            AppendBlastRadiusSection(prompt, pullRequest);
+            AppendChecksSection(prompt, pullRequest);
+            AppendFindingsReportSection(prompt, briefing);
+            AppendAuthorRunSection(prompt, briefing.AuthorRun);
+        }
+
         AppendWorkingArrangementSection(prompt, briefing);
         AppendRulesSection(prompt, briefing);
         AppendClosingSection(prompt, briefing);
@@ -261,6 +353,183 @@ public static class ReviewLapPromptBuilder
 
         prompt.AppendLine();
     }
+
+    /// <summary>
+    /// The scoped lap's whole briefing body (<c>h9k pr review --since-my-review</c>): what moved
+    /// on the reviewer's own threads since their review, and what was pushed since it.
+    /// <para>
+    /// It states its own scope out loud — how many of the reviewer's threads it is NOT showing,
+    /// and that the objective, blast radius, checks and earlier findings are deliberately absent
+    /// — because a session handed a narrow packet with no note about its narrowness will read it
+    /// as the whole picture and reason as though nothing else exists. The same reason the ordinary
+    /// briefing says which of the objective's two sources it is showing.
+    /// </para>
+    /// <para>
+    /// The findings it asks for are shaped like the original report's, deliberately: the reviewer
+    /// walks a scoped lap's findings with the same skill and directs them with the same two
+    /// commands, so a different shape would be a second thing to learn for no gain.
+    /// </para>
+    /// </summary>
+    private static void AppendSinceMyReviewSection(
+        StringBuilder prompt, ReviewLapBriefing briefing, ScopedReviewPacket scoped)
+    {
+        prompt.AppendLine("## What has changed since your review");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            $"This is a **scoped lap**. The reviewer ({OneLine(scoped.ReviewerLogin)}) has already reviewed "
+            + "this pull request once, and this briefing is only what has arrived since: replies on the "
+            + "threads they opened, and the commits pushed after their review. The objective, the blast "
+            + "radius, the CI results and the platform's own earlier findings report are deliberately NOT "
+            + "here — they were read in the first lap and re-reading them is what this flag exists to avoid. "
+            + "Do not reason as though the packet below were the whole pull request; when something in it "
+            + "needs wider context, go and read that context in the checkout rather than assuming it away.");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            scoped.ReviewedHeadSha.IsNotBlank()
+                ? $"Their review was posted against `{ShortSha(scoped.ReviewedHeadSha)}`; the head is now "
+                  + $"`{ShortSha(scoped.CurrentHeadSha ?? string.Empty)}`."
+                : "The platform has no record of which commit their review was posted against, so the code "
+                  + "half of this packet is the commits it could observe rather than a range pinned to their "
+                  + "review. Say so if it matters to a finding.");
+        prompt.AppendLine();
+
+        // Stated up here rather than left to be inferred from an empty packet, because it is the
+        // one thing that can summon this lap with nothing at all in either half below: an author
+        // who resolves the reviewer's threads themselves and re-requests the review, with no reply
+        // and no push, is asking them to look again and the packet has nothing to show for it
+        // (independent pre-PR review, cycle 1, adversarial lens).
+        if (scoped.ReReviewRequested)
+        {
+            prompt.AppendLine(
+                "**The author has re-requested this review**, which is an explicit ask to look again "
+                + "whatever the packet below turns out to hold — a re-request with no reply and no push is "
+                + "still an ask.");
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("### Thread replies");
+        prompt.AppendLine();
+        if (scoped.ThreadPageTruncated)
+        {
+            // Said before the counts rather than after them, because a count read first is a count
+            // believed: this pull request carries more review threads than one provider page holds,
+            // so every number below is a floor and threads of the reviewer's own may be missing
+            // from this packet outright.
+            prompt.AppendLine(
+                "**This pull request carries more review threads than the provider's own page cap can "
+                + "return (100), so the thread half of this packet is incomplete.** Every count below is a "
+                + "floor, and threads the reviewer opened may be missing from it entirely — an absent thread "
+                + "here does NOT mean it went quiet. Read them on GitHub before treating any silence below "
+                + $"as an answer: `gh pr view {OneLine(briefing.PullRequest.Repository)}#"
+                + $"{briefing.PullRequest.Number.ToString(CultureInfo.InvariantCulture)} --comments`.");
+            prompt.AppendLine();
+        }
+
+        if (scoped.Threads.Count == 0)
+        {
+            prompt.AppendLine(
+                "None of the reviewer's own threads have moved since their review"
+                + (scoped.UnchangedThreadCount, scoped.ThreadPageTruncated) switch
+                {
+                    ( > 0, true) => $" — all {Count(scoped.UnchangedThreadCount)} of theirs that could be read are unchanged.",
+                    ( > 0, false) => $" (all {Count(scoped.UnchangedThreadCount)} of them are unchanged).",
+                    (_, true) => " — none of theirs were inside the page that could be read.",
+                    (_, false) => " — they opened none.",
+                }
+                // Never asserted as a fact when a re-request is what summoned the lap: the code
+                // half can be empty too, and telling a session to go and find the cause there
+                // would send it hunting something that does not exist.
+                + (scoped.ReReviewRequested
+                    ? " What prompted this lap may be nothing more than the re-request above; say so plainly"
+                      + " if the code half below is empty as well."
+                    : " Whatever prompted this lap is in the code half below."));
+            prompt.AppendLine();
+        }
+        else
+        {
+            prompt.AppendLine(
+                $"{Count(scoped.Threads.Count)} of the reviewer's threads moved"
+                + (scoped.UnchangedThreadCount > 0
+                    ? $"; {Count(scoped.UnchangedThreadCount)} more are unchanged and are not shown."
+                    : ".")
+                + " Every reply is verbatim.");
+            prompt.AppendLine();
+            foreach (ScopedReviewThreadDelta thread in scoped.Threads)
+            {
+                prompt.AppendLine(
+                    $"#### {OneLine(thread.Location)} — {(thread.IsResolved ? "resolved" : "still unresolved")}");
+                prompt.AppendLine();
+                if (thread.NewComments.Count == 0 && thread.UnreadCommentCount == 0)
+                {
+                    prompt.AppendLine("(No new comment; the thread's own state is what changed.)");
+                    prompt.AppendLine();
+                    continue;
+                }
+
+                foreach (string comment in thread.NewComments)
+                {
+                    prompt.AppendLine(Block(comment));
+                    prompt.AppendLine();
+                }
+
+                if (thread.UnreadCommentCount > 0)
+                {
+                    // The unread tail is the NEWEST comments — the page is read from the front so
+                    // the thread's opener, which is what makes it the reviewer's, is never the one
+                    // dropped. On a scoped lap that is the worst possible loss to leave silent: the
+                    // latest word in the thread is the thing the reviewer came back for.
+                    prompt.AppendLine(
+                        $"(**{thread.UnreadCommentCount.ToString(CultureInfo.InvariantCulture)} further "
+                        + $"comment(s) on this thread are past the provider's own page cap and are NOT shown "
+                        + "here** — and they are the most recent ones, so the last word in this thread is not "
+                        + "above. Read the thread on GitHub before drawing a conclusion from it.)");
+                    prompt.AppendLine();
+                }
+            }
+        }
+
+        prompt.AppendLine("### Commits pushed since your review");
+        prompt.AppendLine();
+        if (scoped.NewCommits.Count == 0)
+        {
+            prompt.AppendLine("None were observed.");
+        }
+        else
+        {
+            foreach (string commit in scoped.NewCommits)
+            {
+                prompt.AppendLine($"- {OneLine(commit)}");
+            }
+        }
+
+        prompt.AppendLine();
+        if (scoped.DiffNote.IsNotBlank())
+        {
+            prompt.AppendLine(scoped.DiffNote);
+            prompt.AppendLine();
+        }
+
+        if (scoped.Diff.IsNotBlank())
+        {
+            prompt.AppendLine(Block(scoped.Diff));
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("### What to produce");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "Read the packet above and report findings in the same shape the first lap's report used: one "
+            + "heading per finding, each naming the file and line it is about, what is wrong, and how "
+            + "confident you are. A reply that answers the original finding correctly is itself a finding "
+            + "worth stating — \"this one is addressed\" is what lets the reviewer resolve the thread. Nothing "
+            + "you write is posted anywhere; the reviewer directs each finding themselves, exactly as they "
+            + "did the first time.");
+        prompt.AppendLine();
+    }
+
+    /// <summary>"1 thread" / "3 threads", spelled once so every sentence in the scoped section agrees.</summary>
+    private static string Count(int count) =>
+        $"{count.ToString(CultureInfo.InvariantCulture)} {(count == 1 ? "thread" : "threads")}";
 
     private static void AppendFindingsReportSection(StringBuilder prompt, ReviewLapBriefing briefing)
     {
