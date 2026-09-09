@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Project.Queries;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -39,7 +40,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         AnsiConsole.Write(Registration(project, connection, owner));
         AnsiConsole.MarkupLine("\n[bold]Settings[/] [dim](change them with h9k project set "
             + $"{project.Name.EscapeMarkup()} …)[/]");
-        AnsiConsole.Write(SettingsPane(project, operatingSettings));
+        ProjectSettingsHistory history = await ProjectSettingsHistory.ReadAsync(session, project.Id, cancellationToken);
+        AnsiConsole.Write(SettingsPane(project, operatingSettings, history));
 
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
@@ -82,14 +84,42 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         return table;
     }
 
-    private static Table SettingsPane(ProjectDetails project, OperatingSettings operatingSettings)
+    /// <summary>
+    /// The settings pane. <paramref name="history"/> is this project's own recorded settings
+    /// changes, which is the only thing that can tell an explicitly chosen value apart from an
+    /// initialised default (Decisions Log #161, <see cref="ProjectSettingsHistory"/>): a row
+    /// whose effective value would read identically either way prints its origin too — auto
+    /// pr-review, the claim gate, skip permissions, the backlog policy and the close-linked-issue
+    /// rule — rather than omitting the row, printing a bare "off" that could mean either, or
+    /// calling a value "the default" when somebody may have typed it.
+    /// <para>
+    /// The rows that carry no origin are the ones where it would change nothing a reader does
+    /// next: a setting whose untouched state is the absence of configuration, with the node or
+    /// nothing at all deciding in its place and a lever printed either way (verify gates, context
+    /// links, never-close labels, the Jira board, the four review caps, the stage composition,
+    /// the run ceiling), and one that prints a value only <c>h9k project set</c> could have
+    /// recorded (commit style, re-request review, the orchestrator model, which names its own
+    /// resolution chain outright).
+    /// </para>
+    /// <para>
+    /// Two rows below still name a value "the default" without reading the stream for it — the
+    /// dispatch tier and the branch template, both of which have a <c>set</c> spelling that
+    /// records exactly their default value. Neither is this change's (independent pre-PR review,
+    /// cycle 1, conformance lens: named rather than fixed here, since they are pre-existing and
+    /// this branch's diff does not touch them), and both would take the same
+    /// <see cref="OriginNote"/> a row above uses.
+    /// </para>
+    /// </summary>
+    private static Table SettingsPane(
+        ProjectDetails project, OperatingSettings operatingSettings, ProjectSettingsHistory history)
     {
+        AutoPrReviewSetting autoPrReview = AutoPrReviewSetting.From(history);
+        bool claimGateRecorded = history.WasRecorded(change => change.ClaimGate);
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
         table.AddRow("Orchestrator model", OrchestratorModelRow(project, operatingSettings));
-        table.AddRow("Skip permissions", project.SkipPermissions
-            ? "[yellow]yes[/] [dim]— agents run with --dangerously-skip-permissions (log #9)[/]"
-            : "[dim]no — agents stop for every permission prompt, which a detached run cannot answer (log #9)[/]");
+        table.AddRow("Skip permissions", SkipPermissionsRow(
+            project, history.WasRecorded(change => change.SkipPermissions)));
         table.AddRow("Max parallel tasks", MaxParallelTasksRow(project));
         if (RetiredMaxParallelAgentsRow(project) is { } retired)
         {
@@ -115,7 +145,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"{project.JiraProjectKey.Value.EscapeMarkup()} [dim]— new cards are filed here; a reported "
               + "card key is checked against it[/]"
             : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --jira PROJ[/]");
-        table.AddRow("Backlog policy", BacklogPolicyRow(project));
+        table.AddRow("Backlog policy", BacklogPolicyRow(
+            project, history.WasRecorded(change => change.BacklogPolicy)));
         table.AddRow("Branch template", project.BranchNameTemplate == BranchNameTemplate.Default
             ? $"[dim]{BranchNameTemplate.Default.Value.EscapeMarkup()} — the platform default; state a "
               + $"convention: h9k project set {project.Name.EscapeMarkup()} --branch-template \"{{key}}-{{slug}}\"[/]"
@@ -130,23 +161,10 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Max final-full-pass rounds", ReviewCapRow(project, project.MaxFinalFullPassRounds, "max-final-full-pass-rounds"));
         table.AddRow("Lifetime review-cycle budget", ReviewCapRow(project, project.LifetimeReviewCycleBudget, "lifetime-review-cycle-budget"));
         table.AddRow("Review stage composition", ReviewStageCompositionRow(project));
-        table.AddRow("Auto pr-review", project.AutoPrReview == AutoPrReviewSpeed.Off
-            ? $"[dim]off — a GitHub reviewer assignment mints nothing; opt in: "
-              + $"h9k project set {project.Name.EscapeMarkup()} --auto-pr-review normal[/]"
-            : $"{project.AutoPrReview.Value.ToLowerInvariant().EscapeMarkup()} [dim]— a pull request GitHub "
-              + "assigns to this install's own login here mints, publishes, and starts a pr-review task "
-              + "automatically (idea e5e98a33)[/]");
-        table.AddRow("Claim gate", project.ClaimGate == ClaimGate.Off
-            ? $"[dim]off — assignment inside Hall9k is the only claim rule; make the tracker's own "
-              + $"assignment the go signal: h9k project set {project.Name.EscapeMarkup()} --claim-gate "
-              + "tracker-assignee[/]"
-            : "tracker-assignee [dim]— a task linked to a Jira card or a GitHub issue is claimed on this "
-              + "install only while the tracker shows that item assigned to this install's own tracker "
-              + "identity, so two teammates' installs cannot both run the same card (idea 64c75e43). "
-              + "Satisfy it in one command with h9k task assign <id> --take, which takes an item nobody "
-              + "holds; the gate itself is read-only, has no override flag, and a tracker that cannot be "
-              + "read holds the claim[/]");
-        table.AddRow("Close linked issue", CloseLinkedIssueRow(project));
+        table.AddRow("Auto pr-review", AutoPrReviewRow(project, autoPrReview));
+        table.AddRow("Claim gate", ClaimGateRow(project, claimGateRecorded));
+        table.AddRow("Close linked issue", CloseLinkedIssueRow(
+            project, history.WasRecorded(change => change.CloseLinkedIssue)));
         table.AddRow("Never-close labels", project.NeverCloseLabels.Count == 0
             ? $"[dim]none — an issue's own labels never force never; add one: h9k project set "
               + $"{project.Name.EscapeMarkup()} --never-close-labels epic,prd,adr[/]"
@@ -157,6 +175,79 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
         return table;
+    }
+
+    /// <summary>
+    /// The words every origin-carrying row in this pane says about where its effective value came
+    /// from (Decisions Log #161), in one place so two rows cannot describe the same fact
+    /// differently: a value this project recorded is "explicit", and one nobody ever chose names
+    /// the absence itself rather than only the word "default", which a reader could take for a
+    /// choice of the default.
+    /// </summary>
+    private static string OriginNote(bool recorded) => recorded ? "explicit" : "default — nothing recorded here";
+
+    /// <summary>
+    /// Whether dispatched agents run with <c>--dangerously-skip-permissions</c>, and whether that
+    /// is this project's own recorded choice — the same always-printed origin rule auto pr-review
+    /// and the claim gate follow (Decisions Log #161). "no" is both the platform's untouched
+    /// default and what <c>--skip-permissions false</c> records, and the two are different facts:
+    /// a project nobody has configured is one command away from running unattended, while one
+    /// that chose "no" has an operator's answer standing behind every prompt a detached run
+    /// cannot answer. "yes" says nothing about origin, because it cannot be anything but a
+    /// choice: nothing but <c>h9k project set</c> ever records it.
+    /// </summary>
+    internal static string SkipPermissionsRow(ProjectDetails project, bool recorded)
+    {
+        string name = project.Name.EscapeMarkup();
+        return project.SkipPermissions
+            ? "[yellow]yes[/] [dim]— agents run with --dangerously-skip-permissions (log #9)[/]"
+            : $"[dim]no ({OriginNote(recorded)}) — agents stop for every permission prompt, which a "
+              + $"detached run cannot answer (log #9). Let them run unattended: h9k project set {name} "
+              + "--skip-permissions true[/]";
+    }
+
+    /// <summary>
+    /// Auto pr-review's effective value and its origin, printed always (Decisions Log #161) —
+    /// the row this feature's three-day silence on both nodes was invisible behind. A project
+    /// with nothing recorded reads "normal (default)", not a bare "off" that a reader could take
+    /// for a choice somebody made; an explicit opt-out reads "off (explicit)" and names the
+    /// command that reverses it, since off is now the setting a human has to have typed.
+    /// </summary>
+    internal static string AutoPrReviewRow(ProjectDetails project, AutoPrReviewSetting setting)
+    {
+        string name = project.Name.EscapeMarkup();
+        string value = $"{setting.Speed.Value.ToLowerInvariant().EscapeMarkup()} "
+            + $"[dim]({OriginNote(setting.Recorded)})[/]";
+        return setting.IsOn
+            ? $"{value} [dim]— a pull request GitHub assigns to this install's own login here mints, "
+              + "publishes, and starts a pr-review task automatically (idea e5e98a33); a request GitHub "
+              + "recorded before this project's own cutoff never starts on its own (no backfill). Turn it "
+              + $"off:[/] h9k project set {name} --auto-pr-review off"
+            : $"{value} [dim]— a GitHub reviewer assignment mints nothing here; every request GitHub makes "
+              + "of this install's own login is still recorded and shown as a needs-you row in h9k status. "
+              + $"Turn it on:[/] h9k project set {name} --auto-pr-review normal";
+    }
+
+    /// <summary>
+    /// The claim gate's effective value and its origin, printed always — the same rule auto
+    /// pr-review's row above follows, and for the same reason (Decisions Log #161): "off" as the
+    /// platform's untouched default and "off" as a choice somebody made are different facts, and
+    /// a row that renders them identically is how a setting goes unnoticed. Its default does not
+    /// change here; only whether the row says which of the two it is.
+    /// </summary>
+    internal static string ClaimGateRow(ProjectDetails project, bool recorded)
+    {
+        string name = project.Name.EscapeMarkup();
+        return project.ClaimGate == ClaimGate.Off
+            ? $"[dim]off ({OriginNote(recorded)}) — assignment "
+              + "inside Hall9k is the only claim rule; make the tracker's own assignment the go signal: "
+              + $"h9k project set {name} --claim-gate tracker-assignee[/]"
+            : "tracker-assignee [dim]— a task linked to a Jira card or a GitHub issue is claimed on this "
+              + "install only while the tracker shows that item assigned to this install's own tracker "
+              + "identity, so two teammates' installs cannot both run the same card (idea 64c75e43). "
+              + "Satisfy it in one command with h9k task assign <id> --take, which takes an item nobody "
+              + "holds; the gate itself is read-only, has no override flag, and a tracker that cannot be "
+              + "read holds the claim[/]";
     }
 
     /// <summary>
@@ -181,9 +272,12 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// <summary>
     /// What the policy means today, said in the same words the option's own help does — a
     /// project bound to a policy nobody has looked at in months should not require re-reading
-    /// h9k project set --help to remember what publishing a task will do.
+    /// h9k project set --help to remember what publishing a task will do. <c>none</c> carries its
+    /// origin for the same reason auto pr-review's row does (Decisions Log #161): it is both the
+    /// untouched default and the explicit "publish nothing externally", and a reader deciding
+    /// whether to bind a board needs to know which of the two they are looking at.
     /// </summary>
-    private static string BacklogPolicyRow(ProjectDetails project)
+    internal static string BacklogPolicyRow(ProjectDetails project, bool recorded)
     {
         string routing = project.BacklogRoutingGuidance.IsNotBlank()
             ? $" [dim](routing: {project.BacklogRoutingGuidance.EscapeMarkup()})[/]"
@@ -201,8 +295,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
                 + $"push-to-jira does[/]{routing}";
         }
 
-        return $"[dim]none — publishing tracks nothing externally; set one: h9k project set "
-            + $"{project.Name.EscapeMarkup()} --backlog github-issues|jira[/]{routing}";
+        return $"[dim]none ({OriginNote(recorded)}) — publishing tracks nothing externally; set one: "
+            + $"h9k project set {project.Name.EscapeMarkup()} --backlog github-issues|jira[/]{routing}";
     }
 
     /// <summary>
@@ -255,8 +349,12 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// GitHub issue is closed at true closeout under a configurable rule), stating the one thing a
     /// reader would otherwise have to work out: the default waits for every linked task, not just
     /// this one, and an explicit override on any single one of them decides it at the last one.
+    /// <c>when-all-tasks-close</c> carries its origin rather than being labelled "the default"
+    /// flatly (Decisions Log #161): <c>--close-linked-issue default</c> records exactly that value
+    /// as a choice, and a row that calls a typed answer the default is guessing at provenance
+    /// (AGENTS.md). The other rules can only have been recorded, so they say nothing about origin.
     /// </summary>
-    internal static string CloseLinkedIssueRow(ProjectDetails project) => project.CloseLinkedIssue switch
+    internal static string CloseLinkedIssueRow(ProjectDetails project, bool recorded) => project.CloseLinkedIssue switch
     {
         { } rule when rule == CloseLinkedIssueRule.OnCloseout =>
             "on-closeout [dim]— every task's linked GitHub issue closes in the same step as its own "
@@ -267,7 +365,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             + "choice for an epic, a PRD, or an ADR). Close automatically on merge: h9k project set "
             + $"{project.Name.EscapeMarkup()} --close-linked-issue on-closeout[/]",
         { } rule when rule == CloseLinkedIssueRule.WhenAllTasksClose =>
-            "[dim]when-all-tasks-close — the default. The merge note is posted every time; the issue "
+            $"[dim]when-all-tasks-close ({OriginNote(recorded)}). The merge note is posted every time; the issue "
             + "closes only once every task linked to it has itself reached true closeout or been "
             + "abandoned, decided fresh at the last one across every linked task's own recorded rule[/]",
         var rule =>

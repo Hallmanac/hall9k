@@ -259,7 +259,11 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             "Whether a pull request GitHub assigns to this install's own login, in this project's repo, "
             + "automatically mints, publishes, and starts a pr-review task — the reviewer assignment on "
             + "GitHub becomes the go signal instead of a human running h9k task add --from-pr by hand "
-            + "(idea e5e98a33). Default 'off', the platform's original behavior, byte-for-byte. 'normal' "
+            + "(idea e5e98a33). Default 'normal' for every project, new and existing, since Decisions Log "
+            + "#161 — 'off' is now an explicit opt-out a human types, and it is honoured for as long as it "
+            + "stands. A review request GitHub recorded before this project's registration, or before this "
+            + "install first ran the on-by-default behaviour, never starts a task on its own whatever the "
+            + "speed says (no backfill); it appears as a needs-you row in h9k status instead. 'normal' "
             + "joins the ordinary dispatch queue like any other assigned task. 'first' also marks it "
             + "queue-first (Decisions Log #127), so it takes the next free dispatch slot regardless of "
             + "assignment age, ahead of everything unmarked. 'now' claims it immediately, ceiling-exempt, "
@@ -555,7 +559,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         // human at this CLI, starts work from here on — the #34 amendment's own second human act
         // (PLAN.md §16), so the consequence including its cost is said out loud at the moment
         // consent is given rather than discovered later on a busy queue or a surprising bill.
-        if (settings.AutoPrReview is not null && AutoPrReviewSpeed.Parse(settings.AutoPrReview) is { } speed && speed != AutoPrReviewSpeed.Off)
+        // Off says its own consequence too, since Decisions Log #161 flipped the default: it is no
+        // longer "leave it as it was" but a deliberate opt-out of behaviour that is otherwise on,
+        // and what it costs — every review GitHub requests here waits for a human — belongs at the
+        // moment that choice is made rather than discovered on a quiet board three days later,
+        // which is exactly the origin incident.
+        if (settings.AutoPrReview is not null && AutoPrReviewSpeed.Parse(settings.AutoPrReview) is { } speed)
         {
             AnsiConsole.MarkupLine(AutoPrReviewConsequence(speed));
         }
@@ -749,6 +758,14 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     /// </summary>
     private static string AutoPrReviewConsequence(AutoPrReviewSpeed speed) => speed switch
     {
+        var s when s == AutoPrReviewSpeed.Off =>
+            "[yellow]From now on, a pull request GitHub assigns to this install's own login in this "
+            + "project's repo mints nothing — this is an explicit opt-out of behaviour that is otherwise on "
+            + "for every project (Decisions Log #161), and it holds until you change it. Every request is "
+            + "still observed and recorded: h9k status shows each one as a needs-you row naming the pull "
+            + "request and how to end the wait — taking the review by hand, and turning this setting back "
+            + "on for the requests new enough to start on their own — so the state is visible rather than "
+            + "silent.[/]",
         var s when s == AutoPrReviewSpeed.Normal =>
             "[yellow]From now on, a pull request GitHub assigns to this install's own login in this "
             + "project's repo mints, publishes, and assigns a pr-review task automatically — no human runs "
