@@ -385,7 +385,7 @@ Every headless session runs these gates in the foreground and never with a backg
 (`run_in_background`, `Monitor`, `ScheduleWakeup`) still pending when its turn ends — the session's
 process is killed the instant it finishes, so a backgrounded gate is left waiting on a
 notification that never arrives, and the daemon tears down a completed session's own process tree
-before the next gate or session touches the same worktree (PLAN.md §16 #163).
+before the next gate or session touches the same worktree (PLAN.md §16 #PLACEHOLDER-9a6d594d).
 
 Each gate is also validated once, at `h9k project set --verify` time, against a clean checkout of
 the project's own base branch — a gate that cannot pass there refuses the whole `project set`
