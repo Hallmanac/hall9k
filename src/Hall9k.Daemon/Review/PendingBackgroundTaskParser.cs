@@ -108,19 +108,23 @@ public static class PendingBackgroundTaskParser
 
     /// <summary>
     /// True only when a negation is found in the same sub-clause (see
-    /// <see cref="SubClauseSeparatorPattern"/>) as either the "background" mention or a
-    /// still-in-flight word — i.e. in the same narrow span as whatever the negation would need to
-    /// be denying. A sub-clause that names neither is skipped outright: a negation word there is
-    /// denying something else in the sentence entirely and must not reach across the boundary to
-    /// suppress a genuine pending-task claim elsewhere in the same period-delimited clause.
+    /// <see cref="SubClauseSeparatorPattern"/>) as the "background" mention itself — i.e. in the
+    /// same narrow span as whatever the negation would need to be denying. A sub-clause that
+    /// doesn't name "background" is skipped outright, even when it happens to contain one of the
+    /// (deliberately common) <see cref="StillInFlightWords"/> — "complete", "finish", "wait", and
+    /// the rest read as ordinary English constantly, and a negation paired with one of them in an
+    /// unrelated earlier sub-clause ("I don't know how long this will take to complete, but the
+    /// background test is still running") must not reach across the boundary and suppress the
+    /// later sub-clause that actually names the pending background task (independent pre-PR
+    /// review, cycle 3, adversarial lens — this is the same reaching-across-the-boundary failure
+    /// cycle 2 fixed for standalone negation words, but triggered by a still-in-flight word instead
+    /// of "background" itself).
     /// </summary>
     private static bool HasNegationCue(string clause)
     {
         foreach (string segment in SubClauseSeparatorPattern.Split(clause))
         {
-            bool namesPendingTaskClaim =
-                segment.Contains("background", StringComparison.OrdinalIgnoreCase)
-                || StillInFlightWords.Any(word => segment.Contains(word, StringComparison.OrdinalIgnoreCase));
+            bool namesPendingTaskClaim = segment.Contains("background", StringComparison.OrdinalIgnoreCase);
 
             if (!namesPendingTaskClaim)
             {

@@ -72,4 +72,18 @@ public sealed class PendingBackgroundTaskParserTests
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(
             "There's no way to shorten the test run, so it's still running in the background while I wait for it to finish.")
             .Should().BeTrue();
+
+    /// <summary>
+    /// A negation paired with a still-in-flight word ("complete") in an earlier, unrelated
+    /// sub-clause must not suppress a later sub-clause that actually names the pending background
+    /// task — the earlier sub-clause never mentions "background" at all, so there is nothing there
+    /// for the negation to deny (independent pre-PR review, cycle 3, adversarial lens — the prior
+    /// fix scoped negation to a sub-clause naming "background" *or* a still-in-flight word, and the
+    /// "or" let a common word like "complete" stand in for "background" and short-circuit past it).
+    /// </summary>
+    [Fact]
+    public void A_negation_paired_with_an_unrelated_still_in_flight_word_does_not_suppress_a_later_genuine_pending_task() =>
+        PendingBackgroundTaskParser.NamesPendingBackgroundTask(
+            "I don't know how long this will take to complete, but the background test is still running.")
+            .Should().BeTrue();
 }
