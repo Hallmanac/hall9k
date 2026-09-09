@@ -142,6 +142,17 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "this task dispatches never writes to the pull request or the remote in any form")]
         public string? FromPr { get; init; }
 
+        [CommandOption("--again")]
+        [Description(
+            "With --from-pr on a pull request this node has already reviewed: mint a second pr-review task "
+            + "deliberately instead of naming the one that already holds it. Without this flag a pull "
+            + "request whose review is waiting on its author, has just been answered, or has closed out is "
+            + "NAMED rather than duplicated — its findings, its verdict and its whole record are on that "
+            + "task, and a second one starts from nothing. Pass this when you genuinely want a fresh review "
+            + "kept apart from the earlier one. Has no effect on any other adoption source, and never "
+            + "overrides the refusal an in-flight task earns")]
+        public bool Again { get; init; }
+
         [CommandOption("--model <MODEL>")]
         [Description(
             "Model this task's sessions run on, overriding every other level of the chain "
@@ -328,9 +339,23 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             ? await EpicIdResolver.ResolveForMembershipAsync(session, epic, projectDetails.Id, cancellationToken)
             : null;
 
-        ImportedWorkItem? imported = adoption is null
+        Adoption? adopted = adoption is null
             ? null
-            : await AdoptAsync(session, projectDetails, adoption, cancellationToken);
+            : await AdoptAsync(session, projectDetails, adoption, settings.Again, cancellationToken);
+        // A pull request this node already reviewed, or is still following a posted review through
+        // on: named rather than minted a second time (task: a pr-review task stays open while the
+        // pull request's review threads are unresolved). Returned rather than thrown, and exiting
+        // Ok rather than as a conflict, because nothing went wrong — the answer to "put this pull
+        // request on the board" is "it already is, here it is" — and because this runs BEFORE the
+        // objective and criteria prompts below, so a human is never asked to type an acceptance
+        // contract for a task that was not going to be created.
+        if (adopted?.ExistingPrReviewTask is { } holder)
+        {
+            PrintExistingPrReviewTask(holder, adopted.Imported.Reference);
+            return ExitCodes.Ok;
+        }
+
+        ImportedWorkItem? imported = adopted?.Imported;
         TaskRecord? record = imported is not null && adoption is not null
             ? TaskRecordAdoption.Read(adoption.Provider, imported)
             : null;
@@ -754,17 +779,127 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// second source cost a provider and a line, not a second import path.
     /// </para>
     /// </summary>
-    private static async Task<ImportedWorkItem> AdoptAsync(
-        IQuerySession session, ProjectDetails project, AdoptionSource source, CancellationToken cancellationToken)
+    /// <summary>
+    /// What the adoption came to: the item, and — only for a pull request this node has already
+    /// reviewed or is still following a posted review through on — the pr-review task that holds
+    /// it, which the caller names instead of minting a second one (task: a pr-review task stays
+    /// open while the pull request's review threads are unresolved).
+    /// </summary>
+    private sealed record Adoption(ImportedWorkItem Imported, TaskListItem? ExistingPrReviewTask);
+
+    private static async Task<Adoption> AdoptAsync(
+        IQuerySession session, ProjectDetails project, AdoptionSource source, bool again,
+        CancellationToken cancellationToken)
     {
         WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken);
         ImportedWorkItem imported = await importer.ImportAsync(
             new WorkItemImportRequest(source.Provider, source.Reference, project.RepositoryPath),
             cancellationToken);
 
-        await RefuseSecondAdoptionAsync(session, imported.Reference, cancellationToken);
-        return imported;
+        // --again skips the naming and goes to the guard, which exempts exactly the holder states
+        // the naming covers: a deliberate second review of a pull request whose first review is
+        // waiting on its author, or has just been answered, is the case the flag exists for, and
+        // it earned a refusal that did not even mention it (independent pre-PR review, cycle 1,
+        // adversarial lens). Every OTHER live holder — a review still running, a findings park
+        // nobody has walked, a Failed one — is still refused there, which is the flag's own stated
+        // limit.
+        TaskListItem? holder = again
+            ? null
+            : await FindPrReviewHolderAsync(session, imported.Reference, cancellationToken);
+        if (holder is null)
+        {
+            await RefuseSecondAdoptionAsync(session, imported.Reference, cancellationToken);
+        }
+
+        return new Adoption(imported, holder);
     }
+
+    /// <summary>
+    /// The pr-review task already holding this pull request in a state a repeat adoption should
+    /// name rather than duplicate: waiting on its author, needing the reviewer back because that
+    /// author has answered, or Done (task: a pr-review task stays open while the pull request's
+    /// review threads are unresolved).
+    /// <para>
+    /// Done is here for the reason it used to be EXCLUDED from
+    /// <see cref="RefuseSecondAdoptionAsync"/>'s own guard: a completed review does not hold its
+    /// pull request hostage, so a second review of it is legitimate — and the way it was made
+    /// legitimate was minting a second task, which quietly abandoned the first one's findings, its
+    /// verdict, and its whole record on the same pull request. Naming it keeps the escape hatch
+    /// (the second review is still available, through <c>--again</c> or <c>h9k pr review</c>) while
+    /// making the existing record the default answer, which is what the origin incident wanted:
+    /// nothing on the board watched arx-platform #2023 after its review posted, and the only lever
+    /// was a fresh adoption that knew nothing about the review it was repeating.
+    /// </para>
+    /// <para>
+    /// Only these three states, and only for a pr-review task. Every OTHER live holder — a running
+    /// review, a findings park nobody has walked, a Failed one — still goes to
+    /// <see cref="RefuseSecondAdoptionAsync"/> and is refused there, because those genuinely are
+    /// in-flight work whose duplication is the contradiction that guard exists for.
+    /// </para>
+    /// </summary>
+    internal static async Task<TaskListItem?> FindPrReviewHolderAsync(
+        IQuerySession session, ExternalReference reference, CancellationToken cancellationToken)
+    {
+        if (reference.Provider != WorkItemProvider.GitHubPullRequest)
+        {
+            return null;
+        }
+
+        string canonical = reference.ToString();
+        // The states are matched as SQL for the reason every state filter in this repo is: TaskState
+        // and TaskType are value objects and Marten refuses to translate a comparison against one.
+        // Newest first, unlike RefuseSecondAdoptionAsync's oldest-first: that guard wants the oldest
+        // live holder because ANY live holder blocks, while this one wants the most recent review of
+        // this pull request, which is the one a reviewer coming back means.
+        return await session.Query<TaskListItem>()
+            .Where(task => task.ExternalReference == canonical)
+            .Where(task => task.MatchesSql("d.data ->> 'type' = ?", TaskType.PrReview.Value))
+            .Where(task => task.MatchesSql(
+                "(d.data ->> 'state' in (?, ?) or (d.data ->> 'state' = ? and (d.data ->> 'prReviewFollowThroughOpen')::boolean))",
+                TaskState.AwaitingAuthor.Value, TaskState.Done.Value, TaskState.NeedsHuman.Value))
+            .OrderByDescending(task => task.AddedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Says which task already holds this pull request, what state it is in, and the command that
+    /// carries on from there — the three things a human who just typed <c>--from-pr</c> needs.
+    /// Each state gets its own next step because they are genuinely different: a waiting review
+    /// needs nothing yet, one that has been answered wants the scoped lap, and a completed one
+    /// wants a fresh lap or a deliberate second task.
+    /// </summary>
+    private static void PrintExistingPrReviewTask(TaskListItem holder, ExternalReference reference)
+    {
+        string shortId = TaskListCommand.ShortId(holder.Id);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[yellow]{reference}[/] [dim]is already this node's pr-review task[/] [bold]{shortId}[/] [dim]({ExternalText.OneLine(holder.Objective)}), which is {holder.State.Value}. No second task was created.[/]");
+        AnsiConsole.MarkupLineInterpolated($"[dim]{NextStepFor(holder, reference, shortId)}.[/]");
+    }
+
+    /// <summary>
+    /// What to do next, per state — a pure function so the wording is checkable without driving
+    /// the whole command, and so each state's own step stays distinct: a waiting review needs
+    /// nothing yet, one that has been answered wants the scoped lap, and a completed one wants
+    /// a fresh lap or a deliberate second task.
+    /// </summary>
+    internal static string NextStepFor(TaskListItem holder, ExternalReference reference, string shortId) =>
+        holder.State.Value switch
+        {
+            "AwaitingAuthor" => "Its review is posted and the closeout watcher is polling the pull request; it "
+                + $"flags needs-you the moment its author replies, pushes, or re-requests the review. "
+                + $"h9k task show {shortId}",
+            // "has been answered", never "its author answered": what the watch observed is a
+            // comment in one of the reviewer's threads that they did not write, and naming the
+            // author would be an attribution nothing read (AGENTS.md's never-guess rule — the
+            // same reason PrReviewAuthorActivity.Describe words its own line that way).
+            "NeedsHuman" => "Your review there has been answered: h9k pr review "
+                + $"{reference.Reference} --since-my-review reads only what changed since your review "
+                + $"(the argument is the pull request, not a task id). h9k task show {shortId} for the line "
+                + "that flagged it",
+            _ => $"That review closed out. h9k pr review {reference.Reference} opens a fresh lap on the same pull "
+                + $"request, or h9k task add --from-pr {reference.Reference} --again mints a second review task "
+                + "deliberately",
+        };
 
     /// <summary>
     /// One live task per item. Adoption is selective rather than mirroring (PLAN.md §3.1a), so a
@@ -792,23 +927,38 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// that works.
     /// </para>
     /// <para>
-    /// A pr-review task is the one exception, and only once it is Done. Its Done means the review
-    /// finished, not that the pull request's own work is done — new commits can land and warrant
-    /// another pass, and that second pass is exactly what <c>TaskDecider.Reopen</c> sends the
-    /// owner here for (its own pr-review guard refuses the reopen and names this command as the
-    /// route). A completed review does not hold its pull request hostage the way adopted work
-    /// holds its issue: unlike an issue, closing out the review is not a claim that the pull
-    /// request itself is finished, so a second review is not the two-closeouts contradiction this
-    /// check otherwise guards against. A live (non-Done) pr-review task still blocks a second
-    /// adoption, exactly like any other in-flight task.
+    /// A pr-review task is the one exception, in the three states
+    /// <see cref="FindPrReviewHolderAsync"/> names: Done, waiting on its author, or needing the
+    /// reviewer back because the pull request answered. Done means the review finished, not that
+    /// the pull request's own work is done — new commits can land and warrant another pass, and
+    /// that second pass is exactly what <c>TaskDecider.Reopen</c> sends the owner here for (its
+    /// own pr-review guard refuses the reopen and names this command as the route). A review being
+    /// followed through is the same case still in progress: it holds no lease, runs nothing, and a
+    /// second review of the same pull request contradicts nothing about it. None of these is the
+    /// two-closeouts contradiction this check guards against, the way one adopted issue with two
+    /// tasks is. Every other live pr-review task — a review actually running, a findings park
+    /// nobody has walked, a Failed one — still blocks, exactly like any other in-flight task.
     /// </para>
     /// <para>
-    /// The Done-pr-review exclusion is applied inside the query rather than to whichever holder
-    /// happens to sort first: with the exception in place, more than one non-abandoned task can
-    /// now legitimately carry the same reference (a Done pr-review alongside a later live one),
-    /// so "oldest by AddedAt" no longer means "the holder that matters." Filtering the excluded
-    /// holders out server-side and taking the oldest survivor keeps the guard's promise — any
-    /// live holder blocks — regardless of how many completed pr-reviews sort ahead of it.
+    /// The exemption is only ever REACHED by a deliberate repeat. An ordinary
+    /// <c>--from-pr</c> asks <see cref="FindPrReviewHolderAsync"/> first and names the holder
+    /// rather than getting this far, so what the exemption serves is <c>--again</c>, whose whole
+    /// purpose is a second task on a pull request one of those three holders already carries —
+    /// and which, guarded without it, threw a conflict that did not so much as mention the flag
+    /// (independent pre-PR review, cycle 1, adversarial lens). <c>AutoPrReviewEngine</c>'s own
+    /// mirror of this query deliberately does NOT carry the two follow-through states: it exempts
+    /// Done alone, so a re-review request on a pull request whose review is still being followed
+    /// through leaves that watch to hold it (its own <c>PrReviewReReviewRequested</c> already
+    /// keeps the task open) rather than having a daemon mint the second task only a human's
+    /// <c>--again</c> is allowed to ask for.
+    /// </para>
+    /// <para>
+    /// The exclusion is applied inside the query rather than to whichever holder happens to sort
+    /// first: with the exception in place, more than one non-abandoned task can now legitimately
+    /// carry the same reference (a Done pr-review alongside a later live one), so "oldest by
+    /// AddedAt" no longer means "the holder that matters." Filtering the excluded holders out
+    /// server-side and taking the oldest survivor keeps the guard's promise — any live holder
+    /// blocks — regardless of how many exempt pr-reviews sort ahead of it.
     /// </para>
     /// </summary>
     internal static async Task RefuseSecondAdoptionAsync(
@@ -818,12 +968,22 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // The state and type are matched as SQL rather than compared in LINQ, which is how every
         // state filter in this repo is written (DispatchEngine, TaskDependencyResolver): TaskState
         // and TaskType are value objects, and Marten refuses to translate a comparison against one.
+        // The exempt-state list is the same one FindPrReviewHolderAsync selects on, written the
+        // same way, so the states this guard lets past and the states that command names can never
+        // drift apart into a pull request that is neither nameable nor adoptable.
         TaskListItem? existing = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference == canonical)
             .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
             .Where(task => task.MatchesSql(
-                "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
-                TaskType.PrReview.Value, TaskState.Done.Value))
+                // coalesced, unlike the positive test in FindPrReviewHolderAsync: this one sits
+                // under a NOT, and a document written before the flag existed reads NULL there —
+                // which would make the whole predicate NULL and quietly exempt an ordinary
+                // findings park from the guard it has always had.
+                "NOT (d.data ->> 'type' = ? AND (d.data ->> 'state' in (?, ?) "
+                + "or (d.data ->> 'state' = ? "
+                + "and coalesce((d.data ->> 'prReviewFollowThroughOpen')::boolean, false))))",
+                TaskType.PrReview.Value, TaskState.Done.Value, TaskState.AwaitingAuthor.Value,
+                TaskState.NeedsHuman.Value))
             .OrderBy(task => task.AddedAt)
             .FirstOrDefaultAsync(cancellationToken);
         if (existing is null)
