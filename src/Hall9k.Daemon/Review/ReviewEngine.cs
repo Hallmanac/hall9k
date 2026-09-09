@@ -4505,6 +4505,12 @@ public sealed class ReviewEngine(
         string summary = result.Summary ?? string.Empty;
         await File.WriteAllTextAsync(RunPaths.ReviewFixPositionFile(runDirectory, cycle), summary, cancellationToken);
 
+        // A fix session refreshes the pull request's own summary opportunistically: its prompt
+        // asks for a fresh PR SUMMARY: block only when the fixes changed what a reviewer of the
+        // whole pull request needs to know. A result carrying none leaves the build session's own
+        // summary standing, which is why this overwrites only when a block is actually there.
+        await PrSummaryArtifact.CaptureAsync(logger, runId, runDirectory, summary, cancellationToken);
+
         ReviewFixOutcome outcome = ReviewResultParser.ParseFixOutcome(summary);
         if (outcome == ReviewFixOutcome.Disputed && cycle == 0)
         {

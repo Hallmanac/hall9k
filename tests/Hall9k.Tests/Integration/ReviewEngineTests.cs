@@ -5927,6 +5927,55 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 "one did on no evidence");
     }
 
+    /// <summary>
+    /// Decisions Log #PLACEHOLDER-f481c576: a fix session refreshes the pull request's own summary
+    /// when its fixes changed what a reviewer of the whole change needs to know, and the daemon
+    /// takes that block off the same result it already reads the resolution line from.
+    /// </summary>
+    [Fact]
+    public async Task A_fix_result_carrying_a_pr_summary_block_refreshes_the_run_directorys_copy()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "1. `Api.cs:7` — envelope type differs from spec. Scenario: clients break.\n\nVERDICT: needs-fixes",
+            "No defects of my own.\n\nVERDICT: merge-ready",
+            "Fixed it.\n\nPR SUMMARY:\nTitle: A refreshed title\n\nThe envelope now matches the spec.\n\nRESOLUTION: disputed");
+        await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        string artifact = RunPaths.PrSummaryFile(RunPaths.GlobalDirectory(runId));
+        File.ReadAllText(artifact).Should().Contain("Title: A refreshed title")
+            .And.Contain("The envelope now matches the spec.")
+            .And.NotContain("RESOLUTION:", "the resolution line belongs to its own parser, not to the pull request");
+    }
+
+    /// <summary>
+    /// The other half of the same rule: silence leaves the build session's own summary standing.
+    /// Overwriting with nothing would throw away the one description of the change a reviewer has,
+    /// on the strength of a fix session having had nothing to add.
+    /// </summary>
+    [Fact]
+    public async Task A_fix_result_with_no_block_leaves_the_build_sessions_summary_alone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        string artifact = RunPaths.PrSummaryFile(RunPaths.GlobalDirectory(runId));
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(runId));
+        File.WriteAllText(artifact, "Title: What the build session wrote\n\nIts own body.");
+
+        ScriptedExecutor executor = new(
+            "1. `Api.cs:7` — envelope type differs from spec. Scenario: clients break.\n\nVERDICT: needs-fixes",
+            "No defects of my own.\n\nVERDICT: merge-ready",
+            "That envelope change is the task's stated design.\n\nRESOLUTION: disputed");
+        await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        File.ReadAllText(artifact).Should().Be("Title: What the build session wrote\n\nIts own body.");
+    }
+
     [Fact]
     public async Task A_disputed_finding_parks_with_both_positions_recorded()
     {
