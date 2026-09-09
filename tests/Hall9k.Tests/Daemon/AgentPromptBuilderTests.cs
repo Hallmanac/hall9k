@@ -2826,7 +2826,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             + "the prompt correctly states using 'when' a few lines below. The phrase wraps across a line "
             + "break at \"the finding\", so both halves are asserted together the same way the foreground "
             + "test-run sub-rule's 'do not / background them' wrap is (see "
-            + "Self_check_phase_runs_the_touched_tests_in_the_foreground_with_a_near_maximum_timeout) — a "
+            + "Self_check_phase_runs_the_touched_tests_in_the_foreground_with_the_real_ceiling) — a "
             + "single-line NotContain here would never match the rendered text regardless of which word the "
             + "prompt actually uses, so it would guard nothing.");
     }
@@ -2851,12 +2851,16 @@ public sealed class AgentPromptBuilderTests : IDisposable
 
     /// <summary>
     /// The touched tests run in the foreground before the session concludes, and the instruction
-    /// teaches the near-maximum timeout that makes a foreground run survivable (2026-09-01
-    /// transcript mining across 399 fix sessions: the command tool's 2-minute default killed
-    /// obedient foreground runs of the 8-minute suite).
+    /// teaches the actual foreground ceiling (<c>BASH_MAX_TIMEOUT_MS</c>) computed from the live
+    /// command timeout, not a fixed number that can drift out of step with it — cycle 3's own
+    /// finding was that the sub-rule previously restated a fixed 590-600 second figure that was
+    /// already stale by the time <c>ClaudeSettingsFile</c> began sizing the real cap from
+    /// <c>Hall9k.Daemon.DaemonOptions.VerifyGateTimeout</c> (2026-09-01 transcript mining across 399 fix
+    /// sessions is the origin of running the suite in the foreground at all: the command tool's
+    /// 2-minute default killed obedient foreground runs of the 8-minute suite).
     /// </summary>
     [Fact]
-    public void Self_check_phase_runs_the_touched_tests_in_the_foreground_with_a_near_maximum_timeout()
+    public void Self_check_phase_runs_the_touched_tests_in_the_foreground_with_the_real_ceiling()
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
@@ -2870,7 +2874,15 @@ public sealed class AgentPromptBuilderTests : IDisposable
             "the foreground-test sub-rule's own do-not-background clause, not one of the prompt's other "
             + "unrelated 'do not' instructions — the phrase wraps across a line break, so the two halves "
             + "must be asserted together to mean anything");
-        prompt.Should().Contain("590-600 seconds");
+        prompt.Should().Contain(
+            "`BASH_MAX_TIMEOUT_MS`, 60 minutes today",
+            "with no explicit commandTimeout, BuildReviewFix falls back to ClaudeSettingsFile.DefaultCommandTimeout "
+            + "(30 minutes), so the real foreground ceiling this sub-rule renders is double that — the same "
+            + "value the prompt's own opening rule already stated, not a separately hardcoded figure");
+        prompt.Should().NotContain(
+            "590-600 seconds",
+            "the sub-rule must read the live ceiling rather than restate the fixed figure that went stale "
+            + "once ClaudeSettingsFile began overriding the stock 10-minute BASH_MAX_TIMEOUT_MS");
         prompt.Should().Contain(
             "`dotnet test`",
             "the sub-rule must name the project's own verification gates, the same as the sibling "

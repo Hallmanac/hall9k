@@ -1372,7 +1372,7 @@ public static class WorkPromptBuilder
         // explicit `timeout` is the dangerous direction: the command is clamped short and dies
         // mid-suite, the precise failure mode this whole rule exists to prevent.
         int defaultCeilingMinutes = (int)Math.Ceiling(commandTimeout.TotalMinutes);
-        int foregroundCeilingMinutes = (int)Math.Floor(commandTimeout.TotalMinutes * 2);
+        int foregroundCeilingMinutes = ForegroundCeilingMinutes(commandTimeout);
         if (sessionRunsGates)
         {
             prompt.AppendLine("  Run this project's own build and test gates in the foreground and wait for them to");
@@ -1402,6 +1402,23 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  case anything you do run needs it.");
         }
     }
+
+    /// <summary>
+    /// The actual foreground ceiling (<c>BASH_MAX_TIMEOUT_MS</c>, in minutes) a session launched
+    /// with <paramref name="commandTimeout"/> as its <c>BASH_DEFAULT_TIMEOUT_MS</c> gets, per
+    /// <see cref="ClaudeSettingsFile.Build"/>'s exact doubling of the millisecond value. Rounds
+    /// DOWN rather than doubling an already-rounded-up default, for the reason
+    /// <see cref="AppendForegroundGatesRule"/>'s own inline comment records: doubling a ceiling'd
+    /// default overstates the one number a session actually requests as an explicit `timeout`,
+    /// which is the dangerous direction — the command is clamped short and dies mid-suite.
+    /// Public so every rendered rule naming this ceiling — the rule itself, and the review-fix
+    /// self-check phase's own foreground-test instruction — reads the same computed value rather
+    /// than a second number that can drift out of step with it (independent pre-PR review, cycle
+    /// 3, conformance lens: the self-check phase previously stated a separate, stale 590-600
+    /// second figure instead of the ceiling this method already computes).
+    /// </summary>
+    public static int ForegroundCeilingMinutes(TimeSpan commandTimeout) =>
+        (int)Math.Floor(commandTimeout.TotalMinutes * 2);
 
     /// <summary>
     /// The interactive counterpart of <see cref="AppendSessionEndsAtFinalMessageRule"/>: an

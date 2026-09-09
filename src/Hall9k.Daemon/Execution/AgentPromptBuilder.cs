@@ -3436,6 +3436,7 @@ public static class AgentPromptBuilder
             + "of it:");
         AppendReviewFixSelfCheckPhaseRules(
             prompt, project, effectiveBaseBranch,
+            commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout,
             WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit));
 
         // Last, not immediately after AppendExternalInteractionLoggingRule (independent pre-PR
@@ -3578,10 +3579,24 @@ public static class AgentPromptBuilder
     /// <see cref="ReviewFindingDispositions.FixHereInItsOwnCommit"/> finding is fixed in that same
     /// separate commit (cycle 3), falling through to named-not-fixed only when neither applies.
     /// </para>
+    /// <para>
+    /// The foreground-test sub-rule's own timeout figure no longer restates the fixed 590-600
+    /// second number the 2026-09-01 transcript mining paragraph above describes: that number was
+    /// near-maximum only against the stock 10-minute <c>BASH_MAX_TIMEOUT_MS</c> in effect at the
+    /// time (PLAN.md §16 #113), and <c>ClaudeSettingsFile</c> began overriding that stock cap on
+    /// 2026-09-02, sizing it instead from the live <see cref="DaemonOptions.VerifyGateTimeout"/> —
+    /// 60 minutes today. A fix session that took the stale figure literally had its `dotnet test`
+    /// killed well inside this project's own 8-to-12-minute suite, the exact failure this whole
+    /// rule exists to prevent (independent pre-PR review, cycle 3, conformance lens). The sub-rule
+    /// now reads <see cref="WorkPromptBuilder.ForegroundCeilingMinutes"/> off the same
+    /// <paramref name="commandTimeout"/> the prompt's own opening rule
+    /// (<see cref="AppendSessionEndsAtFinalMessageRule"/>) already rendered, so the two statements
+    /// of the ceiling in one prompt can never disagree.
+    /// </para>
     /// </summary>
     private static void AppendReviewFixSelfCheckPhaseRules(
         StringBuilder prompt, ProjectDetails project, string effectiveBaseBranch,
-        string? stackedForkPointCommit = null)
+        TimeSpan commandTimeout, string? stackedForkPointCommit = null)
     {
         // The line the sweep draws its own-changes boundary at. A stacked child names its recorded
         // fork point as a literal commit for the same reason every other stacked instruction does:
@@ -3683,11 +3698,12 @@ public static class AgentPromptBuilder
                 prompt.AppendLine($"     - `{gate.Command}`");
             }
 
-            prompt.AppendLine("     Request an explicit near-maximum timeout on the command,");
-            prompt.AppendLine("     590-600 seconds: a foreground run left on a tool's short default timeout does");
-            prompt.AppendLine("     not fail loudly, it dies mid-suite, and a session that notices tends to");
-            prompt.AppendLine("     background the run instead and then end the session still waiting on a result");
-            prompt.AppendLine("     nothing will ever deliver.");
+            int foregroundCeilingMinutes = WorkPromptBuilder.ForegroundCeilingMinutes(commandTimeout);
+            prompt.AppendLine("     Request an explicit timeout up to the foreground ceiling stated above");
+            prompt.AppendLine($"     (`BASH_MAX_TIMEOUT_MS`, {foregroundCeilingMinutes} minutes today): a foreground run left");
+            prompt.AppendLine("     on a tool's short default timeout does not fail loudly, it dies mid-suite, and a");
+            prompt.AppendLine("     session that notices tends to background the run instead and then end the");
+            prompt.AppendLine("     session still waiting on a result nothing will ever deliver.");
         }
         prompt.AppendLine("- **The session is not done while `git status` shows anything modified, staged,");
         prompt.AppendLine("  or untracked.** Commit everything before your final message, including whatever");
