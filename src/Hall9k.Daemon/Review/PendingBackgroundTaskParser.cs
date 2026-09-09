@@ -93,18 +93,79 @@ public static class PendingBackgroundTaskParser
                 continue;
             }
 
-            if (HasNegationCue(clause))
+            string[] backgroundSubClauses = BackgroundSubClauses(clause);
+
+            if (backgroundSubClauses.Length == 0)
             {
                 continue;
             }
 
-            if (StillInFlightWords.Any(word => clause.Contains(word, StringComparison.OrdinalIgnoreCase)))
+            if (HasNegationCue(backgroundSubClauses))
+            {
+                continue;
+            }
+
+            if (backgroundSubClauses.Any(
+                segment => StillInFlightWords.Any(word => segment.Contains(word, StringComparison.OrdinalIgnoreCase))))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The sub-clause that first names "background" (see <see cref="SubClauseSeparatorPattern"/>),
+    /// plus every immediately-following sub-clause that keeps talking about the same background
+    /// task — by pronoun or by re-naming "background" directly — stopping at the first sub-clause
+    /// that moves on to something else. Shared by <see cref="HasNegationCue"/> and
+    /// <see cref="NamesPendingBackgroundTask"/> so both scan the identical span: before this fix,
+    /// the still-in-flight word check ran over the whole raw clause instead of this same scoped
+    /// span, so a still-in-flight word anywhere later in the clause — including inside an unrelated
+    /// word sharing the same substring, like "completed" containing "complete" — could satisfy the
+    /// pending-task check even when it fell in a sub-clause that never actually named "background"
+    /// itself: "For background, the failing test was already red on main, and I re-ran the full
+    /// suite in the foreground, which completed green" has no still-in-flight word in the
+    /// "background"-naming sub-clause or any sub-clause continuing it, but the old whole-clause
+    /// scan matched "complete" inside "completed" regardless (independent pre-PR review, cycle 3,
+    /// conformance lens).
+    /// </summary>
+    private static string[] BackgroundSubClauses(string clause)
+    {
+        string[] segments = SubClauseSeparatorPattern.Split(clause);
+
+        int backgroundIndex = Array.FindIndex(
+            segments, segment => segment.Contains("background", StringComparison.OrdinalIgnoreCase));
+
+        if (backgroundIndex < 0)
+        {
+            return [];
+        }
+
+        List<string> span = [];
+        for (int i = backgroundIndex; i < segments.Length; i++)
+        {
+            string segment = segments[i];
+
+            if (i > backgroundIndex && string.IsNullOrWhiteSpace(segment))
+            {
+                // An artifact of two adjacent separator matches (e.g. ", but"), not a sub-clause
+                // of its own — skip it without treating it as an unrelated new subject.
+                continue;
+            }
+
+            if (i > backgroundIndex
+                && !BackReferringPronounPattern.IsMatch(segment)
+                && !ReNamesSameBackgroundTask(segment))
+            {
+                break;
+            }
+
+            span.Add(segment);
+        }
+
+        return [.. span];
     }
 
     /// <summary>
@@ -157,48 +218,16 @@ public static class PendingBackgroundTaskParser
     /// genuine still-running claim, since "chatter" is not the build the first sub-clause named
     /// (independent pre-PR review, cycle 7, adversarial lens — the cycle-6 fix's substring check
     /// matched any later sub-clause merely containing "background", not one actually continuing the
-    /// same referent).
+    /// same referent). The walk described above now lives in <see cref="BackgroundSubClauses"/>,
+    /// shared with <see cref="NamesPendingBackgroundTask"/>'s own still-in-flight word check so both
+    /// scan the identical scoped span rather than one of them falling back to the whole raw clause
+    /// (independent pre-PR review, cycle 3, conformance lens).
     /// </summary>
-    private static bool HasNegationCue(string clause)
-    {
-        string[] segments = SubClauseSeparatorPattern.Split(clause);
-
-        int backgroundIndex = Array.FindIndex(
-            segments, segment => segment.Contains("background", StringComparison.OrdinalIgnoreCase));
-
-        if (backgroundIndex < 0)
-        {
-            return false;
-        }
-
-        for (int i = backgroundIndex; i < segments.Length; i++)
-        {
-            string segment = segments[i];
-
-            if (i > backgroundIndex && string.IsNullOrWhiteSpace(segment))
-            {
-                // An artifact of two adjacent separator matches (e.g. ", but"), not a sub-clause
-                // of its own — skip it without treating it as an unrelated new subject.
-                continue;
-            }
-
-            if (i > backgroundIndex
-                && !BackReferringPronounPattern.IsMatch(segment)
-                && !ReNamesSameBackgroundTask(segment))
-            {
-                break;
-            }
-
-            if (NegationWordPattern.IsMatch(segment)
-                || segment.Contains("n't", StringComparison.OrdinalIgnoreCase)
-                || NegationPhraseCues.Any(cue => segment.Contains(cue, StringComparison.OrdinalIgnoreCase)))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    private static bool HasNegationCue(string[] backgroundSubClauses) =>
+        backgroundSubClauses.Any(segment =>
+            NegationWordPattern.IsMatch(segment)
+            || segment.Contains("n't", StringComparison.OrdinalIgnoreCase)
+            || NegationPhraseCues.Any(cue => segment.Contains(cue, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>
     /// True when a sub-clause that re-names "background" is still talking about the same pending
