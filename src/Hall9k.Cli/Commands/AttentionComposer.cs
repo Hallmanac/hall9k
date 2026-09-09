@@ -1,4 +1,5 @@
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -462,16 +463,30 @@ internal static class AttentionComposer
         // this composer, and returns before ever reaching it while any thread is still open —
         // including one this run's own follow-up already declined or routed and is deliberately
         // leaving open for the human to close (Decisions Log #159). RunDetails.UnresolvedReviewThreads
-        // is that gate's last observed count; it is not cleared by the gate's own "nothing left for a
-        // follow-up to act on" skip, so a run can otherwise sit here claiming the merge is the
-        // daemon's to make while that same gate is in fact still refusing it (independent pre-PR
-        // review, cycle 3, both lenses). Same "last observation" staleness every other clause in this
-        // method already carries: it clears on the next sweep that finds the thread(s) actually gone.
-        if (run.UnresolvedReviewThreads > 0)
+        // is the wrong field to read that off: it is only ever written by ReviewFeedbackReceived,
+        // which lands on the run that DISCOVERED the threads and immediately moves that run to
+        // ReviewPending then Superseded in the same sweep (RunDetails.Apply(ReviewFeedbackReceived),
+        // CloseoutEngine's dispatch right after appending it) — so the run actually sitting here in
+        // AwaitingReview is always a *different* run (the dispatched follow-up), whose own count is
+        // never anything but its own default. The gate's "nothing left for a follow-up to act on"
+        // skip therefore never sets it either, leaving the clause permanently dead in the one
+        // scenario it exists for; on the run that DID once receive a count, the same field only ever
+        // grows, so a stale non-zero value can equally survive a park-resolve-and-push round trip
+        // that fixed everything (independent pre-PR review, cycle 4, both lenses). LastReviewThreadOutcomes
+        // does not have either failure: Apply(ReviewThreadsTriaged) fully replaces it, on this exact
+        // run's own stream, every time a triage actually runs — which by construction is always
+        // before this run can ever reach AwaitingReview carrying a thread left open on purpose,
+        // since only Decline/Route ever leaves one open (Decisions Log #159; Fix either lands or the
+        // thread stays counted as outstanding and keeps buying follow-ups instead of idling here).
+        IReadOnlyList<ReviewThreadOutcome> openThreads = [.. run.LastReviewThreadOutcomes
+            .Where(outcome => outcome.Disposition == ReviewThreadDisposition.Decline
+                || outcome.Disposition == ReviewThreadDisposition.Route)];
+        if (openThreads.Count > 0)
         {
-            waitingOn.Add(run.UnresolvedHumanReviewThreads is { } human
-                ? $"{run.UnresolvedReviewThreads} unresolved review thread(s) ({human} from a human) to close"
-                : $"{run.UnresolvedReviewThreads} unresolved review thread(s) to close");
+            int human = openThreads.Count(outcome => outcome.IsHuman == true);
+            waitingOn.Add(human > 0
+                ? $"{openThreads.Count} unresolved review thread(s) ({human} from a human) to close"
+                : $"{openThreads.Count} unresolved review thread(s) to close");
         }
 
         // Named rather than reported as an anonymous "human approval" wherever the last observation
