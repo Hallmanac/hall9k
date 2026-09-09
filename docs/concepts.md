@@ -616,7 +616,7 @@ CI is still reporting — an incomplete picture would hand a follow-up a partial
 the pending-checks read short-circuits ahead of the failing-checks branch — even though it still
 records what it saw of Copilot's review state on the run stream that same sweep; which is why the
 quiet phase line names how long a check has been pending rather than claiming a clean pull
-request. **Review feedback is not held behind that read** (Decisions Log #PLACEHOLDER-5657f3fa,
+request. **Review feedback is not held behind that read** (Decisions Log #164,
 Brian's ruling: a broken CI may be what the review found, so the fix lap must be allowed to run):
 unresolved threads or a changes-requested review dispatch their lap whatever the checks are doing,
 and a failing check seen on the same sweep rides in that one lap's prompt rather than buying a

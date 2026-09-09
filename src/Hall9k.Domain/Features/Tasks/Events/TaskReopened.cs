@@ -76,7 +76,7 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// follow-up was dispatched for, or null when it was complete at dispatch (and on events recorded
 /// before this field existed — unknown, never a claimed "the checks were done"). A lap is now
 /// dispatched for review feedback whatever the checks are doing (Decisions Log
-/// #PLACEHOLDER-5657f3fa), so a queued or claimed follow-up is routinely the right answer for a
+/// #164), so a queued or claimed follow-up is routinely the right answer for a
 /// pull request whose check is still pending; this is what lets the phase line for that row say how
 /// long it has been pending instead of leaving the reader to guess. The reopen carries it because
 /// nothing else on the queued row can: <c>Apply(TaskReopened)</c> clears

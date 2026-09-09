@@ -40,7 +40,7 @@ internal static class TaskPhaseComposer
     /// <param name="now">
     /// The one clock this composition reads, passed in rather than sampled here so every surface
     /// on a row measures the same instant. Only the pending-check clause needs it (Decisions Log
-    /// #PLACEHOLDER-5657f3fa): a check's wait is a length, and a length needs a now.
+    /// #164): a check's wait is a length, and a length needs a now.
     /// </param>
     public static TaskPhase Compose(
         TaskListItem task,
@@ -554,7 +554,7 @@ internal static class TaskPhaseComposer
             SessionLiveness.NotApplicable, $"the review is stale; {CopilotThreadsDetail(run, now)}"),
         // No external review activity does not automatically mean a human's merge is the only
         // thing left: a pending check holds the merge on its own (the merge bar is unchanged by
-        // Decisions Log #PLACEHOLDER-5657f3fa), so a run whose CI picture was still incomplete as
+        // Decisions Log #164), so a run whose CI picture was still incomplete as
         // of this observation would read identically to one that is genuinely idle if this ignored
         // RunDetails.ExternalReviewChecksPending the way the Landed arm above does not (independent
         // pre-PR review, cycle 7). What it says about that wait is its length, not that it might
@@ -587,7 +587,7 @@ internal static class TaskPhaseComposer
     /// <see cref="RunDetails.ExternalReviewChecksPending"/> ahead of its own unresolved-thread
     /// read, so a landed review's threads genuinely had not been re-checked and the detail said
     /// "not yet confirmed resolved". Review feedback is now detected whatever the checks are doing
-    /// (Decisions Log #PLACEHOLDER-5657f3fa), so a row resting here with a pending check has in
+    /// (Decisions Log #164), so a row resting here with a pending check has in
     /// fact had its threads read — repeating that hedge would report a gap that no longer exists,
     /// and offering the pendingness alone would name it as the reason nothing is happening, which
     /// is the exact misreading that ruling was written against. What is left to say about the check

@@ -431,7 +431,7 @@ gate, because a pending check holds the merge on its own and the monitor does no
 checks while CI is still reporting — it still records what it saw of Copilot's review state that
 same sweep, but an absence of findings beyond that recorded observation is not itself an
 observation of a clean pull request. What it says about that check is its *age* rather than its
-possibility (Decisions Log #PLACEHOLDER-5657f3fa): "a check has been pending 9h" is a fact a
+possibility (Decisions Log #164): "a check has been pending 9h" is a fact a
 reader can act on, where "its checks may still be reporting" once stood in for nine hours of
 nothing happening. A record with no anchor for the wait says the length is unknown rather than
 measuring from now. A

@@ -234,7 +234,7 @@ public sealed class TaskListItem
     /// existed: unknown, never a claimed "the checks were done". The Delivered phase line reads it
     /// so a queued or claimed follow-up on a pull request whose check is still pending names the
     /// wait's age rather than leaving the pendingness to read as the reason nothing is happening
-    /// (Decisions Log #PLACEHOLDER-5657f3fa).
+    /// (Decisions Log #164).
     /// </summary>
     public DateTimeOffset? FollowUpChecksPendingSince { get; set; }
 }

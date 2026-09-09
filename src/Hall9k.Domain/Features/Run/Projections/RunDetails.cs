@@ -127,7 +127,7 @@ public sealed class RunDetails
     /// <para>
     /// True no longer implies the review-feedback reads were skipped either, which it did when this
     /// field's first readers were written: the pending-checks short-circuit used to sit ahead of
-    /// them, and since Decisions Log #PLACEHOLDER-5657f3fa it yields to them. A run resting in
+    /// them, and since Decisions Log #164 it yields to them. A run resting in
     /// AwaitingReview with this true has had its unresolved threads read; what is still unread is
     /// the CI result, and <see cref="ExternalReviewChecksPendingSince"/> is how long that has been
     /// the case.
@@ -138,7 +138,7 @@ public sealed class RunDetails
     /// When the provider's CI picture was FIRST observed still incomplete on the current run, and
     /// null the moment an observation reads it complete — how long a check has been pending, which
     /// is what the Delivered surfaces say instead of offering the pendingness itself as the reason
-    /// nothing is happening (Decisions Log #PLACEHOLDER-5657f3fa; origin: arx-platform PR #2042's
+    /// nothing is happening (Decisions Log #164; origin: arx-platform PR #2042's
     /// .NET Framework check sat pending for nine hours after its hosted agent died, and the phase
     /// line all night said only that its checks may still be reporting). Set on the transition INTO
     /// pending and never refreshed by a later sweep that merely confirms the same still-pending
