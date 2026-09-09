@@ -231,7 +231,7 @@ public sealed class ReviewResultParserTests
 
     /// <summary>
     /// A session that quotes the triage contract's own worked example before answering — the
-    /// same observed habit <see cref="ExampleLocationPlaceholder"/> already guards against for a
+    /// same observed habit <see cref="ReviewResultParser.ExampleLocationPlaceholder"/> already guards against for a
     /// finding's location — must not have that echoed placeholder recorded as a real thread id
     /// (cycle-1 pre-PR review, adversarial finding).
     /// </summary>
