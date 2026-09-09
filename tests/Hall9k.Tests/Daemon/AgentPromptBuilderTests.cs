@@ -3678,6 +3678,126 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("No review findings were recorded with this follow-up");
     }
 
+    /// <summary>
+    /// Task: a headless build, fix, or recovery session never ends its turn while a gate it
+    /// started is still running in the background. One rule, stated once, has to reach every
+    /// headless leg's own rendered prompt — build, review fix, human-resolved fix, rebase
+    /// recovery, verify, and commit recovery — naming the harness's own background tools by name
+    /// (never proofread away into a paraphrase a session could argue does not apply to it) and the
+    /// foreground timeout it actually has. Review fix and human-resolved fix share one prompt
+    /// method (<c>BuildReviewFix</c> — <c>ReviewEngine.DispatchFixSessionAsync</c> hands it
+    /// <c>run.PendingHumanFindings</c> for the human-resolved case, ordinary review findings
+    /// otherwise), asserted here as two separate cases so a future split of that method cannot
+    /// silently drop the rule from one side without a test noticing.
+    /// </summary>
+    [Theory]
+    [InlineData("build")]
+    [InlineData("review fix")]
+    [InlineData("human-resolved fix")]
+    [InlineData("rebase recovery")]
+    [InlineData("verify")]
+    [InlineData("commit recovery")]
+    public void Every_headless_leg_states_the_foreground_gates_rule(string leg)
+    {
+        string prompt = leg switch
+        {
+            "build" => AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath),
+            "review fix" => AgentPromptBuilder.BuildReviewFix(
+                SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1),
+            "human-resolved fix" => AgentPromptBuilder.BuildReviewFix(
+                SomeTask(), SomeProject(), "task/1-slug",
+                "Human review verdict (h9k review resolve): needs fixes.\n\nFix the validation bug.", cycle: 1),
+            "rebase recovery" => AgentPromptBuilder.BuildPreFinalPassRebase(
+                SomeTask(), SomeProject(), "task/1-slug", CommitStyle.Append, pullRequestUrl: null),
+            "verify" => AgentPromptBuilder.BuildReviewVerify(
+                SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+                tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+                priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null),
+            "commit recovery" => AgentPromptBuilder.BuildUncommittedWorkRecovery(SomeTask(), ["src/Feature.cs"]),
+            _ => throw new ArgumentOutOfRangeException(nameof(leg)),
+        };
+
+        prompt.Should().Contain("run_in_background",
+            $"the {leg} leg's prompt must name the harness's own background tools, not just gates in general");
+        prompt.Should().Contain("Monitor");
+        prompt.Should().Contain("ScheduleWakeup");
+        prompt.Should().Contain("BASH_MAX_TIMEOUT_MS",
+            $"the {leg} leg's prompt must name the actual foreground ceiling so the session knows the full suite fits");
+    }
+
+    /// <summary>
+    /// The read-only verify leg and the commit-only recovery leg are told not to run this
+    /// project's gates at all elsewhere in the same prompt, so the shared foreground-gates rule
+    /// must not open with an imperative to run them — the exact contradiction an earlier wording
+    /// had (independent pre-PR review, cycle 1, both lenses): a verify session told to build and
+    /// test in a worktree a sibling pass is reading, and a commit-only recovery session told to
+    /// run a suite the surrounding text just said it is not asked to run.
+    /// </summary>
+    [Theory]
+    [InlineData("verify")]
+    [InlineData("commit recovery")]
+    public void The_read_only_and_commit_only_legs_never_tell_the_session_to_run_gates(string leg)
+    {
+        string prompt = leg switch
+        {
+            "verify" => AgentPromptBuilder.BuildReviewVerify(
+                SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+                tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+                priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null),
+            "commit recovery" => AgentPromptBuilder.BuildUncommittedWorkRecovery(SomeTask(), ["src/Feature.cs"]),
+            _ => throw new ArgumentOutOfRangeException(nameof(leg)),
+        };
+
+        prompt.Should().NotContain(
+            "Run this project's own build and test gates",
+            $"the {leg} leg must never be told to run gates it is elsewhere forbidden from running");
+    }
+
+    /// <summary>
+    /// Every other headless leg still opens the rule with the imperative to run gates — the
+    /// theory above only narrows it for the two legs that must never run one.
+    /// </summary>
+    [Fact]
+    public void The_build_leg_still_tells_the_session_to_run_gates() =>
+        AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath).Should()
+            .Contain("Run this project's own build and test gates");
+
+    /// <summary>
+    /// AC1: the prompt names the foreground timeout the session actually has, not a compile-time
+    /// constant — <c>ClaudeExecutor</c> sizes <c>BASH_MAX_TIMEOUT_MS</c> from the live
+    /// <c>DaemonOptions.VerifyGateTimeout</c> an operator can move away from its 30-minute
+    /// default, so the prompt has to read the same value rather than always claiming 60 minutes
+    /// (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void The_ceiling_stated_reflects_the_caller_supplied_command_timeout()
+    {
+        string prompt = AgentPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, commandTimeout: TimeSpan.FromMinutes(10));
+
+        prompt.Should().Contain("`BASH_MAX_TIMEOUT_MS`, 20 minutes today");
+        prompt.Should().NotContain("60 minutes today");
+    }
+
+    /// <summary>
+    /// A fractional-minute <c>VerifyGateTimeout</c> rounds up rather than truncating (independent
+    /// pre-PR review, cycle 4, adversarial lens): <c>ClaudeSettingsFile.Build</c> sizes
+    /// <c>BASH_DEFAULT_TIMEOUT_MS</c> straight from the millisecond value, so truncating minutes
+    /// here would state a lower ceiling than the session actually gets, and doubling that
+    /// truncated floor to state <c>BASH_MAX_TIMEOUT_MS</c> would compound the under-statement —
+    /// a session reading the understated number could believe a gate that genuinely fits does
+    /// not, and reach for the very background tools this rule exists to keep it away from.
+    /// </summary>
+    [Fact]
+    public void The_ceiling_stated_rounds_a_fractional_minute_timeout_up_rather_than_truncating()
+    {
+        string prompt = AgentPromptBuilder.Build(
+            SomeTask(), SomeProject(), "task/1-slug", _worktreePath, commandTimeout: TimeSpan.FromSeconds(9.5 * 60));
+
+        prompt.Should().Contain("`BASH_DEFAULT_TIMEOUT_MS`, 10 minutes");
+        prompt.Should().Contain("`BASH_MAX_TIMEOUT_MS`, 20 minutes today");
+    }
+
     private string BuildChangesRequestedPrompt()
     {
         TaskDetails task = SomeTask();
