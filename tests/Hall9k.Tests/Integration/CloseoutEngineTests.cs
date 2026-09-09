@@ -351,7 +351,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             "the provider's CI picture was incomplete as of this observation");
         afterPending.ExternalReviewChecksPendingSince.Should().NotBeNull(
             "the wait's own start is the anchor every Delivered surface measures its length from "
-            + "(Decisions Log #PLACEHOLDER-5657f3fa)");
+            + "(Decisions Log #164)");
         afterPending.State.Should().Be(RunState.AwaitingReview);
 
         // A second sweep that only confirms the same pending picture must not re-anchor it: a
@@ -3396,7 +3396,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// <para>
     /// The obstruction that repeats here is the thread set's own. It used to be a failing check's,
     /// with a newly opened human thread arriving on top of it — a shape review feedback now claims
-    /// for its own lap (Decisions Log #PLACEHOLDER-5657f3fa), which is a *different* obstruction and
+    /// for its own lap (Decisions Log #164), which is a *different* obstruction and
     /// so gets a fresh lap budget rather than needing this grant at all. What still needs the grant
     /// is the identical thread set repeating while the task's own record has never seen its human
     /// thread id: the same obstruction, the same spent cap, the same human-engagement signal.
@@ -3697,7 +3697,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// with no review feedback waiting behind it defers the checks read to the next sweep, because
     /// acting now would hand a follow-up a partial failure list — and the merge stays held, which is
     /// what a pre-approved task proves here. Unchanged by Decisions Log
-    /// #PLACEHOLDER-5657f3fa: that ruling only stops this gate short-circuiting REVIEW feedback,
+    /// #164: that ruling only stops this gate short-circuiting REVIEW feedback,
     /// and there is none on this pull request.
     /// </summary>
     [Fact]
@@ -3729,7 +3729,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     /// <summary>
     /// The ruling this branch implements (Brian, 2026-09-09 about 09:25 EDT; Decisions Log
-    /// #PLACEHOLDER-5657f3fa): a broken CI may be what the review found, so a lap that addresses
+    /// #164): a broken CI may be what the review found, so a lap that addresses
     /// review feedback is never held behind a pending check. Origin incident: arx-platform PR #2042
     /// (task 52634952, ARX-4861), whose .NET Framework build stage lost its hosted Azure DevOps
     /// agent at 00:10 and whose GitHub check never received a final status, so it read pending for

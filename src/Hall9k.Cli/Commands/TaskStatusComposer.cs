@@ -689,7 +689,7 @@ internal static class TaskStatusComposer
 
     /// <summary>
     /// How long a check has been pending, said as a length rather than as a possibility (Decisions
-    /// Log #PLACEHOLDER-5657f3fa; origin: arx-platform PR #2042's .NET Framework check lost its
+    /// Log #164; origin: arx-platform PR #2042's .NET Framework check lost its
     /// hosted Azure DevOps agent and never received a final status, so it read pending for nine
     /// hours while the only thing any surface said about it was that its checks may still be
     /// reporting). Lives here, beside <see cref="RelativeDuration"/>, because the phase line and

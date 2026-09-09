@@ -473,7 +473,7 @@ internal static class AttentionComposer
         // (CloseoutEngine's HasPendingChecks short-circuit returns before the review-decision and
         // outstanding-reviewer reads that feed this composer whenever no review feedback is waiting
         // behind it — and the merge bar is unchanged where feedback is, since that path dispatches
-        // a lap and returns ahead of the merge too, Decisions Log #PLACEHOLDER-5657f3fa), so an
+        // a lap and returns ahead of the merge too, Decisions Log #164), so an
         // incomplete CI picture must not let the "GitHub's own gates read satisfied" claim below
         // fire while checks are still reporting and the daemon is in fact refusing to merge
         // (independent pre-PR review, cycle 1, both lenses).
@@ -787,7 +787,7 @@ internal static class AttentionComposer
         // that hedge itself, or a reader who settles the review side would merge on an unread CI
         // result (the same defect the Landed and None arms below were each corrected for). What it
         // says about that check is how long it has been pending (Decisions Log
-        // #PLACEHOLDER-5657f3fa), because a check nobody will ever get a final status for is
+        // #164), because a check nobody will ever get a final status for is
         // indistinguishable from an ordinary in-flight build until somebody reads the wait's length.
         string checksCaveat = run.ExternalReviewChecksPending
             ? $"; {TaskStatusComposer.ChecksPendingClause(run.ExternalReviewChecksPendingSince, now)} too"
@@ -863,7 +863,7 @@ internal static class AttentionComposer
         // settled CI result, so a run still carrying that caveat gets the same "read its checks
         // first" hedge the None arm below already gives a quiet pull request — named as the wait's
         // own length, because a check nobody will get a final status for reads identically to an
-        // in-flight build otherwise (Decisions Log #PLACEHOLDER-5657f3fa). What this arm no longer
+        // in-flight build otherwise (Decisions Log #164). What this arm no longer
         // claims is that the threads went unread: the sweep short-circuited on a pending CI picture
         // ahead of its own unresolved-thread read when this wording was written, and it does not
         // any more, so repeating "not yet confirmed resolved" would report a gap that is closed.

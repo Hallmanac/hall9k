@@ -514,7 +514,7 @@ public sealed class AttentionSurfaceTests
         // Recorded while the CI picture was still incomplete: a pending check holds the merge on
         // its own, so the cause must not claim the merge is the only thing left (independent pre-PR
         // review, cycle 3) — and what it says about that check is how long it has been pending, not
-        // that it might be (Decisions Log #PLACEHOLDER-5657f3fa). It no longer claims the threads
+        // that it might be (Decisions Log #164). It no longer claims the threads
         // went unread either: review feedback is now detected whatever the checks are doing.
         RunDetails landedChecksPending = StatusFixtures.Run(
             runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
@@ -891,7 +891,7 @@ public sealed class AttentionSurfaceTests
     /// — so it has to carry the checks-pending hedge those arms carry, or a reader who settles the
     /// review side would merge against a CI result nobody has read (the same correction the Landed
     /// and None arms each already took), and it names the wait's length on the same terms they do
-    /// (Decisions Log #PLACEHOLDER-5657f3fa).
+    /// (Decisions Log #164).
     /// </summary>
     [Fact]
     public void A_named_review_wait_still_says_how_long_a_check_has_been_pending()
