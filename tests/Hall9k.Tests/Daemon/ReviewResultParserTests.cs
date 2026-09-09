@@ -246,6 +246,24 @@ public sealed class ReviewResultParserTests
     }
 
     /// <summary>
+    /// The `resolve-review-threads` skill's own worked example
+    /// (`.claude/skills/resolve-review-threads/SKILL.md`) spells the same placeholder
+    /// `&lt;node id&gt;` rather than <see cref="ReviewResultParser.ThreadIdPlaceholder"/>'s
+    /// `&lt;the thread's node id&gt;` — a session that echoes the skill's example instead of the
+    /// prompt's must be dropped exactly the same way (cycle-1 pre-PR review, both lenses, second
+    /// round).
+    /// </summary>
+    [Fact]
+    public void A_thread_disposition_block_echoing_the_skills_own_placeholder_spelling_is_dropped()
+    {
+        ReviewResultParser.ParseThreadDispositions(
+            $"{ReviewResultParser.ThreadDispositionMarker} thread=<node id>; "
+            + "disposition=fix|decline|route; kind=human|bot; author=<login>\n"
+            + "<why: the fix's brief restatement, the decline's evidence, or the route's scope reason>")
+            .Should().BeEmpty();
+    }
+
+    /// <summary>
     /// The recap prose the prompt asks a follow-up to write after its triage blocks — and, for a
     /// disputed thread, the "both positions" narrative above the RESOLUTION line — must not be
     /// absorbed into the last block's own reasoning, mis-attributing it as that thread's evidence
