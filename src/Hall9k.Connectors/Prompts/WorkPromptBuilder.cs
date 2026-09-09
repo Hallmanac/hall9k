@@ -1360,7 +1360,7 @@ public static class WorkPromptBuilder
     public static void AppendForegroundGatesRule(
         StringBuilder prompt, TimeSpan commandTimeout, bool sessionRunsGates = true)
     {
-        int defaultCeilingMinutes = (int)commandTimeout.TotalMinutes;
+        int defaultCeilingMinutes = (int)Math.Ceiling(commandTimeout.TotalMinutes);
         int foregroundCeilingMinutes = defaultCeilingMinutes * 2;
         if (sessionRunsGates)
         {
@@ -1373,7 +1373,7 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  that can never arrive, and the next thing to touch this worktree — another gate, or");
             prompt.AppendLine("  another session — starts while it is still writing to it. A command run with no");
             prompt.AppendLine($"  explicit `timeout` only gets `BASH_DEFAULT_TIMEOUT_MS`, {defaultCeilingMinutes} minutes");
-            prompt.AppendLine("  today — request an explicit `timeout` up to reach the actual foreground ceiling,");
+            prompt.AppendLine("  today — request an explicit `timeout` up to the actual foreground ceiling,");
             prompt.AppendLine($"  `BASH_MAX_TIMEOUT_MS`, {foregroundCeilingMinutes} minutes today, sized so this");
             prompt.AppendLine("  project's full verification suite fits inside one foreground run.");
         }
