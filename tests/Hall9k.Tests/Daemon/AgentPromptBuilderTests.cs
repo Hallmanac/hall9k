@@ -3780,22 +3780,26 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// A fractional-minute <c>VerifyGateTimeout</c> rounds up rather than truncating (independent
-    /// pre-PR review, cycle 4, adversarial lens): <c>ClaudeSettingsFile.Build</c> sizes
-    /// <c>BASH_DEFAULT_TIMEOUT_MS</c> straight from the millisecond value, so truncating minutes
-    /// here would state a lower ceiling than the session actually gets, and doubling that
-    /// truncated floor to state <c>BASH_MAX_TIMEOUT_MS</c> would compound the under-statement —
-    /// a session reading the understated number could believe a gate that genuinely fits does
-    /// not, and reach for the very background tools this rule exists to keep it away from.
+    /// A fractional-minute <c>VerifyGateTimeout</c>'s DEFAULT ceiling rounds up rather than
+    /// truncating (independent pre-PR review, cycle 4, adversarial lens): <c>ClaudeSettingsFile.Build</c>
+    /// sizes <c>BASH_DEFAULT_TIMEOUT_MS</c> straight from the millisecond value, so truncating
+    /// minutes here would state a lower ceiling than the session actually gets by default. The
+    /// MAX ceiling, by contrast, is computed from the real command timeout doubled, not from
+    /// doubling the already-rounded-up default, and rounds DOWN (independent pre-PR review, a
+    /// later cycle's adversarial lens): doubling the rounded default overstated
+    /// <c>BASH_MAX_TIMEOUT_MS</c> — 20 minutes stated for 9.5 minutes' actual 19 — and overstating
+    /// the one number a session actually requests as an explicit `timeout` is the dangerous
+    /// direction, clamping the command short and killing it mid-suite.
     /// </summary>
     [Fact]
-    public void The_ceiling_stated_rounds_a_fractional_minute_timeout_up_rather_than_truncating()
+    public void The_default_ceiling_rounds_a_fractional_minute_timeout_up_while_the_max_ceiling_never_overstates()
     {
         string prompt = AgentPromptBuilder.Build(
             SomeTask(), SomeProject(), "task/1-slug", _worktreePath, commandTimeout: TimeSpan.FromSeconds(9.5 * 60));
 
         prompt.Should().Contain("`BASH_DEFAULT_TIMEOUT_MS`, 10 minutes");
-        prompt.Should().Contain("`BASH_MAX_TIMEOUT_MS`, 20 minutes today");
+        prompt.Should().Contain("`BASH_MAX_TIMEOUT_MS`, 19 minutes today");
+        prompt.Should().NotContain("20 minutes today");
     }
 
     private string BuildChangesRequestedPrompt()

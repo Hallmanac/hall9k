@@ -1360,8 +1360,19 @@ public static class WorkPromptBuilder
     public static void AppendForegroundGatesRule(
         StringBuilder prompt, TimeSpan commandTimeout, bool sessionRunsGates = true)
     {
+        // defaultCeilingMinutes rounds UP (cycle 4, adversarial lens, this method's own prior
+        // finding): ClaudeSettingsFile.Build sizes BASH_DEFAULT_TIMEOUT_MS straight from the
+        // millisecond value, so truncating here would understate what a bare command actually
+        // gets. foregroundCeilingMinutes is computed independently from the real TimeSpan value —
+        // never by doubling the already-rounded-up default — and rounds DOWN (independent pre-PR
+        // review, this task's own ride-along finding): doubling a ceiling'd default overstated
+        // BASH_MAX_TIMEOUT_MS for any non-integral-minute commandTimeout (9.5 minutes stated a
+        // 20-minute cap while ClaudeSettingsFile.Build's own exact doubling of the millisecond
+        // value enforces 19), and overstating the one number a session actually requests as an
+        // explicit `timeout` is the dangerous direction: the command is clamped short and dies
+        // mid-suite, the precise failure mode this whole rule exists to prevent.
         int defaultCeilingMinutes = (int)Math.Ceiling(commandTimeout.TotalMinutes);
-        int foregroundCeilingMinutes = defaultCeilingMinutes * 2;
+        int foregroundCeilingMinutes = (int)Math.Floor(commandTimeout.TotalMinutes * 2);
         if (sessionRunsGates)
         {
             prompt.AppendLine("  Run this project's own build and test gates in the foreground and wait for them to");
