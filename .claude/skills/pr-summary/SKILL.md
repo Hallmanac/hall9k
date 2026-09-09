@@ -185,8 +185,14 @@ there's no task id to compose the note from and no existing footer to carry forw
 The shape end to end: title, work-item line, orientation, grouped bullets with inline whys, a
 reviewer section, and, as when replacing an already-open PR's body, a composed provenance note plus
 the footer carried forward from the PR being replaced. Also note the house style this skill and
-every other authored PR description follows: no em dashes (`~/.claude/CLAUDE.md`), commas or
-periods or parentheses instead.
+every other authored PR description follows: no em dashes, commas or periods or parentheses
+instead. That rule is a project setting now, not only a line in the operator's own
+`~/.claude/CLAUDE.md` (which `--setting-sources project` drops from a dispatched session):
+`h9k project show` prints this project's own writing conventions, `h9k project set <project>
+--writing-conventions` changes them, and every prompt that asks for a `PR SUMMARY:` block carries
+them verbatim. The platform re-checks the mechanical half immediately before it posts, so an em
+dash that slips through is rewritten rather than published, but a body that needed rewriting is a
+body that read as somebody else's.
 
 ```
 Title: Compose PR bodies a colleague would write, not a run transcript

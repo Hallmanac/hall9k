@@ -477,7 +477,8 @@ below), the branch-name template (`--branch-template`,
 [below](#branch-naming)), the auto-pr-review speed (`--auto-pr-review
 off|normal|first|now`, [above](#pull-request-review)), the claim gate (`--claim-gate
 off|tracker-assignee`, [above](#the-claim-gate)), the close-linked-issue rule (`--close-linked-issue
-on-closeout|never|when-all-tasks-close`, [below](#closing-a-linked-issue)), and the home's location live.
+on-closeout|never|when-all-tasks-close`, [below](#closing-a-linked-issue)), the writing conventions
+(`--writing-conventions`, [below](#writing-conventions)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
@@ -566,6 +567,47 @@ by last quarter's rules.
 The location is a setting (`--home`, or `h9k project set <name> --home <path>`); the shape inside
 it is the contract, which is what lets a dispatched agent be handed paths rather than sent
 hunting for them.
+
+### Writing conventions
+
+`h9k project set <project> --writing-conventions "<TEXT>"`
+
+How prose an agent composes for people has to read on this project. The text is pasted verbatim
+into every prompt that asks a session to write something a person reads under your login: a pull
+request's title and body, the summary comment and the thread replies a review-feedback lap writes,
+the note a review lap drafts for `h9k pr approve` or `h9k pr request-changes`, and an attended
+`h9k task work` session's own commit messages and drafts. `h9k project show` prints it, and
+`default` (or an empty value) restores the platform's own, which is: no em dashes (U+2014), full
+sentences over telegraphic fragments, and no AI attribution such as "Generated with Claude" or a
+Co-Authored-By trailer.
+
+Two of those rules a machine can also check, so the platform checks them again immediately before
+it posts anything it composed. An em dash is rewritten to a comma, a semicolon, or a colon by
+context, or simply removed where there is no clause on one side of it for a mark to join, unless it
+sits inside a code block or an inline code span, where it is data somebody is quoting rather than
+punctuation. A code block is a fence the text actually closes, marker length and all, so a longer
+fence quoting a shorter one comes through verbatim, or four-space-indented lines; a fence nobody
+closed is malformed markdown rather than a block, and the lines after it are still checked. An
+attribution alone on its own line is dropped. An attribution
+welded into a sentence somebody wrote has no mechanical fix, whether it sits mid-sentence or opens
+the line and then carries on in their own words, so that prose is not posted at all: the daemon
+drops it, logs the rule under event id 2005, and opens the pull request on what is left, while the
+CLI stops the command before anything reaches GitHub and tells you what to reword. A run never
+fails over a convention miss. Everything the check enforces is read off your own conventions text,
+and read as a prohibition rather than as a mention: a project that rewrites it and leaves the
+em-dash sentence out gets its prose posted exactly as its agent wrote it, and so does one whose
+text says em dashes are fine here.
+
+
+The check runs over composed prose only, never over the platform's own bookkeeping lines or over
+your task's objective and acceptance criteria. Those are this platform's voice and your own words
+respectively, and neither is text an agent wrote for you.
+
+Origin incident (2026-09-09): a review-feedback follow-up on `AgelessRx/arx-platform#2042` posted a
+summary comment under the owner's login with em dashes in most of its paragraphs. The rule existed
+in every orchestrator recipe on both nodes and in the operator's own user-level `CLAUDE.md`, and
+reached none of them, because `--setting-sources project` drops `CLAUDE.md` from a dispatched
+session and no composition prompt carried the rule itself.
 
 ### Branch naming
 
