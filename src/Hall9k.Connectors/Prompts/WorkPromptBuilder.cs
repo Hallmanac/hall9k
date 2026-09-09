@@ -1020,6 +1020,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     under src/ or tests/, and only warns on one elsewhere (a build byproduct can");
         prompt.AppendLine("     legitimately be one there), so this file forgotten by the recompose is the");
         prompt.AppendLine("     check that actually stops it before it ships.");
+        AppendPullRequestSummaryStep(prompt, project, asNumberedStep: true);
         prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
         prompt.AppendLine("  That gap is exactly what the reset is for: because the tree never moves,");
         prompt.AppendLine("  the commits composed in step 2 describe the identical tree that passed the");
@@ -1030,6 +1031,82 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  untracked.** Check it last, after the recompose above, and commit whatever");
         prompt.AppendLine("  it still shows before your final message. A clean tree is the contract, not");
         prompt.AppendLine("  a nice-to-have.");
+    }
+
+    /// <summary>
+    /// The step that makes the pull request the session's own work rather than the daemon's
+    /// (Decisions Log #PLACEHOLDER-f481c576). It runs last, after the tree-identity check, because
+    /// it composes from the commits the recompose just made: a summary written before that step
+    /// would describe checkpoints nobody will ever see.
+    /// <para>
+    /// It is safe to run there, after a check the whole protocol exists to protect, precisely
+    /// because it writes nothing: no file, no commit, no index change. The prompt says so
+    /// explicitly rather than leaving a session to wonder whether composing text has just
+    /// invalidated the identity it verified one step earlier.
+    /// </para>
+    /// <para>
+    /// Skill order is stated rather than left to discovery, and it is the repo's rule first
+    /// (Brian's addition to the design, 2026-09-09): a repository that ships its own
+    /// PR-description rule has a house voice, and the platform's own skill exists to be the
+    /// fallback for one that does not. arx-platform's
+    /// <c>.claude/commands/git/pr-description.md</c> is the known case, which is why the prompt
+    /// names that path outright instead of describing the shape and hoping.
+    /// </para>
+    /// <para>
+    /// Headless only, like every other rule inside <see cref="AppendCheckpointCommitRules"/>: the
+    /// parser this text promises reads a headless session's own stream-json result payload, which
+    /// an attended interactive session never produces. An operator's own pull request text arrives
+    /// through <c>h9k task deliver</c> instead.
+    /// </para>
+    /// </summary>
+    /// <param name="asNumberedStep">
+    /// True inside a numbered recompose protocol, where this is step 4. False on
+    /// <see cref="AppendDelegatedContractorCommitRules"/>'s unreadable-base-commit path, which has
+    /// no numbered steps to be the fourth of: the step still applies there (that session's final
+    /// message is captured exactly the same way), so it is worded as a rule of its own rather than
+    /// dropped for want of a number.
+    /// </param>
+    private static void AppendPullRequestSummaryStep(
+        StringBuilder prompt, ProjectDetails project, bool asNumberedStep)
+    {
+        string indent = asNumberedStep ? "     " : "  ";
+        prompt.AppendLine(asNumberedStep
+            ? "  4. Compose this pull request's title and description now, from the commits you just"
+            : "- **Compose this pull request's title and description before you finish**, from the commits you just");
+        prompt.AppendLine($"{indent}made. This step writes no file, makes no commit and changes nothing in the");
+        prompt.AppendLine(asNumberedStep
+            ? $"{indent}worktree, so it cannot disturb the tree identity step 3 just verified."
+            : $"{indent}worktree, so nothing about it touches the history you are leaving behind.");
+        prompt.AppendLine($"{indent}- **Whose voice.** Follow the target repository's own PR-description rule when it");
+        prompt.AppendLine($"{indent}  ships one — `.claude/commands/git/pr-description.md`, or a PR-description or");
+        prompt.AppendLine($"{indent}  `pr-summary` skill under this worktree's own `.claude/skills/`. That rule wins for");
+        prompt.AppendLine($"{indent}  the prose. Only when the repository ships none, follow the `pr-summary` skill");
+        prompt.AppendLine(project.HomeDirectory.HasValue
+            ? $"{indent}  Hall9k installs at "
+                + $"`{Path.Combine(ProjectHomePaths.SkillsDirectory(project.HomeDirectory.Value), "pr-summary", "SKILL.md")}`."
+            : $"{indent}  Hall9k installs into this project's own skills directory.");
+        prompt.AppendLine($"{indent}- **Where it goes.** Into your final message, under a line reading exactly");
+        prompt.AppendLine($"{indent}  `{PrSummaryParser.Marker}`, placed before the `{HandoffParser.Marker}` line: first line");
+        prompt.AppendLine($"{indent}  `{PrSummaryParser.TitlePrefix} <one line>`, then a blank line, then the body.");
+        prompt.AppendLine($"{indent}- **What to leave out.** The work-item link, the acceptance criteria, and the run");
+        prompt.AppendLine($"{indent}  footer. The platform puts all three around your text, so a copy of any of them");
+        prompt.AppendLine($"{indent}  in your own body is a second one a reviewer reads as a mistake.");
+        AppendWritingConventions(prompt, indent);
+        prompt.AppendLine($"{indent}- Do not run `gh pr create` or `gh pr edit`: the platform opens the pull request,");
+        prompt.AppendLine($"{indent}  and agents never do (PLAN.md §6.6).");
+    }
+
+    /// <summary>
+    /// The house conventions any prose an agent writes for people has to obey, stated here as the
+    /// default text. Task 412afe6c makes this a per-project setting; until that lands, this is the
+    /// one copy, so the day it becomes configurable there is exactly one place to read it from.
+    /// </summary>
+    private static void AppendWritingConventions(StringBuilder prompt, string indent)
+    {
+        prompt.AppendLine($"{indent}- **How it reads.** No em dashes (U+2014); use commas, semicolons, colons, periods,");
+        prompt.AppendLine($"{indent}  or parentheses instead. Full sentences over telegraphic fragments. No AI");
+        prompt.AppendLine($"{indent}  attribution anywhere in it: no \"Generated with Claude\", no Co-Authored-By");
+        prompt.AppendLine($"{indent}  trailer, in the title or the body.");
     }
 
     /// <summary>
@@ -1089,6 +1166,7 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  commits the operator made before this delegation — stays exactly as it is.");
             prompt.AppendLine("  Leave your own checkpoint commits as your history rather than squashing or");
             prompt.AppendLine("  rewriting them.");
+            AppendPullRequestSummaryStep(prompt, project, asNumberedStep: false);
             prompt.AppendLine("- **The session is not done while `git status` shows anything uncommitted or");
             prompt.AppendLine("  untracked.** Check it last and commit whatever it still shows before your");
             prompt.AppendLine("  final message.");
@@ -1134,6 +1212,7 @@ public static class WorkPromptBuilder
         prompt.AppendLine("     than modified, which this diff catches and a plain `git status` glance can");
         prompt.AppendLine("     miss. Check `git status --porcelain` too, right here, and treat any untracked");
         prompt.AppendLine("     file it shows as the same failure.");
+        AppendPullRequestSummaryStep(prompt, project, asNumberedStep: true);
         prompt.AppendLine("  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.");
         prompt.AppendLine("  That gap is exactly what the reset is for: because the tree never moves, the");
         prompt.AppendLine("  commits composed in step 2 describe the identical tree that passed the suite");
