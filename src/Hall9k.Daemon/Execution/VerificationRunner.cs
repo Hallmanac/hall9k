@@ -62,9 +62,15 @@ public sealed partial class VerificationRunner(
     /// cycle, or a FinalFullPass fix's own reverify: nothing merges on scoped green alone) rather than
     /// something this method second-guesses. <paramref name="scopeContext"/> is always required: it is
     /// the human-readable "why" recorded on the verification pass and logged either way.
+    /// <paramref name="leg"/> names which of the run's own legs is being gated right here — the
+    /// automatic uncommitted-work recovery's own eligibility is scoped to it (task: a headless
+    /// build, fix, or recovery session never ends its turn while a gate it started is still running
+    /// in the background), so a leg's own dirty worktree is never turned away just because a
+    /// different, earlier leg on the same run already spent ITS one automatic recovery.
     /// </summary>
     public async Task<bool> VerifyAsync(
-        Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, CancellationToken cancellationToken)
+        Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, RunSessionLeg leg,
+        CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         RunDetails? run = await query.LoadAsync<RunDetails>(runId, cancellationToken);
@@ -92,12 +98,15 @@ public sealed partial class VerificationRunner(
             // actually do something about (task: when a session ends with finished work
             // uncommitted, the daemon recovers on its own) — a task that produced zero commits
             // AND left nothing sitting in the worktree did not strand work, it did nothing, and
-            // no commit session fixes that. At most one attempt per run: a run that already
-            // carries an UncommittedWorkRecovery record spent it already, whatever the outcome.
-            if (failureReason is not null && check.StrandedFiles.Count > 0 && run.UncommittedWorkRecovery is null)
+            // no commit session fixes that. At most one attempt per (run, leg): a run that
+            // already carries an UncommittedWorkRecoveries entry for THIS leg spent that leg's
+            // own attempt already, whatever the outcome — a different leg on the same run reads
+            // its own eligibility independently (task: a headless build, fix, or recovery session
+            // never ends its turn while a gate it started is still running in the background).
+            if (failureReason is not null && check.StrandedFiles.Count > 0 && !run.HasUncommittedWorkRecoveryAttempt(leg))
             {
                 failureReason = await RecoverUncommittedWorkOrExplainAsync(
-                    run, task, project, check.StrandedFiles, failureReason, cancellationToken);
+                    run, task, project, check.StrandedFiles, failureReason, leg, cancellationToken);
             }
 
             if (failureReason is not null)
@@ -550,20 +559,23 @@ public sealed partial class VerificationRunner(
     /// </summary>
     private async Task<string?> RecoverUncommittedWorkOrExplainAsync(
         RunDetails run, TaskDetails task, ProjectDetails project, IReadOnlyList<string> strandedFiles,
-        string originalReason, CancellationToken cancellationToken)
+        string originalReason, RunSessionLeg leg, CancellationToken cancellationToken)
     {
         Guid recoverySessionId = DomainId.New();
 
         // Recorded — and saved — before the spawn, not after: a daemon restart mid-wait must
         // find this fact on the stream even though the spawn's own outcome is still unknown
         // (the "save the decision before the wait" discipline commit 372acb38 fixed for the
-        // session-error-retry leg). This is also what makes the attempt one-shot: the next
-        // VerifyAsync call for this run — whether this same call's own post-recovery re-check,
-        // or a wholly separate later fix cycle's — reads this back and never spawns a second one.
+        // session-error-retry leg). This is also what makes the attempt one-shot per leg: the
+        // next VerifyAsync call for this run's SAME leg — whether this same call's own
+        // post-recovery re-check, or a wholly separate later cycle's on that leg — reads this
+        // back and never spawns a second one; a different leg on this run reads its own
+        // eligibility independently (task: a headless build, fix, or recovery session never ends
+        // its turn while a gate it started is still running in the background).
         await using (IDocumentSession recordSession = store.LightweightSession())
         {
             recordSession.Events.Append(run.Id, new RunUncommittedWorkRecoveryAttempted(
-                run.Id, recoverySessionId, strandedFiles, originalReason, DateTimeOffset.UtcNow));
+                run.Id, recoverySessionId, strandedFiles, originalReason, DateTimeOffset.UtcNow, leg));
             await recordSession.SaveChangesAsync(cancellationToken);
         }
 
@@ -579,7 +591,19 @@ public sealed partial class VerificationRunner(
 
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
         string streamFile = RunPaths.SessionStreamFile(runDirectory, SessionRoleName.CommitRecovery);
-        string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(task, strandedFiles);
+        // Scoped to the Fix leg alone (independent pre-PR review, cycle 1, conformance lens):
+        // RunDetailsProjection only ever sets LastFixEndedWaitingOnBackgroundGate from
+        // ReviewFixCompleted, and never clears it on any other leg's own completion, so a later
+        // leg's recovery — a rebase-recovery session that itself ended dirty, say — would
+        // otherwise be handed a prompt asserting its own immediate predecessor said something
+        // only an earlier, unrelated Fix session actually said (AGENTS.md's never-guess rule).
+        // For the Fix leg itself the flag is always current: it is set exactly once, from the
+        // most recent ReviewFixCompleted, and this recovery only ever dispatches right after
+        // that same leg's own VerifyAsync call reads it.
+        string prompt = AgentPromptBuilder.BuildUncommittedWorkRecovery(
+            task, strandedFiles,
+            priorSessionReportedBackgroundWait: leg == RunSessionLeg.Fix && run.LastFixEndedWaitingOnBackgroundGate,
+            commandTimeout: options.Value.VerifyGateTimeout);
 
         SpawnedAgent? unfinished = null;
         AgentResult? result;
@@ -615,6 +639,20 @@ public sealed partial class VerificationRunner(
                 result = await SessionResultWaiter.WaitAsync(
                     streamFile, agent.ProcessId, agent.StartedAt, processManager, onOutput: null, timeoutSource.Token);
                 unfinished = null;
+
+                // The daemon terminates a completed session's process tree the instant its
+                // terminal result arrives (task: the daemon terminates a completed session's
+                // process tree before it starts any gate or another session in the same
+                // worktree) — the stream's result line is not proof this session's own process
+                // has actually exited. A no-op, and free, on the ordinary path where it already
+                // has.
+                IReadOnlyList<int> lingering = processManager.TerminateTree(agent.ProcessId, agent.StartedAt);
+                if (lingering.Count > 0)
+                {
+                    logger.LogWarning(
+                        "Run {RunId}: the automatic uncommitted-work recovery session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                        run.Id, lingering.Count, string.Join(", ", lingering));
+                }
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -691,8 +729,8 @@ public sealed partial class VerificationRunner(
                    "— reverted or deleted rather than committed. h9k task retry resumes this same worktree by hand.";
         }
 
-        return $"{outcome.StillStrandedReason} An automatic commit-only recovery session already ran once for this " +
-               "run and still did not leave the tree clean — h9k task retry resumes this same worktree by hand.";
+        return $"{outcome.StillStrandedReason} An automatic commit-only recovery session already ran once for the " +
+               $"{leg.Value} leg and still did not leave the tree clean — h9k task retry resumes this same worktree by hand.";
     }
 
     /// <summary>

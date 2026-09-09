@@ -423,6 +423,21 @@ public sealed class RunSupervisor(
 
                 if (sawResult)
                 {
+                    // The daemon terminates a completed session's process tree the instant its
+                    // terminal result arrives (task: the daemon terminates a completed session's
+                    // process tree before it starts any gate or another session in the same
+                    // worktree) — before CompleteRunAsync ever reaches a gate. Read: the stream's
+                    // result line is not proof the underlying process (and whatever it
+                    // backgrounded) has actually exited; TerminateTree no-ops for free when it
+                    // already has.
+                    IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
+                    if (lingering.Count > 0)
+                    {
+                        logger.LogWarning(
+                            "Run {RunId}: the build session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                            runId, lingering.Count, string.Join(", ", lingering));
+                    }
+
                     // A deliberate headless start (h9k task start) never goes through the ordinary
                     // dispatched-build pipeline below (task: a do-now session launched by h9k task
                     // start is caught within seconds) — nothing attends it to run h9k task deliver,
@@ -656,7 +671,7 @@ public sealed class RunSupervisor(
         // The pre-PR pipeline (log #24): gates, then the independent review loop, and
         // only a merge-ready verdict lets the pull request open.
         if (!result.IsError
-            && await verification.VerifyAsync(runId, taskId, scopeSinceSha: null, InitialVerificationScopeReason, cancellationToken)
+            && await verification.VerifyAsync(runId, taskId, scopeSinceSha: null, InitialVerificationScopeReason, RunSessionLeg.Build, cancellationToken)
             && await review.ReviewAsync(runId, taskId, cancellationToken))
         {
             await pullRequests.OpenAsync(runId, taskId, cancellationToken);
@@ -1478,7 +1493,7 @@ public sealed class RunSupervisor(
                 }
 
                 bool mergeReady = run.State == RunState.Verifying
-                    ? await verification.VerifyAsync(run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason, cancellationToken)
+                    ? await verification.VerifyAsync(run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason, RunSessionLeg.Build, cancellationToken)
                         && await review.ReviewAsync(run.Id, run.TaskId, cancellationToken)
                     : await review.ReviewAsync(run.Id, run.TaskId, cancellationToken);
                 if (mergeReady)

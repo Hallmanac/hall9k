@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -8,7 +9,7 @@ using Marten.Events.Aggregation;
 
 namespace Hall9k.Domain.Features.Run.Projections;
 
-public sealed class RunDetails
+public sealed class RunDetails : IJsonOnDeserialized
 {
     public Guid Id { get; set; }
     public Guid TaskId { get; set; }
@@ -660,14 +661,71 @@ public sealed class RunDetails
     public bool PendingBuildSessionErrorRetry { get; set; }
 
     /// <summary>
-    /// The one automatic commit-only recovery this run may ever get (task: when a session ends
-    /// with finished work uncommitted, the daemon recovers on its own), if the pre-gate
-    /// uncommitted-files check ever triggered one — null otherwise. Never cleared once set: a
-    /// run whose recovery session ALSO ended dirty still shows the attempt here, which is what
-    /// stops the daemon's own verification step from ever spawning a second one for the same
-    /// run.
+    /// Every automatic commit-only recovery this run has been given (task: when a session ends
+    /// with finished work uncommitted, the daemon recovers on its own), one per
+    /// <see cref="UncommittedWorkRecoveryRecord.Leg"/> the pre-gate uncommitted-files check ever
+    /// triggered one for — empty when the check never has. Per-leg, not per-run (task: a headless
+    /// build, fix, or recovery session never ends its turn while a gate it started is still
+    /// running in the background): a run's build leg spending its own automatic recovery must not
+    /// leave a later human-resolved-fix leg, or any other leg, on the same run with none of its
+    /// own — origin incidents 2026-09-07/08 failed exactly that way, before gates, costing a human
+    /// retry. Never cleared once appended to: a leg whose recovery session ALSO ended dirty still
+    /// shows the attempt here, which is what stops <see cref="HasUncommittedWorkRecoveryAttempt"/>
+    /// from ever granting that same leg a second one.
     /// </summary>
-    public UncommittedWorkRecoveryRecord? UncommittedWorkRecovery { get; set; }
+    public List<UncommittedWorkRecoveryRecord> UncommittedWorkRecoveries { get; set; } = [];
+
+    /// <summary>
+    /// Back-compat shim for a document written before this field was a list (independent pre-PR
+    /// review, cycle 1, adversarial lens): this projection is registered
+    /// <c>ProjectionLifecycle.Inline</c> (<c>MartenConfiguration.cs</c>), so a stored document is
+    /// never rebuilt from its full event history — only the one new event just appended gets
+    /// applied to whatever shape the document already has on disk. A run already mid-flight when
+    /// this field was renamed from the old singular <c>uncommittedWorkRecovery</c> would otherwise
+    /// deserialize straight into an empty <see cref="UncommittedWorkRecoveries"/>, silently losing
+    /// the one recovery attempt recorded under the old shape and letting
+    /// <see cref="HasUncommittedWorkRecoveryAttempt"/> grant that same run's leg a second one —
+    /// exactly what its own "at most one" invariant says can never happen.
+    /// <see cref="IJsonOnDeserialized.OnDeserialized"/> below folds this in once, immediately after
+    /// which the next event append persists the list shape and this legacy property reads null
+    /// forever after. <see cref="RunSessionLeg.Unknown"/> stands in for the leg the old shape never
+    /// recorded, the same sentinel <see cref="Events.RunUncommittedWorkRecoveryAttempted"/>'s own
+    /// nullable <c>Leg</c> already falls back to for a stream written before that field existed.
+    /// </summary>
+    [JsonInclude]
+    [JsonPropertyName("uncommittedWorkRecovery")]
+    internal LegacyUncommittedWorkRecoveryShape? LegacyUncommittedWorkRecovery { get; set; }
+
+    void IJsonOnDeserialized.OnDeserialized()
+    {
+        if (LegacyUncommittedWorkRecovery is { } legacy && UncommittedWorkRecoveries.Count == 0)
+        {
+            UncommittedWorkRecoveries.Add(new UncommittedWorkRecoveryRecord(
+                legacy.StrandedFiles, legacy.Reason, legacy.AttemptedAt, legacy.RecoveredCleanly,
+                legacy.DiscardedFiles, RunSessionLeg.Unknown, legacy.CompletedAt));
+        }
+    }
+
+    /// <summary>
+    /// Whether this run has already spent its one automatic uncommitted-work recovery on
+    /// <paramref name="leg"/> — the per-leg eligibility check <c>VerificationRunner.VerifyAsync</c>
+    /// reads before offering a fresh one, mirroring <see cref="RunAggregate.HasRetriedSessionError"/>'s
+    /// own per-leg shape for the unrelated session-error-retry mechanism.
+    /// </summary>
+    public bool HasUncommittedWorkRecoveryAttempt(RunSessionLeg leg) =>
+        UncommittedWorkRecoveries.Any(recovery => recovery.Leg == leg);
+
+    /// <summary>
+    /// Whether the most recent fix session to complete on this run ended naming a pending
+    /// background task (<see cref="ReviewFixOutcome.WaitingOnBackgroundGate"/>) rather than
+    /// declaring a resolution (task: a headless build, fix, or recovery session never ends its
+    /// turn while a gate it started is still running in the background). Read by the automatic
+    /// uncommitted-work recovery dispatch so the recovery session's own prompt can name what its
+    /// predecessor said, rather than the recovery session discovering the same dead end on its
+    /// own — the background task that session was waiting on is never coming back; the recovery
+    /// session's only job is committing whatever is on disk right now.
+    /// </summary>
+    public bool LastFixEndedWaitingOnBackgroundGate { get; set; }
 
     /// <summary>
     /// This run's base branch, resolving blank to <paramref name="projectBaseBranch"/> — the
@@ -728,8 +786,9 @@ public sealed record SessionErrorRetryRecord(
     RunSessionLeg Leg, int? Cycle, ReviewLens? Lens, string ObservedMessage, DateTimeOffset RetriedAt);
 
 /// <summary>
-/// The one automatic uncommitted-work recovery attempt <see cref="RunDetailsProjection.Apply(IEvent{RunUncommittedWorkRecoveryAttempted}, RunDetails)"/>
-/// recorded on <see cref="RunDetails.UncommittedWorkRecovery"/>. <see cref="RecoveredCleanly"/> is
+/// One automatic uncommitted-work recovery attempt <see cref="RunDetailsProjection.Apply(IEvent{RunUncommittedWorkRecoveryAttempted}, RunDetails)"/>
+/// appended to <see cref="RunDetails.UncommittedWorkRecoveries"/> — at most one per
+/// <see cref="Leg"/> (that list's own doc). <see cref="RecoveredCleanly"/> is
 /// null until <see cref="RunDetailsProjection.Apply(IEvent{RunUncommittedWorkRecoveryCompleted}, RunDetails)"/>
 /// records a fresh re-detection's own verdict — never guessed from the run's own later state, which is
 /// what a downstream gate failure unrelated to the recovery would otherwise be mistaken for — and stays
@@ -742,8 +801,21 @@ public sealed record SessionErrorRetryRecord(
 /// applies, and is what lets a reader tell "the recovery has not finished yet" apart from "the
 /// recovery finished, but its own re-detection could not read the worktree" — both read as a null
 /// <see cref="RecoveredCleanly"/> otherwise (independent pre-PR review, cycle 3, conformance finding).
+/// <see cref="Leg"/> reads <see cref="RunSessionLeg.Unknown"/> for a stream written before the field
+/// existed (<see cref="Events.RunUncommittedWorkRecoveryAttempted"/>'s own doc) — the one leg no live
+/// eligibility check ever asks about.
 /// </summary>
 public sealed record UncommittedWorkRecoveryRecord(
+    IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt, bool? RecoveredCleanly,
+    IReadOnlyList<string> DiscardedFiles, RunSessionLeg Leg, DateTimeOffset? CompletedAt = null);
+
+/// <summary>
+/// The exact shape <see cref="UncommittedWorkRecoveryRecord"/> had before <see cref="RunSessionLeg"/>
+/// Leg was added to it — what a document written under the old
+/// <see cref="RunDetails.LegacyUncommittedWorkRecovery"/> field actually holds on disk. Kept
+/// solely so that field has something to deserialize into; nothing constructs this directly.
+/// </summary>
+public sealed record LegacyUncommittedWorkRecoveryShape(
     IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt, bool? RecoveredCleanly,
     IReadOnlyList<string> DiscardedFiles, DateTimeOffset? CompletedAt = null);
 
@@ -927,7 +999,11 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     /// The fix session ended, whatever it decided. The gates run next (or a park does), and
     /// neither is a session, so nothing is left for the phase line to claim is running.
     /// </summary>
-    public void Apply(IEvent<ReviewFixCompleted> @event, RunDetails view) => EndSessions(view);
+    public void Apply(IEvent<ReviewFixCompleted> @event, RunDetails view)
+    {
+        EndSessions(view);
+        view.LastFixEndedWaitingOnBackgroundGate = @event.Data.Outcome == ReviewFixOutcome.WaitingOnBackgroundGate;
+    }
 
     // A resumed session keeps the model it started with, so this records rather than replaces.
     public void Apply(IEvent<ReviewVerdictReprompted> @event, RunDetails view)
@@ -1410,15 +1486,23 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     public void Apply(IEvent<RunUncommittedWorkRecoveryAttempted> @event, RunDetails view)
     {
-        view.UncommittedWorkRecovery = new UncommittedWorkRecoveryRecord(
-            @event.Data.StrandedFiles, @event.Data.Reason, @event.Data.AttemptedAt, RecoveredCleanly: null, DiscardedFiles: []);
+        view.UncommittedWorkRecoveries.Add(new UncommittedWorkRecoveryRecord(
+            @event.Data.StrandedFiles, @event.Data.Reason, @event.Data.AttemptedAt, RecoveredCleanly: null,
+            DiscardedFiles: [], @event.Data.Leg ?? RunSessionLeg.Unknown));
     }
 
     public void Apply(IEvent<RunUncommittedWorkRecoveryCompleted> @event, RunDetails view)
     {
-        if (view.UncommittedWorkRecovery is { } recovery)
+        // The completion always answers the most recently attempted recovery: a leg's own
+        // attempt is recorded before its recovery session is even spawned, and the next
+        // VerifyAsync call for this run never offers a second one on the same leg while this
+        // one's own completion is still unrecorded, so attempts and completions interleave
+        // one at a time rather than racing.
+        if (view.UncommittedWorkRecoveries.Count > 0)
         {
-            view.UncommittedWorkRecovery = recovery with
+            int lastIndex = view.UncommittedWorkRecoveries.Count - 1;
+            UncommittedWorkRecoveryRecord recovery = view.UncommittedWorkRecoveries[lastIndex];
+            view.UncommittedWorkRecoveries[lastIndex] = recovery with
             {
                 RecoveredCleanly = @event.Data.RecoveredCleanly,
                 DiscardedFiles = @event.Data.DiscardedFiles,

@@ -549,7 +549,11 @@ public sealed class ReviewEngine(
                                 context.RunId, context.TaskId, scopeSinceSha: null,
                                 run.ReviewStageComposition.WaivesFinalFullPassGuarantee
                                     ? "composition skip-final-pass waives the mandatory final full pass: gating at full scope as the run's terminal check"
-                                    : "mandatory final full pass: nothing merges on scoped green alone", cancellationToken))
+                                    : "mandatory final full pass: nothing merges on scoped green alone",
+                                run.PreFinalPassRebaseAwaitingGate || run.PreFinalPassRebaseAwaitingReview
+                                    ? RunSessionLeg.RebaseRecovery
+                                    : RunSessionLeg.Fix,
+                                cancellationToken))
                             {
                                 return false;
                             }
@@ -934,7 +938,8 @@ public sealed class ReviewEngine(
                         && run.LastGateHeadSha == await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken)
                         && await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
                     if (!reverifyGateAlreadyRan && !await verification.VerifyAsync(
-                        context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, cancellationToken))
+                        context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, RunSessionLeg.Fix,
+                        cancellationToken))
                     {
                         // VerificationRunner already failed the run and task honestly.
                         return false;
@@ -1128,7 +1133,8 @@ public sealed class ReviewEngine(
         string streamFile = RunPaths.SessionStreamFile(
             CurrentRunDirectory(run), ReviewArtifactName(run.ReviewCycle, pass.SessionId, pass.Lens));
         AgentResult? result = await WaitForSessionResultAsync(
-            context.RunId, streamFile, pass.ProcessId, pass.ProcessStartedAt, cancellationToken);
+            context.RunId, streamFile, pass.ProcessId, pass.ProcessStartedAt,
+            $"the {LensLabel(pass.Lens)} review pass (cycle {run.ReviewCycle})", cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, same as the primary session (backlog 40): the
@@ -1205,7 +1211,8 @@ public sealed class ReviewEngine(
         string streamFile = RunPaths.SessionStreamFile(
             CurrentRunDirectory(run), FixArtifactName(run.ReviewCycle, sessionId));
         AgentResult? result = await WaitForSessionResultAsync(
-            context.RunId, streamFile, processId, processStartedAt, cancellationToken);
+            context.RunId, streamFile, processId, processStartedAt,
+            $"the fix session (cycle {run.ReviewCycle})", cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, same as the primary session (backlog 40): the
@@ -1561,7 +1568,7 @@ public sealed class ReviewEngine(
             // it: this pass's full-diff fallback range is a three-dot diff, and a force-pushed
             // parent moves origin/<parent> out from under it.
             baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
-            priorHumanFixes: context.PriorHumanFixes);
+            priorHumanFixes: context.PriorHumanFixes, commandTimeout: _options.VerifyGateTimeout);
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -1766,14 +1773,16 @@ public sealed class ReviewEngine(
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
-                baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit)
+                baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
+                commandTimeout: _options.VerifyGateTimeout)
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
                 // baseCommit too: the self-check phase's own class sweep draws its
                 // own-changes boundary from this range, and on a stacked child that boundary is
                 // the recorded fork point rather than origin/<parent> for the same reason.
-                baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit);
+                baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
+                commandTimeout: _options.VerifyGateTimeout);
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
@@ -1893,7 +1902,7 @@ public sealed class ReviewEngine(
         }
 
         return await verification.VerifyAsync(
-            context.RunId, context.TaskId, scopeSinceSha: null, reason, cancellationToken);
+            context.RunId, context.TaskId, scopeSinceSha: null, reason, RunSessionLeg.RebaseRecovery, cancellationToken);
     }
 
     /// <summary>
@@ -3109,7 +3118,8 @@ public sealed class ReviewEngine(
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
         string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
             context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
-            humanGuidance, rebaseStillInProgress, baseBranch: context.BaseBranch);
+            humanGuidance, rebaseStillInProgress, baseBranch: context.BaseBranch,
+            commandTimeout: _options.VerifyGateTimeout);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = RebaseRecoveryArtifactName(sessionId);
@@ -3148,7 +3158,8 @@ public sealed class ReviewEngine(
 
         string streamFile = RunPaths.SessionStreamFile(CurrentRunDirectory(run), RebaseRecoveryArtifactName(sessionId));
         AgentResult? result = await WaitForSessionResultAsync(
-            context.RunId, streamFile, processId, processStartedAt, cancellationToken);
+            context.RunId, streamFile, processId, processStartedAt,
+            "the pre-final-pass rebase-recovery session", cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             await ParkForBudgetAsync(context.RunId, "the pre-final-pass rebase-recovery session", summary, cancellationToken);
@@ -3202,17 +3213,21 @@ public sealed class ReviewEngine(
         }
 
         // A Fixed outcome is the session's own explicit claim and is trusted exactly like any
-        // other fix session's Fixed outcome. An Unknown (undeclared) outcome is not evidence
-        // either way (AGENTS.md, "never guess at unobserved facts") — an early exit or a
-        // truncated summary can leave the worktree exactly as conflicted as it started
-        // (independent pre-PR review, cycle 1, conformance lens) — so that case is trusted only
-        // once the worktree itself shows a completed rebase, never on the session's silence
-        // alone. A worktree that does not confirm it self-corrects anyway: the next Settling
-        // entry's own EnsureRebasedBeforeFinalPassAsync re-checks and either finds the same
-        // conflict again or, if the worktree is left in a state it will not touch further, warns
-        // and proceeds unrebased.
+        // other fix session's Fixed outcome. Any unmarked ending — Unknown, or its named
+        // WaitingOnBackgroundGate case (task: a headless build, fix, or recovery session never
+        // ends its turn while a gate it started is still running in the background) — is not
+        // evidence either way (AGENTS.md, "never guess at unobserved facts"): naming WHY no
+        // RESOLUTION marker was found does not make the marker's absence any less unmarked, and
+        // an early exit or a truncated summary can leave the worktree exactly as conflicted as it
+        // started (independent pre-PR review, cycle 1, conformance lens) — so both cases are
+        // trusted only once the worktree itself shows a completed rebase, never on the session's
+        // silence alone. A worktree that does not confirm it self-corrects anyway: the next
+        // Settling entry's own EnsureRebasedBeforeFinalPassAsync re-checks and either finds the
+        // same conflict again or, if the worktree is left in a state it will not touch further,
+        // warns and proceeds unrebased.
         bool recordAsResolved = outcome == ReviewFixOutcome.Fixed
-            || (outcome == ReviewFixOutcome.Unknown
+            || (outcome is { } unmarked
+                && (unmarked == ReviewFixOutcome.Unknown || unmarked == ReviewFixOutcome.WaitingOnBackgroundGate)
                 && await RebaseActuallyLandedAsync(
                     context.Run.WorktreePath, context.Run.Branch, $"origin/{context.BaseBranch}", cancellationToken));
 
@@ -4751,12 +4766,37 @@ public sealed class ReviewEngine(
     /// Waits for the session's terminal result through the shared waiter, keeping the run's
     /// last-activity fresh while output flows so h9k status stall detection covers review
     /// legs. Null means the session genuinely died without a result.
+    /// <para>
+    /// Terminates the session's own process tree the moment a result lands (task: the daemon
+    /// terminates a completed session's process tree before it starts any gate or another session
+    /// in the same worktree) — before this method returns, so every caller (a review pass, a fix
+    /// session, or a rebase-recovery session) gets the guarantee for free rather than each having
+    /// to remember it. Origin: a session's own last message can report a result while the
+    /// underlying process — and whatever it backgrounded, like a `dotnet test` run — is still
+    /// alive; <see cref="SessionResultWaiter.WaitAsync"/> returns the instant it parses that result
+    /// line, without ever checking whether the process producing it has actually exited.
+    /// <see cref="IProcessManager.TerminateTree"/> is a no-op when the process is already gone (the
+    /// ordinary case), so this costs nothing on the path that behaved correctly.
+    /// </para>
     /// </summary>
-    private Task<AgentResult?> WaitForSessionResultAsync(
-        Guid runId, string streamFile, int processId, DateTimeOffset processStartedAt, CancellationToken cancellationToken) =>
-        SessionResultWaiter.WaitAsync(
+    private async Task<AgentResult?> WaitForSessionResultAsync(
+        Guid runId, string streamFile, int processId, DateTimeOffset processStartedAt, string sessionLabel,
+        CancellationToken cancellationToken)
+    {
+        AgentResult? result = await SessionResultWaiter.WaitAsync(
             streamFile, processId, processStartedAt, processManager,
             token => TouchActivityAsync(runId, token), cancellationToken);
+
+        IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
+        if (lingering.Count > 0)
+        {
+            logger.LogWarning(
+                "Run {RunId}: {SessionLabel} left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                runId, sessionLabel, lingering.Count, string.Join(", ", lingering));
+        }
+
+        return result;
+    }
 
     private async Task TouchActivityAsync(Guid runId, CancellationToken cancellationToken)
     {

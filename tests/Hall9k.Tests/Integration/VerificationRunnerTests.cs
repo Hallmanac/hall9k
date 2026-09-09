@@ -65,7 +65,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             ],
             cts.Token);
 
-        await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -103,7 +103,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             ],
             cts.Token);
 
-        await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -149,7 +149,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 store, [new VerifyCommand("broken", GateScript.New().Print("unconditionally-broken").Exit(1).Command)], cts.Token,
                 repositoryPath: cleanBase);
 
-            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             await using IQuerySession query = store.QuerySession();
             RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -184,7 +184,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 store, [new VerifyCommand("broken", GateScript.New().Print("unconditionally-broken").Exit(1).Command)], cts.Token,
                 repositoryPath: uncleanBase);
 
-            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             await using IQuerySession query = store.QuerySession();
             RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -227,7 +227,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 cts.Token,
                 repositoryPath: cleanBase);
 
-            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+            await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             await using IQuerySession query = store.QuerySession();
             RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -282,11 +282,11 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
             (Guid taskId1, Guid runId1) = await SeedAsync(
                 store, [gate], cts.Token, repositoryPath: cleanBase, projectId: projectId, nodeId: nodeId);
-            await NewRunner(store).VerifyAsync(runId1, taskId1, scopeSinceSha: null, "test", cts.Token);
+            await NewRunner(store).VerifyAsync(runId1, taskId1, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             (Guid taskId2, Guid runId2) = await SeedAsync(
                 store, [gate], cts.Token, projectId: projectId, nodeId: nodeId, registerProject: false);
-            await NewRunner(store).VerifyAsync(runId2, taskId2, scopeSinceSha: null, "test", cts.Token);
+            await NewRunner(store).VerifyAsync(runId2, taskId2, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             await using IQuerySession query = store.QuerySession();
             RunDetails run1 = (await query.LoadAsync<RunDetails>(runId1, cts.Token))!;
@@ -348,11 +348,11 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
             (Guid taskId1, Guid runId1) = await SeedAsync(
                 store, [gate], cts.Token, repositoryPath: cleanBase, projectId: projectId, nodeId: nodeId);
-            await runner.VerifyAsync(runId1, taskId1, scopeSinceSha: null, "test", cts.Token);
+            await runner.VerifyAsync(runId1, taskId1, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             (Guid taskId2, Guid runId2) = await SeedAsync(
                 store, [gate], cts.Token, projectId: projectId, nodeId: nodeId, registerProject: false);
-            await runner.VerifyAsync(runId2, taskId2, scopeSinceSha: null, "test", cts.Token);
+            await runner.VerifyAsync(runId2, taskId2, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             await using IQuerySession query = store.QuerySession();
             RunDetails run1 = (await query.LoadAsync<RunDetails>(runId1, cts.Token))!;
@@ -389,7 +389,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 GateScript.New().CreateFile(marker).Print(ConnectionRefused).Exit(1)).Command)],
             cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue("the second attempt is what the flaky gate actually does");
         await using IQuerySession query = store.QuerySession();
@@ -426,7 +426,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("dead", GateScript.New().Print(ConnectionRefused).Exit(1).Command)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("the environment never recovered across the retry");
         await using IQuerySession query = store.QuerySession();
@@ -466,7 +466,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             await session.SaveChangesAsync(cts.Token);
         }
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("the gate already spent its one retry before this daemon lifetime began");
         await using IQuerySession query = store.QuerySession();
@@ -496,7 +496,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 .Exit(1).Command)],
             cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("the environment never recovered across the retry");
         await using IQuerySession query = store.QuerySession();
@@ -529,7 +529,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 GateScript.New().CreateFile(marker).Print(ConnectionRefused).Exit(1)).Command)],
             cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse();
         await using IQuerySession query = store.QuerySession();
@@ -545,7 +545,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         DocumentStore store = postgres.Store;
         (Guid taskId, Guid runId) = await SeedAsync(store, gates: [], cts.Token);
 
-        await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
@@ -568,7 +568,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             NullLogger<VerificationRunner>.Instance,
             NewWorktreeManager(), new InstantRecoveryFailureExecutor(), new FakeProcessManager());
 
-        await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -603,7 +603,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             NullLogger<VerificationRunner>.Instance,
             NewWorktreeManager(), new InstantRecoveryFailureExecutor(), new FakeProcessManager());
 
-        bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue("the second attempt exits clean once the hang is behind it");
         await using IQuerySession query = store.QuerySession();
@@ -658,7 +658,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             NullLogger<VerificationRunner>.Instance,
             NewWorktreeManager(), new InstantRecoveryFailureExecutor(), new FakeProcessManager());
 
-        bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue("the second attempt exits clean once the queue wait is behind it");
         await using IQuerySession query = store.QuerySession();
@@ -677,7 +677,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("gates on an unmodified tree pass vacuously and prove nothing");
         await using IQuerySession query = store.QuerySession();
@@ -700,7 +700,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: true, cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue();
         await using IQuerySession query = store.QuerySession();
@@ -723,7 +723,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse();
         await using IQuerySession query = store.QuerySession();
@@ -754,7 +754,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("an untracked new source file is stranded work, not a gate byproduct");
         await using IQuerySession query = store.QuerySession();
@@ -782,7 +782,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("an untracked new test file is stranded work, not a gate byproduct");
         await using IQuerySession query = store.QuerySession();
@@ -812,7 +812,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             Path.Combine(_worktree, "tests", "Hall9k.Tests", "TestResults", "host.trx"), "gate byproduct", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue("TestResults/ under tests/ is a gate byproduct, not stranded agent work");
         await using IQuerySession query = store.QuerySession();
@@ -836,7 +836,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("finished work left uncommitted never reaches the pull request");
         await using IQuerySession query = store.QuerySession();
@@ -875,7 +875,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await File.WriteAllTextAsync(Path.Combine(_worktree, "TestResults.trx"), "gate byproduct", cts.Token);
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue("an untracked file is not stranded agent work");
         await using IQuerySession query = store.QuerySession();
@@ -891,7 +891,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("truth", GateScript.Passes)], cts.Token, TaskType.Research);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue("a research task's deliverable is its transcript, not commits");
     }
@@ -911,7 +911,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("truth", GateScript.Passes)], cts.Token, TaskType.Research);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("a research task can still strand a modified file, exempt or not");
         await using IQuerySession query = store.QuerySession();
@@ -937,16 +937,16 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
         CommittingRecoveryExecutor recovery = new(_worktree);
 
-        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue("the recovery session committed the stranded file, so the tree is clean for the gates");
         recovery.Spawns.Should().ContainSingle().Which.SessionArtifactName.Should().Be(SessionRoleName.CommitRecovery);
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Value.Should().Be("Verifying", "a passing verification never transitions state itself");
-        run.UncommittedWorkRecovery.Should().NotBeNull();
-        run.UncommittedWorkRecovery!.StrandedFiles.Should().Contain("half-done.cs");
-        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeTrue(
+        run.UncommittedWorkRecoveries.Should().ContainSingle();
+        run.UncommittedWorkRecoveries[0].StrandedFiles.Should().Contain("half-done.cs");
+        run.UncommittedWorkRecoveries[0].RecoveredCleanly.Should().BeTrue(
             "the completion event recorded a fresh re-check that found the tree clean");
 
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
@@ -975,7 +975,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store,
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("the recovery session never touched the worktree, so it is still dirty");
         await using IQuerySession query = store.QuerySession();
@@ -985,8 +985,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         run.FailureReason.Should().Contain("half-done.cs", "the original diagnosis still names the file");
         run.FailureReason.Should().Contain("recovery", "the failure explains a recovery was already tried");
         run.FailureReason.Should().Contain("h9k task retry");
-        run.UncommittedWorkRecovery.Should().NotBeNull();
-        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeFalse(
+        run.UncommittedWorkRecoveries.Should().ContainSingle();
+        run.UncommittedWorkRecoveries[0].RecoveredCleanly.Should().BeFalse(
             "the completion event recorded a fresh re-check that still found the tree dirty");
         run.FailedGates.Should().BeEmpty("no gate ever ran");
 
@@ -1017,7 +1017,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
         DiscardingRecoveryExecutor recovery = new(_worktree, "half-done.cs");
 
-        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("the recovery session discarded the stranded work instead of committing it");
         await using IQuerySession query = store.QuerySession();
@@ -1026,10 +1026,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         run.FailureReason.Should().Contain("half-done.cs", "the failure names the file that was discarded");
         run.FailureReason.Should().Contain("reverted or deleted rather than committed");
         run.FailureReason.Should().Contain("h9k task retry");
-        run.UncommittedWorkRecovery.Should().NotBeNull();
-        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeFalse(
+        run.UncommittedWorkRecoveries.Should().ContainSingle();
+        run.UncommittedWorkRecoveries[0].RecoveredCleanly.Should().BeFalse(
             "the tree looked clean, but the file's committed content never matched what it held before recovery");
-        run.UncommittedWorkRecovery!.DiscardedFiles.Should().Contain("half-done.cs");
+        run.UncommittedWorkRecoveries[0].DiscardedFiles.Should().Contain("half-done.cs");
         run.FailedGates.Should().BeEmpty("no gate ever ran");
 
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
@@ -1058,7 +1058,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
         DiscardingRecoveryExecutor recovery = new(_worktree, "half-done.cs");
 
-        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse("the recovery session restored the deleted file instead of committing its removal");
         await using IQuerySession query = store.QuerySession();
@@ -1067,10 +1067,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         run.FailureReason.Should().Contain("half-done.cs", "the failure names the file that was discarded");
         run.FailureReason.Should().Contain("reverted or deleted rather than committed");
         run.FailureReason.Should().Contain("h9k task retry");
-        run.UncommittedWorkRecovery.Should().NotBeNull();
-        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeFalse(
+        run.UncommittedWorkRecoveries.Should().ContainSingle();
+        run.UncommittedWorkRecoveries[0].RecoveredCleanly.Should().BeFalse(
             "the tree looked clean, but the deletion itself never actually reached HEAD");
-        run.UncommittedWorkRecovery!.DiscardedFiles.Should().Contain("half-done.cs");
+        run.UncommittedWorkRecoveries[0].DiscardedFiles.Should().Contain("half-done.cs");
         run.FailedGates.Should().BeEmpty("no gate ever ran");
 
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
@@ -1128,17 +1128,17 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             CommittingRecoveryExecutor recovery = new(_worktree);
 
             bool passed =
-                await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+                await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             passed.Should().BeTrue(
                 "the recovery session committed the submodule pointer bump; a gitlink `git hash-object` cannot " +
                 "hash is not a deletion and must not be flagged as one");
             await using IQuerySession query = store.QuerySession();
             RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-            run.UncommittedWorkRecovery.Should().NotBeNull();
-            run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeTrue(
+            run.UncommittedWorkRecoveries.Should().ContainSingle();
+            run.UncommittedWorkRecoveries[0].RecoveredCleanly.Should().BeTrue(
                 "the submodule bump reached HEAD; nothing was ever a deletion");
-            run.UncommittedWorkRecovery!.DiscardedFiles.Should().BeEmpty();
+            run.UncommittedWorkRecoveries[0].DiscardedFiles.Should().BeEmpty();
         }
         finally
         {
@@ -1166,14 +1166,14 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             [new VerifyCommand("never", GateScript.New().Print("should-not-run").Command)], cts.Token);
 
         bool passed = await NewRunner(store, new SpawnFailureExecutor())
-            .VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+            .VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeFalse();
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.FailureReason.Should().Contain("could not even be started");
-        run.UncommittedWorkRecovery.Should().NotBeNull();
-        run.UncommittedWorkRecovery!.RecoveredCleanly.Should().BeFalse(
+        run.UncommittedWorkRecoveries.Should().ContainSingle();
+        run.UncommittedWorkRecoveries[0].RecoveredCleanly.Should().BeFalse(
             "nothing ever touched the worktree, so the re-check still finds it exactly as dirty as it started");
 
         var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
@@ -1183,13 +1183,18 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
     /// <summary>
     /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
-    /// A run that already carries an <see cref="RunUncommittedWorkRecoveryAttempted"/> record —
-    /// whether this method's own earlier call spent it, or (as seeded directly here) a prior
-    /// daemon lifetime already did — never spawns a second recovery session, however capable the
-    /// executor handed to it would have been.
+    /// A run that already carries an <see cref="RunUncommittedWorkRecoveryAttempted"/> record FOR
+    /// THE SAME LEG — whether this method's own earlier call spent it, or (as seeded directly
+    /// here) a prior daemon lifetime already did — never spawns a second recovery session for
+    /// that leg, however capable the executor handed to it would have been. Per-leg, not per-run
+    /// (task: a headless build, fix, or recovery session never ends its turn while a gate it
+    /// started is still running in the background): the seeded attempt below is explicitly
+    /// recorded against <see cref="RunSessionLeg.Build"/>, the same leg this call verifies, so
+    /// this still proves the one-shot-per-leg guarantee rather than a coincidence of the old
+    /// one-shot-per-run behavior.
     /// </summary>
     [Fact]
-    public async Task A_second_dirty_ending_never_earns_a_second_recovery_session()
+    public async Task A_second_dirty_ending_on_the_same_leg_never_earns_a_second_recovery_session()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -1200,20 +1205,61 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.Append(runId, new RunUncommittedWorkRecoveryAttempted(
-                runId, DomainId.New(), ["half-done.cs"], "already tried once", Now));
+                runId, DomainId.New(), ["half-done.cs"], "already tried once", Now, RunSessionLeg.Build));
             await session.SaveChangesAsync(cts.Token);
         }
         CommittingRecoveryExecutor recovery = new(_worktree);
 
-        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store, recovery).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
-        passed.Should().BeFalse("a run that already spent its one recovery attempt fails outright");
-        recovery.Spawns.Should().BeEmpty("an already-attempted recovery is never retried");
+        passed.Should().BeFalse("this leg already spent its one recovery attempt, so it fails outright");
+        recovery.Spawns.Should().BeEmpty("an already-attempted leg's recovery is never retried");
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Value.Should().Be("Failed");
         run.FailureReason.Should().NotContain(
             "already ran once for this run", "this path never even attempted a NEW recovery to explain");
+    }
+
+    /// <summary>
+    /// The gap origin incidents 2026-09-07/08 hit in production: a run's build leg spending its
+    /// own automatic recovery must not leave a DIFFERENT leg on the same run — the fix leg, here,
+    /// standing in for a human-resolved-fix round — with no recovery of its own, and no honest way
+    /// to tell "already tried and failed" from "never offered one at all" (task: a headless build,
+    /// fix, or recovery session never ends its turn while a gate it started is still running in
+    /// the background). The seeded attempt is recorded against <see cref="RunSessionLeg.Build"/>;
+    /// this call verifies <see cref="RunSessionLeg.Fix"/>, so a leg-scoped eligibility check must
+    /// treat the two as independent.
+    /// </summary>
+    [Fact]
+    public async Task A_different_leg_on_the_same_run_still_earns_its_own_recovery_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("test", GateScript.New().Print("gate-ran").Command)], cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunUncommittedWorkRecoveryAttempted(
+                runId, DomainId.New(), ["some-other-file.cs"], "the build leg already spent its own attempt", Now,
+                RunSessionLeg.Build));
+            await session.SaveChangesAsync(cts.Token);
+        }
+        CommittingRecoveryExecutor recovery = new(_worktree);
+
+        bool passed = await NewRunner(store, recovery).VerifyAsync(
+            runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Fix, cts.Token);
+
+        passed.Should().BeTrue(
+            "the fix leg has never spent a recovery of its own, whatever the build leg already did");
+        recovery.Spawns.Should().ContainSingle("the fix leg's own dirty ending earns its own recovery session");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.UncommittedWorkRecoveries.Should().HaveCount(2, "one attempt per leg, both on record for this run");
+        run.UncommittedWorkRecoveries.Should().Contain(r => r.Leg == RunSessionLeg.Build);
+        run.UncommittedWorkRecoveries.Should().Contain(r => r.Leg == RunSessionLeg.Fix);
     }
 
     /// <summary>
@@ -1240,7 +1286,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance, NewWorktreeManager(),
             hanging, processManager);
 
-        Func<Task> act = () => runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", shutdown.Token);
+        Func<Task> act = () => runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, shutdown.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>(
             "a genuine daemon-shutdown cancellation propagates rather than being swallowed as the recovery's own timeout");
@@ -1279,7 +1325,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         VerificationRunner runner = new(
             store, Options.Create(new DaemonOptions()), logger, NewWorktreeManager(),
             new InstantRecoveryFailureExecutor(), new FakeProcessManager());
-        await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        await runner.VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
@@ -1307,7 +1353,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("test", "dotnet test --help")], cts.Token);
 
         bool passed = await NewRunner(store).VerifyAsync(
-            runId, taskId, scopeSinceSha: null, "mandatory final full pass: nothing merges on scoped green alone", cts.Token);
+            runId, taskId, scopeSinceSha: null, "mandatory final full pass: nothing merges on scoped green alone",
+            RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue();
         string log = File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-test.log"));
@@ -1339,7 +1386,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 GateScript.New().Run("dotnet test --help").Print(PassedSummaryLine).Command)],
             cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue();
         string log = File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-test.log"));
@@ -1383,7 +1430,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         VerificationRunner runner = new(
             store, Options.Create(new DaemonOptions()), logger, NewWorktreeManager(),
             new InstantRecoveryFailureExecutor(), new FakeProcessManager());
-        bool passed = await runner.VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", cts.Token);
+        bool passed = await runner.VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue("the fallback's own full run genuinely passed");
         string log = File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-test.log"));
@@ -1427,7 +1474,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             ],
             cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, sinceSha, "cycle 2 fix (Discovery)", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue();
         File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-unit.log"))
@@ -1493,7 +1540,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             (Guid taskId, Guid runId) = await SeedAsync(
                 store, [new VerifyCommand("envcheck", GateScript.PrintEnvironmentVariable(VariableName))], cts.Token);
 
-            bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+            bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
             passed.Should().BeTrue();
             string log = File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-envcheck.log")).Trim();
@@ -1548,7 +1595,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         (Guid taskId, Guid runId) = await SeedAsync(
             store, [new VerifyCommand("envcheck", "set MSBUILDDISABLENODEREUSE=0 && cmd /c set MSBUILDDISABLENODEREUSE")], cts.Token);
 
-        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", cts.Token);
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
 
         passed.Should().BeTrue();
         // `set NAME=VALUE` keeps everything up to the line separator, so the assigned value here
