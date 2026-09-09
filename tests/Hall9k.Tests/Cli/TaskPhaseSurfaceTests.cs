@@ -825,6 +825,48 @@ public sealed class TaskPhaseSurfaceTests
     }
 
     /// <summary>
+    /// A lap addressing review feedback is dispatched whatever the checks are doing (Decisions Log
+    /// #PLACEHOLDER-5657f3fa), so a pull request with unresolved threads and a check still pending
+    /// is routinely a queued or claimed follow-up now. The phase line says both halves: that the
+    /// lap is dispatched or queued, and how long the check the merge is still waiting on has been
+    /// pending — never the pendingness on its own as the reason nothing is happening, which is what
+    /// arx-platform PR #2042 read for nine hours.
+    /// </summary>
+    [Fact]
+    public void A_follow_up_row_says_how_long_a_check_has_been_pending_behind_it()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/2042";
+
+        TaskListItem queued = StatusFixtures.Task(TaskState.Queued, null, pullRequest);
+        queued.FollowUpChecksPendingSince = StatusFixtures.Now.AddHours(-9);
+        TaskPhase queuedPhase = StatusFixtures.Compose(queued).Phase;
+        queuedPhase.Text.Should().Be("follow-up queued for PR #2042");
+        queuedPhase.Detail.Should().Be("not claimed yet; a check has been pending 9h");
+
+        TaskListItem claimed = StatusFixtures.Task(TaskState.Claimed, runId, pullRequest);
+        claimed.FollowUpChecksPendingSince = StatusFixtures.Now.AddHours(-9);
+        TaskPhase claimedPhase = StatusFixtures.Compose(claimed, StatusFixtures.Run(runId, RunState.Running)).Phase;
+        claimedPhase.Text.Should().Be("follow-up on PR #2042: building");
+        claimedPhase.Detail.Should().Contain("a check has been pending 9h");
+
+        // The third follow-up-in-flight arm gets the identical treatment, so no one of the three
+        // silently drops the clause. Closeout parks rather than reopening a task with an unmet
+        // dependency, so only a manual h9k pr resolve lands a follow-up here today — and that path
+        // records no anchor — but the arm is wired the same way as its siblings regardless.
+        TaskListItem blocked = StatusFixtures.Task(TaskState.Blocked, null, pullRequest);
+        blocked.FollowUpChecksPendingSince = StatusFixtures.Now.AddHours(-9);
+        TaskPhase blockedPhase = StatusFixtures.Compose(blocked).Phase;
+        blockedPhase.Text.Should().Be("follow-up blocked for PR #2042");
+        blockedPhase.Detail.Should().Contain("a check has been pending 9h");
+
+        // Checks complete at dispatch record no anchor, and the line stays exactly as it was before
+        // this clause existed rather than reporting a wait nobody observed.
+        TaskListItem noPendingCheck = StatusFixtures.Task(TaskState.Queued, null, pullRequest);
+        StatusFixtures.Compose(noPendingCheck).Phase.Detail.Should().Be("not claimed yet");
+    }
+
+    /// <summary>
     /// Every review thread on a pull request gets a triage disposition before any fix work
     /// (task: every review thread on a pull request gets a triage disposition before any fix
     /// work). Once a follow-up has triaged, the count is folded into the watching phase's own
@@ -965,20 +1007,36 @@ public sealed class TaskPhaseSurfaceTests
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landed)
             .Phase.Detail.Should().Be("2 comment threads");
 
-        // A landed review recorded while the CI picture was still incomplete has not been
-        // re-checked for new unresolved threads this sweep either (CloseoutEngine records the
-        // review-state observation ahead of that read), so the detail must not read as the
-        // all-clear the case above renders once checks settle (independent pre-PR review,
-        // cycle 3).
+        // A landed review recorded while the CI picture was still incomplete must not read as the
+        // all-clear the case above renders once checks settle (independent pre-PR review, cycle 3)
+        // — but what it says about the checks is how long one has been pending, not that they might
+        // be (Decisions Log #PLACEHOLDER-5657f3fa; origin: arx-platform PR #2042's dead .NET
+        // Framework check read pending for nine hours). It no longer hedges the thread count
+        // either: the sweep reads unresolved threads whatever the checks are doing now, so
+        // "not yet confirmed resolved" would report a gap that is closed.
         RunDetails landedChecksPending = StatusFixtures.Run(
             runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         landedChecksPending.ExternalReviewState = ExternalReviewState.Landed;
         landedChecksPending.ExternalReviewThreadCount = 2;
         landedChecksPending.ExternalReviewChecksPending = true;
+        landedChecksPending.ExternalReviewChecksPendingSince = StatusFixtures.Now.AddHours(-9);
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landedChecksPending)
             .Phase.Text.Should().Be("watching PR #24 — Copilot review landed");
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), landedChecksPending)
-            .Phase.Detail.Should().Be("2 comment threads, not yet confirmed resolved; its checks may still be reporting");
+            .Phase.Detail.Should().Be("2 comment threads; a check has been pending 9h");
+
+        // An observation from before the anchor was collected says the length is unknown rather
+        // than measuring from now, which would report that nine-hour wait as a fresh one
+        // (AGENTS.md, never guess at unobserved facts).
+        RunDetails landedChecksPendingUnanchored = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        landedChecksPendingUnanchored.ExternalReviewState = ExternalReviewState.Landed;
+        landedChecksPendingUnanchored.ExternalReviewThreadCount = 2;
+        landedChecksPendingUnanchored.ExternalReviewChecksPending = true;
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, runId, pullRequest), landedChecksPendingUnanchored)
+            .Phase.Detail.Should().Be(
+                "2 comment threads; a check is still pending, and when it started was not recorded");
 
         RunDetails pending = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         pending.ExternalReviewState = ExternalReviewState.RequestedPending;
@@ -998,18 +1056,19 @@ public sealed class TaskPhaseSurfaceTests
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), stale)
             .Phase.Detail.Should().Be("the review is stale; 1 comment thread");
 
-        // No external review activity while checks may still be reporting is not the same as
-        // "only a human's merge is left": the sweep records this observation ahead of its own
-        // checks read, so the line stops short of naming the human as the last gate while checks
-        // may still be reporting (the same distinction the landed/landedChecksPending pair above
-        // draws, independent pre-PR review, cycle 7).
+        // No external review activity while a check is still pending is not the same as "only a
+        // human's merge is left": a pending check holds the merge on its own, so the line stops
+        // short of naming the human as the last gate (the same distinction the
+        // landed/landedChecksPending pair above draws, independent pre-PR review, cycle 7) and says
+        // how long that check has been pending (Decisions Log #PLACEHOLDER-5657f3fa).
         RunDetails noneChecksPending = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         noneChecksPending.ExternalReviewState = ExternalReviewState.None;
         noneChecksPending.ExternalReviewChecksPending = true;
+        noneChecksPending.ExternalReviewChecksPendingSince = StatusFixtures.Now.AddMinutes(-12);
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), noneChecksPending)
             .Phase.Text.Should().Be("watching PR #24");
         StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), noneChecksPending)
-            .Phase.Detail.Should().Be("no external review activity observed; its checks may still be reporting");
+            .Phase.Detail.Should().Be("no external review activity observed; a check has been pending 12m");
 
         // Once the provider's CI picture is complete and still no external review activity is
         // recorded, nothing is left unresolved on this row but the human's own merge, so the

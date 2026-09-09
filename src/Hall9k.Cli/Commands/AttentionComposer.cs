@@ -446,7 +446,7 @@ internal static class AttentionComposer
                 + "replays it there automatically")
             : task.EffectivePreApproval.MergesAutomatically
                 ? PreApprovedAwaitingReviewAttention(task, run, now)
-                : AwaitingReviewAttention(run);
+                : AwaitingReviewAttention(run, now);
 
     /// <summary>
     /// The pre-approved arm (task: a task can be published pre-approved): a synchronous human gate
@@ -469,14 +469,19 @@ internal static class AttentionComposer
     {
         PreApprovalMode mode = task.EffectivePreApproval;
         List<string> waitingOn = [];
-        // The daemon's own gate checks this ahead of everything else (CloseoutEngine's
-        // HasPendingChecks short-circuit runs before the review-decision and outstanding-reviewer
-        // reads it feeds this composer), so an incomplete CI picture must not let the "GitHub's
-        // own gates read satisfied" claim below fire while checks are still reporting and the
-        // daemon is in fact refusing to merge (independent pre-PR review, cycle 1, both lenses).
+        // The daemon's own gate still holds the merge on this ahead of everything else
+        // (CloseoutEngine's HasPendingChecks short-circuit returns before the review-decision and
+        // outstanding-reviewer reads that feed this composer whenever no review feedback is waiting
+        // behind it — and the merge bar is unchanged where feedback is, since that path dispatches
+        // a lap and returns ahead of the merge too, Decisions Log #PLACEHOLDER-5657f3fa), so an
+        // incomplete CI picture must not let the "GitHub's own gates read satisfied" claim below
+        // fire while checks are still reporting and the daemon is in fact refusing to merge
+        // (independent pre-PR review, cycle 1, both lenses).
         if (run.ExternalReviewChecksPending)
         {
-            waitingOn.Add("CI checks to finish reporting");
+            waitingOn.Add(run.ExternalReviewChecksPendingSince is { } since
+                ? $"CI checks to finish reporting (pending {TaskStatusComposer.RelativeDuration(now - since)})"
+                : "CI checks to finish reporting");
         }
 
         if (run.ExternalReviewState == Domain.Features.Run.ExternalReviewState.RequestedPending)
@@ -734,7 +739,7 @@ internal static class AttentionComposer
     /// NeedsYou, because the reviewer has spoken and nothing in the platform will answer them.
     /// </para>
     /// </summary>
-    private static TaskAttention? NamedHumanReviewWaitAttention(RunDetails run)
+    private static TaskAttention? NamedHumanReviewWaitAttention(RunDetails run, DateTimeOffset now)
     {
         HumanReviewWait wait = ReadHumanReviewWait(run);
 
@@ -780,9 +785,12 @@ internal static class AttentionComposer
         // the wording it replaces: this cause pre-empts the "read its checks first" hedge, so on a
         // row where the CI picture was still incomplete as of the last observation it has to carry
         // that hedge itself, or a reader who settles the review side would merge on an unread CI
-        // result (the same defect the Landed and None arms below were each corrected for).
+        // result (the same defect the Landed and None arms below were each corrected for). What it
+        // says about that check is how long it has been pending (Decisions Log
+        // #PLACEHOLDER-5657f3fa), because a check nobody will ever get a final status for is
+        // indistinguishable from an ordinary in-flight build until somebody reads the wait's length.
         string checksCaveat = run.ExternalReviewChecksPending
-            ? "; its checks may still be reporting too"
+            ? $"; {TaskStatusComposer.ChecksPendingClause(run.ExternalReviewChecksPendingSince, now)} too"
             : string.Empty;
 
         // NeedsYou only when a verdict is actually waiting on the owner. An outstanding request is
@@ -796,9 +804,10 @@ internal static class AttentionComposer
         return new TaskAttention(level, cause + checksCaveat, run.PullRequestUrl ?? string.Empty);
     }
 
-    private static TaskAttention AwaitingReviewAttention(RunDetails run)
+    private static TaskAttention AwaitingReviewAttention(RunDetails run, DateTimeOffset now)
     {
-        TaskAttention baseAttention = NamedHumanReviewWaitAttention(run) ?? CopilotAwaitingReviewAttention(run);
+        TaskAttention baseAttention =
+            NamedHumanReviewWaitAttention(run, now) ?? CopilotAwaitingReviewAttention(run, now);
         IReadOnlyList<ReviewThreadOutcome> openThreads = OpenHumanReviewThreads(run);
         if (openThreads.Count == 0)
         {
@@ -846,19 +855,22 @@ internal static class AttentionComposer
                     || outcome.Disposition == ReviewThreadDisposition.Route)
                 && outcome.IsHuman != false)];
 
-    private static TaskAttention CopilotAwaitingReviewAttention(RunDetails run) => run.ExternalReviewState.Value switch
+    private static TaskAttention CopilotAwaitingReviewAttention(RunDetails run, DateTimeOffset now) => run.ExternalReviewState.Value switch
     {
         "RequestedPending" => new TaskAttention(AttentionLevel.WaitingHandled,
             "Copilot's review is requested but not submitted yet — nothing for you until it lands"),
-        // A landed review recorded while checks were still incomplete has not been read
-        // against a settled CI result, and its threads have not been re-checked for new
-        // unresolved ones this sweep either (RunDetails.ExternalReviewChecksPending) — the
-        // unconditional claim below is only true once a sweep got past both reads without
-        // moving the run off AwaitingReview, so a run still carrying the caveat gets the same
-        // "read its checks first" hedge the None arm below already gives a quiet pull request.
+        // A landed review recorded while checks were still incomplete has not been read against a
+        // settled CI result, so a run still carrying that caveat gets the same "read its checks
+        // first" hedge the None arm below already gives a quiet pull request — named as the wait's
+        // own length, because a check nobody will get a final status for reads identically to an
+        // in-flight build otherwise (Decisions Log #PLACEHOLDER-5657f3fa). What this arm no longer
+        // claims is that the threads went unread: the sweep short-circuited on a pending CI picture
+        // ahead of its own unresolved-thread read when this wording was written, and it does not
+        // any more, so repeating "not yet confirmed resolved" would report a gap that is closed.
         "Landed" when run.ExternalReviewChecksPending => new TaskAttention(AttentionLevel.NeedsYou,
-            "Copilot's review landed, but its checks may still be reporting and its threads are not yet "
-            + "confirmed resolved — read its checks, then the merge is yours",
+            "Copilot's review landed, and "
+            + $"{TaskStatusComposer.ChecksPendingClause(run.ExternalReviewChecksPendingSince, now)} — "
+            + "read its checks, then the merge is yours",
             run.PullRequestUrl ?? string.Empty),
         "Landed" => new TaskAttention(AttentionLevel.NeedsYou,
             "Copilot's review landed — read it, then the merge is yours", run.PullRequestUrl ?? string.Empty),
@@ -880,8 +892,9 @@ internal static class AttentionComposer
             "no external review activity recorded — the merge is yours",
             run.PullRequestUrl ?? string.Empty),
         "None" => new TaskAttention(AttentionLevel.NeedsYou,
-            "no external review activity recorded, and its checks may still be reporting — read "
-            + "them, then the merge is yours",
+            "no external review activity recorded, and "
+            + $"{TaskStatusComposer.ChecksPendingClause(run.ExternalReviewChecksPendingSince, now)} — "
+            + "read them, then the merge is yours",
             run.PullRequestUrl ?? string.Empty),
         // Unknown is either no sweep at all or a sweep that read a Copilot review it could not
         // compare against the head commit — in neither case is there confirmed review activity

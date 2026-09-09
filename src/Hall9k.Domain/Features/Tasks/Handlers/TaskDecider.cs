@@ -1691,7 +1691,8 @@ public static class TaskDecider
         string? pullRequestHeadSha = null,
         string? stackReplayUpstreamCommit = null,
         string? stackReplayOntoCommit = null,
-        IReadOnlyList<ChangesRequestedReview>? changesRequestedReviews = null)
+        IReadOnlyList<ChangesRequestedReview>? changesRequestedReviews = null,
+        DateTimeOffset? checksPendingSince = null)
     {
         if (task.State != TaskState.Done)
         {
@@ -1759,7 +1760,8 @@ public static class TaskDecider
             task.Id, previousRunId, branch, reason, reopenedAt, reopenedByOwnerId, kind, automatic,
             obstructionKey, obstructionSummary,
             knownHumanReviewThreadIds, knownPendingReviewRequestLogins, pullRequestHeadSha,
-            stackReplayUpstreamCommit, stackReplayOntoCommit, changesRequestedReviews);
+            stackReplayUpstreamCommit, stackReplayOntoCommit, changesRequestedReviews,
+            checksPendingSince);
     }
 
     /// <summary>

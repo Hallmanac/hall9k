@@ -124,8 +124,29 @@ public sealed class RunDetails
     /// complete CI answer at that moment (pre-PR review, cycle 4) — not that the sweep went on to
     /// read past failing checks or unresolved threads, or that none were found: a parked run
     /// records this and returns before ever reaching those reads.
+    /// <para>
+    /// True no longer implies the review-feedback reads were skipped either, which it did when this
+    /// field's first readers were written: the pending-checks short-circuit used to sit ahead of
+    /// them, and since Decisions Log #PLACEHOLDER-5657f3fa it yields to them. A run resting in
+    /// AwaitingReview with this true has had its unresolved threads read; what is still unread is
+    /// the CI result, and <see cref="ExternalReviewChecksPendingSince"/> is how long that has been
+    /// the case.
+    /// </para>
     /// </summary>
     public bool ExternalReviewChecksPending { get; set; }
+    /// <summary>
+    /// When the provider's CI picture was FIRST observed still incomplete on the current run, and
+    /// null the moment an observation reads it complete — how long a check has been pending, which
+    /// is what the Delivered surfaces say instead of offering the pendingness itself as the reason
+    /// nothing is happening (Decisions Log #PLACEHOLDER-5657f3fa; origin: arx-platform PR #2042's
+    /// .NET Framework check sat pending for nine hours after its hosted agent died, and the phase
+    /// line all night said only that its checks may still be reporting). Set on the transition INTO
+    /// pending and never refreshed by a later sweep that merely confirms the same still-pending
+    /// picture — the same anchoring <see cref="CopilotReviewRequestPendingSince"/> uses, and for the
+    /// same reason: a duration measured from the most recent confirming sweep would always read as
+    /// minutes however long the check had really been stuck.
+    /// </summary>
+    public DateTimeOffset? ExternalReviewChecksPendingSince { get; set; }
     /// <summary>
     /// GitHub's own review-decision verdict as last observed (task: a task can be published
     /// pre-approved) — display only, see <see cref="Events.ExternalReviewObserved.ReviewDecision"/>'s
@@ -1186,6 +1207,21 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         else
         {
             view.CopilotReviewRequestPendingSince = null;
+        }
+
+        // The checks-pending anchor, read off the view's own prior value before it is overwritten
+        // below, and on exactly the terms the Copilot anchor above uses: set on the transition INTO
+        // a pending CI picture, cleared the moment one reads complete, and never refreshed by a
+        // sweep that only confirms the same pending picture again. The dedup in
+        // CloseoutEngine.RecordExternalReviewObservationAsync compares ChecksPending as its own
+        // axis, so both transitions always land an event of their own to be read here.
+        if (@event.Data.ChecksPending)
+        {
+            view.ExternalReviewChecksPendingSince ??= @event.Data.ObservedAt;
+        }
+        else
+        {
+            view.ExternalReviewChecksPendingSince = null;
         }
 
         view.ExternalReviewState = @event.Data.State;

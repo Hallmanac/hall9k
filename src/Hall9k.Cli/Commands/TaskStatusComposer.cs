@@ -258,7 +258,7 @@ internal static class TaskStatusComposer
         QueueHold? held = QueueHold.For(task, project, context.Pressure);
         TrackerClaimDecision? heldByTracker = HeldByTracker(task, context);
 
-        TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, held, heldByTracker);
+        TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, now, held, heldByTracker);
         (bool stalled, string activity) = Silence(task, run, state, session, context, now);
         TaskAttention attention = AttentionComposer.Compose(
             task, run, state, phase, stalled, now,
@@ -673,4 +673,36 @@ internal static class TaskStatusComposer
         { TotalHours: < 36 } => $"{(int)elapsed.TotalHours}h ago",
         _ => $"{(int)elapsed.TotalDays}d ago",
     };
+
+    /// <summary>
+    /// How long something has been going on, in the same resolution <see cref="RelativeAge"/>
+    /// reads at a glance — a span rather than a point, for the lines that say a wait's length
+    /// ("a check has been pending 9h") rather than when it started.
+    /// </summary>
+    public static string RelativeDuration(TimeSpan elapsed) => elapsed switch
+    {
+        { TotalSeconds: < 90 } => "under a minute",
+        { TotalMinutes: < 90 } => $"{(int)elapsed.TotalMinutes}m",
+        { TotalHours: < 36 } => $"{(int)elapsed.TotalHours}h",
+        _ => $"{(int)elapsed.TotalDays}d",
+    };
+
+    /// <summary>
+    /// How long a check has been pending, said as a length rather than as a possibility (Decisions
+    /// Log #PLACEHOLDER-5657f3fa; origin: arx-platform PR #2042's .NET Framework check lost its
+    /// hosted Azure DevOps agent and never received a final status, so it read pending for nine
+    /// hours while the only thing any surface said about it was that its checks may still be
+    /// reporting). Lives here, beside <see cref="RelativeDuration"/>, because the phase line and
+    /// the attention line directly under it both say it and must not drift apart on the wording.
+    /// <para>
+    /// A record with no anchor says the length is unknown rather than measuring from now, which
+    /// would report every such row as a fresh wait — the honest reading of an observation that
+    /// predates the anchor being collected is that the length was never recorded (AGENTS.md, never
+    /// guess at unobserved facts).
+    /// </para>
+    /// </summary>
+    public static string ChecksPendingClause(DateTimeOffset? pendingSince, DateTimeOffset now) =>
+        pendingSince is { } since
+            ? $"a check has been pending {RelativeDuration(now - since)}"
+            : "a check is still pending, and when it started was not recorded";
 }

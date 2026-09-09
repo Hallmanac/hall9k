@@ -226,6 +226,17 @@ public sealed class TaskListItem
     /// refuses --merge-ready, apart from an ordinary review park, which takes it.
     /// </summary>
     public FollowUpKind FollowUpKind { get; set; } = FollowUpKind.Unknown;
+    /// <summary>
+    /// When the pull request's CI picture was first observed still incomplete, as of the sweep that
+    /// dispatched the pending follow-up (<see cref="Events.TaskReopened.ChecksPendingSince"/>) —
+    /// how long a check had been pending when this lap was dispatched. Null when the checks were
+    /// complete then, when no follow-up is pending, and on a reopen recorded before the field
+    /// existed: unknown, never a claimed "the checks were done". The Delivered phase line reads it
+    /// so a queued or claimed follow-up on a pull request whose check is still pending names the
+    /// wait's age rather than leaving the pendingness to read as the reason nothing is happening
+    /// (Decisions Log #PLACEHOLDER-5657f3fa).
+    /// </summary>
+    public DateTimeOffset? FollowUpChecksPendingSince { get; set; }
 }
 
 public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem, Guid>
@@ -492,6 +503,10 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.FollowUpKind = FollowUpKind.Unknown;
+        // Cleared with the kind it belongs to: the follow-up has landed, so what closeout observed
+        // of the checks at its dispatch describes a push that is no longer the head. The run's own
+        // ExternalReviewChecksPendingSince takes over from here, re-anchored by the next sweep.
+        view.FollowUpChecksPendingSince = null;
         view.State = TaskState.Done;
         // Mirrors TaskAggregate.Apply(TaskCompleted): a marker set while this same claim was
         // live never routes back through Apply(TaskClaimed), so nothing else here clears it.
@@ -503,6 +518,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.ClaimedByNodeId = null;
         view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
+        view.FollowUpChecksPendingSince = @event.Data.ChecksPendingSince;
         // Same invariant the TaskRequeued handler above restores: a deliberately-claimed Blocked
         // task can reach Done/Reopened while still carrying an unmet dependency, since Claim never
         // clears UnmetDependencies — only Assign does.
@@ -553,6 +569,10 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.PullRequestUrl = @event.Data.PullRequestUrl ?? view.PullRequestUrl;
         view.FollowUpKind = FollowUpKind.Unknown;
+        // Cleared with the kind, on the same terms Apply(TaskCompleted) clears it: there is no
+        // pending follow-up left for it to describe, and a value surviving into a state that
+        // renders nothing from it is one a later reader can only misread.
+        view.FollowUpChecksPendingSince = null;
         view.State = TaskState.Done;
         // Mirrors TaskAggregate.Apply(TaskResolved): same reasoning as Apply(TaskCompleted) above.
         view.QueuePriorityMarked = false;
@@ -562,6 +582,8 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskAbandoned> @event, TaskListItem view)
     {
         view.FollowUpKind = FollowUpKind.Unknown;
+        // Same reasoning as Apply(TaskResolved) above, and a dead end besides.
+        view.FollowUpChecksPendingSince = null;
         view.State = TaskState.Abandoned;
         // Mirrors TaskAggregate.Apply(TaskAbandoned): a dead end, so a marker set earlier in
         // this task's life must not survive to be read back.

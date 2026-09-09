@@ -2697,7 +2697,15 @@ public sealed class CloseoutEngine(
             pullRequestHeadSha: pullRequestHeadSha,
             stackReplayUpstreamCommit: stackReplayUpstreamCommit,
             stackReplayOntoCommit: stackReplayOntoCommit,
-            changesRequestedReviews: changesRequestedReviews));
+            changesRequestedReviews: changesRequestedReviews,
+            // Derived here rather than passed by each caller, because every caller has the same
+            // two facts to derive it from and there is one right answer: the snapshot this dispatch
+            // acted on. run.ExternalReviewChecksPendingSince is the anchor a previous sweep set;
+            // `now` covers the sweep that observes the pending picture for the first time, whose own
+            // ExternalReviewObserved append has not been projected back into `run` yet.
+            checksPendingSince: snapshot.HasPendingChecks
+                ? run.ExternalReviewChecksPendingSince ?? now
+                : null));
 
         // The reopen hands the pull request to a successor, so this run's watch ends
         // with it — retire it in the same transaction (TASK-MODEL.md §2.2). A lost race

@@ -511,19 +511,27 @@ public sealed class AttentionSurfaceTests
         reviewLanded.Attention.Cause.Should().Contain("Copilot's review landed");
         reviewLanded.Attention.Cause.Should().Contain("the merge is yours");
 
-        // Recorded while the CI picture was still incomplete: the sweep never got to
-        // re-checking for new unresolved threads, so the cause must not claim the merge is
-        // the only thing left (independent pre-PR review, cycle 3).
+        // Recorded while the CI picture was still incomplete: a pending check holds the merge on
+        // its own, so the cause must not claim the merge is the only thing left (independent pre-PR
+        // review, cycle 3) — and what it says about that check is how long it has been pending, not
+        // that it might be (Decisions Log #PLACEHOLDER-5657f3fa). It no longer claims the threads
+        // went unread either: review feedback is now detected whatever the checks are doing.
         RunDetails landedChecksPending = StatusFixtures.Run(
             runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         landedChecksPending.ExternalReviewState = ExternalReviewState.Landed;
         landedChecksPending.ExternalReviewChecksPending = true;
+        landedChecksPending.ExternalReviewChecksPendingSince = StatusFixtures.Now.AddHours(-9);
         TaskStatusRow reviewLandedChecksPending = StatusFixtures.Compose(
             StatusFixtures.Task(TaskState.Done, runId, pullRequest), landedChecksPending);
 
         reviewLandedChecksPending.Attention.NeedsYou.Should().BeTrue("Copilot has weighed in even though checks are still out");
         reviewLandedChecksPending.Attention.Cause.Should().Contain("Copilot's review landed");
-        reviewLandedChecksPending.Attention.Cause.Should().Contain("checks may still be reporting");
+        reviewLandedChecksPending.Attention.Cause.Should().Contain("a check has been pending 9h");
+        reviewLandedChecksPending.Attention.Cause.Should().NotContain(
+            "checks may still be reporting",
+            "the pendingness alone was the reason nothing happened for nine hours on PR #2042");
+        reviewLandedChecksPending.Attention.Cause.Should().NotContain(
+            "not yet confirmed resolved", "the sweep does read the threads now, pending checks or not");
         reviewLandedChecksPending.Attention.Cause.Should().NotContain(
             "landed — read it, then the merge is yours", "checks pending must not read as the unconditional all-clear");
 
@@ -558,12 +566,24 @@ public sealed class AttentionSurfaceTests
         RunDetails noneChecksPending = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
         noneChecksPending.ExternalReviewState = ExternalReviewState.None;
         noneChecksPending.ExternalReviewChecksPending = true;
+        noneChecksPending.ExternalReviewChecksPendingSince = StatusFixtures.Now.AddMinutes(-12);
         TaskStatusRow reviewNoneChecksPending = StatusFixtures.Compose(
             StatusFixtures.Task(TaskState.Done, runId, pullRequest), noneChecksPending);
 
         reviewNoneChecksPending.Attention.NeedsYou.Should().BeTrue();
         reviewNoneChecksPending.Attention.Cause.Should().Contain("no external review activity recorded");
-        reviewNoneChecksPending.Attention.Cause.Should().Contain("checks may still be reporting");
+        reviewNoneChecksPending.Attention.Cause.Should().Contain("a check has been pending 12m");
+
+        // An observation recorded before the anchor was collected says the length is unknown rather
+        // than measuring from now, which would report a nine-hour wait as a fresh one (AGENTS.md,
+        // never guess at unobserved facts).
+        RunDetails noneChecksPendingUnanchored = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        noneChecksPendingUnanchored.ExternalReviewState = ExternalReviewState.None;
+        noneChecksPendingUnanchored.ExternalReviewChecksPending = true;
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, runId, pullRequest), noneChecksPendingUnanchored)
+            .Attention.Cause.Should().Contain("when it started was not recorded");
     }
 
     /// <summary>
@@ -870,22 +890,25 @@ public sealed class AttentionSurfaceTests
     /// The named wait pre-empts the Copilot arms below it, which is what drops "the merge is yours"
     /// — so it has to carry the checks-pending hedge those arms carry, or a reader who settles the
     /// review side would merge against a CI result nobody has read (the same correction the Landed
-    /// and None arms each already took).
+    /// and None arms each already took), and it names the wait's length on the same terms they do
+    /// (Decisions Log #PLACEHOLDER-5657f3fa).
     /// </summary>
     [Fact]
-    public void A_named_review_wait_still_says_the_checks_may_be_reporting()
+    public void A_named_review_wait_still_says_how_long_a_check_has_been_pending()
     {
         Guid runId = DomainId.New();
         RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 35);
         run.ExternalOutstandingReviewerLogins = ["alice"];
         run.ExternalOutstandingHumanReviewerLogins = ["alice"];
         run.ExternalReviewChecksPending = true;
+        run.ExternalReviewChecksPendingSince = StatusFixtures.Now.AddHours(-9);
 
         TaskStatusRow row = StatusFixtures.Compose(
             StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/35"), run);
 
         row.Attention.Cause.Should().Contain("awaiting review from `alice`");
-        row.Attention.Cause.Should().Contain("checks may still be reporting");
+        row.Attention.Cause.Should().Contain("a check has been pending 9h");
+        row.Attention.Cause.Should().NotContain("checks may still be reporting");
     }
 
     /// <summary>
