@@ -931,12 +931,53 @@ public sealed class CloseoutEngine(
 
         if (snapshot.UnresolvedReviewThreadCount > 0)
         {
+            // A human-authored thread this exact run already declined or routed stays unresolved
+            // by design (Decisions Log #159: "a human-authored one stays open" — closing it is not
+            // the agent's to do). Left in snapshot.ThreadIds unchanged, it would otherwise read as
+            // a fresh obstruction on every sweep after this one, buying a second follow-up dispatch
+            // that can only repeat "never re-litigate a point a previous run already answered" and
+            // push nothing before the per-obstruction cap parks the run anyway (independent pre-PR
+            // review, cycle 1, adversarial lens: before this exclusion, the identical
+            // already-answered thread cost a wasted extra lap on the way to that same park).
+            // Excluding it from the DISPATCH decision only — snapshot.UnresolvedReviewThreadCount
+            // itself still gates everything below, including auto-merge, exactly as before, so a
+            // thread left open on purpose still blocks a pre-approved merge until the human closes
+            // it. Excluding it here does not risk missing real, later human engagement on it: the
+            // per-obstruction cap's own human-engagement bypass (HasHumanEngagement) already only
+            // ever recognizes a thread id newly appearing, never a reply added to one it already
+            // knows — so a reply on this thread was never going to grant a bypass either way, and
+            // this exclusion costs nothing beyond what that gap already did.
+            IReadOnlyList<string> alreadyAnsweredThreadIds = [.. run.LastReviewThreadOutcomes
+                .Where(outcome => outcome.Disposition == ReviewThreadDisposition.Decline
+                    || outcome.Disposition == ReviewThreadDisposition.Route)
+                .Select(outcome => outcome.ThreadId)];
+            IReadOnlyList<string> outstandingThreadIds = [.. snapshot.ThreadIds.Except(alreadyAnsweredThreadIds)];
+
+            // snapshot.ThreadIds.Count > 0 is a deliberate extra guard, not a redundant one: the
+            // provider read always populates it 1:1 with UnresolvedReviewThreadCount
+            // (GitHubPullRequestInspector.ReadReviewObservation), but nothing here can tell an
+            // inspector reading that ids the count > 0 came before them existed
+            // (FakeInspector.Quiet() with { UnresolvedReviewThreadCount = N } and no ids, used
+            // throughout this class's own tests) — the empty-Except() answer is identical for
+            // "nothing outstanding" and "no id-level data to compare against", and only the id
+            // list can tell them apart. Skipping without it would treat a bare count as fully
+            // accounted for and never dispatch.
+            if (snapshot.ThreadIds.Count > 0 && outstandingThreadIds.Count == 0)
+            {
+                // Nothing left that a follow-up could act on: every unresolved thread is one this
+                // run already triaged as decline or route and replied to, waiting only on the human
+                // it was left open for. A visible wait, not a park (design ruling 3's own terms) —
+                // the next sweep re-reads and either finds the human closed it, or reads this exact
+                // same set and takes this same branch again, spending nothing either time.
+                return InspectionOutcome.Inspected;
+            }
+
             session.Events.Append(run.Id, new ReviewFeedbackReceived(
                 run.Id, snapshot.UnresolvedReviewThreadCount, now, snapshot.UnresolvedHumanThreadCount));
             await DispatchFollowUpOrParkAsync(
                 session, task, run, fence.Version,
                 FollowUpKind.ReviewFeedback,
-                snapshot.ThreadIds,
+                outstandingThreadIds,
                 snapshot,
                 DescribeUnresolvedThreads(snapshot),
                 // Same reasoning as the FailingChecks branch above: seed the follow-up's own
