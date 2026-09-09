@@ -8,9 +8,12 @@ namespace Hall9k.Daemon.ProcessManagement;
 /// <see cref="Process.StartTime"/>, and <c>Kill(entireProcessTree: true)</c> already behave
 /// identically on every OS .NET targets here, and the pid-reuse check that tells "same
 /// process" from "the pid was recycled" (Decisions Log #2) is a comparison, not a syscall —
-/// nothing about it differs by platform. Spawn is the one place a real difference exists (the
-/// native shell that gives the child its own file handle), so it is the only member each
-/// concrete implementation supplies.
+/// nothing about it differs by platform. Spawn is one of two places a real difference exists
+/// (the native shell that gives the child its own file handle); the other is
+/// <see cref="CollectDescendants"/> (task: the daemon terminates a completed session's process
+/// tree before it starts any gate or another session in the same worktree), since no
+/// cross-platform BCL API enumerates "children of this pid" — every other member here is
+/// implemented once, in this base class, in terms of those two.
 /// </summary>
 public abstract class ProcessManagerBase : IProcessManager
 {
@@ -180,6 +183,22 @@ public abstract class ProcessManagerBase : IProcessManager
         // by the pid-and-start-time identity this method snapshotted before the reparenting
         // could have happened, so a pid the OS recycled for an unrelated process in the
         // meantime is recognized as gone rather than killed by mistake.
+        //
+        // A descendant still alive at the exact instant the root happens to exit is not yet
+        // distinguishable from one genuinely lingering (independent pre-PR review, cycle 1,
+        // adversarial lens): the root exiting early only proves the ROOT finished tearing down,
+        // not that everything it spawned already has, and the doc comment above's own reasoning
+        // for giving the root a grace window before judging it applies verbatim here. Rather
+        // than a second, fresh window — which would let a slow root plus a slow descendant cost
+        // up to double LingeringGraceWindow in total — this polls out whatever time is LEFT on
+        // the SAME graceDeadline already budgeted above, so the combined wait for root-plus-
+        // descendants never exceeds the one window this method has always promised.
+        while (DateTimeOffset.UtcNow < graceDeadline
+            && descendantSnapshotsBeforeExit.Any(descendant => IsAlive(descendant.Id, descendant.StartedAt)))
+        {
+            Thread.Sleep(LingeringGracePollInterval);
+        }
+
         List<int> stillAliveDescendants = [];
         foreach ((int descendantId, DateTimeOffset descendantStartedAt) in descendantSnapshotsBeforeExit)
         {
