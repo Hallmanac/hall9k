@@ -418,8 +418,8 @@ PR #24 — Copilot review landed" with its comment-thread count, "watching PR #2
 Copilot review · requested but not yet submitted", "watching PR #24 — Copilot reviewed an
 earlier commit" with the same thread count and its own stale-review hedge (a real review that
 happened, just against a since-superseded commit, distinct from nothing having happened at
-all), plain "watching PR #24" with "no external review activity observed; its checks may
-still be reporting" while the provider's CI picture is still incomplete, "watching PR #24 —
+all), plain "watching PR #24" with "no external review activity observed; a check has been
+pending 12m" while the provider's CI picture is still incomplete, "watching PR #24 —
 awaiting human review" once it is not, or plain "watching PR #24" with "no confirmed review
 observation recorded; its checks may still be reporting" when no sweep has confirmed review
 activity at all — either because none has run yet, or because a sweep read a real Copilot
@@ -427,13 +427,19 @@ review it could not compare against the head commit - plus the
 failing checks or the unresolved thread count when those are what is observed instead, and
 "automatic follow-ups stopped" when parked. The
 quiet-checks-pending reading never claims a clean pull request or names the human as the last
-gate, because the monitor does not act on checks or review
-threads while CI is still reporting — it still records what it saw of Copilot's review state that
+gate, because a pending check holds the merge on its own and the monitor does not act on the
+checks while CI is still reporting — it still records what it saw of Copilot's review state that
 same sweep, but an absence of findings beyond that recorded observation is not itself an
-observation of a clean pull request. A
+observation of a clean pull request. What it says about that check is its *age* rather than its
+possibility (Decisions Log #PLACEHOLDER-5657f3fa): "a check has been pending 9h" is a fact a
+reader can act on, where "its checks may still be reporting" once stood in for nine hours of
+nothing happening. A record with no anchor for the wait says the length is unknown rather than
+measuring from now. A
 Queued/Claimed task still carrying a pull-request URL is a follow-up in flight and says so
-("follow-up on PR #24: building"), which is the distinction the old single `ClosingOut` bucket
-could not make. **Done** appears only once the merge is observed; a run that ended without one stays
+("follow-up on PR #24: building"), and where a check was still pending when that lap was
+dispatched the same line carries the wait's age beside it ("follow-up queued for PR #2042 · not
+claimed yet; a check has been pending 9h") — which is the distinction the old single `ClosingOut`
+bucket could not make. **Done** appears only once the merge is observed; a run that ended without one stays
 Delivered and quotes the reason the run recorded, which is how a pull request closed without
 merging (`PullRequestClosed` records its own reason) reads differently from a gate failure a
 human then resolved onto that pull request. `RunState.Failed` carries both, so neither the phase

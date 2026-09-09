@@ -611,11 +611,16 @@ Per poll, in priority order:
 
 Two silences are worth knowing about. GitHub hides an unsubmitted (`PENDING`) review's comments
 from the API entirely, so a pull request can look quiet while feedback is being written: never
-read silence as "the reviewer had nothing to say". And the monitor does not act on checks or
-review threads while CI is still reporting — the pending-checks read short-circuits ahead of both
-— even though it still records what it saw of Copilot's review state on the run stream that same
-sweep; which is why the quiet phase line says "no external review activity observed; its checks
-may still be reporting" rather than claiming a clean pull request.
+read silence as "the reviewer had nothing to say". And the monitor does not act on *checks* while
+CI is still reporting — an incomplete picture would hand a follow-up a partial failure list, so
+the pending-checks read short-circuits ahead of the failing-checks branch — even though it still
+records what it saw of Copilot's review state on the run stream that same sweep; which is why the
+quiet phase line names how long a check has been pending rather than claiming a clean pull
+request. **Review feedback is not held behind that read** (Decisions Log #PLACEHOLDER-5657f3fa,
+Brian's ruling: a broken CI may be what the review found, so the fix lap must be allowed to run):
+unresolved threads or a changes-requested review dispatch their lap whatever the checks are doing,
+and a failing check seen on the same sweep rides in that one lap's prompt rather than buying a
+second. A pending check still holds the *merge* either way.
 
 Automatic follow-ups are bounded by two counters, not one. A **progress cap**
 (`MaxCloseoutLapsPerObstruction`, default 2) counts consecutive laps spent on the *same*
