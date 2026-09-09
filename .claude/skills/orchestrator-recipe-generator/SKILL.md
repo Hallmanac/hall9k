@@ -148,7 +148,9 @@ from what this skill says next time it runs.
 > "Generated with Claude", no Co-Authored-By trailer in commits, PR titles, or PR bodies. These
 > rules live here, in the recipe itself, rather than only in the operator's own user-level
 > `CLAUDE.md`, because `--setting-sources project` drops that file from every session this recipe
-> starts.
+> starts. A dispatched session gets the same rules a third way, from the project's own
+> `--writing-conventions` setting, which the platform pastes into every prompt that asks an agent
+> to compose prose posted under the owner's login; this block is the operator-window copy of it.
 
 ### Talking to the operator (copy verbatim)
 

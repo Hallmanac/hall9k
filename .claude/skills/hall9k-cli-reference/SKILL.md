@@ -28,6 +28,7 @@ h9k project set <name> --max-parallel-tasks <N|default>   # this project's own c
 h9k project set <name> --priority high|normal|low|default   # which tier this project's ready work competes in for a FREE dispatch slot. Default normal, and free slots rotate: the eligible project longest unserved wins the next one, oldest task first within it (nothing to set on a single-project node). 'high' is focus — wins every free slot over lower tiers while it has ready work and RELEASES ITSELF when its queue drains, which is the opposite of the sticky --max-parallel-tasks 0 pause. 'default' is the clearing word, restoring normal. Nothing preempts; every claim logs why that project won (Decisions Log #141)
 h9k project set <name> --claim-gate off|tracker-assignee   # a task linked to a Jira card or GitHub issue is claimed on this install only while the tracker shows that item assigned to this install's own identity; default off (Decisions Log #142)
 h9k project set <name> --close-linked-issue on-closeout|never|when-all-tasks-close|default   # whether true closeout closes a task's linked GitHub issue, and when; default when-all-tasks-close waits for every task linked to the same issue to close out or be abandoned, decided fresh at the last one — a task overrides it at publish/revise, --never-close-labels forces never for a labeled issue, Jira untouched (Decisions Log #154)
+h9k project set <name> --writing-conventions "<TEXT>"   # how prose an agent composes for people has to read here, pasted verbatim into every prompt that asks a session to write something posted under the owner's login (PR title and body, a review-feedback lap's summary comment and thread replies, the note a review lap drafts for h9k pr approve / request-changes, an attended session's commit messages). The two mechanically checkable rules are re-checked immediately before the platform posts: an em dash is rewritten by context, an attribution line is dropped, an attribution welded into a sentence is not posted at all. A run never fails over a convention miss. 'default' restores the platform text (no em dashes, full sentences, no AI attribution)
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
 h9k status                   # the attention pane: state, phase, and attention on every row
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
@@ -579,6 +580,19 @@ drift between those two moments is the same failure a hand-renamed branch caused
 node on 2026-08-31, where the push hit a refspec that no longer existed and the task parked Failed.
 A task carrying no linked item renders `{key}` as `no-key` — nothing was observed, said out loud,
 rather than an empty segment or an invented card number.
+
+**A project's house writing style is a setting the platform actually delivers, not a rule that
+lives only where the composing session cannot read it.** `h9k project set <project>
+--writing-conventions "<TEXT>"` records it and `h9k project show` prints it; the text is pasted
+verbatim into every prompt that asks an agent to compose something posted to GitHub under the
+owner's login, and the two rules a machine can also check (an em dash, an AI attribution string)
+are re-checked immediately before the platform posts anything it composed. A hit with a mechanical
+fix is rewritten (an em dash becomes a comma, a semicolon or a colon by context; an attribution
+alone on its line is dropped); one without is not posted at all, and the run carries on rather than
+failing. `default` restores the platform text. Origin incident (2026-09-09): a review-feedback
+follow-up on `AgelessRx/arx-platform#2042` posted its summary comment under the owner's login with
+em dashes in most of its paragraphs, because the rule lived only in the orchestrator recipes and in
+the operator's own `CLAUDE.md`, which `--setting-sources project` drops from a dispatched session.
 
 **A pull request GitHub assigns to this install's own login is a go signal in its own right, on
 every project unless it has opted out** (idea e5e98a33, Decisions Log #34's own amendment, #133,
