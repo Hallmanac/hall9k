@@ -22,7 +22,7 @@ public static class OrchestratorReport
         }
         else
         {
-            AnsiConsole.WriteLine(launchText.Text);
+            LaunchLineWriter.Write(launchText.Text);
         }
 
         string recipeStatus = File.Exists(recipePath) ? string.Empty : " (not created yet - run the orchestrator-recipe-generator skill)";
