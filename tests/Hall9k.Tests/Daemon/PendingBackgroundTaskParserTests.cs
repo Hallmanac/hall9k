@@ -86,4 +86,17 @@ public sealed class PendingBackgroundTaskParserTests
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(
             "I don't know how long this will take to complete, but the background test is still running.")
             .Should().BeTrue();
+
+    /// <summary>
+    /// A negation doesn't need to repeat "background" itself to deny it — a later sub-clause can
+    /// refer back by pronoun ("which") and still count, because the denial applies to the same
+    /// background task the earlier sub-clause named (independent pre-PR review, cycle 4, adversarial
+    /// lens — the prior fix only checked the sub-clause naming "background" itself, missing a
+    /// negation that lands in the very next sub-clause instead).
+    /// </summary>
+    [Fact]
+    public void A_negation_in_a_later_sub_clause_referring_back_by_pronoun_suppresses_the_pending_task_claim() =>
+        PendingBackgroundTaskParser.NamesPendingBackgroundTask(
+            "A background test, which never finished, so I killed it.")
+            .Should().BeFalse();
 }
