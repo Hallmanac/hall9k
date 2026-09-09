@@ -30,12 +30,20 @@ public static class PendingBackgroundTaskParser
     /// <summary>
     /// Phrases that turn "background" from something still pending into something explicitly
     /// avoided or already resolved: "rather than backgrounding it", "instead of the background
-    /// run", "no longer running in the background". Checked within the same clause as
-    /// "background" itself, not the whole summary, so a negation elsewhere in a long summary
-    /// cannot silently suppress a genuine pending-task clause later on.
+    /// run", "no longer running in the background", "nothing is left running in the background",
+    /// "no background monitors were set" — the last two are the most natural way a session that
+    /// obeyed the foreground-gates rule affirms it left nothing behind, and without a cue for that
+    /// shape a clean ending reads as the exact violation it is denying (independent pre-PR review,
+    /// cycle 1, adversarial lens). Checked within the same clause as "background" itself, not the
+    /// whole summary, so a negation elsewhere in a long summary cannot silently suppress a genuine
+    /// pending-task clause later on.
     /// </summary>
     private static readonly string[] NegationCues =
-        ["rather than", "instead of", "no longer", "not backgrounding", "without backgrounding", "never backgrounded"];
+    [
+        "rather than", "instead of", "no longer", "not backgrounding", "without backgrounding",
+        "never backgrounded", "nothing is left", "nothing left", "nothing is running",
+        "no background monitor", "no background task", "no background job", "no background process",
+    ];
 
     public static bool NamesPendingBackgroundTask(string? summary)
     {

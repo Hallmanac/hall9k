@@ -46,4 +46,15 @@ public sealed class PendingBackgroundTaskParserTests
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(
             "Ran the full suite in the foreground rather than backgrounding it; all gates completed.")
             .Should().BeFalse();
+
+    /// <summary>
+    /// The most natural way a compliant session affirms it left nothing behind — "nothing is left
+    /// running" or "no background monitors were set" — must not itself be misread as the violation
+    /// it is denying (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Theory]
+    [InlineData("Ran the gates in the foreground. Nothing is left running in the background.")]
+    [InlineData("Ran the gates in the foreground; no background monitors were set.")]
+    public void A_compliant_summary_that_affirms_nothing_was_left_behind_is_not_a_match(string summary) =>
+        PendingBackgroundTaskParser.NamesPendingBackgroundTask(summary).Should().BeFalse();
 }
