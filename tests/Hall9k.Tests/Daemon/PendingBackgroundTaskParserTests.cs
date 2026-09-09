@@ -129,4 +129,19 @@ public sealed class PendingBackgroundTaskParserTests
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(
             "I started a background test, but no background task is actually still running.")
             .Should().BeFalse();
+
+    /// <summary>
+    /// A later sub-clause that re-names "background" is only the same denial when it is still
+    /// talking about the same pending task — carrying one of the still-in-flight words, the way
+    /// cycle 6's own "no background task is actually still running" does. An unrelated aside that
+    /// merely shares the literal word "background" ("chatter") must not suppress the genuine
+    /// still-running claim named earlier in the same sentence (independent pre-PR review, cycle 7,
+    /// adversarial lens — the cycle-6 fix's substring check matched any later sub-clause merely
+    /// containing "background", not one actually continuing the same referent).
+    /// </summary>
+    [Fact]
+    public void A_later_sub_clause_that_re_names_background_unrelated_to_the_earlier_task_does_not_suppress_it() =>
+        PendingBackgroundTaskParser.NamesPendingBackgroundTask(
+            "The background build is still running, but no background chatter is worth mentioning here.")
+            .Should().BeTrue();
 }

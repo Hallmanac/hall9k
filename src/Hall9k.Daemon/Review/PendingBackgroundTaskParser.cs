@@ -148,7 +148,16 @@ public static class PendingBackgroundTaskParser
     /// when it carries a negation word, because that negation has nothing yet to deny: "I don't know
     /// how long this will take to complete, but the background test is still running" must not have
     /// its earlier, unrelated "don't" suppress the later sub-clause that actually names the pending
-    /// background task (independent pre-PR review, cycle 3, adversarial lens).
+    /// background task (independent pre-PR review, cycle 3, adversarial lens). Re-naming
+    /// "background" only counts as continuing the *same* pending task when the sub-clause also
+    /// carries one of <see cref="StillInFlightWords"/> — merely containing the literal substring
+    /// "background" is not enough, because an unrelated aside can share that word without sharing the
+    /// referent: "the background build is still running, but no background chatter is worth
+    /// mentioning here" must not have the second sub-clause's own "no" suppress the first sub-clause's
+    /// genuine still-running claim, since "chatter" is not the build the first sub-clause named
+    /// (independent pre-PR review, cycle 7, adversarial lens — the cycle-6 fix's substring check
+    /// matched any later sub-clause merely containing "background", not one actually continuing the
+    /// same referent).
     /// </summary>
     private static bool HasNegationCue(string clause)
     {
@@ -175,7 +184,7 @@ public static class PendingBackgroundTaskParser
 
             if (i > backgroundIndex
                 && !BackReferringPronounPattern.IsMatch(segment)
-                && !segment.Contains("background", StringComparison.OrdinalIgnoreCase))
+                && !ReNamesSameBackgroundTask(segment))
             {
                 break;
             }
@@ -190,4 +199,17 @@ public static class PendingBackgroundTaskParser
 
         return false;
     }
+
+    /// <summary>
+    /// True when a sub-clause that re-names "background" is still talking about the same pending
+    /// task named earlier, not an unrelated aside that merely shares the word: it must carry one of
+    /// <see cref="StillInFlightWords"/> too, the same vocabulary a genuine still-pending claim uses
+    /// elsewhere in this parser. "no background chatter is worth mentioning here" contains
+    /// "background" but none of those words, so it does not continue the earlier "background build
+    /// is still running" claim; "no background task is actually still running" contains "background"
+    /// and "running", so it does.
+    /// </summary>
+    private static bool ReNamesSameBackgroundTask(string segment) =>
+        segment.Contains("background", StringComparison.OrdinalIgnoreCase)
+        && StillInFlightWords.Any(word => segment.Contains(word, StringComparison.OrdinalIgnoreCase));
 }
