@@ -52,11 +52,12 @@ public static class AgentPromptBuilder
         string? blockerContext = null,
         string? interactiveMilestoneAddress = null,
         string? baseBranch = null,
-        string? baseCommit = null) =>
+        string? baseCommit = null,
+        TimeSpan? commandTimeout = null) =>
         WorkPromptBuilder.Build(
             task, project, branch, worktreePath, resumesPreviousWork, blockerContext, task.RetryReason,
             isHandback: task.ResumesFromHandback, interactiveMilestoneAddress: interactiveMilestoneAddress,
-            baseBranch: baseBranch, baseCommit: baseCommit);
+            baseBranch: baseBranch, baseCommit: baseCommit, commandTimeout: commandTimeout);
 
     /// <summary>
     /// The line a follow-up ends with when a review thread is a disagreement it cannot
@@ -91,7 +92,8 @@ public static class AgentPromptBuilder
     /// </param>
     public static string BuildFollowUp(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null)
+        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
+        TimeSpan? commandTimeout = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
@@ -146,7 +148,7 @@ public static class AgentPromptBuilder
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
             ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
-        AppendSessionEndsAtFinalMessageRule(prompt);
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: one THREAD DISPOSITION block per thread as the");
         prompt.AppendLine($"  triage section above asks for, then `{ThreadDispositionSummaryMarker}` followed");
@@ -199,7 +201,8 @@ public static class AgentPromptBuilder
     /// </param>
     public static string BuildReviewRequestedChanges(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null)
+        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
+        TimeSpan? commandTimeout = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
@@ -263,7 +266,7 @@ public static class AgentPromptBuilder
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
             ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
-        AppendSessionEndsAtFinalMessageRule(prompt);
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: which findings you fixed, which you answered without a");
         prompt.AppendLine("  code change and why, and which one (if any) you parked as a disagreement.");
@@ -477,7 +480,8 @@ public static class AgentPromptBuilder
     /// </param>
     public static string BuildFixChecks(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
-        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null)
+        string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
+        TimeSpan? commandTimeout = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
@@ -528,7 +532,7 @@ public static class AgentPromptBuilder
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
             ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
-        AppendSessionEndsAtFinalMessageRule(prompt);
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what was failing, what you changed, and any open");
         prompt.AppendLine("  questions.");
@@ -590,7 +594,8 @@ public static class AgentPromptBuilder
     public static string BuildRebase(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? humanResolution = null, string? interactiveMilestoneAddress = null,
-        bool? interactiveModeEnabledOverride = null, string? baseBranch = null, string? baseCommit = null)
+        bool? interactiveModeEnabledOverride = null, string? baseBranch = null, string? baseCommit = null,
+        TimeSpan? commandTimeout = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
@@ -714,7 +719,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("    `git push --force-with-lease` after re-verifying), and do NOT open a new pull");
         prompt.AppendLine("    request — the existing PR updates in place.");
         AppendRebaseDisputeRules(prompt);
-        AppendSessionEndsAtFinalMessageRule(prompt);
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what conflicted, how you resolved each conflict and");
         prompt.AppendLine("  why, and the verification results.");
@@ -997,7 +1002,7 @@ public static class AgentPromptBuilder
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false,
-        string? baseBranch = null)
+        string? baseBranch = null, TimeSpan? commandTimeout = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
@@ -1110,7 +1115,7 @@ public static class AgentPromptBuilder
         }
 
         AppendRebaseDisputeRules(prompt);
-        AppendSessionEndsAtFinalMessageRule(prompt);
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: what conflicted, how you resolved each conflict and");
         prompt.AppendLine("  why, and the verification results.");
@@ -1159,7 +1164,8 @@ public static class AgentPromptBuilder
     /// </param>
     public static string BuildStackReplay(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl,
-        CommitStyle commitStyle, string baseBranch, string upstreamCommit, string ontoCommit)
+        CommitStyle commitStyle, string baseBranch, string upstreamCommit, string ontoCommit,
+        TimeSpan? commandTimeout = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("# Follow-up task: replay this stacked branch onto its new base");
@@ -1245,7 +1251,8 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  forcing something through. Leave the worktree clean (`git rebase --abort`), and");
         prompt.AppendLine("  name in your final summary exactly what blocked it. A replay nobody reviews must");
         prompt.AppendLine("  never ship a result you are unsure of.");
-        WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(prompt);
+        WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(
+            prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- End with a short summary: which commits replayed, anything git dropped and why,");
         prompt.AppendLine("  what conflicted and how you resolved it, the verification results, and anything");
@@ -1789,7 +1796,8 @@ public static class AgentPromptBuilder
         bool? interactiveModeEnabledOverride = null,
         string? baseBranch = null,
         string? baseCommit = null,
-        IReadOnlyList<HumanFixRecord>? priorHumanFixes = null)
+        IReadOnlyList<HumanFixRecord>? priorHumanFixes = null,
+        TimeSpan? commandTimeout = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
@@ -1911,7 +1919,12 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  stated location cannot be matched against the prior cycle's own findings, or told");
         prompt.AppendLine("  apart from another unplaced one, so give a location whenever the defect has one.");
         prompt.AppendLine("- Do NOT modify files, commit, push, or open pull requests. You are read-only.");
-        prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.**");
+        prompt.AppendLine("- **Do NOT build, test, or run anything that writes into this worktree.** This");
+        prompt.AppendLine("  session ends at your final message — nothing runs after it, so the same rule that");
+        prompt.AppendLine("  keeps a build or fix session from backgrounding a gate applies here too, for");
+        prompt.AppendLine("  anything else you run:");
+        AppendForegroundGatesRule(
+            prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
         AppendReviewGateStatus(prompt, project);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         if (interactiveModeEnabled)
@@ -3251,7 +3264,9 @@ public static class AgentPromptBuilder
     /// there and was never anyone's to delete (independent pre-PR review, cycle 1, both lenses).
     /// </para>
     /// </summary>
-    public static string BuildUncommittedWorkRecovery(TaskDetails task, IReadOnlyList<string> strandedFiles)
+    public static string BuildUncommittedWorkRecovery(
+        TaskDetails task, IReadOnlyList<string> strandedFiles, bool priorSessionReportedBackgroundWait = false,
+        TimeSpan? commandTimeout = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("A previous session working this task ended with finished work sitting uncommitted");
@@ -3259,6 +3274,15 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(SummarizeStrandedFiles(strandedFiles));
         prompt.AppendLine();
+        if (priorSessionReportedBackgroundWait)
+        {
+            prompt.AppendLine("That prior session's own last message said it was still waiting on a background");
+            prompt.AppendLine("build or test run to finish — it never will: the process that would have delivered");
+            prompt.AppendLine("that result was killed the moment that session's turn ended, so there is nothing to");
+            prompt.AppendLine("wait for here. Do not re-run or wait on anything; commit exactly what is already on");
+            prompt.AppendLine("disk, below.");
+            prompt.AppendLine();
+        }
         prompt.AppendLine($"The task's objective, for orientation: {task.Objective}");
         prompt.AppendLine();
         prompt.AppendLine("Your only job is turning every file listed above into well-formed commits, then");
@@ -3294,6 +3318,14 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine("## Working rules");
         prompt.AppendLine();
+        prompt.AppendLine("- **This session ends at your final message — nothing runs after it.** The");
+        prompt.AppendLine("  dispatched runtime kills the process the moment you finish, so a backgrounded");
+        prompt.AppendLine("  command, a scheduled wakeup, or a monitor set up to report back later never");
+        prompt.AppendLine("  fires: there is nothing left to fire it, and nobody reads the result. This session");
+        prompt.AppendLine("  is not asked to run this project's gates at all — see above — but the same rule");
+        prompt.AppendLine("  covers anything else you run:");
+        AppendForegroundGatesRule(
+            prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
 
         return prompt.ToString();
@@ -3332,7 +3364,8 @@ public static class AgentPromptBuilder
         string? interactiveSessionAddress = null,
         bool? interactiveModeEnabledOverride = null,
         string? baseBranch = null,
-        string? baseCommit = null)
+        string? baseCommit = null,
+        TimeSpan? commandTimeout = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
@@ -3359,7 +3392,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- Verify each finding yourself, fix the real ones, and commit on this branch with");
         prompt.AppendLine("  clear messages. Do NOT push, do NOT open a pull request — the platform re-runs");
         prompt.AppendLine("  the verification gates and a fresh review after you finish.");
-        AppendSessionEndsAtFinalMessageRule(prompt);
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine("- **Follow the platform's disposition for each finding**, in the section headed");
         prompt.AppendLine($"  \"{ReviewFindingDispositions.Heading}\" if the findings above have one. It is");

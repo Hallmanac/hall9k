@@ -434,18 +434,19 @@ public sealed class RunLauncher(
                     ? AgentPromptBuilder.BuildFixChecks(
                         task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                         interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                        baseCommit: baseCommit)
+                        baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout)
                     : task.FollowUpKind == FollowUpKind.Rebase
                         ? AgentPromptBuilder.BuildRebase(
                             task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                             interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                            baseCommit: baseCommit)
+                            baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout)
                         : isStackReplay
                             ? AgentPromptBuilder.BuildStackReplay(
                                 task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                 runBaseBranch,
                                 task.StackReplayUpstreamCommit ?? string.Empty,
-                                task.StackReplayOntoCommit ?? string.Empty)
+                                task.StackReplayOntoCommit ?? string.Empty,
+                                commandTimeout: options.Value.VerifyGateTimeout)
                             // A human's changes-requested review gets its own prompt rather than
                             // the thread one (task: a changes-requested pull-request review from a
                             // human becomes a fix lap): the findings are handed over, and a
@@ -454,11 +455,11 @@ public sealed class RunLauncher(
                                 ? AgentPromptBuilder.BuildReviewRequestedChanges(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                                    baseCommit: baseCommit)
+                                    baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout)
                                 : AgentPromptBuilder.BuildFollowUp(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                                    baseCommit: baseCommit);
+                                    baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout);
             }
             else
             {
@@ -486,7 +487,8 @@ public sealed class RunLauncher(
                 // rewrite the parent's commits as the child's own history).
                 prompt = AgentPromptBuilder.Build(
                     task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
-                    baseBranch: runBaseBranch, baseCommit: baseCommit);
+                    baseBranch: runBaseBranch, baseCommit: baseCommit,
+                    commandTimeout: options.Value.VerifyGateTimeout);
             }
 
             SpawnedAgent agent = await executor.SpawnAsync(

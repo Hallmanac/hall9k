@@ -69,7 +69,8 @@ public static class WorkPromptBuilder
         string? delegationNote = null,
         string? delegationBaseCommit = null,
         string? baseBranch = null,
-        string? baseCommit = null)
+        string? baseCommit = null,
+        TimeSpan? commandTimeout = null)
     {
         // The branch this session's work sits on top of, resolved by the caller at dispatch
         // (RunDispatched.BaseBranch): the project's own for every ordinary run, a stacked child's
@@ -81,6 +82,12 @@ public static class WorkPromptBuilder
         // with no run to read one from passes.
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         string? stackedForkPointCommit = StackedForkPoint(project, effectiveBaseBranch, baseCommit);
+        // The live ceiling this session's own settings file actually enforces when a caller with
+        // one in reach (ClaudeExecutor, via RunLauncher) passes it through; the CLI's own
+        // h9k task work claim structurally cannot reach DaemonOptions (Reference graph: Cli ->
+        // Domain + Connectors), so it falls back to the same constant ClaudeSettingsFile.Build
+        // itself falls back to for that caller (independent pre-PR review, cycle 1, both lenses).
+        TimeSpan effectiveCommandTimeout = commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout;
         StringBuilder prompt = new();
         prompt.AppendLine("# Task");
         prompt.AppendLine();
@@ -280,7 +287,7 @@ public static class WorkPromptBuilder
             AppendDelegatedContractorCommitRules(
                 prompt, project, worktreePath, delegationBaseCommit, effectiveBaseBranch,
                 stackedForkPointCommit);
-            AppendSessionEndsAtFinalMessageRule(prompt);
+            AppendSessionEndsAtFinalMessageRule(prompt, effectiveCommandTimeout);
         }
         else if (isDeliberateHeadlessStart)
         {
@@ -308,14 +315,14 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  done, and leave the tree exactly how you want it found.");
             AppendCheckpointCommitRules(
                 prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
-            AppendSessionEndsAtFinalMessageRule(prompt);
+            AppendSessionEndsAtFinalMessageRule(prompt, effectiveCommandTimeout);
         }
         else
         {
             prompt.AppendLine("  the platform verifies and opens the PR after you finish.");
             AppendCheckpointCommitRules(
                 prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
-            AppendSessionEndsAtFinalMessageRule(prompt);
+            AppendSessionEndsAtFinalMessageRule(prompt, effectiveCommandTimeout);
         }
 
         IReadOnlyList<RepoSkill> skills = DiscoverRepoSkills(worktreePath);
@@ -1274,16 +1281,31 @@ public static class WorkPromptBuilder
     /// false claim about its own runtime, and would wrongly talk it out of backgrounding a long
     /// gate while it waits (adversarial review, cycle 4).
     /// </para>
+    /// <para>
+    /// The foreground-gates half of this rule (task: a headless build, fix, or recovery session
+    /// never ends its turn while a gate it started is still running in the background) is factored
+    /// into <see cref="AppendForegroundGatesRule"/> so the same wording reaches the two headless
+    /// legs that never called this method at all — <c>BuildReviewVerify</c> (read-only, so the
+    /// commit-discipline half below does not apply to it) and <c>BuildUncommittedWorkRecovery</c>
+    /// (already carries its own narrower commit instructions). Origin: three headless sessions in
+    /// eleven hours (2026-09-07/08, all claude-sonnet-5) each ended a turn with a `dotnet test` run
+    /// still backgrounded — one via <c>run_in_background</c>, one merely narrating that a suite was
+    /// "still running", one having set a <c>Monitor</c> — even though this method's own prior
+    /// wording already said "run every verification command... in the foreground". Naming the
+    /// harness's own background tools by name, saying explicitly that ending the turn with one
+    /// still pending is the failure (not only "not relying on its result"), and naming the actual
+    /// foreground ceiling (<c>BASH_MAX_TIMEOUT_MS</c>) so a session can see the whole suite fits
+    /// without ever reaching for one, is what this task adds on top of the existing wording.
+    /// </para>
     /// </summary>
-    public static void AppendSessionEndsAtFinalMessageRule(StringBuilder prompt)
+    public static void AppendSessionEndsAtFinalMessageRule(StringBuilder prompt, TimeSpan commandTimeout)
     {
         prompt.AppendLine("- **This session ends at your final message — nothing runs after it.** The");
         prompt.AppendLine("  dispatched runtime kills the process the moment you finish, so a backgrounded");
         prompt.AppendLine("  command, a scheduled wakeup, or a monitor set up to report back later never");
-        prompt.AppendLine("  fires: there is nothing left to fire it, and nobody reads the result. Run every");
-        prompt.AppendLine("  verification command (build, test, lint — whatever this project's gates run) in");
-        prompt.AppendLine("  the foreground and wait for it to finish before you rely on its result or move");
-        prompt.AppendLine("  on. Commit everything before that final message, new files included: a tracked");
+        prompt.AppendLine("  fires: there is nothing left to fire it, and nobody reads the result.");
+        AppendForegroundGatesRule(prompt, commandTimeout);
+        prompt.AppendLine("  Commit everything before that final message, new files included: a tracked");
         prompt.AppendLine("  file left modified or staged but uncommitted when the session ends is stranded there,");
         prompt.AppendLine("  and the platform fails the run naming exactly which files were left behind — a new,");
         prompt.AppendLine("  never-`git add`ed file under src/ or tests/ counts too, named in the same failure,");
@@ -1291,6 +1313,73 @@ public static class WorkPromptBuilder
         prompt.AppendLine("  behind. An untracked file outside src/ and tests/ only warns — a gate's own build");
         prompt.AppendLine("  output can land there too — but it still never ships, so `git add` it and commit");
         prompt.AppendLine("  rather than counting on the warning to catch it.");
+    }
+
+    /// <summary>
+    /// The one rule every headless leg's prompt states, once, about how a build or test gate is
+    /// run (task: a headless build, fix, or recovery session never ends its turn while a gate it
+    /// started is still running in the background). Called from
+    /// <see cref="AppendSessionEndsAtFinalMessageRule"/> for the legs that already carry that
+    /// rule's full commit-discipline wording, and directly from
+    /// <c>Hall9k.Daemon.Execution.AgentPromptBuilder.BuildReviewVerify</c> (the read-only verify
+    /// leg, which never reaches the commit half) and
+    /// <c>Hall9k.Daemon.Execution.AgentPromptBuilder.BuildUncommittedWorkRecovery</c> (the commit
+    /// recovery leg, which already states its own narrower commit instructions) — the two legs
+    /// AGENTS.md's Decisions Log entry for this task names as never having called
+    /// <see cref="AppendSessionEndsAtFinalMessageRule"/> at all.
+    /// <para>
+    /// Names the harness's background tools explicitly — Bash's own <c>run_in_background</c>,
+    /// <c>Monitor</c>, <c>ScheduleWakeup</c> — because the origin incidents show a generic
+    /// "run gates in the foreground" sentence was not enough to stop a session reaching for one of
+    /// these by name once a suite ran long: two of the three sessions this task's origin cites had
+    /// already read that sentence and backgrounded the suite anyway, one of them via
+    /// <c>ScheduleWakeup</c> and <c>Monitor</c> specifically. States the actual foreground ceiling
+    /// (<c>BASH_MAX_TIMEOUT_MS</c>, doubled from <paramref name="commandTimeout"/> the same way
+    /// <see cref="ClaudeSettingsFile.Build"/> sizes it) so a session can see that the project's
+    /// whole suite fits inside one foreground command rather than discovering the ceiling only
+    /// after backgrounding something to avoid it. <paramref name="commandTimeout"/> is the live
+    /// ceiling the caller's own session actually launches with — <c>ClaudeExecutor</c> sizes it
+    /// from <c>DaemonOptions.VerifyGateTimeout</c> rather than a compile-time constant, so this
+    /// rule reads the same value rather than a number that goes stale the moment an operator
+    /// raises the live option (independent pre-PR review, cycle 1, both lenses; the same staleness
+    /// <c>ClaudeSettingsFile</c>'s own 2026-09-02 finding recorded for <see cref="ClaudeSettingsFile.Build"/>).
+    /// <paramref name="sessionRunsGates"/> is false for the two legs that must never run a gate at
+    /// all — <c>BuildReviewVerify</c>, forbidden from writing into the worktree, and
+    /// <c>BuildUncommittedWorkRecovery</c>, told not to run or wait on anything — so their rendered
+    /// prompt does not open with an imperative to run the very thing the surrounding rules forbid
+    /// (independent pre-PR review, cycle 1, both lenses: the unconditional wording once told a
+    /// read-only reviewer to build and test in a worktree a sibling pass was reading, and told a
+    /// commit-only recovery session to run a suite it had just been told not to wait on).
+    /// </para>
+    /// </summary>
+    public static void AppendForegroundGatesRule(
+        StringBuilder prompt, TimeSpan commandTimeout, bool sessionRunsGates = true)
+    {
+        int foregroundCeilingMinutes = (int)(commandTimeout.TotalMinutes * 2);
+        if (sessionRunsGates)
+        {
+            prompt.AppendLine("  Run this project's own build and test gates in the foreground and wait for them to");
+            prompt.AppendLine("  finish before you rely on their result or move on. Never start one with the");
+            prompt.AppendLine("  harness's own background tools — Bash's `run_in_background`, `Monitor`,");
+            prompt.AppendLine("  `ScheduleWakeup`, or any other scheduled check-in — and never end your turn with");
+            prompt.AppendLine("  one of those still pending: this session's process is killed the instant your final");
+            prompt.AppendLine("  message ends, so a background task left running is left waiting on a notification");
+            prompt.AppendLine("  that can never arrive, and the next thing to touch this worktree — another gate, or");
+            prompt.AppendLine("  another session — starts while it is still writing to it. The foreground timeout on");
+            prompt.AppendLine($"  a single command is `BASH_MAX_TIMEOUT_MS`, {foregroundCeilingMinutes} minutes today,");
+            prompt.AppendLine("  sized so this project's full verification suite fits inside one foreground run.");
+        }
+        else
+        {
+            prompt.AppendLine("  Never start anything with the harness's own background tools — Bash's");
+            prompt.AppendLine("  `run_in_background`, `Monitor`, `ScheduleWakeup`, or any other scheduled check-in —");
+            prompt.AppendLine("  and never end your turn with one of those still pending: this session's process is");
+            prompt.AppendLine("  killed the instant your final message ends, so a background task left running is");
+            prompt.AppendLine("  left waiting on a notification that can never arrive, and the next thing to touch");
+            prompt.AppendLine("  this worktree — another gate, or another session — starts while it is still");
+            prompt.AppendLine("  writing to it. The foreground timeout on a single command is `BASH_MAX_TIMEOUT_MS`,");
+            prompt.AppendLine($"  {foregroundCeilingMinutes} minutes today, in case anything you do run needs it.");
+        }
     }
 
     /// <summary>
