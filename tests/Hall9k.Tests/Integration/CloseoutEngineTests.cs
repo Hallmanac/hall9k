@@ -349,7 +349,21 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         afterPending.ExternalReviewState.Should().Be(ExternalReviewState.Landed);
         afterPending.ExternalReviewChecksPending.Should().BeTrue(
             "the provider's CI picture was incomplete as of this observation");
+        afterPending.ExternalReviewChecksPendingSince.Should().NotBeNull(
+            "the wait's own start is the anchor every Delivered surface measures its length from "
+            + "(Decisions Log #PLACEHOLDER-5657f3fa)");
         afterPending.State.Should().Be(RunState.AwaitingReview);
+
+        // A second sweep that only confirms the same pending picture must not re-anchor it: a
+        // duration measured from the most recent confirming sweep would read as minutes however
+        // long the check had really been stuck, which is the nine-hour blind spot the anchor exists
+        // to close.
+        await engine.PollOnceAsync(cts.Token);
+        await using (IQuerySession confirmingQuery = store.QuerySession())
+        {
+            (await confirmingQuery.LoadAsync<RunDetails>(runId, cts.Token))!
+                .ExternalReviewChecksPendingSince.Should().Be(afterPending.ExternalReviewChecksPendingSince);
+        }
 
         inspector.Snapshot = inspector.Snapshot with { HasPendingChecks = false };
         await engine.PollOnceAsync(cts.Token);
@@ -358,6 +372,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         RunDetails afterSettled = (await secondQuery.LoadAsync<RunDetails>(runId, cts.Token))!;
         afterSettled.ExternalReviewChecksPending.Should().BeFalse(
             "checks completed and no failure or unresolved thread moved the run off AwaitingReview");
+        afterSettled.ExternalReviewChecksPendingSince.Should().BeNull(
+            "there is no pending wait left to measure");
 
         (await secondQuery.Events.FetchStreamAsync(runId, token: cts.Token))
             .Count(e => e.Data is ExternalReviewObserved)
@@ -3745,6 +3761,11 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.State.Should().Be(TaskState.Queued);
         task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+
+        TaskListItem row = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        row.FollowUpChecksPendingSince.Should().NotBeNull(
+            "the queued row carries how long the check has been pending — its own run document is "
+            + "unreachable from here, so nothing else on the row could say it");
     }
 
     /// <summary>

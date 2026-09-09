@@ -71,6 +71,18 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// take, so the session reads what the reviewer wrote rather than a count of it. Null on every
 /// other reopen kind and on events recorded before this field existed.
 /// </param>
+/// <param name="ChecksPendingSince">
+/// When the provider's CI picture was first observed still incomplete on the pull request this
+/// follow-up was dispatched for, or null when it was complete at dispatch (and on events recorded
+/// before this field existed — unknown, never a claimed "the checks were done"). A lap is now
+/// dispatched for review feedback whatever the checks are doing (Decisions Log
+/// #PLACEHOLDER-5657f3fa), so a queued or claimed follow-up is routinely the right answer for a
+/// pull request whose check is still pending; this is what lets the phase line for that row say how
+/// long it has been pending instead of leaving the reader to guess. The reopen carries it because
+/// nothing else on the queued row can: <c>Apply(TaskReopened)</c> clears
+/// <c>TaskListItem.CurrentRunId</c>, so the run that made the observation is unreachable from the
+/// row by the time it renders.
+/// </param>
 public sealed record TaskReopened(
     Guid Id,
     Guid PreviousRunId,
@@ -87,4 +99,5 @@ public sealed record TaskReopened(
     string? PullRequestHeadSha = null,
     string? StackReplayUpstreamCommit = null,
     string? StackReplayOntoCommit = null,
-    IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null);
+    IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null,
+    DateTimeOffset? ChecksPendingSince = null);

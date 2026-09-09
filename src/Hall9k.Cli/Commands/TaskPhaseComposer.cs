@@ -37,11 +37,17 @@ internal static class TaskPhaseComposer
     /// <paramref name="held"/> where both apply, since a card somebody else holds is the
     /// more specific cause and this line carries one.
     /// </param>
+    /// <param name="now">
+    /// The one clock this composition reads, passed in rather than sampled here so every surface
+    /// on a row measures the same instant. Only the pending-check clause needs it (Decisions Log
+    /// #PLACEHOLDER-5657f3fa): a check's wait is a length, and a length needs a now.
+    /// </param>
     public static TaskPhase Compose(
         TaskListItem task,
         RunDetails? run,
         LifecycleState state,
         SessionLiveness session,
+        DateTimeOffset now,
         QueueHold? held = null,
         TrackerClaimDecision? heldByTracker = null)
     {
@@ -56,7 +62,7 @@ internal static class TaskPhaseComposer
         }
 
         return state == LifecycleState.Delivered
-            ? Delivered(task, run, session, held, heldByTracker)
+            ? Delivered(task, run, session, now, held, heldByTracker)
             : TaskPhase.None;
     }
 
@@ -358,8 +364,8 @@ internal static class TaskPhaseComposer
     /// but a human's merge.
     /// </summary>
     private static TaskPhase Delivered(
-        TaskListItem task, RunDetails? run, SessionLiveness session, QueueHold? held,
-        TrackerClaimDecision? heldByTracker)
+        TaskListItem task, RunDetails? run, SessionLiveness session, DateTimeOffset now,
+        QueueHold? held, TrackerClaimDecision? heldByTracker)
     {
         string pullRequest = PullRequestLabel(task, run);
 
@@ -375,8 +381,10 @@ internal static class TaskPhaseComposer
             // orders them that way: a reopened follow-up whose card the tracker says somebody else
             // holds is not going to be claimed here whatever the ceiling does (idea 64c75e43), and
             // this line has room for exactly one cause.
-            return new TaskPhase($"follow-up queued for {pullRequest}", SessionLiveness.NotApplicable,
-                heldByTracker?.ReasonLine ?? held?.ReasonLine ?? "not claimed yet");
+            return WithChecksPendingDetail(
+                new TaskPhase($"follow-up queued for {pullRequest}", SessionLiveness.NotApplicable,
+                    heldByTracker?.ReasonLine ?? held?.ReasonLine ?? "not claimed yet"),
+                task, now);
         }
 
         // A reopened follow-up held by a dependency: nothing is dispatching it and no run is
@@ -387,14 +395,25 @@ internal static class TaskPhaseComposer
         // a handoff the platform never made (pre-PR review, 2026-08-22).
         if (task.State == TaskState.Blocked)
         {
-            return new TaskPhase($"follow-up blocked for {pullRequest}", SessionLiveness.NotApplicable,
-                BlockedDetail(task));
+            // The pending-check clause on the same terms as its two sibling arms above and below:
+            // the dependency is what holds this row, and a check the merge is also waiting on is a
+            // second fact the reader wants on the one line. Closeout itself parks rather than
+            // reopening a task with an unmet dependency, so today only a manual h9k pr resolve
+            // lands here — and that path records no anchor, so the clause renders nothing. Applied
+            // anyway rather than left as the one arm of three that would silently drop it if that
+            // ever changes.
+            return WithChecksPendingDetail(
+                new TaskPhase($"follow-up blocked for {pullRequest}", SessionLiveness.NotApplicable,
+                    BlockedDetail(task)),
+                task, now);
         }
 
         if (task.State == TaskState.Claimed || task.State == TaskState.NeedsHuman)
         {
             TaskPhase working = Working(task, run, session);
-            return WithTriageDetail(working with { Text = $"follow-up on {pullRequest}: {working.Text}" }, run);
+            return WithChecksPendingDetail(
+                WithTriageDetail(working with { Text = $"follow-up on {pullRequest}: {working.Text}" }, run),
+                task, now);
         }
 
         if (run is null)
@@ -410,7 +429,7 @@ internal static class TaskPhaseComposer
             // another here is only the post-PR review watcher's own read of Copilot: landed,
             // requested but still pending, or neither observed yet (origin: PR #50 sat Delivered
             // for 23 minutes with a landed Copilot review nobody had read before the merge).
-            "AwaitingReview" => WithTriageDetail(AwaitingReviewPhase(pullRequest, run), run),
+            "AwaitingReview" => WithTriageDetail(AwaitingReviewPhase(pullRequest, run, now), run),
             "ChecksFailing" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable,
                 ChecksDetail(run)),
             "ReviewPending" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable, Threads(run)),
@@ -509,7 +528,7 @@ internal static class TaskPhaseComposer
     /// own comment below already refuses to assert; Unknown reads the identical conservative
     /// way instead.
     /// </summary>
-    private static TaskPhase AwaitingReviewPhase(string pullRequest, RunDetails run) =>
+    private static TaskPhase AwaitingReviewPhase(string pullRequest, RunDetails run, DateTimeOffset now) =>
         // Ahead of every Copilot reading below, for the same reason AttentionComposer's own stacked
         // branch sits ahead of its two arms (task: the bar machinery treats an un-retargeted stacked
         // PR as not at the bar): the phase line and the attention line under it must never disagree,
@@ -519,30 +538,35 @@ internal static class TaskPhaseComposer
                 $"watching {pullRequest} — stacked on {parentBranch}",
                 SessionLiveness.NotApplicable,
                 "its base is still the parent's branch; it retargets and replays when the parent merges")
-            : AwaitingReviewCopilotPhase(pullRequest, run);
+            : AwaitingReviewCopilotPhase(pullRequest, run, now);
 
     /// <summary>The Copilot-observation readings, once the stacked check above has had its say.</summary>
-    private static TaskPhase AwaitingReviewCopilotPhase(string pullRequest, RunDetails run) => run.ExternalReviewState.Value switch
+    private static TaskPhase AwaitingReviewCopilotPhase(string pullRequest, RunDetails run, DateTimeOffset now) => run.ExternalReviewState.Value switch
     {
         "Landed" => new TaskPhase($"watching {pullRequest} — Copilot review landed",
-            SessionLiveness.NotApplicable, CopilotThreadsDetail(run)),
+            SessionLiveness.NotApplicable, CopilotThreadsDetail(run, now)),
         "RequestedPending" => new TaskPhase($"watching {pullRequest} — awaiting Copilot review",
             SessionLiveness.NotApplicable, "requested but not yet submitted"),
         // A stale review is review activity that happened, just against a commit that is no
         // longer the head — it must not read as "nothing recorded" (independent pre-PR review,
         // cycle 6), so it gets its own text and the same thread-count detail a landed review gets.
         "Stale" => new TaskPhase($"watching {pullRequest} — Copilot reviewed an earlier commit",
-            SessionLiveness.NotApplicable, $"the review is stale; {CopilotThreadsDetail(run)}"),
+            SessionLiveness.NotApplicable, $"the review is stale; {CopilotThreadsDetail(run, now)}"),
         // No external review activity does not automatically mean a human's merge is the only
-        // thing left: the closeout sweep records this observation ahead of its own checks read,
-        // so a run still building or testing would read identically to one that is genuinely
-        // idle if this ignored RunDetails.ExternalReviewChecksPending the way the Landed arm
-        // above does not (independent pre-PR review, cycle 7). Once that same field says the
-        // provider's CI picture was complete as of this observation, there is nothing left
-        // unresolved on this row and the human's merge is what remains, so the line says so.
+        // thing left: a pending check holds the merge on its own (the merge bar is unchanged by
+        // Decisions Log #PLACEHOLDER-5657f3fa), so a run whose CI picture was still incomplete as
+        // of this observation would read identically to one that is genuinely idle if this ignored
+        // RunDetails.ExternalReviewChecksPending the way the Landed arm above does not (independent
+        // pre-PR review, cycle 7). What it says about that wait is its length, not that it might
+        // exist: nothing on this row is going to move until the check reports, and a reader who is
+        // told only "its checks may still be reporting" cannot tell an ordinary two-minute build
+        // from the nine-hour dead check that ruling was written for. Once the same field says the
+        // picture was complete, there is nothing left unresolved here and the human's merge is what
+        // remains, so the line says so.
         "None" => run.ExternalReviewChecksPending
             ? new TaskPhase($"watching {pullRequest}",
-                SessionLiveness.NotApplicable, "no external review activity observed; its checks may still be reporting")
+                SessionLiveness.NotApplicable,
+                $"no external review activity observed; {TaskStatusComposer.ChecksPendingClause(run.ExternalReviewChecksPendingSince, now)}")
             : new TaskPhase($"watching {pullRequest} — awaiting human review",
                 SessionLiveness.NotApplicable, "no external review activity observed"),
         // Unknown carries even less than None: either no sweep has recorded an observation at
@@ -557,12 +581,20 @@ internal static class TaskPhaseComposer
     /// <summary>
     /// The comment-thread count a landed Copilot review left, resolved or not — distinct from
     /// <see cref="Threads"/>'s unresolved-only count, which only ever renders once a finding has
-    /// moved the run to ReviewPending. While <see cref="RunDetails.ExternalReviewChecksPending"/>
-    /// is still true, this count has not been re-checked for new unresolved threads this sweep
-    /// (the same ordering gap <c>AttentionComposer.Delivered</c>'s Landed arm hedges against), so
-    /// the detail says that rather than reading as an all-clear.
+    /// moved the run to ReviewPending.
+    /// <para>
+    /// A pending CI picture no longer hedges the count. It used to: the sweep short-circuited on
+    /// <see cref="RunDetails.ExternalReviewChecksPending"/> ahead of its own unresolved-thread
+    /// read, so a landed review's threads genuinely had not been re-checked and the detail said
+    /// "not yet confirmed resolved". Review feedback is now detected whatever the checks are doing
+    /// (Decisions Log #PLACEHOLDER-5657f3fa), so a row resting here with a pending check has in
+    /// fact had its threads read — repeating that hedge would report a gap that no longer exists,
+    /// and offering the pendingness alone would name it as the reason nothing is happening, which
+    /// is the exact misreading that ruling was written against. What is left to say about the check
+    /// is how long it has been pending, which the merge is genuinely waiting on.
+    /// </para>
     /// </summary>
-    private static string CopilotThreadsDetail(RunDetails run)
+    private static string CopilotThreadsDetail(RunDetails run, DateTimeOffset now)
     {
         string threads = run.ExternalReviewThreadCount switch
         {
@@ -572,8 +604,32 @@ internal static class TaskPhaseComposer
         };
 
         return run.ExternalReviewChecksPending
-            ? $"{threads}, not yet confirmed resolved; its checks may still be reporting"
+            ? $"{threads}; {TaskStatusComposer.ChecksPendingClause(run.ExternalReviewChecksPendingSince, now)}"
             : threads;
+    }
+
+    /// <summary>
+    /// The pending-check clause on a follow-up row: the lap is dispatched, queued or blocked — that
+    /// is what the phase text already says — and this names the check the merge is still waiting on
+    /// behind it, so the two facts sit on one line instead of the reader having to infer either.
+    /// Read off the task rather than the run because <c>Apply(TaskReopened)</c> clears
+    /// <c>TaskListItem.CurrentRunId</c>: on a queued follow-up the run that observed the checks is
+    /// not reachable from the row at all (<see cref="TaskListItem.FollowUpChecksPendingSince"/>).
+    /// A row with no anchor renders exactly as it did before this clause existed, rather than
+    /// reporting a wait nobody observed.
+    /// </summary>
+    private static TaskPhase WithChecksPendingDetail(TaskPhase phase, TaskListItem task, DateTimeOffset now)
+    {
+        if (task.FollowUpChecksPendingSince is null)
+        {
+            return phase;
+        }
+
+        string clause = TaskStatusComposer.ChecksPendingClause(task.FollowUpChecksPendingSince, now);
+        return phase with
+        {
+            Detail = phase.Detail.IsBlank() ? clause : $"{phase.Detail}; {clause}",
+        };
     }
 
     /// <summary>
