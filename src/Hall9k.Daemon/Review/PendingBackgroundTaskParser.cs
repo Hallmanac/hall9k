@@ -113,7 +113,9 @@ public static class PendingBackgroundTaskParser
     /// or a bare "it". Used to keep <see cref="HasNegationCue"/> walking forward past the
     /// "background"-naming sub-clause only while each next one is still talking about the same
     /// background task by pronoun, e.g. "a background test, which never finished" — never past a
-    /// sub-clause that opens a new, unrelated statement with its own subject.
+    /// sub-clause that opens a new, unrelated statement with its own subject. A sub-clause that
+    /// instead re-names "background" directly, rather than by pronoun, is recognized separately in
+    /// <see cref="HasNegationCue"/> itself.
     /// </summary>
     private static readonly Regex BackReferringPronounPattern = new(
         @"^\s*(which|who|whose|that|it)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -121,24 +123,32 @@ public static class PendingBackgroundTaskParser
     /// <summary>
     /// True only when a negation is found in the sub-clause (see
     /// <see cref="SubClauseSeparatorPattern"/>) that first names "background", or in a run of
-    /// immediately-following sub-clauses that each keep referring back to it by pronoun rather than
-    /// introducing a new subject — never in one before it, and never past the first sub-clause that
-    /// moves on to something else. A later sub-clause can deny the earlier one by pronoun rather
-    /// than repeating "background" itself ("a background test, which never finished, so I killed
-    /// it" — "never" lands in the sub-clause right after the one naming "background", denying it by
-    /// referring back to "which"), so scoping to only the "background"-naming sub-clause itself
-    /// would miss it. But a sub-clause that instead opens with its own new subject denies something
-    /// else entirely, even when it shares the sentence: "the background build is still running, but
-    /// I don't expect it to fail" denies an expectation about failure, not whether the build is
-    /// still pending, so its "don't" must not suppress the genuine claim named earlier in the same
-    /// sentence (independent pre-PR review, cycle 5, adversarial lens — the prior fix scanned every
-    /// sub-clause through the end of the sentence once one of them named "background", letting an
-    /// unrelated negation anywhere later in the sentence suppress a real pending-task claim). A
-    /// sub-clause *before* the one naming "background" is excluded even when it carries a negation
-    /// word, because that negation has nothing yet to deny: "I don't know how long this will take to
-    /// complete, but the background test is still running" must not have its earlier, unrelated
-    /// "don't" suppress the later sub-clause that actually names the pending background task
-    /// (independent pre-PR review, cycle 3, adversarial lens).
+    /// immediately-following sub-clauses that each keep talking about the same background task —
+    /// either by referring back to it by pronoun, or by re-naming "background" directly — rather
+    /// than introducing a new subject — never in one before it, and never past the first sub-clause
+    /// that moves on to something else. A later sub-clause can deny the earlier one by pronoun
+    /// rather than repeating "background" itself ("a background test, which never finished, so I
+    /// killed it" — "never" lands in the sub-clause right after the one naming "background", denying
+    /// it by referring back to "which"), so scoping to only the "background"-naming sub-clause
+    /// itself would miss it. A later sub-clause can just as well deny it by re-naming "background"
+    /// outright instead of by pronoun ("I started a background test, but no background task is
+    /// actually still running" — the second sub-clause never says "which" or "it", it just says
+    /// "background" again), so a break condition that only recognized the pronoun form would miss
+    /// this shape too (independent pre-PR review, cycle 6, adversarial lens — the cycle-5 fix
+    /// over-narrowed the "keep going" condition to pronoun-only, breaking before ever inspecting a
+    /// later sub-clause that re-named "background" and negated it in the same breath). But a
+    /// sub-clause that instead opens with its own new subject, naming neither a pronoun nor
+    /// "background" again, denies something else entirely, even when it shares the sentence: "the
+    /// background build is still running, but I don't expect it to fail" denies an expectation about
+    /// failure, not whether the build is still pending, so its "don't" must not suppress the genuine
+    /// claim named earlier in the same sentence (independent pre-PR review, cycle 5, adversarial
+    /// lens — the prior fix scanned every sub-clause through the end of the sentence once one of them
+    /// named "background", letting an unrelated negation anywhere later in the sentence suppress a
+    /// real pending-task claim). A sub-clause *before* the one naming "background" is excluded even
+    /// when it carries a negation word, because that negation has nothing yet to deny: "I don't know
+    /// how long this will take to complete, but the background test is still running" must not have
+    /// its earlier, unrelated "don't" suppress the later sub-clause that actually names the pending
+    /// background task (independent pre-PR review, cycle 3, adversarial lens).
     /// </summary>
     private static bool HasNegationCue(string clause)
     {
@@ -163,7 +173,9 @@ public static class PendingBackgroundTaskParser
                 continue;
             }
 
-            if (i > backgroundIndex && !BackReferringPronounPattern.IsMatch(segment))
+            if (i > backgroundIndex
+                && !BackReferringPronounPattern.IsMatch(segment)
+                && !segment.Contains("background", StringComparison.OrdinalIgnoreCase))
             {
                 break;
             }

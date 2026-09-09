@@ -115,4 +115,18 @@ public sealed class PendingBackgroundTaskParserTests
     public void A_negation_in_a_later_sub_clause_with_its_own_new_subject_does_not_suppress_a_genuine_pending_task(
         string summary) =>
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(summary).Should().BeTrue();
+
+    /// <summary>
+    /// A negation doesn't need a pronoun to refer back to the earlier "background" mention — a
+    /// later sub-clause can deny it by re-naming "background" directly instead, and that still
+    /// counts as the same denial (independent pre-PR review, cycle 6, adversarial lens — the
+    /// cycle-5 fix's break condition only recognized the pronoun form and stopped scanning before
+    /// ever inspecting a later sub-clause that re-named "background" and negated it in the same
+    /// breath).
+    /// </summary>
+    [Fact]
+    public void A_negation_in_a_later_sub_clause_that_re_names_background_directly_suppresses_the_pending_task_claim() =>
+        PendingBackgroundTaskParser.NamesPendingBackgroundTask(
+            "I started a background test, but no background task is actually still running.")
+            .Should().BeFalse();
 }
