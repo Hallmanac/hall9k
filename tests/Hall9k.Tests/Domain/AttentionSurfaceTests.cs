@@ -618,6 +618,35 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
+    /// CloseoutEngine's own unresolved-thread gate sits ahead of the auto-merge read this composer
+    /// draws on, and refuses to merge while any thread is still unresolved — including one this
+    /// run's own follow-up already declined and is deliberately leaving open for the human to close
+    /// (Decisions Log #159). A run can sit AwaitingReview with RunDetails.UnresolvedReviewThreads
+    /// still nonzero (that gate's own "nothing left for a follow-up to act on" skip does not clear
+    /// it), so the pre-approved arm must not say the daemon merges it on its own while that gate
+    /// would in fact still refuse (independent pre-PR review, cycle 3, both lenses).
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_task_with_an_unresolved_review_thread_does_not_claim_gates_are_satisfied()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/40";
+        TaskListItem preApproved = StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproved: true);
+
+        RunDetails threadStillOpen = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 40);
+        threadStillOpen.UnresolvedReviewThreads = 1;
+        threadStillOpen.UnresolvedHumanReviewThreads = 1;
+
+        TaskStatusRow row = StatusFixtures.Compose(preApproved, threadStillOpen);
+
+        row.Attention.NeedsYou.Should().BeFalse("design ruling 3: nothing on a pre-approved task's arm is ever NeedsYou");
+        row.Attention.Cause.Should().NotContain("merges it on its own",
+            "a thread left open on purpose still blocks the daemon's own auto-merge gate");
+        row.Attention.Cause.Should().Contain("1 unresolved review thread(s) (1 from a human) to close");
+    }
+
+    /// <summary>
     /// RunDetails.ExternalOutstandingReviewerLogins is deliberately Copilot-inclusive and
     /// unfiltered (display of the raw provider read); the pre-approved arm must read the
     /// Copilot-filtered twin, ExternalOutstandingHumanReviewerLogins, or it tells the owner a

@@ -458,6 +458,22 @@ internal static class AttentionComposer
             waitingOn.Add("copilot review");
         }
 
+        // CloseoutEngine's own unresolved-thread gate sits ahead of the auto-merge read it feeds
+        // this composer, and returns before ever reaching it while any thread is still open —
+        // including one this run's own follow-up already declined or routed and is deliberately
+        // leaving open for the human to close (Decisions Log #159). RunDetails.UnresolvedReviewThreads
+        // is that gate's last observed count; it is not cleared by the gate's own "nothing left for a
+        // follow-up to act on" skip, so a run can otherwise sit here claiming the merge is the
+        // daemon's to make while that same gate is in fact still refusing it (independent pre-PR
+        // review, cycle 3, both lenses). Same "last observation" staleness every other clause in this
+        // method already carries: it clears on the next sweep that finds the thread(s) actually gone.
+        if (run.UnresolvedReviewThreads > 0)
+        {
+            waitingOn.Add(run.UnresolvedHumanReviewThreads is { } human
+                ? $"{run.UnresolvedReviewThreads} unresolved review thread(s) ({human} from a human) to close"
+                : $"{run.UnresolvedReviewThreads} unresolved review thread(s) to close");
+        }
+
         // Named rather than reported as an anonymous "human approval" wherever the last observation
         // actually recorded who (task: the people a pull request is waiting on are named): the
         // owner's only lever here is social, and "waiting on human approval" does not tell them who
