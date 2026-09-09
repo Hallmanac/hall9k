@@ -46,7 +46,10 @@ Three things are outside the law, because they are not platform features:
   window's own work product, and it is what a task is authored *from*. The in-tree `backlog/` is
   a dogfood-era archive (see `backlog/README.md`) rather than a live target — a new backlog-shaped
   item goes through `h9k idea add` / `h9k task add` and renders into the project home instead
-  (backlog 48).
+  (backlog 48). AGENTS.md's own Working agreements placeholder rule (`PLACEHOLDER-<shortid>`) is
+  for a task's branch, never this window: an orchestrator entry lands straight on `main`, with no
+  branch and no rebase step ever coming along behind it to assign a number later, so it takes the
+  log's next real number by hand, same as before that convention existed.
 - **Reading anything.** Inspecting the tree, the streams, the logs, a PR diff.
 - **Unbreaking the platform when the platform is what is broken.** A daemon that will not start
   cannot dispatch the task that fixes it. Do the smallest thing that restores dispatch, then task
