@@ -201,4 +201,4 @@ rather than left to discover them.
   nulls, honest labels like "purged per policy") — never plausibly filled in. An audit
   trail that guesses at provenance is worse than one that admits the gap.
 - Every dependency or pattern choice gets a one-line "why" and a one-line "does this block the later vision?"
-- A headless session runs its gates in the foreground, never behind `run_in_background`/`Monitor`/`ScheduleWakeup`, and never ends its turn with one still pending — it is killed the instant it finishes (PLAN.md §16 #163).
+- A headless session runs its gates in the foreground, never behind `run_in_background`/`Monitor`/`ScheduleWakeup`, and never ends its turn with one still pending — it is killed the instant it finishes (PLAN.md §16 #PLACEHOLDER-9a6d594d).
