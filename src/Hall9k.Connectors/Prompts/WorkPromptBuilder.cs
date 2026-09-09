@@ -1293,9 +1293,11 @@ public static class WorkPromptBuilder
     /// "still running", one having set a <c>Monitor</c> — even though this method's own prior
     /// wording already said "run every verification command... in the foreground". Naming the
     /// harness's own background tools by name, saying explicitly that ending the turn with one
-    /// still pending is the failure (not only "not relying on its result"), and naming the actual
-    /// foreground ceiling (<c>BASH_MAX_TIMEOUT_MS</c>) so a session can see the whole suite fits
-    /// without ever reaching for one, is what this task adds on top of the existing wording.
+    /// still pending is the failure (not only "not relying on its result"), and telling the
+    /// session to request an explicit per-command `timeout` up to the actual foreground ceiling
+    /// (<c>BASH_MAX_TIMEOUT_MS</c>) rather than accepting the lower default a command gets with
+    /// none, so a session can see the whole suite fits without ever reaching for a background
+    /// tool, is what this task adds on top of the existing wording.
     /// </para>
     /// </summary>
     public static void AppendSessionEndsAtFinalMessageRule(StringBuilder prompt, TimeSpan commandTimeout)
@@ -1333,11 +1335,14 @@ public static class WorkPromptBuilder
     /// "run gates in the foreground" sentence was not enough to stop a session reaching for one of
     /// these by name once a suite ran long: two of the three sessions this task's origin cites had
     /// already read that sentence and backgrounded the suite anyway, one of them via
-    /// <c>ScheduleWakeup</c> and <c>Monitor</c> specifically. States the actual foreground ceiling
-    /// (<c>BASH_MAX_TIMEOUT_MS</c>, doubled from <paramref name="commandTimeout"/> the same way
-    /// <see cref="ClaudeSettingsFile.Build"/> sizes it) so a session can see that the project's
-    /// whole suite fits inside one foreground command rather than discovering the ceiling only
-    /// after backgrounding something to avoid it. <paramref name="commandTimeout"/> is the live
+    /// <c>ScheduleWakeup</c> and <c>Monitor</c> specifically. States both halves of the ceiling
+    /// rather than only the higher one: a command run with no explicit `timeout` gets
+    /// <c>BASH_DEFAULT_TIMEOUT_MS</c> (<paramref name="commandTimeout"/> itself, the same value
+    /// <see cref="ClaudeSettingsFile.Build"/> sizes it to), and only an explicit per-command
+    /// `timeout` reaches <c>BASH_MAX_TIMEOUT_MS</c> (double that) — so a session sees that the
+    /// project's whole suite fits inside one foreground command only if it asks for the higher
+    /// ceiling, rather than reading a bare mention of the ceiling as something it gets by
+    /// default and discovering otherwise mid-suite. <paramref name="commandTimeout"/> is the live
     /// ceiling the caller's own session actually launches with — <c>ClaudeExecutor</c> sizes it
     /// from <c>DaemonOptions.VerifyGateTimeout</c> rather than a compile-time constant, so this
     /// rule reads the same value rather than a number that goes stale the moment an operator
@@ -1355,7 +1360,8 @@ public static class WorkPromptBuilder
     public static void AppendForegroundGatesRule(
         StringBuilder prompt, TimeSpan commandTimeout, bool sessionRunsGates = true)
     {
-        int foregroundCeilingMinutes = (int)(commandTimeout.TotalMinutes * 2);
+        int defaultCeilingMinutes = (int)commandTimeout.TotalMinutes;
+        int foregroundCeilingMinutes = defaultCeilingMinutes * 2;
         if (sessionRunsGates)
         {
             prompt.AppendLine("  Run this project's own build and test gates in the foreground and wait for them to");
@@ -1365,9 +1371,11 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  one of those still pending: this session's process is killed the instant your final");
             prompt.AppendLine("  message ends, so a background task left running is left waiting on a notification");
             prompt.AppendLine("  that can never arrive, and the next thing to touch this worktree — another gate, or");
-            prompt.AppendLine("  another session — starts while it is still writing to it. The foreground timeout on");
-            prompt.AppendLine($"  a single command is `BASH_MAX_TIMEOUT_MS`, {foregroundCeilingMinutes} minutes today,");
-            prompt.AppendLine("  sized so this project's full verification suite fits inside one foreground run.");
+            prompt.AppendLine("  another session — starts while it is still writing to it. A command run with no");
+            prompt.AppendLine($"  explicit `timeout` only gets `BASH_DEFAULT_TIMEOUT_MS`, {defaultCeilingMinutes} minutes");
+            prompt.AppendLine("  today — request an explicit `timeout` up to reach the actual foreground ceiling,");
+            prompt.AppendLine($"  `BASH_MAX_TIMEOUT_MS`, {foregroundCeilingMinutes} minutes today, sized so this");
+            prompt.AppendLine("  project's full verification suite fits inside one foreground run.");
         }
         else
         {
@@ -1377,8 +1385,10 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  killed the instant your final message ends, so a background task left running is");
             prompt.AppendLine("  left waiting on a notification that can never arrive, and the next thing to touch");
             prompt.AppendLine("  this worktree — another gate, or another session — starts while it is still");
-            prompt.AppendLine("  writing to it. The foreground timeout on a single command is `BASH_MAX_TIMEOUT_MS`,");
-            prompt.AppendLine($"  {foregroundCeilingMinutes} minutes today, in case anything you do run needs it.");
+            prompt.AppendLine("  writing to it. A command run with no explicit `timeout` only gets");
+            prompt.AppendLine($"  `BASH_DEFAULT_TIMEOUT_MS`, {defaultCeilingMinutes} minutes today — request an explicit");
+            prompt.AppendLine($"  `timeout` up to `BASH_MAX_TIMEOUT_MS`, {foregroundCeilingMinutes} minutes today, in");
+            prompt.AppendLine("  case anything you do run needs it.");
         }
     }
 
