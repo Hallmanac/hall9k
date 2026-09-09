@@ -595,6 +595,24 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
             ?? throw new DomainNotFoundException($"No project {task.ProjectId} — cannot reach its repository to post.");
         int pullRequestNumber = PullRequestUrls.ParseNumber(task.PullRequestUrl);
 
+        // Vetted against the project's writing conventions here, still before the first write and
+        // for the same reason every other check above it runs there (task 412afe6c): these replies
+        // go to a person under the implementer's own login, so one that breaks the house style with
+        // no mechanical fix stops the whole command with nothing sent, rather than being discovered
+        // by the reviewer reading it.
+        List<(ReviewDisagreement Disagreement, string Body)> vetted = [];
+        foreach ((ReviewDisagreement disagreement, string body) in planned)
+        {
+            vetted.Add((disagreement, PostedProse.Vet(
+                body,
+                project.WritingConventions,
+                disagreement.ThreadId.IsNotBlank()
+                    ? $"the reply for review thread {disagreement.ThreadId}"
+                    : "the top-level comment answering the review's own body")));
+        }
+
+        planned = vetted;
+
         List<ReplyOutcome> directed = [];
         foreach ((ReviewDisagreement disagreement, string body) in planned)
         {
