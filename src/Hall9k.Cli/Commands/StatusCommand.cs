@@ -59,6 +59,12 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             session, DateTimeOffset.UtcNow, cancellationToken);
         if (rows.Count == 0)
         {
+            // Printed before the "nothing tracked" line rather than after the header below,
+            // because an install with no tasks at all is exactly where this feature's state is
+            // load-bearing (Decisions Log #161): a review request GitHub has made of this login
+            // that nothing minted a task for leaves a board with no rows on it and a request
+            // waiting, which is the origin incident's own shape.
+            await WriteAutoPrReviewAsync(session, rows, DateTimeOffset.UtcNow, cancellationToken);
             AnsiConsole.MarkupLine("[dim]Nothing tracked yet. Draft some work with h9k task add.[/]");
             return ExitCodes.Ok;
         }
@@ -113,6 +119,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         {
             AnsiConsole.MarkupLine(line);
         }
+
+        await WriteAutoPrReviewAsync(session, rows, now, cancellationToken);
 
         int listed = 0;
         listed += Section(rows, AttentionBucket.NeedsYou, "needs-you", "[red bold]Needs you[/]", now);
@@ -174,6 +182,44 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             "\n[dim]Browse it all:[/] h9k task list --include-archived "
             + "[dim](--project <name>, --state <state>) · per project:[/] h9k project list");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Auto pr-review's own state, printed on every run of this pane (Decisions Log #161): one
+    /// line per project saying whether a review GitHub requests of this install's own login there
+    /// mints a task, and one row per request GitHub is currently making — needs-you where nothing
+    /// started and the operator has to act, informational where the daemon is already on it.
+    /// <para>
+    /// Always printed, at the default as much as at an explicit setting, because the origin
+    /// incident was an invisible state rather than a wrong one. Degraded rather than fatal on a
+    /// database hiccup, exactly as the spend and capacity lines above are: this pane's job is to
+    /// still say something useful when part of the picture is missing.
+    /// </para>
+    /// </summary>
+    private static async Task WriteAutoPrReviewAsync(
+        IQuerySession session, IReadOnlyList<TaskStatusRow> rows, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        ReviewRequestPaneContents pane;
+        try
+        {
+            pane = await ReviewRequestPane.ComposeAllAsync(session, rows, now, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]auto pr-review: unavailable ({exception.Message})[/]");
+            return;
+        }
+
+        foreach (string line in pane.SettingLines)
+        {
+            AnsiConsole.MarkupLine(line);
+        }
+
+        foreach (ReviewRequestRow request in pane.InReadingOrder)
+        {
+            AnsiConsole.MarkupLine(request.Markup);
+        }
     }
 
     /// <summary>
