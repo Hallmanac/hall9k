@@ -95,9 +95,15 @@ public sealed record ProjectSettingsChanged(
     /// <summary>
     /// Whether a pull request GitHub assigns to this install's own login, in this project's
     /// repo, automatically mints and starts a pr-review task, and at what speed (idea e5e98a33).
-    /// Off is both the default and the explicit "don't" — the <see cref="Project.BacklogPolicy.None"/>
-    /// idiom. Trailing and optional so every stream written before this feature existed replays
-    /// byte-for-byte unchanged.
+    /// Present at all is the whole point since Decisions Log #161: the default is
+    /// <see cref="Project.AutoPrReviewSpeed.Normal"/>, so this field being recorded on any event
+    /// in a project's stream is what makes that project's setting explicit — <c>Off</c> included,
+    /// which is now an opt-out a human typed rather than the platform's own initial state.
+    /// <see cref="Project.AutoPrReviewSetting"/> reads exactly that (the projection cannot: it
+    /// stores a field's initialised default indistinguishably from a chosen one). Trailing and
+    /// optional so every stream written before this feature existed replays byte-for-byte
+    /// unchanged — and one written before the flip, carrying nothing here, correctly reads as a
+    /// project that never chose.
     /// </summary>
     Optional<AutoPrReviewSpeed> AutoPrReview = default,
     /// <summary>

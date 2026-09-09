@@ -80,7 +80,15 @@ public sealed class ProjectDetails
     /// <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> name the platform cut before templates existed.
     /// </summary>
     public BranchNameTemplate BranchNameTemplate { get; set; } = BranchNameTemplate.Default;
-    /// <summary>Whether a GitHub reviewer assignment to this install's own login auto-creates a pr-review task, and how fast it starts; Off is the platform's original behavior (idea e5e98a33).</summary>
+    /// <summary>
+    /// The last auto-pr-review speed this project's stream recorded — never the effective one
+    /// (idea e5e98a33, Decisions Log #161). This document is serialised whole on every write, so
+    /// the initialised default below has been stored under this key since a project's very first
+    /// event and cannot be told apart from the same value chosen deliberately. Read
+    /// <see cref="AutoPrReviewSetting"/> instead wherever the effective value or its origin
+    /// matters; it resolves from the stream, which is the only honest record of what an operator
+    /// chose.
+    /// </summary>
     public AutoPrReviewSpeed AutoPrReview { get; set; } = AutoPrReviewSpeed.Off;
     /// <summary>
     /// What has to be true on this install before a task linked to a Jira card or a GitHub issue

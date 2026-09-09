@@ -94,7 +94,12 @@ public sealed class ProjectAggregate
     /// <c>task/&lt;shortid&gt;-&lt;slug&gt;</c> name the platform cut before templates existed.
     /// </summary>
     public BranchNameTemplate BranchNameTemplate { get; private set; } = BranchNameTemplate.Default;
-    /// <summary>Whether a GitHub reviewer assignment to this install's own login auto-creates a pr-review task, and how fast it starts; Off is the platform's original behavior (idea e5e98a33).</summary>
+    /// <summary>
+    /// The last auto-pr-review speed this project's stream recorded (idea e5e98a33). Off here is
+    /// the replay of a stream that recorded nothing as much as one that recorded an opt-out, so
+    /// this is not the effective setting: <see cref="AutoPrReviewSetting"/> resolves that, and
+    /// Decisions Log #161 says why the difference matters.
+    /// </summary>
     public AutoPrReviewSpeed AutoPrReview { get; private set; } = AutoPrReviewSpeed.Off;
     /// <summary>
     /// What has to be true on this install before a task linked to a Jira card or a GitHub issue

@@ -7,8 +7,16 @@ namespace Hall9k.Domain.Features.Project;
 /// <summary>
 /// Whether a pull request GitHub assigns to this install's own login, in this project's repo,
 /// automatically mints and starts a pr-review task — and how fast the resulting task dispatches.
-/// Off is both the default and the explicit "don't", the <see cref="BacklogPolicy.None"/> idiom:
-/// a project that never set this and one told to stop read identically.
+/// <para>
+/// Off is the explicit "don't" and nothing else since Decisions Log #161: the default is
+/// <see cref="Normal"/>, and a project that never set this is a different thing from one told to
+/// stop. This type carries no default of its own for that reason —
+/// <see cref="AutoPrReviewSetting"/> is the resolution every reader goes through, because the one
+/// place the difference is recorded is the project's own stream, not a field's initialised value.
+/// It deliberately breaks the <see cref="BacklogPolicy.None"/> idiom the rest of these settings
+/// follow: the feature sat installed and silent on both nodes for three days (2026-09-08) because
+/// off-as-default and off-as-choice were indistinguishable everywhere.
+/// </para>
 /// <para>
 /// The three non-off speeds are the general dispatch levers this feature deliberately builds no
 /// scheduling code of its own on top of (idea e5e98a33, blocked behind task 45136b29's queue-first
@@ -25,7 +33,7 @@ namespace Hall9k.Domain.Features.Project;
 [JsonConverter(typeof(AutoPrReviewSpeedJsonConverter))]
 public sealed record AutoPrReviewSpeed
 {
-    /// <summary>The platform's original behavior: no automatic pr-review task is ever minted.</summary>
+    /// <summary>The explicit opt-out: no automatic pr-review task is ever minted for this project.</summary>
     public static readonly AutoPrReviewSpeed Off = new("Off");
 
     /// <summary>Mint, publish, and assign — the task joins the ordinary queue like any other.</summary>
