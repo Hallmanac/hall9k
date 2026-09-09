@@ -1967,7 +1967,19 @@ public sealed class ReviewEngine(
         // identical pre-flight itself (it is reached from the pre-first-cycle checkpoint too, which
         // has no caller to run it), and running it twice on this path would pay for a second
         // `gh pr view` and a second pair of worktree reads to answer a question already answered.
-        if (StackedParentWatch.IsStackedChild(context.Run, context.Project))
+        //
+        // Read fresh here rather than off context.Run (independent pre-PR review, cycle 3,
+        // adversarial lens): that snapshot is loaded once when the review loop is entered and held
+        // for this whole call, while closeout's own sweep retargets a child's pull request — and
+        // clears its recorded base — the moment its parent merges, which can land while this very
+        // loop is running. A stale "still stacked" read would send this iteration down
+        // RebaseOntoStackedParentAsync's own "no longer a stacked child, nothing owed" branch, which
+        // returns RebaseGateOutcome.Proceed straight back to THIS method's own caller — skipping the
+        // unstacked rebase-and-renumber path a few lines below entirely, the one place a stacked
+        // child's placeholder is ever assigned its real number, for however many iterations pass
+        // before something else notices the mismatch (Settling's "nothing owed, no review left"
+        // path notices nothing, since no renumbering was ever this run's job to notice missing).
+        if (await IsCurrentlyStackedChildAsync(context, cancellationToken))
         {
             // Deliberately not wired to DecisionsLogRenumberer here (Decisions Log
             // #PLACEHOLDER-6df5f975 — a documented scope limit, not an oversight): the fork point
@@ -1975,7 +1987,10 @@ public sealed class ReviewEngine(
             // checkpoint replay onto a PARENT branch's head does not carry, and this run's own
             // mergeBase-against-origin-base is never computed on this path at all. A stacked
             // child's own placeholder stays unrenumbered until this task's branch is retargeted
-            // onto main (#144/#153) and a later call here takes the unstacked path below instead.
+            // onto main (#144/#153) and a later call here takes the unstacked path below instead —
+            // the fresh check above is what makes that "later call" this SAME call, the moment the
+            // retarget has actually landed, rather than depending on some future iteration to
+            // notice on its own.
             return await RebaseOntoStackedParentAsync(
                 context, StackedCheckpoint.BeforeFinalPass, cancellationToken);
         }
@@ -2166,6 +2181,34 @@ public sealed class ReviewEngine(
         return await DispatchRebaseRecoverySessionAsync(context, run, humanGuidance: null, cancellationToken)
             ? RebaseGateOutcome.LoopAgain
             : RebaseGateOutcome.Stop;
+    }
+
+    /// <summary>
+    /// Whether this run is still a stacked child, read fresh rather than off
+    /// <see cref="ReviewContext.Run"/> — the same freshness <see cref="RebaseOntoStackedParentAsync"/>'s
+    /// own doc already requires of its "current" read, for the identical reason: a run document
+    /// loaded once when the review loop was entered and held for the whole call can go stale while
+    /// closeout retargets this exact run's pull request out from under it. A read failure or a
+    /// missing run document falls back to the held snapshot — the same answer
+    /// <see cref="EnsureRebasedBeforeFinalPassAsync"/> gave before this fresh check existed, not a
+    /// new failure mode.
+    /// </summary>
+    private async Task<bool> IsCurrentlyStackedChildAsync(ReviewContext context, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            RunDetails? current = await query.LoadAsync<RunDetails>(context.RunId, cancellationToken);
+            return current is not null && StackedParentWatch.IsStackedChild(current, context.Project);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: could not read this run's own document fresh to check whether it is still a stacked child — falling back to the snapshot held for this review loop",
+                context.RunId);
+            return StackedParentWatch.IsStackedChild(context.Run, context.Project);
+        }
     }
 
     /// <summary>
