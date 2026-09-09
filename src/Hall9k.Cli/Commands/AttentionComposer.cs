@@ -479,29 +479,42 @@ internal static class AttentionComposer
         // since only Decline/Route ever leaves one open (Decisions Log #159; Fix either lands or the
         // thread stays counted as outstanding and keeps buying follow-ups instead of idling here).
         //
-        // Scoped to IsHuman == true, not every Decline/Route outcome: the design this field
-        // exists to reflect (Decisions Log #159) only ever leaves a HUMAN-authored thread open on
-        // purpose — a bot-authored one (Copilot, another agent) is resolved by this same triage
-        // run before it ever pushes (resolve-review-threads skill step 9), so it stops being
-        // genuinely unresolved the moment this run reaches AwaitingReview. LastReviewThreadOutcomes
-        // itself is never revisited after that point (Apply(ReviewThreadsTriaged) only ever fires
-        // on this run's own triage), so counting every outcome regardless of author kind would
-        // report an already-closed bot thread as still blocking the merge for the entire remaining
-        // life of this run (independent pre-PR review, cycle 6, adversarial finding). This mirrors
-        // CloseoutEngine's own scoping of its "already answered" exclusion to human threads
-        // (CloseoutEngine.cs, snapshot.HumanThreadIds) — that gate reads a live GitHub actor-type
-        // classification instead of this outcome's own self-reported IsHuman, because a live
-        // provider read is available there; this composer has no live snapshot to read at command
-        // time, so the self-report is the only signal on hand, and using it here is a read for
-        // display, not the "may an agent resolve this thread" decision IsHuman's own doc warns
-        // against trusting it for.
-        IReadOnlyList<ReviewThreadOutcome> openThreads = [.. run.LastReviewThreadOutcomes
-            .Where(outcome => (outcome.Disposition == ReviewThreadDisposition.Decline
-                    || outcome.Disposition == ReviewThreadDisposition.Route)
-                && outcome.IsHuman == true)];
+        // Scoped to IsHuman != false, not IsHuman == true: null means the triage never recorded
+        // an author kind (AppendThreadTriageRules tells the agent to leave kind= off for a
+        // Mannequin author, or when it never fetched the typename at all), and
+        // ReviewThreadOutcome.IsHuman's own doc calls null an unobserved fact, not a claimed
+        // "bot". A genuinely bot-authored thread (IsHuman == false) is still excluded here: it is
+        // resolved by this same triage run before it ever pushes (resolve-review-threads skill
+        // step 9), so it stops being genuinely unresolved the moment this run reaches
+        // AwaitingReview. LastReviewThreadOutcomes itself is never revisited after that point
+        // (Apply(ReviewThreadsTriaged) only ever fires on this run's own triage), so counting
+        // every outcome regardless of author kind would report an already-closed bot thread as
+        // still blocking the merge for the entire remaining life of this run (independent pre-PR
+        // review, cycle 6, adversarial finding). Treating null as still-open costs only an extra
+        // wait line; treating it as already resolved would have let this arm claim the merge is
+        // automatic while CloseoutEngine's own exclusion (CloseoutEngine.cs,
+        // snapshot.HumanThreadIds) still reads the thread as human off a live GitHub actor-type
+        // classification and refuses to dispatch a follow-up for it, so nothing would ever
+        // revisit it (independent pre-PR review, cycle 1, adversarial finding). This composer has
+        // no live snapshot of its own to read at command time, so the self-report is the only
+        // signal on hand, and using it here is a read for display, not the "may an agent resolve
+        // this thread" decision IsHuman's own doc warns against trusting it for.
+        IReadOnlyList<ReviewThreadOutcome> openThreads = OpenHumanReviewThreads(run);
         if (openThreads.Count > 0)
         {
-            waitingOn.Add($"{openThreads.Count} unresolved review thread(s) ({openThreads.Count} from a human) to close");
+            // The parenthetical is a genuine subset now that the predicate above admits a
+            // null-kind outcome: the leading number is every thread left open, the parenthetical
+            // only the ones this run's own triage could actually confirm a human wrote
+            // (independent pre-PR review, cycle 1, both lenses — before this the two numbers were
+            // always equal and the parenthetical read as decoration, not information). The
+            // trailing hedge is honest about staleness rather than silent about it: this field is
+            // written once by the triage and never re-observed, so a human who has since resolved
+            // the thread on GitHub still reads it as open here until a fresh triage or merge
+            // supersedes this run (independent pre-PR review, cycle 1, conformance finding).
+            int humanCount = openThreads.Count(outcome => outcome.IsHuman == true);
+            waitingOn.Add($"{openThreads.Count} unresolved review thread(s) ({humanCount} from a human) "
+                + "to close (as observed by the last triage; already closed if you've since resolved "
+                + "them)");
         }
 
         // Named rather than reported as an anonymous "human approval" wherever the last observation
@@ -758,8 +771,55 @@ internal static class AttentionComposer
         return new TaskAttention(level, cause + checksCaveat, run.PullRequestUrl ?? string.Empty);
     }
 
-    private static TaskAttention AwaitingReviewAttention(RunDetails run) =>
-        NamedHumanReviewWaitAttention(run) ?? CopilotAwaitingReviewAttention(run);
+    private static TaskAttention AwaitingReviewAttention(RunDetails run)
+    {
+        TaskAttention baseAttention = NamedHumanReviewWaitAttention(run) ?? CopilotAwaitingReviewAttention(run);
+        IReadOnlyList<ReviewThreadOutcome> openThreads = OpenHumanReviewThreads(run);
+        if (openThreads.Count == 0)
+        {
+            return baseAttention;
+        }
+
+        // CloseoutEngine's own dispatch-suppression branch (CloseoutEngine.cs, the
+        // alreadyAnsweredThreadIds skip) can leave this run resting in AwaitingReview indefinitely
+        // with a human-authored thread declined or routed on purpose (Decisions Log #159). That
+        // is a real merge gate (AGENTS.md names "every review thread resolved" as one of the
+        // four, and says it is a gate, not a formality), not something the base cause's own "the
+        // merge is yours" / "nothing for you until it lands" wording ever named (independent
+        // pre-PR review, cycle 1, conformance finding). Folded onto the base cause rather than
+        // replacing it: the base cause still carries real information (Copilot's state, or a
+        // named reviewer's), and this clause always applies once such a thread exists, regardless
+        // of what Copilot or any other reviewer is doing.
+        int humanCount = openThreads.Count(outcome => outcome.IsHuman == true);
+        string threadClause = $"the last triage also left {openThreads.Count} review thread(s) "
+            + $"({humanCount} from a human) declined or routed and open on purpose; close them "
+            + "yourself, or reply if you disagree (already closed by the time you read this if "
+            + "you've since resolved them)";
+        return baseAttention with
+        {
+            Level = AttentionLevel.NeedsYou,
+            Cause = baseAttention.HasCause ? $"{baseAttention.Cause}; {threadClause}" : threadClause,
+            Lever = baseAttention.Lever.IsNotBlank() ? baseAttention.Lever : (run.PullRequestUrl ?? string.Empty),
+        };
+    }
+
+    /// <summary>
+    /// Threads this run's own last triage declined or routed and left open for a human to close
+    /// on purpose (Decisions Log #159), read for display, not for the "may an agent resolve this
+    /// thread" decision <see cref="ReviewThreadOutcome.IsHuman"/>'s own doc warns against trusting
+    /// it for. Includes an outcome whose author kind was never recorded (IsHuman null): null is an
+    /// unobserved fact, not a claimed "bot" (AppendThreadTriageRules tells the agent to leave
+    /// kind= off for a Mannequin author, or when it never fetched the typename at all), and a
+    /// genuinely bot-authored thread (IsHuman == false) is always resolved by this same triage run
+    /// before it ever pushes (resolve-review-threads skill step 9). Shared by both AwaitingReview
+    /// arms so they read the same set the same way (independent pre-PR review, cycle 1,
+    /// conformance finding: only the pre-approved arm named this before).
+    /// </summary>
+    private static IReadOnlyList<ReviewThreadOutcome> OpenHumanReviewThreads(RunDetails run) =>
+        [.. run.LastReviewThreadOutcomes
+            .Where(outcome => (outcome.Disposition == ReviewThreadDisposition.Decline
+                    || outcome.Disposition == ReviewThreadDisposition.Route)
+                && outcome.IsHuman != false)];
 
     private static TaskAttention CopilotAwaitingReviewAttention(RunDetails run) => run.ExternalReviewState.Value switch
     {
