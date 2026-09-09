@@ -125,7 +125,17 @@ public abstract class ProcessManagerBase : IProcessManager
         // rather than a bare-pid lookup (independent pre-PR review, cycle 3, adversarial lens).
         List<(int Id, DateTimeOffset StartedAt)> descendantSnapshotsBeforeExit =
             [.. CollectDescendants(processId).Select(TrySnapshotStartTime).OfType<(int Id, DateTimeOffset StartedAt)>()];
-        DescendantsSnapshotted?.Invoke();
+
+        // A throwing subscriber must never reach here: this is a test-only seam (see the event's
+        // own doc comment), and letting an exception from it propagate would abort process-tree
+        // cleanup and bubble into the run pipeline for something no production caller even wires up.
+        try
+        {
+            DescendantsSnapshotted?.Invoke();
+        }
+        catch (Exception)
+        {
+        }
 
         DateTimeOffset graceDeadline = DateTimeOffset.UtcNow + LingeringGraceWindow;
         while (!process.HasExited && DateTimeOffset.UtcNow < graceDeadline)
@@ -262,11 +272,19 @@ public abstract class ProcessManagerBase : IProcessManager
 
     /// <summary>
     /// Shared breadth-first walk over whatever single-level "children of this pid" lookup a
-    /// concrete manager's own <see cref="CollectDescendants"/> override supplies.
+    /// concrete manager's own <see cref="CollectDescendants"/> override supplies. Tracks pids
+    /// already enqueued so a cycle in that lookup terminates instead of spinning forever
+    /// (independent pre-PR review, cycle 1, adversarial lens): <see cref="WindowsProcessManager"/>'s
+    /// map is built from <c>Win32_Process.ParentProcessId</c>, which the OS never clears when a
+    /// parent exits, so a recycled pid can produce a two-node cycle (A's stale parent pid is
+    /// later reused by a process the live tree also reports as A's own child) that this walk
+    /// would otherwise revisit without end, growing <c>descendants</c> unboundedly on the thread
+    /// that is supposed to be acting on a session's terminal result.
     /// </summary>
     protected static IReadOnlyList<int> CollectDescendantsBreadthFirst(int rootProcessId, Func<int, IEnumerable<int>> childrenOf)
     {
         List<int> descendants = [];
+        HashSet<int> enqueued = [rootProcessId];
         Queue<int> frontier = new();
         frontier.Enqueue(rootProcessId);
         while (frontier.Count > 0)
@@ -274,6 +292,11 @@ public abstract class ProcessManagerBase : IProcessManager
             int parent = frontier.Dequeue();
             foreach (int child in childrenOf(parent))
             {
+                if (!enqueued.Add(child))
+                {
+                    continue;
+                }
+
                 descendants.Add(child);
                 frontier.Enqueue(child);
             }
