@@ -357,7 +357,7 @@ internal static class TaskPhaseComposer
             // another here is only the post-PR review watcher's own read of Copilot: landed,
             // requested but still pending, or neither observed yet (origin: PR #50 sat Delivered
             // for 23 minutes with a landed Copilot review nobody had read before the merge).
-            "AwaitingReview" => AwaitingReviewPhase(pullRequest, run),
+            "AwaitingReview" => WithTriageDetail(AwaitingReviewPhase(pullRequest, run), run),
             "ChecksFailing" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable,
                 ChecksDetail(run)),
             "ReviewPending" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable, Threads(run)),
