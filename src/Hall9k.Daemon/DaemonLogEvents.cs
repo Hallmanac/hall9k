@@ -38,4 +38,21 @@ public static class DaemonLogEvents
     /// </summary>
     public static readonly EventId StackedParentBranchGoneAtPullRequestOpen =
         new(2003, nameof(StackedParentBranchGoneAtPullRequestOpen));
+
+    /// <summary>
+    /// Composed prose the platform was about to post broke a mechanically checkable writing
+    /// convention and was rewritten on the way out (task 412afe6c). Its own id because it is the
+    /// signal that a composition prompt is not landing: one of these is a session having a bad
+    /// day, and a steady stream of them means the conventions are reaching the agent and being
+    /// ignored, which is a prompt problem no rewrite fixes.
+    /// </summary>
+    public static readonly EventId WritingConventionsRewrote = new(2004, nameof(WritingConventionsRewrote));
+
+    /// <summary>
+    /// Composed prose was withheld outright, because the convention it broke had no mechanical fix
+    /// (task 412afe6c). Distinct from <see cref="WritingConventionsRewrote"/> deliberately: this is
+    /// the id that means something an agent wrote is NOT on the pull request, so an operator
+    /// looking for prose that never appeared has one line to grep for.
+    /// </summary>
+    public static readonly EventId WritingConventionsWithheld = new(2005, nameof(WritingConventionsWithheld));
 }

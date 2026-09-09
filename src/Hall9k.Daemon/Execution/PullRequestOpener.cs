@@ -4,6 +4,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -95,7 +96,8 @@ public sealed class PullRequestOpener(
                     // a pull request at it. Every unstacked pull request opens exactly as it always
                     // has, without a single extra call.
                     ? await CreatePullRequestAsync(
-                        run, task, await ResolveOpenBaseAsync(run, project, cancellationToken), cancellationToken)
+                        run, task, await ResolveOpenBaseAsync(run, project, cancellationToken),
+                        project.WritingConventions, cancellationToken)
                     : (null, 0);
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -457,11 +459,12 @@ public sealed class PullRequestOpener(
         lsRemoteExitCode == 2 ? projectBaseBranch : recordedBase;
 
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
-        RunDetails run, TaskDetails task, string baseBranch, CancellationToken cancellationToken)
+        RunDetails run, TaskDetails task, string baseBranch, WritingConventions conventions,
+        CancellationToken cancellationToken)
     {
         IReadOnlyList<string> arguments = await CreateArgumentsAsync(
             logger, run, task, TryReadAgentSummary(run), await SourceUrlAsync(task, cancellationToken), baseBranch,
-            cancellationToken);
+            conventions, cancellationToken);
         string output = await RunInWorktreeAsync(run.WorktreePath, "gh", arguments, cancellationToken);
 
         string url = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -490,14 +493,27 @@ public sealed class PullRequestOpener(
     /// </summary>
     internal static async Task<IReadOnlyList<string>> CreateArgumentsAsync(
         ILogger logger, RunDetails run, TaskDetails task, string? agentSummary, Uri? sourceUrl, string baseBranch,
-        CancellationToken cancellationToken)
+        WritingConventions conventions, CancellationToken cancellationToken)
     {
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
-        // What the build session composed for itself, when it composed one.
-        PrSummaryParser.PrSummary? prSummary = PrSummaryArtifact.TryRead(logger, run.Id, runDirectory);
+        // What the build session composed for itself, when it composed one — vetted against the
+        // project's writing conventions here, at the last moment before it becomes a pull request
+        // and stops being editable by anything but a human (task 412afe6c). Only the composed
+        // prose goes through the check: the platform's own bookkeeping lines and the task's
+        // objective and criteria are this platform's voice and the operator's own words, not text
+        // an agent wrote for them, and rewriting either would be answering a style miss with a
+        // change nobody asked for.
+        PrSummaryParser.PrSummary? read = PrSummaryArtifact.TryRead(logger, run.Id, runDirectory);
+        PrSummaryParser.PrSummary? prSummary = read is null
+            ? null
+            : new PrSummaryParser.PrSummary(
+                Vetted(logger, run.Id, read.Title, conventions, "the pull request title"),
+                Vetted(logger, run.Id, read.Body, conventions, "the pull request body") ?? string.Empty);
+        string? vettedAgentSummary = Vetted(
+            logger, run.Id, agentSummary, conventions, "the session's closing summary");
         string bodyFile = Path.Combine(runDirectory, "pr-body.md");
         await File.WriteAllTextAsync(
-            bodyFile, PullRequestBody.Build(run, task, agentSummary, sourceUrl, prSummary), cancellationToken);
+            bodyFile, PullRequestBody.Build(run, task, vettedAgentSummary, sourceUrl, prSummary), cancellationToken);
 
         return
         [
@@ -507,6 +523,44 @@ public sealed class PullRequestOpener(
             "--base", baseBranch,
             "--head", run.Branch,
         ];
+    }
+
+    /// <summary>
+    /// One piece of composed prose, as it should actually be posted: rewritten where the
+    /// convention it broke has a mechanical fix, and dropped where it does not, so the fallback
+    /// underneath it (the task's own objective for a title, the run skeleton for a body) is what a
+    /// reviewer reads instead. Never an exception and never a failed run: a style miss is not
+    /// worth stranding finished, gated work over, and the log line is what an operator acts on.
+    /// </summary>
+    private static string? Vetted(
+        ILogger logger, Guid runId, string? text, WritingConventions conventions, string what)
+    {
+        if (text.IsBlank())
+        {
+            return text;
+        }
+
+        WritingConventionsVerdict verdict = WritingConventionsCheck.Vet(text, conventions);
+        if (verdict.Refused)
+        {
+            logger.LogWarning(
+                DaemonLogEvents.WritingConventionsWithheld,
+                "Run {RunId}: {What} broke {Rule}, and no mechanical fix keeps what it says, so it is not "
+                + "posted at all. The text is in this run's own artifacts; h9k task show names the run",
+                runId, what, verdict.Refusal);
+            return null;
+        }
+
+        if (verdict.Rewrites.Count > 0)
+        {
+            logger.LogInformation(
+                DaemonLogEvents.WritingConventionsRewrote,
+                "Run {RunId}: {What} broke the project's writing conventions and was rewritten before posting "
+                + "({Rewrites})",
+                runId, what, string.Join("; ", verdict.Rewrites));
+        }
+
+        return verdict.Text;
     }
 
     private string? TryReadAgentSummary(RunDetails run)
