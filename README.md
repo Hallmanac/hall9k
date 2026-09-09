@@ -460,9 +460,13 @@ liveness, its launch text, its recipe and journal paths, and its last measured t
 Neither one launches anything; you copy the printed line into a fresh terminal yourself. The
 launch command itself always prints as a single line with exactly one trailing newline, never
 hand-wrapped at the terminal's width, whether you read it in an interactive terminal or pipe the
-output somewhere else — so it is paste-safe both ways: triple-click or drag-select the line in an
-interactive terminal, or pipe the command straight to your clipboard tool, `h9k orchestrator
-project hall9k | pbcopy` on macOS or `h9k orchestrator project hall9k | clip` on Windows.
+output somewhere else, so it is paste-safe both ways: triple-click or drag-select the line in an
+interactive terminal, or, since `h9k orchestrator node`/`project` print the launch line alongside
+other context lines, isolate it with `head -1` before piping to your clipboard tool on macOS:
+`h9k orchestrator launch-text show --project hall9k | head -1 | pbcopy`, or with PowerShell's
+`Select-Object -First 1` on Windows, since standard PowerShell has no `head`:
+`h9k orchestrator launch-text show --project hall9k | Select-Object -First 1 | clip` (omit
+`--project` for the node's own launch text).
 `h9k orchestrator launch-text show`/`set` reads and replaces that launch line, one setting per
 agent CLI, and `h9k orchestrator measure` runs a fixed one-turn probe against it so "lean" is a
 number you can watch rather than a promise: a same-day dry run of the skill's own first real run
