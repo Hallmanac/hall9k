@@ -6,7 +6,7 @@ namespace Hall9k.Tests.Daemon;
 
 /// <summary>
 /// The pull request the build session composed for itself, read off the same terminal result the
-/// handoff comes from (Decisions Log #PLACEHOLDER-f481c576). Every rule here exists because a
+/// handoff comes from (Decisions Log #163). Every rule here exists because a
 /// session's final message is prose written by a model, not a form it filled in.
 /// </summary>
 public sealed class PrSummaryParserTests

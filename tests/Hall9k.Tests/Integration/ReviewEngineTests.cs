@@ -5928,7 +5928,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
-    /// Decisions Log #PLACEHOLDER-f481c576: a fix session refreshes the pull request's own summary
+    /// Decisions Log #163: a fix session refreshes the pull request's own summary
     /// when its fixes changed what a reviewer of the whole change needs to know, and the daemon
     /// takes that block off the same result it already reads the resolution line from.
     /// </summary>

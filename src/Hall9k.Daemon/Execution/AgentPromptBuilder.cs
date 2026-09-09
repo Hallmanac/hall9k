@@ -3374,7 +3374,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  The severity decides how the review loop converges, so re-grading one yourself");
         prompt.AppendLine("  would be deciding your own way past that. The platform hands disputes to a human");
         prompt.AppendLine("  with both positions on record.");
-        // Opportunistic, not mandatory (Decisions Log #PLACEHOLDER-f481c576): the build session
+        // Opportunistic, not mandatory (Decisions Log #163): the build session
         // already composed this pull request's summary, and a fix folded into its owning commit
         // usually changes nothing a reviewer of the whole change needs to know. A session that
         // writes no block leaves the build session's own standing, which is why the sentence asks

@@ -1035,7 +1035,7 @@ public static class WorkPromptBuilder
 
     /// <summary>
     /// The step that makes the pull request the session's own work rather than the daemon's
-    /// (Decisions Log #PLACEHOLDER-f481c576). It runs last, after the tree-identity check, because
+    /// (Decisions Log #163). It runs last, after the tree-identity check, because
     /// it composes from the commits the recompose just made: a summary written before that step
     /// would describe checkpoints nobody will ever see.
     /// <para>
