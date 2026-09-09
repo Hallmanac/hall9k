@@ -2517,6 +2517,53 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// A human-authored thread this exact run already declined and replied to stays open by
+    /// design (Decisions Log #159: "a human-authored one stays open"), so it keeps reading as
+    /// unresolved on every sweep after this one — but a second dispatch on it can only repeat
+    /// "never re-litigate a point a previous run already answered" and push nothing, wasting a
+    /// full follow-up on the way to the same eventual park (independent pre-PR review, cycle 1,
+    /// adversarial lens). Once every unresolved thread is accounted for this way, the sweep must
+    /// not dispatch — but the observation the closeout gate itself reads still gates a
+    /// pre-approved merge, so this must read as a visible wait, not a silent all-clear.
+    /// </summary>
+    [Fact]
+    public async Task A_thread_already_declined_and_answered_by_this_run_does_not_buy_a_second_dispatch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        await using (IDocumentSession triageSession = store.LightweightSession())
+        {
+            triageSession.Events.Append(runId, new ReviewThreadsTriaged(
+                runId,
+                [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "brianhallmanac", IsHuman: true)],
+                Now));
+            await triageSession.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["PRRC_1"],
+                UnresolvedHumanThreadIds = ["PRRC_1"],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.AwaitingReview, "nothing outstanding remains to dispatch a follow-up onto — a visible wait, not a park");
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.State.Should().Be(
+            TaskState.Done, "no reopen was appended; the task's own state is untouched");
+    }
+
+    /// <summary>
     /// The countersign is off unless someone said otherwise: nothing about a quiet pull
     /// request should spend review quota by default (Decisions Log #62).
     /// </summary>
