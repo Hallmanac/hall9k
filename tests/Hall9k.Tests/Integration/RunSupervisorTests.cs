@@ -103,6 +103,59 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// Decisions Log #PLACEHOLDER-f481c576: the pull request the build session composed for itself
+    /// is a second marked block on the same terminal result the handoff comes from, captured at
+    /// the one moment that result is in hand.
+    /// </summary>
+    [Fact]
+    public async Task A_results_pull_request_summary_block_lands_in_the_run_directory()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        const string resultWithSummary =
+            """{"type":"result","subtype":"success","is_error":false,"result":"Did the work.\n\nPR SUMMARY:\nTitle: Resolve references in every host\n\nEvery host now uses the shared provider.\n\nHANDOFF:\nNothing surprising here.","usage":{"input_tokens":1,"output_tokens":1}}""";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(resultWithSummary));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node)
+            .StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+        await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+
+        string artifact = RunPaths.PrSummaryFile(RunPaths.GlobalDirectory(runId));
+        File.ReadAllText(artifact).Should().Contain("Title: Resolve references in every host")
+            .And.Contain("Every host now uses the shared provider.")
+            .And.NotContain("Nothing surprising here.", "the handoff is its own artifact and its own parser");
+        File.ReadAllText(RunPaths.HandoffFile(RunPaths.GlobalDirectory(runId)))
+            .Should().Contain("Nothing surprising here.").And.NotContain("PR SUMMARY:");
+    }
+
+    /// <summary>
+    /// A session that composed none writes none: unlike the handoff, whose empty file is the
+    /// third of three observations closeout reads, nothing downstream of this artifact needs to
+    /// tell an absent summary from an empty one.
+    /// </summary>
+    [Fact]
+    public async Task A_result_with_no_summary_block_writes_no_pull_request_summary_at_all()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(ResultLine));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node)
+            .StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+        await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+
+        File.Exists(RunPaths.PrSummaryFile(RunPaths.GlobalDirectory(runId))).Should().BeFalse();
+        File.Exists(RunPaths.HandoffFile(RunPaths.GlobalDirectory(runId)))
+            .Should().BeTrue("the handoff's own three-state contract is untouched by this");
+    }
+
+    /// <summary>
     /// A reviewer's own review lap (<c>h9k pr review</c>, Decisions Log #149) is a human's, not
     /// this daemon's. Its run sits Dispatched under the ceiling-exempt <see cref="Guid.Empty"/>
     /// node sentinel with no agent process ever recorded — there is none; the reviewer pasted the

@@ -1421,6 +1421,14 @@ public sealed class RunSupervisor(
     /// there was no session-end capture at all. Writing nothing would collapse the middle
     /// case into the last and lose a fact the platform actually observed.
     /// </para>
+    /// <para>
+    /// The same result carries a second marked block, the pull request the session composed for
+    /// itself, and <see cref="PrSummaryArtifact"/> takes it from here — a sibling call rather than
+    /// a second read of the same text somewhere else in the pipeline, since this is the one moment
+    /// the terminal result is in hand. It writes nothing when the result carried no block, which is
+    /// the whole difference from the handoff above: nothing downstream needs to tell an absent
+    /// summary from an empty one, so there is no third state worth recording.
+    /// </para>
     /// </summary>
     private async Task CaptureHandoffAsync(
         Guid runId, string runDirectory, AgentResult result, CancellationToken cancellationToken)
@@ -1443,6 +1451,8 @@ public sealed class RunSupervisor(
             // reads an absent file and records NotCaptured, which is exactly what happened.
             logger.LogWarning(exception, "Could not write the handoff artifact for run {RunId}", runId);
         }
+
+        await PrSummaryArtifact.CaptureAsync(logger, runId, runDirectory, result.Summary, cancellationToken);
     }
 
     /// <summary>
