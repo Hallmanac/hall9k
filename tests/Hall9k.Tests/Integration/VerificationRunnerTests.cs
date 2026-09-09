@@ -1218,7 +1218,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Value.Should().Be("Failed");
         run.FailureReason.Should().NotContain(
-            "already ran once for this run", "this path never even attempted a NEW recovery to explain");
+            "already ran once for the Build leg", "this path never even attempted a NEW recovery to explain");
     }
 
     /// <summary>

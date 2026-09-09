@@ -676,21 +676,30 @@ public sealed class RunDetails : IJsonOnDeserialized
     public List<UncommittedWorkRecoveryRecord> UncommittedWorkRecoveries { get; set; } = [];
 
     /// <summary>
-    /// Back-compat shim for a document written before this field was a list (independent pre-PR
+    /// Back-compat record for a document written before this field was a list (independent pre-PR
     /// review, cycle 1, adversarial lens): this projection is registered
     /// <c>ProjectionLifecycle.Inline</c> (<c>MartenConfiguration.cs</c>), so a stored document is
     /// never rebuilt from its full event history — only the one new event just appended gets
     /// applied to whatever shape the document already has on disk. A run already mid-flight when
     /// this field was renamed from the old singular <c>uncommittedWorkRecovery</c> would otherwise
     /// deserialize straight into an empty <see cref="UncommittedWorkRecoveries"/>, silently losing
-    /// the one recovery attempt recorded under the old shape and letting
-    /// <see cref="HasUncommittedWorkRecoveryAttempt"/> grant that same run's leg a second one —
-    /// exactly what its own "at most one" invariant says can never happen.
-    /// <see cref="IJsonOnDeserialized.OnDeserialized"/> below folds this in once, immediately after
-    /// which the next event append persists the list shape and this legacy property reads null
-    /// forever after. <see cref="RunSessionLeg.Unknown"/> stands in for the leg the old shape never
-    /// recorded, the same sentinel <see cref="Events.RunUncommittedWorkRecoveryAttempted"/>'s own
+    /// the one recovery attempt recorded under the old shape.
+    /// <see cref="IJsonOnDeserialized.OnDeserialized"/> below folds this in once, tagged
+    /// <see cref="RunSessionLeg.Unknown"/> because the old shape never recorded which leg it was
+    /// for — the same sentinel <see cref="Events.RunUncommittedWorkRecoveryAttempted"/>'s own
     /// nullable <c>Leg</c> already falls back to for a stream written before that field existed.
+    /// <see cref="HasUncommittedWorkRecoveryAttempt"/> checks by leg, so a folded
+    /// <see cref="RunSessionLeg.Unknown"/> entry never matches <c>Build</c>, <c>Fix</c>, or
+    /// <c>RebaseRecovery</c> and, on its own, does not stop the run's real leg from earning a
+    /// fresh per-leg recovery — folding this in preserves the historical record rather than
+    /// granting eligibility protection, which only a per-leg <see cref="UncommittedWorkRecoveries"/>
+    /// entry recorded from this point forward provides. <c>[JsonInclude]</c> means this legacy
+    /// property still serializes as well as deserializes, but <c>OnDeserialized</c> clears it back
+    /// to null once folded, so the next save this document makes stops writing
+    /// <c>uncommittedWorkRecovery</c> alongside <c>uncommittedWorkRecoveries</c> — an upgraded
+    /// document self-heals on its own next write instead of carrying the fold's source data
+    /// forever. Reading the already-folded record back out of <see cref="UncommittedWorkRecoveries"/>
+    /// is the read path from that point on; nothing depends on this property surviving the fold.
     /// </summary>
     [JsonInclude]
     [JsonPropertyName("uncommittedWorkRecovery")]
@@ -703,6 +712,7 @@ public sealed class RunDetails : IJsonOnDeserialized
             UncommittedWorkRecoveries.Add(new UncommittedWorkRecoveryRecord(
                 legacy.StrandedFiles, legacy.Reason, legacy.AttemptedAt, legacy.RecoveredCleanly,
                 legacy.DiscardedFiles, RunSessionLeg.Unknown, legacy.CompletedAt));
+            LegacyUncommittedWorkRecovery = null;
         }
     }
 
