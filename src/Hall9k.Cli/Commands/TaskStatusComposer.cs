@@ -462,6 +462,13 @@ internal static class TaskStatusComposer
             // flight, which is Delivered work rather than work waiting to start.
             "Published" or "Queued" or "Blocked" => pushed ? LifecycleState.Delivered : LifecycleState.Published,
             "Claimed" or "NeedsHuman" => pushed ? LifecycleState.Delivered : LifecycleState.Working,
+            // A posted review waiting on its author (task: a pr-review task stays open while the
+            // pull request's review threads are unresolved). Only one state ever reads as this
+            // word: NeedsHuman is deliberately NOT folded in here even while a follow-through is
+            // open on it, because the whole point of that transition is that the row goes red and
+            // asks for the reviewer — showing it as Waiting would hide exactly the moment this
+            // feature exists to surface.
+            "AwaitingAuthor" => LifecycleState.Waiting,
             // Merged, or closed with nothing to watch: the story is over either way. A pull
             // request closed without merging is deliberately NOT Done — closeout ended, but not
             // the way Done claims, and the attention line says so.
@@ -585,6 +592,7 @@ internal static class TaskStatusComposer
         {
             "Working" => AttentionBucket.Working,
             "Delivered" => AttentionBucket.Delivered,
+            "Waiting" => AttentionBucket.Waiting,
             "Failed" => AttentionBucket.NeedsYou,
             "Done" => AttentionBucket.Done,
             "Draft" => AttentionBucket.Draft,
@@ -643,15 +651,18 @@ internal static class TaskStatusComposer
         AttentionBucket.Stalled => 1,
         AttentionBucket.Working => 2,
         AttentionBucket.Delivered => 3,
-        AttentionBucket.Queued => 4,
+        // A posted review waiting on its author ranks just under Delivered work: both are an open
+        // pull request being watched, and this one is the wait a reader can do least about.
+        AttentionBucket.Waiting => 4,
+        AttentionBucket.Queued => 5,
         // The development states rank below dispatched work: they are not waiting on the
         // platform, they are waiting on a human to finish thinking (Blocked is waiting on
         // another task, which is closer to running than either).
-        AttentionBucket.Blocked => 5,
-        AttentionBucket.Ready => 6,
-        AttentionBucket.Draft => 7,
-        AttentionBucket.Done => 8,
-        _ => 9,
+        AttentionBucket.Blocked => 6,
+        AttentionBucket.Ready => 7,
+        AttentionBucket.Draft => 8,
+        AttentionBucket.Done => 9,
+        _ => 10,
     };
 
     /// <summary>How long ago, in the resolution a human actually reads at a glance.</summary>

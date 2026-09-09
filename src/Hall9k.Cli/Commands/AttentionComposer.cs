@@ -71,6 +71,31 @@ internal static class AttentionComposer
             return TaskAttention.None;
         }
 
+        // The pull request answered a review this node posted (task: a pr-review task stays open while
+        // the pull request's review threads are unresolved). Ahead of the NeedsHuman arm below,
+        // which is the same state and would otherwise report "the agent asked a question and
+        // stopped" — a cause nothing here observed, on a task whose real cause is recorded and
+        // specific. The reason is the line the follow-through poll composed, verbatim, so the
+        // board, h9k task show, and the daemon's log all say it the same way.
+        if (task.State == TaskState.NeedsHuman
+            && task.PrReviewFollowThroughOpen
+            && task.PrReviewAuthorActivitySummary is { } authorActivity)
+        {
+            // h9k pr review's argument is the PULL REQUEST, never a task id, so the lever names the
+            // pull request — a task-id fragment there would either be refused or, when the fragment
+            // happens to be all digits, silently read as a pull-request number (self-review, round
+            // one: never advise a lever the platform will refuse, and never one it would misread).
+            // The reference is what the task itself adopted, so it is always readable here; the
+            // stated fallback is the one command that cannot be wrong about which task it means.
+            string reviewLever = task.AdoptedPullRequestReference is { } pullRequest
+                ? $"h9k pr review {pullRequest} --since-my-review [dim](reads only what changed since your review)[/]"
+                : $"h9k task show {id} [dim](this task carries no readable pull-request reference to open a lap on)[/]";
+            return new TaskAttention(
+                AttentionLevel.NeedsYou,
+                authorActivity,
+                $"{reviewLever}, or h9k task abandon {id} [dim](stop watching this pull request)[/]");
+        }
+
         // An agent asked a question and stopped. The ask-a-human loop records the question but
         // no command answers it yet, so the lever is the one that shows it rather than one the
         // platform does not have (never advise a lever the platform will refuse).

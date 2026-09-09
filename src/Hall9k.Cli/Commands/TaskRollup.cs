@@ -41,6 +41,16 @@ internal sealed record TaskRollup(
                 AttentionBucket.Stalled => rollup with { Stalled = rollup.Stalled + 1 },
                 AttentionBucket.Working => rollup with { Working = rollup.Working + 1 },
                 AttentionBucket.Delivered => rollup with { Delivered = rollup.Delivered + 1 },
+                // Counted under Delivered rather than earning a column of its own (task: a
+                // pr-review task stays open while the pull request's review threads are
+                // unresolved). The rollup is the coarse view — one row per project on
+                // h9k project list — and both groups mean the identical coarse thing there: an
+                // open pull request this install is watching. The distinction that matters (whose
+                // pull request, and what the wait is for) is what the Status column and the
+                // h9k status section carry, where there is room to say it. Explicit rather than
+                // left to fall through, because the fall-through is Closed, which would count a
+                // live wait as archived and quietly break "the columns sum to the task count".
+                AttentionBucket.Waiting => rollup with { Delivered = rollup.Delivered + 1 },
                 AttentionBucket.Queued => rollup with { Queued = rollup.Queued + 1 },
                 AttentionBucket.Blocked => rollup with { Blocked = rollup.Blocked + 1 },
                 AttentionBucket.Ready => rollup with { Ready = rollup.Ready + 1 },

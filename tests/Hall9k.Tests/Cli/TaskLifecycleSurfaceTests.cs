@@ -19,19 +19,21 @@ public sealed class TaskLifecycleSurfaceTests
     private static readonly DateTimeOffset Now = StatusFixtures.Now;
 
     [Fact]
-    public void The_status_column_shows_seven_words_and_never_a_run_state()
+    public void The_status_column_shows_eight_words_and_never_a_run_state()
     {
         string[] lifecycle = [.. LifecycleState.All.Select(state => state.Word)];
-        lifecycle.Should().Equal("Draft", "Published", "Working", "Delivered", "Done", "Failed", "Archived");
+        lifecycle.Should().Equal(
+            "Draft", "Published", "Working", "Delivered", "Waiting", "Done", "Failed", "Archived");
 
         // Every run state under every task state the composer can be handed. The run vocabulary
         // is the phase line's material now, and the column it used to leak into prints exactly
-        // one of the seven words above. (Failed names both a task's ending and a run's, so the
+        // one of the eight words above. (Failed names both a task's ending and a run's, so the
         // check is what the column renders, not whether the two word lists overlap.)
         string[] taskStates =
         [
             TaskState.Draft, TaskState.Published, TaskState.Queued, TaskState.Blocked,
-            TaskState.Claimed, TaskState.NeedsHuman, TaskState.Done, TaskState.Failed, TaskState.Abandoned,
+            TaskState.Claimed, TaskState.NeedsHuman, TaskState.AwaitingAuthor, TaskState.Done,
+            TaskState.Failed, TaskState.Abandoned,
         ];
         string[] leaked = ["Claimed", "Queued", "Blocked", "NeedsHuman", "ClosingOut", .. TaskStateFilter.RunStates];
 
