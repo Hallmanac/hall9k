@@ -993,6 +993,457 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
         return worktrees;
     }
 
+    // ── the scoped second lap: h9k pr review --since-my-review ──
+
+    /// <summary>
+    /// gh and git, scripted for a scoped lap (task: a pr-review task stays open while the pull
+    /// request's review threads are unresolved). Four calls reach it and each answers a different
+    /// question, so it dispatches on what was asked rather than on call order — which is the
+    /// honest shape anyway: the composer is free to reorder its reads.
+    /// </summary>
+    private ProcessRunner ScopedLapGh(string conversationJson) => (fileName, arguments, _, _) =>
+    {
+        List<string> argv = [.. arguments];
+        if (fileName == "git")
+        {
+            return Task.FromResult(argv.Contains("log")
+                ? new ProcessResult(0, "9a1b2c3 answer the review\n", string.Empty)
+                : new ProcessResult(
+                    0,
+                    "diff --git a/src/One.cs b/src/One.cs\n@@ -1 +1 @@\n-old\n+new\n", string.Empty));
+        }
+
+        if (argv.Contains("graphql"))
+        {
+            return Task.FromResult(new ProcessResult(0, conversationJson, string.Empty));
+        }
+
+        return Task.FromResult(argv.Contains("user")
+            ? new ProcessResult(0, "brian\n", string.Empty)
+            : new ProcessResult(0, PullRequestJson, string.Empty));
+    };
+
+    /// <summary>
+    /// The review conversation as GraphQL reports it once the author has answered: the reviewer's
+    /// own thread, its opener theirs and one reply theirs, plus a thread of somebody else's that
+    /// this lap must not read as its own.
+    /// </summary>
+    private static string ConversationWithOneReply() =>
+        """
+        {"data":{"repository":{"pullRequest":{
+          "state":"OPEN","merged":false,"closed":false,"headRefOid":"9a1b2c3d4e5f",
+          "commits":{"totalCount":4},
+          "reviewThreads":{"nodes":[
+            {"id":"T1","isResolved":false,"path":"src/One.cs","line":12,
+             "comments":{"totalCount":2,"nodes":[
+               {"author":{"login":"brian"},"body":"the fence is checked after the read","createdAt":"2026-09-07T13:20:00Z"},
+               {"author":{"login":"someone-else"},"body":"moved it ahead of the read in 9a1b2c3","createdAt":"2026-09-08T12:06:00Z"}]}},
+            {"id":"T2","isResolved":false,"path":"src/Two.cs","line":3,
+             "comments":{"totalCount":1,"nodes":[
+               {"author":{"login":"copilot"},"body":"a bot's own concern","createdAt":"2026-09-07T13:25:00Z"}]}}
+          ],"pageInfo":{"hasNextPage":false}},
+          "reviewRequests":{"nodes":[]}
+        }}}}
+        """;
+
+    /// <summary>
+    /// What an author leaves behind when they click re-request review and nothing else: the
+    /// reviewer's thread exactly as they left it, no reply, no resolution, no push. The one shape
+    /// that summons a scoped lap with an empty packet in BOTH halves.
+    /// </summary>
+    private static string ConversationWithNothingButAReReviewRequest() =>
+        """
+        {"data":{"repository":{"pullRequest":{
+          "state":"OPEN","merged":false,"closed":false,"headRefOid":"0f1e2d3c4b5a",
+          "commits":{"totalCount":3},
+          "reviewThreads":{"nodes":[
+            {"id":"T1","isResolved":false,"path":"src/One.cs","line":12,
+             "comments":{"totalCount":1,"nodes":[
+               {"author":{"login":"brian"},"body":"the fence is checked after the read","createdAt":"2026-09-07T13:20:00Z"}]}}
+          ],"pageInfo":{"hasNextPage":false}},
+          "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"brian"}}]}
+        }}}}
+        """;
+
+    /// <summary>
+    /// The lap the re-review wake now summons (independent pre-PR review, cycle 1, adversarial
+    /// lens): nothing was said, nothing was pushed, and the packet has nothing in either half —
+    /// so it must say the re-request is what asked for it, rather than sending the session hunting
+    /// a cause in a code half that is empty too.
+    /// </summary>
+    [Fact]
+    public async Task A_scoped_lap_summoned_by_a_re_review_request_alone_says_that_is_what_asked_for_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedWaitingPrReviewTaskAsync(store, node, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        // Nothing was pushed either, so git has no commits and no diff to report.
+        ProcessRunner quietGit = (fileName, arguments, workingDirectory, token) => fileName == "git"
+            ? Task.FromResult(new ProcessResult(0, string.Empty, string.Empty))
+            : ScopedLapGh(ConversationWithNothingButAReReviewRequest())(
+                fileName, arguments, workingDirectory, token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            int result = await PullRequestReviewCommand.RunAsync(
+                store, session,
+                new PullRequestReviewCommand.Settings
+                {
+                    PullRequest = "42", Project = seeded.ProjectName, SinceMyReview = true,
+                },
+                quietGit, worktrees, cts.Token);
+            result.Should().Be(0);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!;
+        RunDetails run = (await query.LoadAsync<RunDetails>(task.CurrentRunId!.Value, cts.Token))!;
+        string prompt = ReadPrompt(run);
+
+        prompt.Should().Contain(
+            "The author has re-requested this review",
+            "it is the only thing that asked for this lap, and an empty packet cannot imply it");
+        prompt.Should().Contain(
+            "may be nothing more than the re-request above",
+            "and the empty-thread line must not send the session looking for a cause in the code half");
+        prompt.Should().NotContain(
+            "Whatever prompted this lap is in the code half below",
+            "which would be false: the code half is empty too");
+    }
+
+    [Fact]
+    public async Task The_scoped_laps_packet_holds_only_the_deltas_since_the_reviewers_own_review()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedWaitingPrReviewTaskAsync(store, node, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            int result = await PullRequestReviewCommand.RunAsync(
+                store, session,
+                new PullRequestReviewCommand.Settings
+                {
+                    PullRequest = "42", Project = seeded.ProjectName, SinceMyReview = true,
+                },
+                ScopedLapGh(ConversationWithOneReply()), worktrees, cts.Token);
+            result.Should().Be(0);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!;
+        task.State.Should().Be(TaskState.Claimed, "a scoped lap claims the waiting task rather than minting one");
+        RunDetails run = (await query.LoadAsync<RunDetails>(task.CurrentRunId!.Value, cts.Token))!;
+        string prompt = ReadPrompt(run);
+
+        prompt.Should().Contain("scoped lap");
+        prompt.Should().Contain(
+            "moved it ahead of the read in 9a1b2c3", "the author's reply is carried verbatim");
+        prompt.Should().Contain("src/One.cs:12", "the reply is placed where the thread is");
+        prompt.Should().Contain("9a1b2c3 answer the review", "the commits pushed since the review are named");
+        prompt.Should().Contain("+new", "and their diff is in the packet");
+        prompt.Should().Contain("h9k pr approve", "the lap ends the same two ways an ordinary one does");
+
+        prompt.Should().NotContain(
+            "a bot's own concern", "somebody else's thread is not what a scoped lap is scoped to");
+        prompt.Should().NotContain(
+            "+120/-18", "the blast radius was read in the first lap and is deliberately absent");
+        prompt.Should().NotContain(
+            "no conclusion yet", "so are the CI results");
+        prompt.Should().NotContain(
+            "The lease fence is checked after the read, not before.",
+            "and so is the earlier findings report");
+    }
+
+    /// <summary>
+    /// The contradiction the first cut shipped (self-review, round one): the needs-you line says
+    /// "1 reply in 1 thread", the reviewer runs the scoped lap it names, and the packet says
+    /// nothing has moved — because the poll watermark the packet diffed against had just been
+    /// advanced past those very replies, which is what stops the same replies notifying twice. The
+    /// review's own anchor is what the packet has to diff against, and it does not move.
+    /// </summary>
+    [Fact]
+    public async Task The_scoped_packet_survives_the_polls_own_re_baselining()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedWaitingPrReviewTaskAsync(store, node, cts.Token);
+
+        // The poll that notified: it observed the reply AND re-baselined its own watermark onto it,
+        // exactly as PrReviewFollowThroughEngine does in one transaction.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+                seeded.TaskId, token: cts.Token))!;
+            PullRequestReviewFollowThroughObserved observed = TaskDecider.ObservePrReviewFollowThrough(
+                task, "brian", [new PrReviewThreadWatermark("T1", 1, IsResolved: false)],
+                reReviewRequested: false, headSha: "9a1b2c3d4e5f", commitCount: 4, Now.AddHours(3));
+            task.Apply(observed);
+            PullRequestReviewAuthorResponded responded = TaskDecider.RecordPrReviewAuthorResponse(
+                task, "The author answered your review.", replyCount: 1, threadsWithReplies: 1,
+                newCommitCount: 1, headMoved: true, reReviewNewlyRequested: false,
+                interactiveSessionAddress: null, Now.AddHours(3));
+            session.Events.Append(seeded.TaskId, observed, responded);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            int result = await PullRequestReviewCommand.RunAsync(
+                store, session,
+                new PullRequestReviewCommand.Settings
+                {
+                    PullRequest = "42", Project = seeded.ProjectName, SinceMyReview = true,
+                },
+                ScopedLapGh(ConversationWithOneReply()), worktrees, cts.Token);
+            result.Should().Be(0);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate claimed = (await query.Events.AggregateStreamAsync<TaskAggregate>(
+            seeded.TaskId, token: cts.Token))!;
+        string prompt = ReadPrompt((await query.LoadAsync<RunDetails>(claimed.CurrentRunId!.Value, cts.Token))!);
+
+        prompt.Should().Contain(
+            "moved it ahead of the read in 9a1b2c3",
+            "the reply the needs-you line was about is still what the scoped packet shows");
+        prompt.Should().Contain(
+            "9a1b2c3 answer the review",
+            "and the commits are diffed from the head the review was posted against, not the last poll's");
+        prompt.Should().NotContain(
+            "None of the reviewer's own threads have moved",
+            "which is what the poll watermark would have said");
+    }
+
+    /// <summary>
+    /// The conversation as GraphQL reports it when both of the provider's own caps bit: the thread
+    /// page has a next page, and the reviewer's one readable thread carries 140 comments of which
+    /// two came back. The read is short in two different ways and the packet has to say both.
+    /// </summary>
+    private static string ConversationReadShortByBothCaps() =>
+        """
+        {"data":{"repository":{"pullRequest":{
+          "state":"OPEN","merged":false,"closed":false,"headRefOid":"9a1b2c3d4e5f",
+          "commits":{"totalCount":4},
+          "reviewThreads":{"nodes":[
+            {"id":"T1","isResolved":false,"path":"src/One.cs","line":12,
+             "comments":{"totalCount":140,"nodes":[
+               {"author":{"login":"brian"},"body":"the fence is checked after the read","createdAt":"2026-09-07T13:20:00Z"},
+               {"author":{"login":"someone-else"},"body":"moved it ahead of the read in 9a1b2c3","createdAt":"2026-09-08T12:06:00Z"}]}}
+          ],"pageInfo":{"hasNextPage":true}},
+          "reviewRequests":{"nodes":[]}
+        }}}}
+        """;
+
+    /// <summary>
+    /// A short read presented as a complete one is the one failure a scoped packet cannot recover
+    /// from: the reviewer reads "nothing moved" and stops (independent pre-PR review, cycle 2).
+    /// Both of the provider's caps are stated out loud instead — the thread page, which makes every
+    /// thread count a floor, and the per-thread comment page, whose unread tail is the NEWEST
+    /// comments and so the very ones the lap was opened to read.
+    /// </summary>
+    [Fact]
+    public async Task A_scoped_packet_read_short_by_the_providers_caps_says_so_rather_than_reading_as_complete()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedWaitingPrReviewTaskAsync(store, node, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (await PullRequestReviewCommand.RunAsync(
+                store, session,
+                new PullRequestReviewCommand.Settings
+                {
+                    PullRequest = "42", Project = seeded.ProjectName, SinceMyReview = true,
+                },
+                ScopedLapGh(ConversationReadShortByBothCaps()), worktrees, cts.Token))
+                .Should().Be(0);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!;
+        string prompt = ReadPrompt((await query.LoadAsync<RunDetails>(task.CurrentRunId!.Value, cts.Token))!);
+
+        prompt.Should().Contain(
+            "more review threads than the provider's own page cap",
+            "a capped thread page makes every count below it a floor, and silence would read as 'these are all your threads'");
+        prompt.Should().Contain(
+            "138 further comment(s) on this thread are past the provider's own page cap",
+            "the tail the read could not carry is named with its size rather than dropped");
+        prompt.Should().Contain(
+            "the most recent ones", "and named as the newest comments, which is what makes losing them silently worst");
+        prompt.Should().Contain(
+            "moved it ahead of the read in 9a1b2c3", "what WAS read is still carried verbatim");
+    }
+
+    /// <summary>
+    /// A thread whose whole reply tail fell past the comment cap must never be counted unchanged:
+    /// ReplyCountFor already counts that tail as replies, so the board says the author answered,
+    /// and a packet calling the same thread unchanged is the one disagreement the shared
+    /// FirstReplyIndexFor rule exists to make impossible.
+    /// </summary>
+    [Fact]
+    public async Task A_thread_whose_replies_all_fell_past_the_comment_cap_is_never_reported_unchanged()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedWaitingPrReviewTaskAsync(store, node, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        // The reviewer's own comment is the LAST one the read carried, so every reply is in the
+        // tail: "since their last word" reads as nothing at all off the comments that came back.
+        string conversation =
+            """
+            {"data":{"repository":{"pullRequest":{
+              "state":"OPEN","merged":false,"closed":false,"headRefOid":"9a1b2c3d4e5f",
+              "commits":{"totalCount":4},
+              "reviewThreads":{"nodes":[
+                {"id":"T1","isResolved":false,"path":"src/One.cs","line":12,
+                 "comments":{"totalCount":103,"nodes":[
+                   {"author":{"login":"brian"},"body":"the fence is checked after the read","createdAt":"2026-09-07T13:20:00Z"},
+                   {"author":{"login":"brian"},"body":"and here too","createdAt":"2026-09-07T13:21:00Z"}]}}
+              ],"pageInfo":{"hasNextPage":false}},
+              "reviewRequests":{"nodes":[]}
+            }}}}
+            """;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (await PullRequestReviewCommand.RunAsync(
+                store, session,
+                new PullRequestReviewCommand.Settings
+                {
+                    PullRequest = "42", Project = seeded.ProjectName, SinceMyReview = true,
+                },
+                ScopedLapGh(conversation), worktrees, cts.Token))
+                .Should().Be(0);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!;
+        string prompt = ReadPrompt((await query.LoadAsync<RunDetails>(task.CurrentRunId!.Value, cts.Token))!);
+
+        prompt.Should().NotContain(
+            "None of the reviewer's own threads have moved",
+            "the board counts those 101 comments as replies, and the packet must not call the same thread quiet");
+        prompt.Should().Contain("src/One.cs:12", "the thread is listed");
+        prompt.Should().Contain(
+            "101 further comment(s) on this thread are past the provider's own page cap",
+            "with the size of what it could not show");
+    }
+
+    /// <summary>
+    /// Closing the terminal is an ordinary way to leave a scoped lap too (independent pre-PR
+    /// review, cycle 1, adversarial lens). The refusal that guarded <c>--since-my-review</c> read
+    /// the task's STATE, which the lap's own claim has already moved to Claimed — so re-running
+    /// the identical command was refused with a message saying no review of theirs was being
+    /// followed through, while it was, and the scoped packet stayed unreachable until a verdict or
+    /// an abandon ended the lap.
+    /// </summary>
+    [Fact]
+    public async Task Re_running_a_scoped_lap_re_enters_it_rather_than_refusing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedWaitingPrReviewTaskAsync(store, node, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+        PullRequestReviewCommand.Settings scoped = new()
+        {
+            PullRequest = "42", Project = seeded.ProjectName, SinceMyReview = true,
+        };
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (await PullRequestReviewCommand.RunAsync(
+                store, session, scoped, ScopedLapGh(ConversationWithOneReply()), worktrees, cts.Token))
+                .Should().Be(0);
+        }
+
+        await using (IDocumentSession again = store.LightweightSession())
+        {
+            (await PullRequestReviewCommand.RunAsync(
+                store, again, scoped, ScopedLapGh(ConversationWithOneReply()), worktrees, cts.Token))
+                .Should().Be(0, "re-entering a scoped lap you already hold is the ordinary case, not a conflict");
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!;
+        task.PrReviewFollowThroughOpen.Should().BeTrue("the wait is suspended by the lap, not ended by it");
+        string prompt = ReadPrompt((await query.LoadAsync<RunDetails>(task.CurrentRunId!.Value, cts.Token))!);
+        prompt.Should().Contain("scoped lap")
+            .And.Contain(
+                "moved it ahead of the read in 9a1b2c3",
+                "the re-entry composes the same packet the lap was opened for");
+        worktrees.PrReviewCheckouts.Should().ContainSingle(
+            "the second entry reuses the checkout the first one cut");
+    }
+
+    [Fact]
+    public async Task An_ordinary_lap_on_a_waiting_review_reads_the_pull_request_whole()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Seeded seeded = await SeedWaitingPrReviewTaskAsync(store, node, cts.Token);
+        FakeReviewWorktrees worktrees = NewWorktrees();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            int result = await PullRequestReviewCommand.RunAsync(
+                store, session,
+                new PullRequestReviewCommand.Settings { PullRequest = "42", Project = seeded.ProjectName },
+                ScopedLapGh(ConversationWithOneReply()), worktrees, cts.Token);
+            result.Should().Be(0);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(seeded.TaskId, token: cts.Token))!;
+        RunDetails run = (await query.LoadAsync<RunDetails>(task.CurrentRunId!.Value, cts.Token))!;
+        string prompt = ReadPrompt(run);
+
+        prompt.Should().NotContain("scoped lap");
+        prompt.Should().Contain("+120/-18", "without the flag the whole pull request is read as it always was");
+    }
+
+    /// <summary>
+    /// A pr-review task whose review is posted and whose follow-through has already been looked at
+    /// once: the shape <c>PrReviewEngine.FinalizeAsync</c> plus one poll leaves behind. The
+    /// observation is seeded rather than skipped because it is what fixes the review's own anchor
+    /// — the resolution state a scoped lap reports a thread as having changed against — and its
+    /// thread carries no reply yet, which is the state the review was posted in.
+    /// </summary>
+    private async Task<Seeded> SeedWaitingPrReviewTaskAsync(
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+    {
+        Seeded parked = await SeedParkedPrReviewTaskAsync(
+            store, node, "The lease fence is checked after the read, not before.", cancellationToken);
+
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+            parked.TaskId, token: cancellationToken))!;
+        PullRequestReviewFollowThroughOpened opened = TaskDecider.OpenPrReviewFollowThrough(
+            task, parked.RunId, $"https://github.com/{repository}/pull/42", "0f1e2d3c4b5a", Now.AddHours(1));
+        task.Apply(opened);
+        PullRequestReviewFollowThroughObserved observed = TaskDecider.ObservePrReviewFollowThrough(
+            task, "brian", [new PrReviewThreadWatermark("T1", 0, IsResolved: false)],
+            reReviewRequested: false, headSha: "0f1e2d3c4b5a", commitCount: 3, Now.AddHours(2));
+        session.Events.Append(parked.TaskId, opened, observed);
+        session.Delete<TaskLease>(parked.TaskId);
+        await session.SaveChangesAsync(cancellationToken);
+        return parked;
+    }
+
     private static string ReadPrompt(RunDetails run) =>
         File.ReadAllText(RunPaths.PromptFile(RunPaths.ResolveCurrentDirectory(run.RunDirectory)));
 

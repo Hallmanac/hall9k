@@ -220,10 +220,15 @@ public static class CliCommandTree
                     + "test scenarios or areas of concern — the session gives those the moment you ask, and "
                     + "helps with local setup, running the suites, or writing end-to-end tests. It never "
                     + "commits to or pushes the pull request's branch, and git push is denied for the session "
-                    + "outright. The lap never ends on its own: h9k pr approve or h9k pr request-changes ends it.")
+                    + "outright. The lap never ends on its own: h9k pr approve or h9k pr request-changes ends it. "
+                    + "--since-my-review is the scoped second lap once your review is posted and its author "
+                    + "has answered: it reads only the replies on threads you opened and the commits pushed "
+                    + "since, skips the objective, blast radius, CI and the earlier findings report entirely, "
+                    + "and reports findings in the same shape so you direct them the same way.")
                 .WithExample("pr", "review", "42")
                 .WithExample("pr", "review", "https://github.com/Hallmanac/hall9k/pull/42")
-                .WithExample("pr", "review", "42", "--no-worktree");
+                .WithExample("pr", "review", "42", "--no-worktree")
+                .WithExample("pr", "review", "42", "--since-my-review");
             pullRequest.AddCommand<PullRequestApproveCommand>("approve")
                 .WithDescription(
                     "End your review lap with an approval: posts an APPROVE review on the pull request's "

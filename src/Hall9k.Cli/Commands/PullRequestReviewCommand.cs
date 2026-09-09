@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using Hall9k.Connectors.Processes;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
@@ -79,6 +80,16 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             + "than reading the code locally. The lap runs the same way otherwise: the same briefing, the "
             + "same verdict commands, the same guard against posting anything yourself")]
         public bool NoWorktree { get; init; }
+
+        [CommandOption("--since-my-review")]
+        [Description(
+            "Read only what has arrived since your own last review on this pull request: replies on the "
+            + "threads you opened, and the commits pushed after it. Skips the full review pipeline — no "
+            + "objective, no blast radius, no CI, no re-read of the earlier findings report — and produces "
+            + "findings in the same shape, which you direct with the same two commands. Needs a pr-review "
+            + "task whose posted review this platform is already following through (h9k status lists it "
+            + "under Waiting, or as needs-you once its author answers)")]
+        public bool SinceMyReview { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -119,6 +130,17 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         LapAttachment attachment;
         if (existing is null)
         {
+            // --since-my-review is meaningless with nothing to be "since" of, and refusing here
+            // rather than quietly adopting is the difference between a scoped lap and a full one
+            // wearing its name (the reviewer asked for the short read and would get the long one).
+            if (settings.SinceMyReview)
+            {
+                throw new DomainConflictException(
+                    $"No live task on this node holds {reference.Reference}, so there is no review of yours "
+                    + "for this lap to read the changes since. Open an ordinary lap instead — h9k pr review "
+                    + $"{settings.PullRequest} — which adopts the pull request and reads it whole.");
+            }
+
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]No live task holds {reference.Reference} on this node — adopting the pull request now, the same way h9k task add --from-pr does.[/]");
             attachment = await AdoptAndClaimAsync(
@@ -127,8 +149,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         else
         {
             attachment = await AttachAsync(
-                store, session, project, context, pullRequest, existing, settings.NoWorktree, worktrees,
-                cancellationToken);
+                store, session, project, context, pullRequest, existing, settings.NoWorktree,
+                settings.SinceMyReview, worktrees, cancellationToken);
         }
 
         // Appended after the worktree exists, not before: WorktreePath is the fact this event
@@ -140,6 +162,20 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         string worktreePath = attachment.WorktreePath;
         ReviewLapBriefing briefing = await ComposeBriefingAsync(
             session, project, taskId, runId, worktreePath, pullRequest, cancellationToken);
+        if (settings.SinceMyReview)
+        {
+            briefing = briefing with
+            {
+                SinceMyReview = await ComposeScopedPacketAsync(
+                    session, project, taskId, worktreePath, pullRequest, processRunner, cancellationToken),
+                // The earlier report is dropped rather than carried alongside the packet: the
+                // scoped section says out loud that it is not showing it, and handing the session
+                // both would be the full read this flag exists to avoid, with a narrower heading.
+                FindingsReport = null,
+                AuthorRun = null,
+            };
+        }
+
         string prompt = ReviewLapPromptBuilder.Build(briefing);
 
         string settingsFile = await WriteLapSettingsAsync(session, runId, prompt, cancellationToken);
@@ -282,7 +318,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     /// </summary>
     private static async Task<LapAttachment> AttachAsync(
         DocumentStore store, IDocumentSession session, ProjectDetails project, BootstrapContext context,
-        PullRequestSurface pullRequest, TaskListItem existing, bool noWorktree,
+        PullRequestSurface pullRequest, TaskListItem existing, bool noWorktree, bool sinceMyReview,
         IWorktreeManager worktrees, CancellationToken cancellationToken)
     {
         StreamState fence = await session.Events.FetchStreamStateAsync(existing.Id, cancellationToken)
@@ -298,6 +334,46 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
                 + $"{task.Type.Value} task — the task that BUILT this pull request, not one that reviews it. "
                 + "A review lap needs a pr-review task; this one cannot be turned into one (h9k task revise "
                 + "refuses the type change). Abandon or finish that task first if it is genuinely a review.");
+        }
+
+        // A posted review still being followed through (task: a pr-review task stays open while
+        // the pull request's review threads are unresolved) is its own arm, ahead of the
+        // existing-run branch below, and it has to be: a waiting task still names the run its
+        // review rode on, and that run is Completed — a terminal state that branch correctly
+        // refuses ("that run will never park a findings report"), while what is actually true here
+        // is that the review is done and the reviewer is coming back to read the answer. The lap
+        // gets a fresh run and a fresh checkout, exactly as the reviewer-got-here-first arm does.
+        if (TaskDecider.AwaitsPrReviewFollowThrough(task))
+        {
+            AnsiConsole.MarkupLineInterpolated(sinceMyReview
+                ? (FormattableString)$"[dim]Task {task.Id}'s review is posted and being followed through — opening a scoped lap on what has changed since it.[/]"
+                : $"[dim]Task {task.Id}'s review is posted and being followed through — opening a fresh lap that reads the pull request whole (--since-my-review reads only what changed since your review).[/]");
+            return await ClaimAndCutAsync(
+                store, session, project, context, pullRequest, task, fence, noWorktree, worktrees,
+                followThrough: true, cancellationToken);
+        }
+
+        if (sinceMyReview && !task.PrReviewFollowThroughOpen)
+        {
+            // Reached only for a task this platform is NOT following a posted review through at
+            // all: no review of the reviewer's own is on record, so there is no "since" and the
+            // scoped packet would be the whole pull request with a misleading heading. Refused
+            // here rather than at the claim, so the reviewer is told before anything is claimed or
+            // cut.
+            //
+            // The flag, not AwaitsPrReviewFollowThrough, is what this reads — the arm above has
+            // already taken every task that check admits. What is left with the flag still set is
+            // a scoped lap of the reviewer's own that is already open (the claim moved the task to
+            // Claimed, which that check does not admit), and closing the terminal is an ordinary
+            // way to leave one: the state check refused re-entry with a message saying no review
+            // was being followed through, which was untrue, and left the scoped packet unreachable
+            // until a verdict or an abandon ended the lap (independent pre-PR review, cycle 1,
+            // adversarial lens). Re-entry falls through to the existing-run arm below and composes
+            // the packet again from the anchor the claim left untouched.
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} and this platform is not following a posted review of "
+                + "yours through on it, so there is nothing since your last review to read. Drop "
+                + $"--since-my-review to open an ordinary lap; h9k task show {task.Id} says where it stands.");
         }
 
         if (task.CurrentRunId is { } existingRunId)
@@ -350,7 +426,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         }
 
         return await ClaimAndCutAsync(
-            store, session, project, context, pullRequest, task, fence, noWorktree, worktrees, cancellationToken);
+            store, session, project, context, pullRequest, task, fence, noWorktree, worktrees,
+            followThrough: false, cancellationToken);
     }
 
     /// <summary>
@@ -588,7 +665,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
     private static async Task<LapAttachment> ClaimAndCutAsync(
         DocumentStore store, IDocumentSession session, ProjectDetails project, BootstrapContext context,
         PullRequestSurface pullRequest, TaskAggregate task, StreamState fence, bool noWorktree, IWorktreeManager worktrees,
-        CancellationToken cancellationToken)
+        bool followThrough, CancellationToken cancellationToken)
     {
         if (task.State.IsPreDispatch)
         {
@@ -608,6 +685,22 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             events.Add(assigned);
         }
 
+        // A waiting review's own claim goes through its own decider rather than through
+        // ClaimInteractively's Queued-or-acknowledged-Blocked check (task: a pr-review task stays
+        // open while the pull request's review threads are unresolved). That check is load-bearing
+        // for every other caller — it is what stops an operator claiming a task the dispatcher
+        // already owns — so the two states this feature added are admitted by a narrower guard of
+        // their own instead of by relaxing it for the whole surface.
+        if (followThrough)
+        {
+            TaskClaimed followThroughClaim = TaskDecider.ClaimForScopedReviewLap(
+                task, context.OwnerId, runId, now);
+            events.Add(followThroughClaim);
+            return await CommitClaimAndCutAsync(
+                store, session, project, context, pullRequest, task, fence, events, followThroughClaim, runId,
+                noWorktree, worktrees, cancellationToken);
+        }
+
         TaskClaimed claimed = TaskDecider.ClaimInteractively(
             task, context.OwnerId, runId, now,
             // A pr-review task carries no dependency edges of its own — TaskDecider.VetStackedEdge
@@ -619,6 +712,24 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             // not a refusal pointing at an option this command deliberately does not have.
             dependencyOverrideAcknowledged: task.State == TaskState.Blocked);
         events.Add(claimed);
+        return await CommitClaimAndCutAsync(
+            store, session, project, context, pullRequest, task, fence, events, claimed, runId, noWorktree,
+            worktrees, cancellationToken);
+    }
+
+    /// <summary>
+    /// The half both claim shapes share: commit the appends the caller composed, then cut the
+    /// checkout and dispatch the lap's own run. Extracted so the follow-through claim and the
+    /// ordinary interactive one differ in exactly one line — which decider produced the
+    /// <see cref="TaskClaimed"/> — rather than in two copies of the fencing, the refusal text, and
+    /// the cut.
+    /// </summary>
+    private static async Task<LapAttachment> CommitClaimAndCutAsync(
+        DocumentStore store, IDocumentSession session, ProjectDetails project, BootstrapContext context,
+        PullRequestSurface pullRequest, TaskAggregate task, StreamState fence, List<object> events,
+        TaskClaimed claimed, Guid runId, bool noWorktree, IWorktreeManager worktrees,
+        CancellationToken cancellationToken)
+    {
         long claimedVersion = fence.Version + events.Count;
         session.Events.Append(task.Id, expectedVersion: claimedVersion, [.. events]);
         try
@@ -629,7 +740,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         {
             throw new DomainConflictException(
                 $"Task {task.Id} changed while claiming it for this lap — the dispatcher likely just claimed "
-                + "it for the automated review. Check h9k status and open the lap again; if the automated "
+                + "it for the automated review, or the closeout watcher recorded something new on the pull "
+                + "request. Check h9k status and open the lap again; if the automated "
                 + "review is now running, the lap attaches to its findings report once it parks.");
         }
 
@@ -872,6 +984,196 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             authorTask is null ? null : TaskListCommand.ShortId(authorTask.Id),
             findingsReport,
             authorRun is null ? null : DescribeAuthorRun(authorRun));
+    }
+
+    /// <summary>
+    /// How much of the diff the scoped packet carries before it stops and says so. A scoped lap is
+    /// a short read by construction, and a force-push that rewrote the branch can make the
+    /// "since your review" range the whole pull request — at which point pasting it into a prompt
+    /// is the full read this flag exists to avoid, arriving through the back door. The session is
+    /// in the checkout and can read the rest itself; what it must not be handed is a truncated
+    /// diff with nothing saying it was truncated.
+    /// </summary>
+    private const int ScopedDiffCharacterBudget = 60_000;
+
+    /// <summary>
+    /// The scoped packet (<c>h9k pr review --since-my-review</c>): the thread deltas since the
+    /// reviewer's own last review, and the commits pushed since it.
+    /// <para>
+    /// The thread half is read live through the same <c>gh</c> seam the daemon's follow-through
+    /// poll uses (<see cref="IReviewConversationReader"/>) — live rather than replayed from the
+    /// task's own stream, because the stream carries counts and the reviewer needs the words. What
+    /// counts as "since" is each thread's own comments after the reviewer's last word in it
+    /// (<c>ReviewThread.FirstReplyIndexFor</c>), the one definition the poll's reply count also
+    /// reads: not a timestamp, which would need this platform's clock and the provider's to agree,
+    /// and not a recorded count, which is taken a poll interval after the review was posted and so
+    /// already contains any reply that beat it there.
+    /// </para>
+    /// <para>
+    /// Both of that read's own caps are carried into the packet rather than absorbed by it: a
+    /// capped thread page makes every thread count here a floor, and a thread whose comments were
+    /// cut short is reported as moved with the size of the tail it could not show. A short read
+    /// presented as a complete one is the one failure this packet cannot recover from — the
+    /// reviewer reads "nothing moved" and stops.
+    /// </para>
+    /// <para>
+    /// The code half is <c>git</c> in the lap's own read-only checkout, which is where the pull
+    /// request's head has just been fetched. Every way it can come up short is stated rather than
+    /// dropped: no recorded reviewed head, no checkout at all (<c>--no-worktree</c>), a range git
+    /// refuses because a force-push dropped the reviewed commit, or a diff past the budget above.
+    /// Silence there would read as "nothing changed in the code", which is the one wrong answer.
+    /// </para>
+    /// </summary>
+    private static async Task<ScopedReviewPacket> ComposeScopedPacketAsync(
+        IQuerySession session,
+        ProjectDetails project,
+        Guid taskId,
+        string worktreePath,
+        PullRequestSurface pullRequest,
+        ProcessRunner processRunner,
+        CancellationToken cancellationToken)
+    {
+        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        // The login the watermark was taken against wherever the poll recorded one; gh's own
+        // answer otherwise, for a lap opened before the first poll ever looked. Never invented:
+        // an unreadable login refuses, because the whole packet is scoped to one account's threads
+        // and the wrong account's threads are somebody else's conversation.
+        string reviewerLogin = task.PrReviewReviewerLogin
+            ?? (await new GitHubReviewAssignments(processRunner)
+                .ReadCurrentLoginAsync(project.RepositoryPath, cancellationToken)).Login
+            ?? throw new DomainValidationException(
+                $"gh could not say which login is signed in from {project.RepositoryPath}, and task {taskId} "
+                + "has no reviewer login recorded yet, so a scoped lap cannot tell which threads are yours. "
+                + "Fix gh (gh auth status) and try again, or drop --since-my-review to read the pull request "
+                + "whole.");
+
+        ReviewConversation conversation = await new GitHubReviewThreads(processRunner).ReadAsync(
+            pullRequest.Repository, pullRequest.Number, project.RepositoryPath, cancellationToken);
+
+        List<ScopedReviewThreadDelta> moved = [];
+        int unchanged = 0;
+        foreach (ReviewThread thread in conversation.ThreadsStartedBy(reviewerLogin))
+        {
+            // Everything after the reviewer's own last comment in the thread — the identical rule
+            // the follow-through poll counts its replies by (ReviewThread.ReplyCountFor), so the
+            // board's "3 replies" and the comments shown here can never be different threes. Read
+            // off the live thread rather than diffed against a recorded count, which is what makes
+            // it right where a count was wrong twice over: the poll watermark advances past exactly
+            // the replies the needs-you line was about (self-review, round one), and the fixed
+            // anchor it was replaced with is taken by the FIRST poll — so a reply that landed
+            // between the review and that poll is already inside the anchor, and skipping to it hid
+            // the very reply that summoned this lap (independent pre-PR review, cycle 1,
+            // adversarial lens).
+            int seen = thread.FirstReplyIndexFor(reviewerLogin);
+            // The anchor still answers the other half — whether the thread's RESOLUTION has changed
+            // since the review — which is news of its own on a thread that gained no comment.
+            PrReviewThreadWatermark? watermark = task.PrReviewReviewedThreads.FirstOrDefault(
+                candidate => candidate.ThreadId == thread.Id);
+            bool stateChanged = watermark is not null && watermark.IsResolved != thread.IsResolved;
+            // A thread whose comments the provider's own page cap cut short has moved by
+            // definition: ReplyCountFor already counts that tail as replies, so the board says the
+            // author answered — and a packet that called the same thread unchanged would be the one
+            // disagreement the shared FirstReplyIndexFor rule exists to make impossible, on the
+            // thread where the reviewer can least afford it (independent pre-PR review, cycle 2).
+            int unreadTail = thread.UnreadCommentCount;
+            if (seen >= thread.Comments.Count && unreadTail == 0 && !stateChanged)
+            {
+                unchanged++;
+                continue;
+            }
+
+            moved.Add(new ScopedReviewThreadDelta(
+                Location: thread.Location(),
+                IsResolved: thread.IsResolved,
+                NewComments:
+                [
+                    .. thread.Comments.Skip(seen).Select(comment =>
+                        comment.AuthorLogin is { } author
+                            ? $"{author}: {comment.Body}"
+                            : comment.Body),
+                ],
+                UnreadCommentCount: unreadTail));
+        }
+
+        (IReadOnlyList<string> commits, string? diff, string? note) = await ReadPushedSinceAsync(
+            task.PrReviewReviewedHeadSha,
+            conversation.HeadSha ?? pullRequest.HeadSha,
+            worktreePath,
+            processRunner,
+            cancellationToken);
+
+        return new ScopedReviewPacket(
+            reviewerLogin,
+            task.PrReviewReviewedHeadSha,
+            conversation.HeadSha ?? pullRequest.HeadSha,
+            moved,
+            unchanged,
+            commits,
+            diff,
+            note,
+            conversation.ThreadsTruncated,
+            conversation.ReReviewRequestedOf(reviewerLogin));
+    }
+
+    /// <summary>
+    /// The commits between the reviewed head and the current one, and their diff, read with git in
+    /// the lap's own checkout. Returns the reason instead whenever it cannot: each of the four
+    /// ways that happens is a fact the reviewer needs, and none of them is "nothing changed".
+    /// </summary>
+    private static async Task<(IReadOnlyList<string> Commits, string? Diff, string? Note)> ReadPushedSinceAsync(
+        string? reviewedHead,
+        string currentHead,
+        string worktreePath,
+        ProcessRunner processRunner,
+        CancellationToken cancellationToken)
+    {
+        if (reviewedHead.IsBlank())
+        {
+            return ([], null,
+                "No commit is recorded for the reviewer's own review, so there is no range to diff — the "
+                + "review predates this platform recording the head it was posted against. The whole pull "
+                + "request is in the checkout; ask the reviewer which commit they read if a finding turns on it.");
+        }
+
+        if (worktreePath.IsBlank())
+        {
+            return ([], null, "This lap has no checkout (`--no-worktree`), so the code half cannot be read "
+                + $"here. `gh pr diff` on the pull request, or a lap without that flag, is the way to it.");
+        }
+
+        string range = $"{reviewedHead}..{currentHead}";
+        ProcessResult log = await processRunner(
+            "git", ["log", "--no-decorate", "--oneline", range], worktreePath, cancellationToken);
+        if (log.ExitCode != 0)
+        {
+            return ([], null, $"git could not resolve `{range}` in the checkout — the commit the review was "
+                + "posted against is not reachable from the head any more, which is what a force-push looks "
+                + $"like. git reported: {RelayedText.OneLine(log.StandardError).Trim()}. The whole pull "
+                + "request is in the checkout; read what you need of it directly.");
+        }
+
+        IReadOnlyList<string> commits =
+        [
+            .. log.StandardOutput
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Reverse(),
+        ];
+
+        ProcessResult diff = await processRunner("git", ["diff", range], worktreePath, cancellationToken);
+        if (diff.ExitCode != 0)
+        {
+            return (commits, null, $"git listed those commits but could not diff `{range}`: "
+                + $"{RelayedText.OneLine(diff.StandardError).Trim()}. Read them in the checkout directly.");
+        }
+
+        return diff.StandardOutput.Length <= ScopedDiffCharacterBudget
+            ? (commits, diff.StandardOutput, null)
+            : (commits, null, $"The diff of `{range}` is "
+                + $"{diff.StandardOutput.Length.ToString(CultureInfo.InvariantCulture)} "
+                + "characters, past what a scoped packet carries, so it is NOT included here — this is a "
+                + "deliberate omission, not an empty diff. Read it in the checkout: "
+                + $"`git diff {range}`.");
     }
 
     /// <summary>
