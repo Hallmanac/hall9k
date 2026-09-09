@@ -6008,7 +6008,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.LastFixEndedWaitingOnBackgroundGate.Should().BeTrue(
             "h9k task show and the run log must say this leg ended waiting on a background gate, not undeclared");
-        run.UncommittedWorkRecoveries.Should().ContainSingle().Which.Leg.Should().Be(RunSessionLeg.Fix);
+        run.UncommittedWorkRecoveries.Should().ContainSingle().Which.Leg.Should().Be(
+            RunSessionLeg.HumanResolvedFix,
+            "this round dispatched over the operator's own --needs-fixes reason, its own leg " +
+            "distinct from the ordinary review-fix leg — so an earlier review-fix leg's own " +
+            "spent recovery on this same run never blocks this leg's own attempt");
         run.UncommittedWorkRecoveries.Single().RecoveredCleanly.Should().BeTrue(
             "the scripted recovery session actually committed the stranded file");
         run.State.Should().NotBe(

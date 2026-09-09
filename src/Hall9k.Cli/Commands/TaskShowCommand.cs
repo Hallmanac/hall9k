@@ -815,9 +815,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             ? "build session"
             : leg == RunSessionLeg.Fix
                 ? "fix session"
-                : leg == RunSessionLeg.RebaseRecovery
-                    ? "rebase-recovery session"
-                    : null;
+                : leg == RunSessionLeg.HumanResolvedFix
+                    ? "human-resolved fix session"
+                    : leg == RunSessionLeg.RebaseRecovery
+                        ? "rebase-recovery session"
+                        : null;
 
     /// <summary>
     /// Every changes-requested review this task's pull request has taken, and what each fix lap

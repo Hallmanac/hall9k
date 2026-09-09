@@ -1263,6 +1263,49 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// Independent pre-PR review, conformance lens (task: a headless build, fix, or recovery
+    /// session never ends its turn while a gate it started is still running in the background):
+    /// AC3 pairs the human-resolved fix leg with the ordinary review-fix leg specifically because
+    /// the two ARE different legs — the same "a different leg on this run reads its own
+    /// eligibility independently" guarantee <see cref="A_different_leg_on_the_same_run_still_earns_its_own_recovery_session"/>
+    /// already proves for Build versus Fix must also hold for Fix versus
+    /// <see cref="RunSessionLeg.HumanResolvedFix"/> specifically, since collapsing exactly those
+    /// two onto one shared leg was the production gap (origin incidents 2026-09-07/08): an earlier
+    /// review-fix leg spending its own automatic recovery must not leave a later human-resolved-fix
+    /// leg on the same run with none of its own.
+    /// </summary>
+    [Fact]
+    public async Task The_human_resolved_fix_leg_still_earns_its_own_recovery_after_the_ordinary_fix_leg_spent_its_own()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await InitGitWorktreeAsync(withTaskCommit: true, cts.Token, trackedFile: "half-done.cs");
+        await File.WriteAllTextAsync(Path.Combine(_worktree, "half-done.cs"), "left behind", cts.Token);
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("test", GateScript.New().Print("gate-ran").Command)], cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunUncommittedWorkRecoveryAttempted(
+                runId, DomainId.New(), ["some-other-file.cs"],
+                "the ordinary review-fix leg already spent its own attempt", Now, RunSessionLeg.Fix));
+            await session.SaveChangesAsync(cts.Token);
+        }
+        CommittingRecoveryExecutor recovery = new(_worktree);
+
+        bool passed = await NewRunner(store, recovery).VerifyAsync(
+            runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.HumanResolvedFix, cts.Token);
+
+        passed.Should().BeTrue(
+            "the human-resolved-fix leg has never spent a recovery of its own, whatever the ordinary review-fix leg already did");
+        recovery.Spawns.Should().ContainSingle("the human-resolved-fix leg's own dirty ending earns its own recovery session");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.UncommittedWorkRecoveries.Should().HaveCount(2, "one attempt per leg, both on record for this run");
+        run.UncommittedWorkRecoveries.Should().Contain(r => r.Leg == RunSessionLeg.Fix);
+        run.UncommittedWorkRecoveries.Should().Contain(r => r.Leg == RunSessionLeg.HumanResolvedFix);
+    }
+
+    /// <summary>
     /// Task: when a session ends with finished work uncommitted, the daemon recovers on its own.
     /// A daemon shutdown mid-wait (the caller's own <c>cancellationToken</c> cancelled, not the
     /// recovery's own inner timeout) must not leave the spawned recovery session running
