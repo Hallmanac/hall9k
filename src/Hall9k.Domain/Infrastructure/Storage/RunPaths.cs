@@ -375,6 +375,21 @@ public static class RunPaths
     /// </summary>
     public static string HandoffFile(string runDirectory) => Path.Combine(runDirectory, "handoff.md");
 
+    /// <summary>
+    /// The pull request the session composed for itself: the title and the body it wrote under
+    /// its own <c>PR SUMMARY:</c> marker, captured at session end beside the handoff. The opener
+    /// reads it back when it composes the real pull request, so the run directory holds both what
+    /// the agent wrote (here) and what the daemon actually sent (<c>pr-body.md</c>).
+    /// <para>
+    /// Unlike <see cref="HandoffFile"/> this has two states rather than three, and is written
+    /// only when a block exists: the handoff's empty-file state exists because closeout has to
+    /// tell "the result was read and carried none" from "there was no capture at all", and
+    /// nothing downstream of this file asks that question — absent and empty would both mean
+    /// exactly "compose the skeleton instead".
+    /// </para>
+    /// </summary>
+    public static string PrSummaryFile(string runDirectory) => Path.Combine(runDirectory, "pr-summary.md");
+
     /// <summary>The condensed blocker context a synthesis session produced for this run (log #36).</summary>
     public static string BlockerContextFile(string runDirectory) => Path.Combine(runDirectory, "blocker-context.md");
 }
