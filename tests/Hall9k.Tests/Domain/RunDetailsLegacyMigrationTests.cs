@@ -12,11 +12,15 @@ namespace Hall9k.Tests.Domain;
 /// history — a run already mid-flight when <c>UncommittedWorkRecovery</c> (a nullable object) was
 /// renamed to <c>UncommittedWorkRecoveries</c> (a list) would otherwise deserialize straight into
 /// an empty list on the next daemon build, silently losing the one recovery attempt recorded
-/// under the old shape and letting <c>HasUncommittedWorkRecoveryAttempt</c> grant that run's leg
-/// a second one — exactly what its own "at most one" invariant forbids (independent pre-PR
-/// review, cycle 1, adversarial lens). These pin the shim that folds the old shape in once, on
-/// first read, using the same camelCase policy Marten itself is configured with
-/// (<c>UseSystemTextJsonForSerialization</c>).
+/// under the old shape from <c>h9k task show</c>'s own historical record (independent pre-PR
+/// review, cycle 1, adversarial lens). The folded-in entry is tagged <see cref="RunSessionLeg.Unknown"/>,
+/// since the old shape never recorded which leg it was for, so on its own it does NOT grant that
+/// run's real leg a second automatic recovery — <c>HasUncommittedWorkRecoveryAttempt</c> checks by
+/// leg, and <c>Unknown</c> never matches <c>Build</c>, <c>Fix</c>, or <c>RebaseRecovery</c>; only a
+/// per-leg entry recorded from this point forward provides that eligibility protection
+/// (<c>RunDetails.cs</c>'s own doc on <c>LegacyUncommittedWorkRecovery</c>). These pin the shim
+/// that folds the old shape in once, on first read, using the same camelCase policy Marten itself
+/// is configured with (<c>UseSystemTextJsonForSerialization</c>).
 /// </summary>
 public sealed class RunDetailsLegacyMigrationTests
 {
@@ -46,6 +50,28 @@ public sealed class RunDetailsLegacyMigrationTests
             "the old shape never recorded a leg, and Unknown is the sentinel for exactly that gap");
         view.HasUncommittedWorkRecoveryAttempt(RunSessionLeg.Unknown).Should().BeTrue(
             "the folded-in attempt must actually be visible to the same eligibility check a live run reads");
+    }
+
+    [Fact]
+    public void A_document_written_under_the_old_singular_field_clears_it_after_folding_so_the_next_write_self_heals()
+    {
+        string legacyJson = """
+            {
+                "uncommittedWorkRecovery": {
+                    "strandedFiles": ["src/Feature.cs"],
+                    "reason": "modified-but-uncommitted tracked file(s)",
+                    "attemptedAt": "2026-09-01T12:00:00+00:00",
+                    "recoveredCleanly": null,
+                    "discardedFiles": []
+                }
+            }
+            """;
+
+        RunDetails view = JsonSerializer.Deserialize<RunDetails>(legacyJson, Options)!;
+
+        view.LegacyUncommittedWorkRecovery.Should().BeNull(
+            "the fold already preserved the historical record in UncommittedWorkRecoveries, so the next " +
+            "save of this document should stop writing the now-redundant legacy field");
     }
 
     [Fact]
