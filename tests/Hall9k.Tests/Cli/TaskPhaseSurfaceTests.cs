@@ -876,6 +876,32 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Detail.Should().Be("last triage: 1 fix");
     }
 
+    /// <summary>
+    /// A run that lands AwaitingReview the moment a follow-up pushes nothing — every triaged
+    /// thread declined or routed, none of them fixed — still names its own triage, the same as the
+    /// ReviewPending and Claimed/NeedsHuman arms above (independent pre-PR review, cycle 1,
+    /// conformance lens: this arm previously dropped the detail at exactly the point a reader asks
+    /// "why did that lap push nothing?").
+    /// </summary>
+    [Fact]
+    public void A_follow_up_that_lands_awaiting_review_still_names_its_own_triage()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/24";
+        RunDetails awaitingReview = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        awaitingReview.ExternalReviewState = ExternalReviewState.None;
+        awaitingReview.LastReviewThreadOutcomes =
+        [
+            new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "copilot", IsHuman: false),
+            new ReviewThreadOutcome("PRRC_2", ReviewThreadDisposition.Route, "filed as idea abc123", "brianhallmanac", IsHuman: true),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), awaitingReview);
+
+        row.Phase.Text.Should().Be("watching PR #24 — awaiting human review");
+        row.Phase.Detail.Should().Be("no external review activity observed; last triage: 1 decline, 1 route");
+    }
+
     [Fact]
     public void Gates_claim_no_session_because_they_run_in_the_daemon()
     {
