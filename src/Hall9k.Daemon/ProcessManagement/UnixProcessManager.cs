@@ -38,4 +38,37 @@ public sealed class UnixProcessManager : ProcessManagerBase
 
         return new SpawnedProcess(process.Id, ReadStartedAt(process));
     }
+
+    /// <summary>
+    /// <c>pgrep -P &lt;pid&gt;</c>, native to both macOS and Linux, walked breadth-first by the
+    /// shared base helper. Any failure (pgrep missing, a transient shell-out error) is swallowed
+    /// and reads as "no children found" — best-effort naming only, never the kill decision itself
+    /// (<see cref="ProcessManagerBase.CollectDescendants"/>'s own doc).
+    /// </summary>
+    protected override IReadOnlyList<int> CollectDescendants(int processId) =>
+        CollectDescendantsBreadthFirst(processId, ChildrenOf);
+
+    private static IEnumerable<int> ChildrenOf(int parentProcessId)
+    {
+        try
+        {
+            using Process pgrep = new()
+            {
+                StartInfo = new ProcessStartInfo("pgrep")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                },
+            };
+            pgrep.StartInfo.ArgumentList.Add("-P");
+            pgrep.StartInfo.ArgumentList.Add(parentProcessId.ToString());
+            pgrep.Start();
+            return ParsePids(ReadOutputWithBoundedWait(pgrep, ChildProcessQueryTimeout));
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return [];
+        }
+    }
 }

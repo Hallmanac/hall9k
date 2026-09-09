@@ -42,4 +42,17 @@ public interface IProcessManager
     bool IsAlive(int processId, DateTimeOffset startedAt);
 
     void Terminate(int processId, DateTimeOffset startedAt);
+
+    /// <summary>
+    /// Terminates the whole process tree rooted at <paramref name="processId"/> — the process
+    /// itself and every descendant still alive at the moment this is called — and returns every
+    /// pid that was actually found alive and killed (root included), for a caller to log by the
+    /// session it belonged to. Empty when the root process is already gone (per the same
+    /// pid+start-time identity <see cref="IsAlive"/> and <see cref="Terminate"/> use): a dead
+    /// root's former children have already been reparented away from it by the OS, with no
+    /// relation to it left to observe, so there is nothing left to name here (task: the daemon
+    /// terminates a completed session's process tree before starting a gate or another session in
+    /// the same worktree).
+    /// </summary>
+    IReadOnlyList<int> TerminateTree(int processId, DateTimeOffset startedAt);
 }
