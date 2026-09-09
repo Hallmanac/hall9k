@@ -621,10 +621,11 @@ public sealed class AttentionSurfaceTests
     /// CloseoutEngine's own unresolved-thread gate sits ahead of the auto-merge read this composer
     /// draws on, and refuses to merge while any thread is still unresolved — including one this
     /// run's own follow-up already declined and is deliberately leaving open for the human to close
-    /// (Decisions Log #159). A run can sit AwaitingReview with RunDetails.UnresolvedReviewThreads
-    /// still nonzero (that gate's own "nothing left for a follow-up to act on" skip does not clear
-    /// it), so the pre-approved arm must not say the daemon merges it on its own while that gate
-    /// would in fact still refuse (independent pre-PR review, cycle 3, both lenses).
+    /// (Decisions Log #159). The run sitting here in AwaitingReview is always the follow-up that did
+    /// the triage, not the run that first discovered the threads — RunDetails.UnresolvedReviewThreads
+    /// only ever lands on the latter (independent pre-PR review, cycle 4, both lenses: the field is
+    /// dead in this exact scenario), so the composer instead reads this run's own
+    /// LastReviewThreadOutcomes, which the triage itself wrote.
     /// </summary>
     [Fact]
     public void A_pre_approved_task_with_an_unresolved_review_thread_does_not_claim_gates_are_satisfied()
@@ -635,8 +636,11 @@ public sealed class AttentionSurfaceTests
 
         RunDetails threadStillOpen = StatusFixtures.Run(
             runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 40);
-        threadStillOpen.UnresolvedReviewThreads = 1;
-        threadStillOpen.UnresolvedHumanReviewThreads = 1;
+        threadStillOpen.LastReviewThreadOutcomes =
+        [
+            new ReviewThreadOutcome(
+                "PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "brianhallmanac", IsHuman: true),
+        ];
 
         TaskStatusRow row = StatusFixtures.Compose(preApproved, threadStillOpen);
 
@@ -644,6 +648,35 @@ public sealed class AttentionSurfaceTests
         row.Attention.Cause.Should().NotContain("merges it on its own",
             "a thread left open on purpose still blocks the daemon's own auto-merge gate");
         row.Attention.Cause.Should().Contain("1 unresolved review thread(s) (1 from a human) to close");
+    }
+
+    /// <summary>
+    /// A stale, monotonic RunDetails.UnresolvedReviewThreads left over from a park-resolve-and-push
+    /// round trip must not out-live the fix: once the run's own last triage shows nothing left
+    /// Declined or Routed (everything Fixed instead), the pre-approved arm reads that, not the
+    /// old counter, and claims the merge is the daemon's to make (independent pre-PR review,
+    /// cycle 4, adversarial lens, part two).
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_task_whose_last_triage_fixed_every_thread_claims_gates_are_satisfied()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/41";
+        TaskListItem preApproved = StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproved: true);
+
+        RunDetails allFixed = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 41);
+        allFixed.LastReviewThreadOutcomes =
+        [
+            new ReviewThreadOutcome(
+                "PRRC_1", ReviewThreadDisposition.Fix, "addressed in the resumed session", "brianhallmanac", IsHuman: true),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(preApproved, allFixed);
+
+        row.Attention.NeedsYou.Should().BeFalse("design ruling 3: nothing on a pre-approved task's arm is ever NeedsYou");
+        row.Attention.Cause.Should().Contain("merges it on its own",
+            "every thread this run last triaged was Fixed, not left open on purpose");
     }
 
     /// <summary>
