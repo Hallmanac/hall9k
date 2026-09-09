@@ -567,6 +567,37 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
+    /// The unflagged (non-pre-approved) arm shares CloseoutEngine's own dispatch-suppression
+    /// branch (CloseoutEngine.cs, the alreadyAnsweredThreadIds skip): a human-authored thread this
+    /// run's own last triage declined or routed on purpose (Decisions Log #159) can leave this run
+    /// resting in AwaitingReview indefinitely with no external review activity otherwise recorded.
+    /// Before this fix, that state read as "no external review activity recorded — the merge is
+    /// yours", naming nothing AGENTS.md calls a real merge gate (independent pre-PR review, cycle
+    /// 1, conformance finding).
+    /// </summary>
+    [Fact]
+    public void A_non_pre_approved_task_names_a_human_authored_thread_the_last_triage_left_open()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/44";
+
+        RunDetails run = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 44);
+        run.ExternalReviewState = ExternalReviewState.None;
+        run.LastReviewThreadOutcomes =
+        [
+            new ReviewThreadOutcome(
+                "PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "brianhallmanac", IsHuman: true),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), run);
+
+        row.Attention.NeedsYou.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("1 review thread(s) (1 from a human) declined or routed and open on purpose");
+        row.Attention.Cause.Should().Contain("no external review activity recorded",
+            "the base cause still carries real information; the thread clause is folded onto it, not a replacement for it");
+    }
+
+    /// <summary>
     /// A pre-approved task's own AwaitingReview arm never reads NeedsYou (task: a task can be
     /// published pre-approved, design ruling 3): waiting on a required human approval, or an
     /// outstanding requested reviewer, is a visible, self-resuming wait, never a park and never a
@@ -680,6 +711,40 @@ public sealed class AttentionSurfaceTests
 
         row.Attention.Cause.Should().Contain("1 unresolved review thread(s) (1 from a human) to close",
             "the bot thread was already resolved by this same triage run and must not be counted forever");
+    }
+
+    /// <summary>
+    /// A triage that declined or routed a human-authored thread but never recorded a usable
+    /// kind= tag (a Mannequin author, or a session that never fetched the typename at all —
+    /// AppendThreadTriageRules tells the agent to leave kind= off in both cases) must not read as
+    /// already resolved: ReviewThreadOutcome.IsHuman's own doc calls null an unobserved fact, not
+    /// a claimed "bot", and CloseoutEngine's own live-classification exclusion still treats the
+    /// thread as human and refuses to dispatch a follow-up for it — so counting it as closed here
+    /// would claim the daemon merges automatically while the daemon is in fact never going to
+    /// touch this thread again (independent pre-PR review, cycle 1, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_task_treats_a_null_kind_declined_thread_as_still_open()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/43";
+        TaskListItem preApproved = StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproved: true);
+
+        RunDetails nullKind = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 43);
+        nullKind.LastReviewThreadOutcomes =
+        [
+            new ReviewThreadOutcome(
+                "PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "alice", IsHuman: null),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(preApproved, nullKind);
+
+        row.Attention.NeedsYou.Should().BeFalse("design ruling 3: nothing on a pre-approved task's arm is ever NeedsYou");
+        row.Attention.Cause.Should().NotContain("merges it on its own",
+            "an unrecorded author kind is an unobserved fact, not a claimed bot, so the thread must still count as open");
+        row.Attention.Cause.Should().Contain("1 unresolved review thread(s) (0 from a human) to close",
+            "the parenthetical only counts outcomes this run's own triage could confirm a human wrote");
     }
 
     /// <summary>
