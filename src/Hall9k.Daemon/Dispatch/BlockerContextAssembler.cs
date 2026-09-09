@@ -106,7 +106,8 @@ public sealed class BlockerContextAssembler(
             string sessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.Synthesis);
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
                 runId, sessionId, worktreePath, runDirectory,
-                AgentPromptBuilder.BuildContextSynthesis(task, blockerCount, raw),
+                AgentPromptBuilder.BuildContextSynthesis(
+                    task, blockerCount, raw, commandTimeout: _options.VerifyGateTimeout),
                 mode, model, project.SkipPermissions, artifactName)
             {
                 SessionName = sessionName,

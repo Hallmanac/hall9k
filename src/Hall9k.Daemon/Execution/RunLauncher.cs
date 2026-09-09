@@ -408,7 +408,9 @@ public sealed class RunLauncher(
                 // PrReviewEngine takes over from here once it completes, dispatching the
                 // conformance lens second and never a build/fix session of any kind.
                 string baseBranch = prReviewFacts!.BaseRefName.IsNotBlank() ? prReviewFacts.BaseRefName : project.BaseBranch;
-                prompt = AgentPromptBuilder.BuildPrReviewLens(task, project, worktree.Branch, ReviewLens.Adversarial, baseBranch);
+                prompt = AgentPromptBuilder.BuildPrReviewLens(
+                    task, project, worktree.Branch, ReviewLens.Adversarial, baseBranch,
+                    commandTimeout: options.Value.VerifyGateTimeout);
             }
             else if (followUp is { } review)
             {
