@@ -59,4 +59,17 @@ public sealed class PendingBackgroundTaskParserTests
     [InlineData("The suite finished; I am not waiting on anything in the background.")]
     public void A_compliant_summary_that_affirms_nothing_was_left_behind_is_not_a_match(string summary) =>
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(summary).Should().BeFalse();
+
+    /// <summary>
+    /// A negation word that denies something else entirely, unrelated to the pending-task claim
+    /// later in the same period-delimited clause, must not suppress that later claim just because
+    /// both share a clause. "no" here negates "way", not the still-running background task named
+    /// after the comma (independent pre-PR review, cycle 2, adversarial lens — this exact phrasing
+    /// escaped the prior, whole-clause negation scoping).
+    /// </summary>
+    [Fact]
+    public void A_negation_of_something_unrelated_does_not_suppress_a_later_genuine_pending_task() =>
+        PendingBackgroundTaskParser.NamesPendingBackgroundTask(
+            "There's no way to shorten the test run, so it's still running in the background while I wait for it to finish.")
+            .Should().BeTrue();
 }
