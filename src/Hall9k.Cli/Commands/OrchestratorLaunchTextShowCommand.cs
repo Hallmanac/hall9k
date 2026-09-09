@@ -65,7 +65,7 @@ public sealed class OrchestratorLaunchTextShowCommand : Hall9kAsyncCommand<Orche
         return ExitCodes.Ok;
     }
 
-    private static void Print(string cli, LaunchText? resolved, bool stored, string scopeSuffix)
+    internal static void Print(string cli, LaunchText? resolved, bool stored, string scopeSuffix)
     {
         string escapedCli = cli.EscapeMarkup();
         if (resolved is null)
@@ -76,7 +76,7 @@ public sealed class OrchestratorLaunchTextShowCommand : Hall9kAsyncCommand<Orche
             return;
         }
 
-        AnsiConsole.WriteLine(resolved.Text);
+        LaunchLineWriter.Write(resolved.Text);
         AnsiConsole.MarkupLine(resolved is { MeasuredTurnOneTokens: { } tokens, MeasuredAt: { } at }
             ? $"[dim]Last measured: {tokens} tokens on {at:yyyy-MM-dd}.[/]"
             : stored
