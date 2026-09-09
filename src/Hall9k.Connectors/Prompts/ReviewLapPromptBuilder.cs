@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
 
 namespace Hall9k.Connectors.Prompts;
 
@@ -124,6 +125,11 @@ public sealed record ScopedReviewPacket(
 /// it is present the briefing is composed from it INSTEAD of the objective, blast-radius, checks,
 /// findings-report and author-run sections — see <see cref="ScopedReviewPacket"/> for why.
 /// </param>
+/// <param name="WritingConventions">
+/// The reviewing project's own house style, governing the <c>--note</c> and the findings this lap
+/// drafts for the reviewer to post under their own login (task 412afe6c). Null falls back to the
+/// platform default, which is what a caller with no project to read one from passes.
+/// </param>
 public sealed record ReviewLapBriefing(
     Guid TaskId,
     PullRequestSurface PullRequest,
@@ -135,7 +141,8 @@ public sealed record ReviewLapBriefing(
     string? AuthorTaskShortId,
     string? FindingsReport,
     ReviewLapAuthorRun? AuthorRun,
-    ScopedReviewPacket? SinceMyReview = null);
+    ScopedReviewPacket? SinceMyReview = null,
+    WritingConventions? WritingConventions = null);
 
 /// <summary>
 /// The opening briefing a reviewer's own review lap starts with (<c>h9k pr review</c>, Decisions
@@ -696,6 +703,15 @@ public static class ReviewLapPromptBuilder
             + "denied for this session, deliberately: they are printed here so you can hand the reviewer the "
             + "exact line to run, not so you can run it. If they ask you to draft the note or the findings, "
             + "draft them and hand them over — running the command is theirs.");
+        prompt.AppendLine();
+        // The note and each finding are posted verbatim under the reviewer's own login, so a draft
+        // that ignores the house style either goes out in the reviewer's name reading nothing like
+        // them or costs them an edit (task 412afe6c). The platform re-checks the two mechanical
+        // rules immediately before posting; this is what keeps a draft from needing that rescue.
+        WorkPromptBuilder.AppendWritingConventions(
+            prompt, string.Empty, briefing.WritingConventions ?? WritingConventions.Default,
+            "**How a draft you hand them reads.** The note and each finding are posted verbatim under "
+            + "the reviewer's own login, so this project's writing conventions govern every word:");
         prompt.AppendLine();
     }
 

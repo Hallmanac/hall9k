@@ -680,6 +680,65 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// The gap task 412afe6c closes: this prompt has always told the follow-up to post a top-level
+    /// comment and to reply in threads, and said nothing at all about how any of it should read.
+    /// Origin incident (2026-09-09): a follow-up's summary comment went out under Brian's login on
+    /// arx-platform#2042 with em dashes in most of its paragraphs.
+    /// </summary>
+    [Fact]
+    public void Follow_up_prompt_states_the_writing_conventions_the_comment_is_posted_under()
+    {
+        string prompt = AgentPromptBuilder.BuildFollowUp(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().Contain("No em dashes (U+2014)");
+        prompt.IndexOf("No em dashes (U+2014)", StringComparison.Ordinal)
+            .Should().BeGreaterThan(prompt.IndexOf("gh pr comment", StringComparison.Ordinal),
+                "it governs the comment the bullet above it asks for");
+    }
+
+    /// <summary>
+    /// The changes-requested lap is the other prompt that has an agent write words a reviewer
+    /// reads under the owner's login, and it has its own copy of the handling rules — so it needs
+    /// its own copy of the conventions rather than inheriting one.
+    /// </summary>
+    [Fact]
+    public void Changes_requested_prompt_states_the_writing_conventions_too()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewRequestedChanges(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().Contain("No em dashes (U+2014)").And.Contain("posted under the owner's own login");
+    }
+
+    /// <summary>
+    /// The fix session may replace the build session's pull request body, so the block it is asked
+    /// for carries the same rule the build session's own step does.
+    /// </summary>
+    [Fact]
+    public void Review_fix_prompt_states_the_conventions_for_the_summary_block_it_may_refresh()
+    {
+        AgentPromptBuilder.BuildReviewFix(SomeTask(), SomeProject(), "task/1-slug", "findings", cycle: 1)
+            .Should().Contain("No em dashes (U+2014)");
+    }
+
+    /// <summary>
+    /// The conventions are the project's own, so a project that states its own house style is what
+    /// every one of these prompts carries.
+    /// </summary>
+    [Fact]
+    public void A_projects_own_conventions_replace_the_platform_default_in_the_follow_up_prompt()
+    {
+        ProjectDetails project = SomeProject();
+        project.WritingConventions = WritingConventions.Parse("Answer in one paragraph. No lists.");
+
+        string prompt = AgentPromptBuilder.BuildFollowUp(
+            SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().Contain("Answer in one paragraph. No lists.").And.NotContain("No em dashes (U+2014)");
+    }
+
+    /// <summary>
     /// The instruction boundary the widened surface needs (Decisions Log #62). Weighing every
     /// thread author's text means weighing text from anyone who can comment on the pull
     /// request, so the same data-only fence this prompt puts around an adopted issue body goes

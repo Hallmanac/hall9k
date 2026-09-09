@@ -983,7 +983,9 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             authorTask?.AcceptanceCriteria ?? [],
             authorTask is null ? null : TaskListCommand.ShortId(authorTask.Id),
             findingsReport,
-            authorRun is null ? null : DescribeAuthorRun(authorRun));
+            authorRun is null ? null : DescribeAuthorRun(authorRun),
+            SinceMyReview: null,
+            WritingConventions: project.WritingConventions);
     }
 
     /// <summary>

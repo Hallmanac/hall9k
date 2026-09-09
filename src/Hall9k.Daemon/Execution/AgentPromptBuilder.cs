@@ -131,7 +131,7 @@ public static class AgentPromptBuilder
 
         AppendReviewerAttributionRules(prompt);
         AppendThreadTriageRules(prompt, project.Name);
-        AppendThreadHandlingRules(prompt);
+        AppendThreadHandlingRules(prompt, project);
         AppendThreadDisputeRules(prompt);
 
         prompt.AppendLine("## Working rules");
@@ -239,7 +239,7 @@ public static class AgentPromptBuilder
 
         AppendProjectHome(prompt, project);
         AppendChangesRequestedFindings(prompt, task);
-        AppendChangesRequestedHandlingRules(prompt);
+        AppendChangesRequestedHandlingRules(prompt, project);
         AppendChangesRequestedDisagreementRules(prompt);
 
         prompt.AppendLine("## Working rules");
@@ -378,7 +378,7 @@ public static class AgentPromptBuilder
     /// is known to be a person: there is no bot half to state, because a bot's review never reaches
     /// this prompt.
     /// </summary>
-    private static void AppendChangesRequestedHandlingRules(StringBuilder prompt)
+    private static void AppendChangesRequestedHandlingRules(StringBuilder prompt, ProjectDetails project)
     {
         prompt.AppendLine("## How to handle each finding");
         prompt.AppendLine();
@@ -397,6 +397,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine("- **Never open a new review thread.** Reply inside existing ones only. A thread's");
         prompt.AppendLine("  first comment is always a reviewer's, and that is the only way the next run can");
         prompt.AppendLine("  tell your comment from theirs.");
+        AppendWritingConventions(
+            prompt, string.Empty, project.WritingConventions,
+            "**How every one of those replies reads.** The top-level comment and each in-thread reply "
+            + "are posted under the owner's own login, so this project's writing conventions govern "
+            + "every word of them:");
         prompt.AppendLine();
         prompt.AppendLine("What you cannot see: GitHub hides a review's comments while that review is still");
         prompt.AppendLine("PENDING (written but not submitted). So work the findings above, and never read");
@@ -1377,7 +1382,7 @@ public static class AgentPromptBuilder
     /// asymmetry exists to meet). Bounded on purpose: one honest attempt per thread per follow-up,
     /// the never-loop rule the review park already runs on.
     /// </summary>
-    private static void AppendThreadHandlingRules(StringBuilder prompt)
+    private static void AppendThreadHandlingRules(StringBuilder prompt, ProjectDetails project)
     {
         prompt.AppendLine("## How to act on each disposition");
         prompt.AppendLine();
@@ -1407,6 +1412,12 @@ public static class AgentPromptBuilder
         prompt.AppendLine("comment on the pull request (`gh pr comment`) that names the review it answers and");
         prompt.AppendLine("says what you did about each point. Never leave a review body unanswered, and");
         prompt.AppendLine("never leave a comment the reviewer has to connect back to their review themselves.");
+        prompt.AppendLine();
+        AppendWritingConventions(
+            prompt, string.Empty, project.WritingConventions,
+            "**How every one of those replies reads.** The top-level comment and each in-thread reply "
+            + "are posted under the owner's own login, so this project's writing conventions govern "
+            + "every word of them:");
         prompt.AppendLine();
     }
 
@@ -3385,6 +3396,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"  line below (`{PrSummaryParser.TitlePrefix} <one line>`, a blank line, then the body, leaving out the");
         prompt.AppendLine("  work-item link, the acceptance criteria and the run footer); otherwise write none and");
         prompt.AppendLine("  the build session's own summary stands.");
+        AppendWritingConventions(
+            prompt, "  ", project.WritingConventions,
+            "**How that block reads, if you write one.** It becomes the pull request body a reviewer "
+            + "reads under the owner's login, so this project's writing conventions govern every word "
+            + "of it:");
         AppendReviewFixSelfCheckPhaseRules(
             prompt, project, effectiveBaseBranch,
             WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit));
