@@ -243,6 +243,15 @@ public static class WorkPromptBuilder
             prompt.AppendLine("  opens a pull request until then.");
             AppendCommitDisciplineRuleForInteractiveSession(prompt);
             AppendSelfDeliveryRule(prompt);
+            // The take-the-wheel session composes no pull request body of its own — that is why it
+            // never reaches AppendPullRequestSummaryStep — but it writes commit messages the
+            // operator pushes, and it drafts comments and replies they post under their own login.
+            // The conventions reach it here or not at all (task 412afe6c).
+            AppendWritingConventions(
+                prompt, string.Empty, project.WritingConventions,
+                "**How anything you write for people reads.** This project's writing conventions govern "
+                + "every commit message, and every word you draft for the operator to post anywhere "
+                + "under their own login:");
             if (requiresSelfRegistration)
             {
                 AppendSelfRegistrationRule(prompt, task.Id);
@@ -1091,22 +1100,37 @@ public static class WorkPromptBuilder
         prompt.AppendLine($"{indent}- **What to leave out.** The work-item link, the acceptance criteria, and the run");
         prompt.AppendLine($"{indent}  footer. The platform puts all three around your text, so a copy of any of them");
         prompt.AppendLine($"{indent}  in your own body is a second one a reviewer reads as a mistake.");
-        AppendWritingConventions(prompt, indent);
+        AppendWritingConventions(
+            prompt, indent, project.WritingConventions,
+            "**How it reads.** This project's writing conventions govern every word of the title and "
+            + "the body, which reviewers read on GitHub under the owner's login:");
         prompt.AppendLine($"{indent}- Do not run `gh pr create` or `gh pr edit`: the platform opens the pull request,");
         prompt.AppendLine($"{indent}  and agents never do (PLAN.md §6.6).");
     }
 
     /// <summary>
-    /// The house conventions any prose an agent writes for people has to obey, stated here as the
-    /// default text. Task 412afe6c makes this a per-project setting; until that lands, this is the
-    /// one copy, so the day it becomes configurable there is exactly one place to read it from.
+    /// The house conventions any prose an agent writes for people has to obey, carried verbatim
+    /// out of the project's own <see cref="WritingConventions"/> setting rather than written here
+    /// — which is what task 412afe6c made of the hard-coded copy this used to be. Every prompt in
+    /// this codebase that asks a session to compose text a person will read under the owner's
+    /// login calls this, so the conventions are stated in one voice wherever they appear.
+    /// <para>
+    /// Public because <c>Hall9k.Daemon.Execution.AgentPromptBuilder</c> and
+    /// <see cref="ReviewLapPromptBuilder"/> both need the same words: the review-feedback lap's
+    /// summary comment and thread replies, and the note a review lap drafts for the reviewer's own
+    /// <c>h9k pr approve</c>, are posted to GitHub exactly as a pull request body is.
+    /// </para>
     /// </summary>
-    private static void AppendWritingConventions(StringBuilder prompt, string indent)
+    /// <param name="lead">
+    /// The bullet's own sentence, naming which prose these conventions govern here. Per caller,
+    /// because "it" means the pull request body in one prompt and a review comment in the next,
+    /// and a bullet that named neither would leave the session to guess how far the rule reaches.
+    /// </param>
+    public static void AppendWritingConventions(
+        StringBuilder prompt, string indent, WritingConventions conventions, string lead)
     {
-        prompt.AppendLine($"{indent}- **How it reads.** No em dashes (U+2014); use commas, semicolons, colons, periods,");
-        prompt.AppendLine($"{indent}  or parentheses instead. Full sentences over telegraphic fragments. No AI");
-        prompt.AppendLine($"{indent}  attribution anywhere in it: no \"Generated with Claude\", no Co-Authored-By");
-        prompt.AppendLine($"{indent}  trailer, in the title or the body.");
+        prompt.AppendLine($"{indent}- {lead}");
+        prompt.Append(conventions.ToPromptLines($"{indent}  > "));
     }
 
     /// <summary>

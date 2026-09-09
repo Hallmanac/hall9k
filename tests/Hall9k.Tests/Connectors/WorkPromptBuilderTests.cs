@@ -206,9 +206,14 @@ public sealed class WorkPromptBuilderTests
         string withoutSelfRegistration = WorkPromptBuilder.Build(
             task, SomeProject(), "task/1-slug", _worktreePath, isInteractive: true);
 
-        withSelfRegistration.Should().Contain("Co-Authored-By");
+        // The reminder's own sentence, not the bare token: since task 412afe6c every interactive
+        // prompt carries the project's writing conventions, whose default text names a
+        // Co-Authored-By trailer as prose an agent must not write. That is a different rule about a
+        // different artifact, and matching on the token alone would read it as this one.
+        withSelfRegistration.Should().Contain("Never add a `Co-Authored-By` trailer to any");
         withoutSelfRegistration.Should().NotContain(
-            "Co-Authored-By", "--direct-launch always passes --settings itself, so nothing here can be skipped");
+            "Never add a `Co-Authored-By` trailer to any",
+            "--direct-launch always passes --settings itself, so nothing here can be skipped");
     }
 
     [Fact]
@@ -474,6 +479,37 @@ public sealed class WorkPromptBuilderTests
     public void The_attended_interactive_prompt_never_asks_for_one()
     {
         Build(isInteractive: true, isDeliberateHeadlessStart: false).Should().NotContain(PrSummaryParser.Marker);
+    }
+
+    /// <summary>
+    /// The conventions are the project's, not a constant this builder owns (task 412afe6c): a
+    /// project that states its own house style is what the composing session reads, and the
+    /// platform default never appears alongside it.
+    /// </summary>
+    [Fact]
+    public void The_pull_request_summary_step_carries_this_projects_own_conventions()
+    {
+        ProjectDetails project = SomeProject();
+        project.WritingConventions = WritingConventions.Parse("Write like a telegram. Exclamation marks welcome.");
+
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), project, branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath);
+
+        prompt.Should().Contain("Write like a telegram. Exclamation marks welcome.")
+            .And.NotContain("No em dashes (U+2014)", "the project replaced the platform's own text");
+    }
+
+    /// <summary>
+    /// The take-the-wheel session composes no pull request body, so it never reaches the step
+    /// above — and it still writes commit messages the operator pushes and drafts comments they
+    /// post. The conventions reach it on its own branch or not at all (task 412afe6c).
+    /// </summary>
+    [Fact]
+    public void The_attended_interactive_prompt_still_carries_the_writing_conventions()
+    {
+        Build(isInteractive: true, isDeliberateHeadlessStart: false)
+            .Should().Contain("No em dashes (U+2014)")
+            .And.Contain("How anything you write for people reads");
     }
 
     [Fact]

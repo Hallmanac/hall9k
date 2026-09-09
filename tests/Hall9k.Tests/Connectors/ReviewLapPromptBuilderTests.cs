@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
@@ -447,6 +448,32 @@ public sealed class ReviewLapPromptBuilderTests
         ReviewerVerdict.ChangesRequested.GitHubEvent.Should().Be("REQUEST_CHANGES");
         ReviewerVerdict.Unknown.GitHubEvent.Should().BeEmpty(
             "there is no review GitHub could be asked to submit for a verdict nobody gave");
+    }
+
+    /// <summary>
+    /// The note and each finding are posted verbatim under the reviewer's own login, so the lap
+    /// that drafts them is told the house style (task 412afe6c). A lap composed with no project
+    /// conventions still gets the platform's own text rather than nothing.
+    /// </summary>
+    [Fact]
+    public void The_closing_section_carries_the_writing_conventions_the_note_is_posted_under()
+    {
+        string prompt = ReviewLapPromptBuilder.Build(Briefing());
+
+        prompt.Should().Contain("No em dashes (U+2014)")
+            .And.Contain("How a draft you hand them reads");
+        prompt.IndexOf("No em dashes (U+2014)", StringComparison.Ordinal)
+            .Should().BeGreaterThan(prompt.IndexOf("h9k pr approve", StringComparison.Ordinal),
+                "it governs the note those two commands post");
+    }
+
+    [Fact]
+    public void A_project_that_states_its_own_conventions_is_what_the_lap_reads()
+    {
+        string prompt = ReviewLapPromptBuilder.Build(
+            Briefing() with { WritingConventions = WritingConventions.Parse("Terse. British spelling.") });
+
+        prompt.Should().Contain("Terse. British spelling.").And.NotContain("No em dashes (U+2014)");
     }
 
     private static ReviewLapBriefing Briefing() => new(
