@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
 
@@ -111,6 +112,42 @@ public sealed class TaskListItem
     /// Abandoned, rather than reading as if auto-pr-review never touched it at all.
     /// </summary>
     public bool WasAutoPrReviewCreated { get; set; }
+    /// <summary>
+    /// Mirrors <see cref="TaskAggregate.PrReviewFollowThroughOpen"/>: whether this pr-review
+    /// task's posted review is still being followed through (task: a pr-review task stays open
+    /// while the pull request's review threads are unresolved). The closeout watcher's own
+    /// follow-through sweep selects on this field and the state, so a NeedsHuman pr-review task
+    /// that is merely parked on an unwalked findings report is never polled.
+    /// </summary>
+    public bool PrReviewFollowThroughOpen { get; set; }
+    /// <summary>The pull request the follow-through watches, kept off <see cref="PullRequestUrl"/> for the reason <see cref="TaskAggregate.PrReviewFollowThroughPullRequestUrl"/> gives.</summary>
+    public string? PrReviewFollowThroughPullRequestUrl { get; set; }
+    /// <summary>How many of the reviewer's own threads the last poll found unresolved — the count <c>h9k status</c> shows beside a waiting row.</summary>
+    public int PrReviewOpenThreadCount { get; set; }
+    /// <summary>Whether the last poll found a re-review requested of the reviewer — the second reason a follow-through stays open.</summary>
+    public bool PrReviewReReviewRequested { get; set; }
+    /// <summary>Whether any poll has looked at the watched pull request yet: what tells "no threads outstanding" from "not looked at".</summary>
+    public bool PrReviewFollowThroughObserved { get; set; }
+    /// <summary>What the author did, as the last <see cref="PullRequestReviewAuthorResponded"/> put it, or null while they have said nothing.</summary>
+    public string? PrReviewAuthorActivitySummary { get; set; }
+    /// <summary>The registered interactive session the most recent author-response line was addressed to, or null when none was registered.</summary>
+    public string? PrReviewAuthorActivitySessionAddress { get; set; }
+    /// <summary>
+    /// The <c>owner/repo#42</c> this task adopted, or null when its reference names something else
+    /// (an issue, a card) or nothing at all. Derived here rather than in each surface that needs
+    /// it, the same way <see cref="EffectivePreApproval"/> is: every lever naming
+    /// <c>h9k pr review</c> has to spell the pull request rather than a task id — that command's
+    /// argument is the pull request, and a numeric task-id fragment there would be silently read
+    /// as a pull-request number — so the board's attention line and its phase line both need this
+    /// and must not word it two ways.
+    /// </summary>
+    public string? AdoptedPullRequestReference =>
+        ExternalReference is { } reference
+        && Tasks.ExternalReference.Parse(reference) is
+            { Provider: var provider, Reference: { Length: > 0 } canonical }
+        && provider == WorkItemProvider.GitHubPullRequest
+            ? canonical
+            : null;
     /// <summary>Declared dependency edges — the cheap re-evaluation query filters on this.</summary>
     public List<Guid> BlockedBy { get; set; } = [];
     /// <summary>Blockers not yet at true closeout; empty on anything but a Blocked task.</summary>
@@ -459,6 +496,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // Mirrors TaskAggregate.Apply(TaskCompleted): a marker set while this same claim was
         // live never routes back through Apply(TaskClaimed), so nothing else here clears it.
         view.QueuePriorityMarked = false;
+        ForgetPrReviewFollowThrough(view);
     }
 
     public void Apply(IEvent<TaskReopened> @event, TaskListItem view)
@@ -473,6 +511,10 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // would drop CloseoutEngine's watch of the pull request a Blocked landing just parked
         // behind an open dependency (adversarial review, cycle 1, on h9k task start).
         view.CurrentRunId = view.State == TaskState.Blocked ? @event.Data.PreviousRunId : null;
+        // TaskDecider.Reopen refuses a pr-review task, so this is defence rather than a reachable
+        // path — but a reopen lands Queued or Blocked, and a flag surviving into either would
+        // advertise a watch nothing is doing.
+        ForgetPrReviewFollowThrough(view);
     }
 
     public void Apply(IEvent<TaskFailed> @event, TaskListItem view)
@@ -514,6 +556,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.State = TaskState.Done;
         // Mirrors TaskAggregate.Apply(TaskResolved): same reasoning as Apply(TaskCompleted) above.
         view.QueuePriorityMarked = false;
+        ForgetPrReviewFollowThrough(view);
     }
 
     public void Apply(IEvent<TaskAbandoned> @event, TaskListItem view)
@@ -523,6 +566,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // Mirrors TaskAggregate.Apply(TaskAbandoned): a dead end, so a marker set earlier in
         // this task's life must not survive to be read back.
         view.QueuePriorityMarked = false;
+        ForgetPrReviewFollowThrough(view);
     }
 
     // Only the auth-failure flag and its reason matter to this row (AttentionComposer.Compose):
@@ -567,4 +611,49 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
 
     public void Apply(IEvent<PullRequestReviewAssignmentRecalled> @event, TaskListItem view) =>
         view.AutoPrReviewAssigneeLogin = null;
+
+    // Mirrors TaskAggregate.Apply(PullRequestReviewFollowThroughOpened): the pr-review task's own
+    // ending is now a wait rather than Done, and this is the row the follow-through sweep and
+    // h9k status both read it off.
+    public void Apply(IEvent<PullRequestReviewFollowThroughOpened> @event, TaskListItem view)
+    {
+        view.PrReviewFollowThroughOpen = true;
+        view.PrReviewFollowThroughPullRequestUrl = @event.Data.PullRequestUrl;
+        view.PrReviewFollowThroughObserved = false;
+        view.PrReviewOpenThreadCount = 0;
+        view.PrReviewReReviewRequested = false;
+        view.PrReviewAuthorActivitySummary = null;
+        view.PrReviewAuthorActivitySessionAddress = null;
+        view.State = TaskState.AwaitingAuthor;
+        view.QueuePriorityMarked = false;
+    }
+
+    public void Apply(IEvent<PullRequestReviewFollowThroughObserved> @event, TaskListItem view)
+    {
+        view.PrReviewFollowThroughObserved = true;
+        view.PrReviewOpenThreadCount = @event.Data.Threads.Count(thread => !thread.IsResolved);
+        view.PrReviewReReviewRequested = @event.Data.ReReviewRequested;
+    }
+
+    public void Apply(IEvent<PullRequestReviewAuthorResponded> @event, TaskListItem view)
+    {
+        view.PrReviewAuthorActivitySummary = @event.Data.Summary;
+        view.PrReviewAuthorActivitySessionAddress = @event.Data.InteractiveSessionAddress;
+        view.State = TaskState.NeedsHuman;
+    }
+
+    /// <summary>
+    /// Mirrors <c>TaskAggregate.EndAnyPrReviewFollowThrough</c> — see that method for the whole
+    /// reasoning. This is the copy that matters operationally: the closeout watcher's own
+    /// follow-through sweep selects on THIS row, so a flag left standing here would keep spending
+    /// a <c>gh</c> read per poll interval on a task whose story is over.
+    /// </summary>
+    private static void ForgetPrReviewFollowThrough(TaskListItem view)
+    {
+        view.PrReviewFollowThroughOpen = false;
+        view.PrReviewReReviewRequested = false;
+        view.PrReviewOpenThreadCount = 0;
+        view.PrReviewAuthorActivitySummary = null;
+        view.PrReviewAuthorActivitySessionAddress = null;
+    }
 }

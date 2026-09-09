@@ -1250,7 +1250,35 @@ public sealed class TaskDeciderTests
 
         Action act = () => TaskDecider.Complete(task, DomainId.New(), "https://github.com/x/y/pull/7", Now);
 
-        act.Should().Throw<DomainConflictException>().WithMessage("*only a claimed task, or a Blocked one*");
+        act.Should().Throw<DomainConflictException>().WithMessage("*only a claimed task, a Blocked one*");
+    }
+
+    /// <summary>
+    /// The third arm the follow-through added (task: a pr-review task stays open while the pull
+    /// request's review threads are unresolved): a waiting review completes, and an ordinary
+    /// NeedsHuman task — an agent's unanswered question, a findings park nobody has walked — keeps
+    /// the refusal it has always had. Both halves, because widening the arm without narrowing it
+    /// to the follow-through flag would let any parked task be completed out from under its human.
+    /// </summary>
+    [Fact]
+    public void Complete_of_a_waiting_pr_review_task_is_admitted_and_of_an_ordinary_parked_one_is_not()
+    {
+        TaskAggregate waiting = ClaimedPrReviewTask();
+        waiting.Apply(TaskDecider.OpenPrReviewFollowThrough(
+            waiting, waiting.CurrentRunId!.Value, "https://github.com/x/y/pull/7", "aaa", Now));
+        waiting.State.Should().Be(TaskState.AwaitingAuthor);
+
+        Action completeWaiting = () => TaskDecider.Complete(
+            waiting, waiting.CurrentRunId!.Value, "https://github.com/x/y/pull/7", Now);
+        completeWaiting.Should().NotThrow();
+
+        TaskAggregate parked = ClaimedTask();
+        parked.Apply(TaskDecider.Ask(parked, DomainId.New(), parked.CurrentRunId!.Value, "which way?", Now));
+        parked.State.Should().Be(TaskState.NeedsHuman);
+
+        Action completeParked = () => TaskDecider.Complete(parked, parked.CurrentRunId!.Value, null, Now);
+        completeParked.Should().Throw<DomainConflictException>(
+            "a task parked on an unanswered question is not a review being followed through");
     }
 
     [Fact]
@@ -1989,6 +2017,14 @@ public sealed class TaskDeciderTests
 
     private static TaskAggregate DonePrReviewTask()
     {
+        TaskAggregate task = ClaimedPrReviewTask();
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/acme/widgets/pull/7", Now));
+        return task;
+    }
+
+    /// <summary>A pr-review task claimed at generation 1 — where the automated review, or a reviewer's own lap, takes over.</summary>
+    private static TaskAggregate ClaimedPrReviewTask()
+    {
         TaskAggregate task = new();
         task.Apply(TaskDecider.Add(
             DomainId.New(), DomainId.New(), "Review the widgets PR", ["The findings report is accurate"],
@@ -1998,7 +2034,6 @@ public sealed class TaskDeciderTests
         task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, Owner));
         task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
         task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
-        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/acme/widgets/pull/7", Now));
         return task;
     }
 

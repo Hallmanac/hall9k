@@ -1463,14 +1463,210 @@ public static class TaskDecider
         // finalizing straight to Done here is what stops a later TaskDependencyCompleted from
         // re-queuing a task whose work already shipped (independent pre-PR review, cycle 3,
         // adversarial lens, on h9k task start).
-        if (task.State != TaskState.Claimed && task.State != TaskState.Blocked)
+        // AwaitingAuthor and NeedsHuman are admitted for the pr-review follow-through's own two
+        // endings (task: a pr-review task stays open while the pull request's review threads are
+        // unresolved): every thread the reviewer opened is resolved, or the pull request merged
+        // or closed. The follow-through poll is what observes either, and the task it observes it
+        // for is sitting in one of those two states with no lease and no live run — AwaitingAuthor
+        // while the author has said nothing, NeedsHuman once they have — so the Claimed-only rule
+        // above would leave the one state this feature invented with no way to reach Done at all.
+        // Narrowed to a task with the follow-through actually open, so an ordinary NeedsHuman task
+        // (an agent's unanswered question, a findings park nobody has walked) keeps the refusal it
+        // has always had.
+        bool prReviewFollowThrough = task.PrReviewFollowThroughOpen
+            && (task.State == TaskState.AwaitingAuthor || task.State == TaskState.NeedsHuman);
+        if (task.State != TaskState.Claimed && task.State != TaskState.Blocked && !prReviewFollowThrough)
         {
             throw new DomainConflictException(
-                $"Task {task.Id} is {task.State.Value} — only a claimed task, or a Blocked one whose " +
-                "watched pull request merged anyway, completes.");
+                $"Task {task.Id} is {task.State.Value} — only a claimed task, a Blocked one whose " +
+                "watched pull request merged anyway, or a pr-review task whose posted review has been " +
+                "followed through, completes.");
         }
 
         return new TaskCompleted(task.Id, runId, pullRequestUrl, completedAt);
+    }
+
+    /// <summary>
+    /// The posted review is not the ending: park the pr-review task on the pull request and watch
+    /// it for the author's answer (task: a pr-review task stays open while the pull request's
+    /// review threads are unresolved). What <c>PrReviewEngine.FinalizeAsync</c> appends in place
+    /// of <see cref="Complete"/> once a verdict has been delivered on the run.
+    /// <para>
+    /// A pull request URL is required and a non-pr-review task is refused, because both are what
+    /// make the wait meaningful: there is no follow-through without something to poll, and no
+    /// other task type has somebody else's review threads to wait on. A pr-review task whose own
+    /// reference cannot be read is the one case the caller must handle instead of routing here —
+    /// it completes exactly as it always did, because there is genuinely nothing to watch.
+    /// </para>
+    /// </summary>
+    public static PullRequestReviewFollowThroughOpened OpenPrReviewFollowThrough(
+        TaskAggregate task, Guid runId, string pullRequestUrl, string? headSha, DateTimeOffset openedAt)
+    {
+        if (task.Type != TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a {task.Type.Value} task — following through on a posted review is a "
+                + "pr-review task's own ending, and this one has no review of somebody else's pull request "
+                + "to be waiting on.");
+        }
+
+        if (task.State != TaskState.Claimed)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only the claim the review was delivered under "
+                + "parks on the pull request to wait for its author.");
+        }
+
+        if (pullRequestUrl.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id} has no pull request to wait on, so there is nothing to follow through. "
+                + "Complete it instead — a review with no readable pull-request reference has nothing "
+                + "left to watch (AGENTS.md: never guess at unobserved facts).");
+        }
+
+        return new PullRequestReviewFollowThroughOpened(task.Id, runId, pullRequestUrl, headSha, openedAt);
+    }
+
+    /// <summary>
+    /// Whether this task is one the closeout watcher's follow-through sweep should poll: a
+    /// pr-review task with a posted review still being followed through, sitting in one of the
+    /// two states that wait rather than work. Asked from the domain so the sweep's own query and
+    /// every guard downstream of it read the same rule.
+    /// </summary>
+    public static bool AwaitsPrReviewFollowThrough(TaskAggregate task) =>
+        task.PrReviewFollowThroughOpen
+        && task.Type == TaskType.PrReview
+        && (task.State == TaskState.AwaitingAuthor || task.State == TaskState.NeedsHuman);
+
+    /// <summary>
+    /// One poll's reading of the watched pull request, recorded as the watermark the next poll
+    /// compares against (task: a pr-review task stays open while the pull request's review
+    /// threads are unresolved). Refuses a task that is not actually following anything through,
+    /// so a stale sweep landing after the task closed out writes nothing.
+    /// </summary>
+    public static PullRequestReviewFollowThroughObserved ObservePrReviewFollowThrough(
+        TaskAggregate task,
+        string reviewerLogin,
+        IReadOnlyList<PrReviewThreadWatermark> threads,
+        bool reReviewRequested,
+        string? headSha,
+        int? commitCount,
+        DateTimeOffset observedAt)
+    {
+        RefuseUnlessFollowingThrough(task, "record an observation of");
+        if (reviewerLogin.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id}'s follow-through observation names no reviewer login, so it cannot say "
+                + "whose review threads it counted. An unreadable login is a failed poll to retry, never "
+                + "an observation to record (AGENTS.md: never guess at unobserved facts).");
+        }
+
+        return new PullRequestReviewFollowThroughObserved(
+            task.Id, reviewerLogin, threads, reReviewRequested, headSha, commitCount, observedAt);
+    }
+
+    /// <summary>
+    /// The pull request answered: replies in the reviewer's own threads that they did not write
+    /// themselves, new commits, a re-review newly requested of them, or any combination — so the
+    /// task surfaces as needs-you with a line naming what changed, and only what was observed.
+    /// Always appended after the
+    /// <see cref="ObservePrReviewFollowThrough"/> that re-baselines the watermark, in the same
+    /// transaction, which is what stops the same replies notifying twice.
+    /// <para>
+    /// A re-review request stands beside the other two rather than merely holding the wait open,
+    /// because it is the one thing here that is an explicit ask of the reviewer: an author who
+    /// resolves the threads themselves and re-requests review, with no comment and no push, is
+    /// asking them back, and leaving the task Waiting there had the author waiting on the reviewer
+    /// while the reviewer's board said the opposite (independent pre-PR review, cycle 1,
+    /// adversarial lens). Only the transition wakes them — the observation beside this event
+    /// records the standing request, so the same ask cannot fire on the next poll.
+    /// </para>
+    /// </summary>
+    public static PullRequestReviewAuthorResponded RecordPrReviewAuthorResponse(
+        TaskAggregate task,
+        string summary,
+        int replyCount,
+        int threadsWithReplies,
+        int? newCommitCount,
+        bool headMoved,
+        bool reReviewNewlyRequested,
+        string? interactiveSessionAddress,
+        DateTimeOffset observedAt)
+    {
+        RefuseUnlessFollowingThrough(task, "record an author response on");
+        if (replyCount <= 0 && !headMoved && !reReviewNewlyRequested)
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id} saw no reply, no moved head and no new re-review request, so there is no "
+                + "author response to record. A poll that found nothing new records its observation and says "
+                + "nothing else — waking the reviewer for silence is exactly the noise this watch exists to "
+                + "avoid.");
+        }
+
+        if (summary.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id}'s author response needs the line every surface shows. Without it the "
+                + "board would say needs-you and be unable to say why.");
+        }
+
+        return new PullRequestReviewAuthorResponded(
+            task.Id, summary, replyCount, threadsWithReplies, newCommitCount, headMoved,
+            reReviewNewlyRequested, interactiveSessionAddress, observedAt);
+    }
+
+    /// <summary>
+    /// The scoped lap's own claim (<c>h9k pr review --since-my-review</c>): a third sibling of
+    /// <see cref="ClaimInteractively"/> and <see cref="ClaimDeliberately"/>, same sentinel
+    /// <see cref="Guid.Empty"/> node id and the same reasoning — a human's deliberate act is
+    /// outside the automation's budget (Decisions Log #103) — entered from the one pair of states
+    /// neither of those admits.
+    /// <para>
+    /// Its own method rather than a widening of <see cref="ClaimInteractively"/>'s state check,
+    /// because that check is load-bearing for every other caller: "Queued or an acknowledged
+    /// Blocked" is what stops an operator claiming a task the dispatcher already owns, and
+    /// admitting two more states there would relax that guard for the whole surface to serve one
+    /// command. Here the equivalent guard is <see cref="AwaitsPrReviewFollowThrough"/>, which is
+    /// strictly narrower: a pr-review task with a posted review and no live run of any kind.
+    /// </para>
+    /// </summary>
+    public static TaskClaimed ClaimForScopedReviewLap(
+        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt)
+    {
+        if (!AwaitsPrReviewFollowThrough(task))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a {task.Type.Value} task in {task.State.Value} with no posted review being "
+                + "followed through, so there is nothing since your last review to read. A scoped lap reads the "
+                + "thread replies and pushes that arrived after a review THIS platform recorded you posting; "
+                + "h9k pr review on that pull request, without --since-my-review, opens an ordinary lap "
+                + "instead.");
+        }
+
+        if (task.AssignedOwnerId != ownerId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is assigned to "
+                + $"{(task.AssignedOwnerId is { } assignee ? assignee.ToString() : "nobody")}, not to this owner "
+                + $"({ownerId}) — an operator claims only their own owner's work.");
+        }
+
+        return new TaskClaimed(
+            task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
+            DependencyOverrideAcknowledged: false, DependencyOverrideCarriedForward: false,
+            InteractiveMode: true);
+    }
+
+    private static void RefuseUnlessFollowingThrough(TaskAggregate task, string what)
+    {
+        if (!AwaitsPrReviewFollowThrough(task))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a {task.Type.Value} task in {task.State.Value} with no posted review "
+                + $"being followed through, so there is nothing to {what} it.");
+        }
     }
 
     /// <summary>
