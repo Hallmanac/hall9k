@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
 using Marten;
@@ -755,6 +756,80 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         runView.FailureReason.Should().Contain(
             "could not read origin's current tip", "the guard's own refusal message names what happened");
     }
+
+    /// <summary>
+    /// The wiring, as opposed to the composition <c>PrSummaryArtifactTests</c> pins as a pure
+    /// function: that the opener actually reads the run directory's <c>pr-summary.md</c> and puts
+    /// both halves of what it finds into what <c>gh</c> is told — the authored title as
+    /// <c>--title</c>, the authored prose into the <c>--body-file</c> it names. Nothing else in
+    /// this class can catch that read going away, because every other test here runs against a
+    /// local origin, where no pull request is opened at all (independent pre-PR review, cycle 1,
+    /// conformance lens: deleting the artifact read left every pull request reopening on the
+    /// skeleton with the whole suite green).
+    /// </summary>
+    [Fact]
+    public async Task What_gh_is_told_comes_from_the_run_directorys_pull_request_summary()
+    {
+        string runDirectory = Path.Combine(_root, "run-that-composed-one");
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(
+            RunPaths.PrSummaryFile(runDirectory),
+            "Title: Resolve references in every host\n\nEvery host uses the shared provider now.");
+
+        IReadOnlyList<string> arguments = await PullRequestOpener.CreateArgumentsAsync(
+            NullLogger.Instance, ComposingRun(runDirectory), ComposingTask(), "run narration", sourceUrl: null,
+            "main", CancellationToken.None);
+
+        arguments.Should().Equal(
+            "pr", "create",
+            "--title", "ARX-4861: Resolve references in every host",
+            "--body-file", Path.Combine(runDirectory, "pr-body.md"),
+            "--base", "main",
+            "--head", "task/12345678-resolve-references");
+        (await File.ReadAllTextAsync(Path.Combine(runDirectory, "pr-body.md")))
+            .Should().Contain("Every host uses the shared provider now.")
+            .And.NotContain("run narration", "a session that composed a body already said what a reviewer needs");
+    }
+
+    /// <summary>
+    /// The other half of the same wiring: a run whose session composed nothing — an interactive
+    /// claim delivered by hand, a session killed before its final message — still opens on the
+    /// skeleton the daemon has always written, with the key-prefixed short title as the one thing
+    /// that improves.
+    /// </summary>
+    [Fact]
+    public async Task What_gh_is_told_falls_back_to_the_skeleton_when_no_session_composed_one()
+    {
+        string runDirectory = Path.Combine(_root, "run-that-composed-none");
+        Directory.CreateDirectory(runDirectory);
+
+        IReadOnlyList<string> arguments = await PullRequestOpener.CreateArgumentsAsync(
+            NullLogger.Instance, ComposingRun(runDirectory), ComposingTask(), "run narration", sourceUrl: null,
+            "main", CancellationToken.None);
+
+        File.Exists(RunPaths.PrSummaryFile(runDirectory)).Should().BeFalse("no session composed one");
+        arguments.Should().ContainInOrder(
+            "--title", "ARX-4861: Turn an external work item into a task with one command");
+        (await File.ReadAllTextAsync(Path.Combine(runDirectory, "pr-body.md")))
+            .Should().Contain("## Acceptance criteria")
+            .And.Contain("run narration", "with no authored body the run's own narration is what there is");
+    }
+
+    private static Hall9k.Domain.Features.Run.Projections.RunDetails ComposingRun(string runDirectory) => new()
+    {
+        Id = DomainId.New(),
+        TaskId = DomainId.New(),
+        RunDirectory = runDirectory,
+        Branch = "task/12345678-resolve-references",
+    };
+
+    private static TaskDetails ComposingTask() => new()
+    {
+        Id = DomainId.New(),
+        Objective = "Turn an external work item into a task with one command",
+        AcceptanceCriteria = ["The importer refuses a closed issue"],
+        ExternalReference = "jira:ARX-4861",
+    };
 
     private static void Git(string workingDirectory, string arguments)
     {

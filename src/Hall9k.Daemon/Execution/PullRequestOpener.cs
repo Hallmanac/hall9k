@@ -1,6 +1,7 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Domain.Features.Run;
@@ -458,30 +459,54 @@ public sealed class PullRequestOpener(
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
         RunDetails run, TaskDetails task, string baseBranch, CancellationToken cancellationToken)
     {
-        string bodyFile = Path.Combine(RunPaths.ResolveCurrentDirectory(run.RunDirectory), "pr-body.md");
-        await File.WriteAllTextAsync(
-            bodyFile,
-            PullRequestBody.Build(run, task, TryReadAgentSummary(run), await SourceUrlAsync(task, cancellationToken)),
+        IReadOnlyList<string> arguments = await CreateArgumentsAsync(
+            logger, run, task, TryReadAgentSummary(run), await SourceUrlAsync(task, cancellationToken), baseBranch,
             cancellationToken);
-
-        // The title goes through PullRequestBody too, not straight from the projection: on a
-        // squash merge GitHub's default commit message is the pull request's title, so a title is
-        // a closing instruction with a longer fuse than anything in the body.
-        string output = await RunInWorktreeAsync(run.WorktreePath, "gh",
-            [
-                "pr", "create",
-                "--title", PullRequestBody.Title(task.Objective),
-                "--body-file", bodyFile,
-                "--base", baseBranch,
-                "--head", run.Branch,
-            ],
-            cancellationToken);
+        string output = await RunInWorktreeAsync(run.WorktreePath, "gh", arguments, cancellationToken);
 
         string url = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .LastOrDefault(line => line.StartsWith("https://", StringComparison.Ordinal))
             ?? throw new InvalidOperationException($"gh pr create returned no URL. Output: {output}");
 
         return (url, PullRequestUrls.ParseNumber(url));
+    }
+
+    /// <summary>
+    /// Everything <c>gh pr create</c> is told, composed from the run directory the session left
+    /// behind. Split out from the call itself, and internal, purely so a test can read the whole
+    /// argument vector — and the body file it names — without <c>gh</c>: composing a pull request
+    /// is a pure function of the run, the task and <c>pr-summary.md</c>, but which of those the
+    /// opener actually consults is wiring, and wiring is what silently stops happening. Nothing
+    /// pinned it, so deleting the artifact read below left every pull request reopening on the
+    /// skeleton with the whole suite green — the exact regression this task exists to prevent
+    /// (independent pre-PR review, cycle 1, conformance lens).
+    /// <para>
+    /// <c>pr-body.md</c> is written either way, so the run directory holds both what the agent
+    /// wrote (<c>pr-summary.md</c>) and what the daemon actually sent. The title goes through
+    /// <see cref="PullRequestBody"/> too, not straight from the projection: on a squash merge
+    /// GitHub's default commit message is the pull request's title, so a title is a closing
+    /// instruction with a longer fuse than anything in the body.
+    /// </para>
+    /// </summary>
+    internal static async Task<IReadOnlyList<string>> CreateArgumentsAsync(
+        ILogger logger, RunDetails run, TaskDetails task, string? agentSummary, Uri? sourceUrl, string baseBranch,
+        CancellationToken cancellationToken)
+    {
+        string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        // What the build session composed for itself, when it composed one.
+        PrSummaryParser.PrSummary? prSummary = PrSummaryArtifact.TryRead(logger, run.Id, runDirectory);
+        string bodyFile = Path.Combine(runDirectory, "pr-body.md");
+        await File.WriteAllTextAsync(
+            bodyFile, PullRequestBody.Build(run, task, agentSummary, sourceUrl, prSummary), cancellationToken);
+
+        return
+        [
+            "pr", "create",
+            "--title", PullRequestBody.Title(task, prSummary),
+            "--body-file", bodyFile,
+            "--base", baseBranch,
+            "--head", run.Branch,
+        ];
     }
 
     private string? TryReadAgentSummary(RunDetails run)
