@@ -29,9 +29,12 @@ with its base along the way, and removing the worktree and the branch at true cl
 changes-requested review from a *person* is its own lap, carrying that review's body and every
 inline comment as findings: the lap fixes what it agrees with and replies in those threads, and
 where it disagrees it posts nothing and parks with a proposed reply the implementer sends, edits,
-or drops through `h9k review resolve` — no agent ever posts a disagreement to a human reviewer
-(PLAN.md Decisions Log #152). Copilot's own changes-requested review stays on the automated thread
-path, disputing and resolving without a human in the loop. A branch
+or drops through `h9k review resolve` — no agent ever posts a disagreement to a human reviewer on
+a standing changes-requested review (PLAN.md Decisions Log #152). A declined or routed unresolved
+review thread is the narrower, comment-only case: that gets an evidence-based reply posted
+in-thread, leaving only the thread's resolve to the human (PLAN.md Decisions Log #159). Copilot's
+own changes-requested review stays on the automated thread path, disputing and resolving without a
+human in the loop. A branch
 obstructed only by a conflict with its own base gets a mechanical fix tried first: a plain fetch +
 rebase + force-push in the run's retained worktree, no agent session and no local gates, since
 GitHub's own CI on the push is treated as the authoritative gate here — the follow-up run only
