@@ -366,6 +366,38 @@ been directed — `--needs-fixes` is refused outright, since there is no diff of
 a fix session to act on — and completion never observes a merge, because there is no pull request
 of this task's own to merge.
 
+A posted review is **followed through rather than ended** (Decisions Log #160). Whichever of the
+three routes posts it — `h9k pr approve`, `h9k pr request-changes`, or a review the owner posted by
+hand and then closed with `h9k review resolve --merge-ready` — the task parks on the pull request as
+`AwaitingAuthor`, shown under **Waiting** on `h9k status` with the pull request and the count of the
+reviewer's own open threads. The closeout watcher polls it on its existing cadence: a reply in one
+of those threads that the reviewer did not write themselves, new commits pushed, or a re-review
+newly requested of them, flags the task
+**needs-you** with a line naming what it saw and the pull request that moved — never an author,
+because the counts do not observe who wrote a comment; every one of those threads resolved with no
+re-review outstanding, or the pull request merging or closing, reaches Done. A reply that arrives
+before the watcher's first look is caught by that look rather than absorbed into its baseline. A
+re-review request wakes the reviewer on its own — it is the one thing the watch reads that is an
+explicit ask *of* them, and an author who resolves the threads themselves and asks them back
+without a word or a push would otherwise leave both sides waiting on the other — and only its
+arrival wakes them: a standing request holds the wait open without re-announcing itself. Only
+threads the reviewer themselves opened hold it open —
+somebody else's unresolved conversation on the same pull request is not this review's business — and
+the reviewer's login is read back from `gh` every sweep rather than remembered. `h9k task abandon`
+is how a reviewer stops watching early, and the only way: `h9k task resolve` is the Failed-only
+attestation exit and is refused on a waiting review. **What this does not do:** the daemon cannot push that line
+into a live Claude Code session (no resident agents — an agent sends, the daemon does not), so the
+observation records the registered session it was addressed to and the line reaches that session off
+the board it already reads.
+
+`h9k pr review <number-or-url> --since-my-review` is the scoped second lap: the replies on the
+reviewer's own threads verbatim, plus the commits pushed since their review and that range's diff,
+and nothing else — no objective, no blast radius, no CI, no re-read of the earlier findings report.
+It reports findings in the same shape, directed the same way. A repeat `h9k task add --from-pr` on a
+pull request already held by a waiting, just-answered, or completed pr-review task **names that
+task** and says what to do next rather than minting a second one that would know nothing about the
+review it was repeating; `--again` mints one deliberately.
+
 `h9k pr review <number-or-url>` runs the reviewer's own lap on top of that same task (Decisions
 Log #149). It attaches to the `pr-review` task this node already holds for the pull request, or
 adopts the pull request through the same adoption when none exists, reuses that task's read-only
@@ -385,8 +417,9 @@ branch of their own the session offers to stack on the pull request. The lap end
 `h9k pr approve <task> --note "…"` or
 `h9k pr request-changes <task> --note "…" [--finding "<path:line: text>"]…`, each of which posts
 the GitHub review on the pull request's current head under the reviewer's own login, records the
-verdict, and finalizes the task exactly as `h9k review resolve --merge-ready` does. The review is
-posted before anything is recorded, so a failed post records nothing at all.
+verdict, and parks the task on the pull request to wait for its author (above), exactly as
+`h9k review resolve --merge-ready` does. The review is posted before anything is recorded, so a
+failed post records nothing at all.
 
 That same `pr-review` task starts automatically by default: the daemon polls GitHub, on the
 closeout monitor's own interval-with-backoff shape, for open pull requests in each project's repo
