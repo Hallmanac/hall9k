@@ -1351,15 +1351,23 @@ public static class AgentPromptBuilder
         prompt.AppendLine($"`{ThreadDispositionSummaryMarker}` right after the last block, before any recap");
         prompt.AppendLine("text, open questions, or dispute narrative — otherwise that prose is read as the");
         prompt.AppendLine("last thread's own evidence.");
-        prompt.AppendLine("`kind=` is the thread-starter's own provider actor type — `Bot` reads as `bot`,");
-        prompt.AppendLine("everything else (`User`, a mannequin, an enterprise account) reads as `human` — read");
-        prompt.AppendLine("off the same GraphQL `__typename` the thread-fetch already returns, never guessed");
-        prompt.AppendLine("from the login string. Leave it off rather than guess if you never fetched it.");
+        prompt.AppendLine("`kind=` reads the thread-starter the same way the closeout inspector's own");
+        prompt.AppendLine("reviewer-kind classification does, off the GraphQL `__typename` the thread-fetch");
+        prompt.AppendLine("already returns — `Bot` reads as `bot`; a `Mannequin` (GitHub's unclaimed-identity");
+        prompt.AppendLine("placeholder — nobody is behind one) is neither, so leave `kind=` off rather than");
+        prompt.AppendLine("counting it as human; every other type (`User`, an enterprise account) reads as");
+        prompt.AppendLine("`human` — UNLESS the login is one of Copilot's own known accounts (`copilot` or");
+        prompt.AppendLine("`copilot-pull-request-reviewer`, with or without a `[bot]` suffix), which reads");
+        prompt.AppendLine("`bot` regardless of typename: the unified Copilot app has surfaced under both actor");
+        prompt.AppendLine("types, and misreading it as a person would leave nobody to answer a thread you left");
+        prompt.AppendLine("open for a human to close. That login check is the one named exception — never guess");
+        prompt.AppendLine("`bot` from a login otherwise. Leave `kind=` off rather than guess if you never");
+        prompt.AppendLine("fetched the typename at all.");
         prompt.AppendLine();
     }
 
     /// <summary>
-    /// How a triage disposition becomes a reply and a resolve decision (Decisions Log #62, #156).
+    /// How a triage disposition becomes a reply and a resolve decision (Decisions Log #62, #159).
     /// A fix invites no argument and is replied and resolved the same way regardless of who
     /// started the thread; a decline or a route is different — the evidence or the routing note
     /// still goes in the thread, but only a bot-authored thread may be resolved afterward. A
