@@ -136,7 +136,8 @@ Full behaviour: [concepts.md](concepts.md#stacked-pull-requests).
 
 ### Pull-request review
 
-`h9k task add --from-pr <number-or-url>` · `h9k pr review <number-or-url>` ·
+`h9k task add --from-pr <number-or-url> [--again]` ·
+`h9k pr review <number-or-url> [--no-worktree] [--since-my-review]` ·
 `h9k pr approve <task> --note "…"` · `h9k pr request-changes <task> --note "…" [--finding "…"]`
 
 `--from-pr` creates a read-only `pr-review` task: the node pulls the pull request into a detached
@@ -145,8 +146,45 @@ parks a findings report for the owner to walk — `h9k review resolve <id> --mer
 finding has been directed, since a pr-review task has no diff of its own for `--needs-fixes` to
 act on. Nothing is ever posted to the pull request without an explicit human go: the
 `walk-pr-review-findings` skill is what walks the report and posts on direction, always under the
-owner's own login. The task completes without any merge ever being observed — there is no pull
-request of this task's own to merge.
+owner's own login. No merge is ever observed for it — there is no pull request of this task's own
+to merge.
+
+**A posted review is followed through, not ended** (PLAN.md §16 #160). Once the review is out —
+`h9k pr approve`, `h9k pr request-changes`, or a review you posted by hand and then closed with
+`h9k review resolve --merge-ready` — the task does **not** go Done. It parks on the pull request as
+`AwaitingAuthor`, listed under **Waiting** on `h9k status` with the pull request named and the count
+of your own threads still open beside it, and the closeout watcher polls it on its existing cadence
+(minutes, not seconds). When the author replies in one of your threads, pushes new commits, or
+re-requests your review, the task flags **needs-you** with a line naming what changed — replies and
+threads counted, new commits counted, a re-review request said outright. A reply counts when *you*
+did not write it: your own follow-up comment in your own thread never flags the task, and the line
+says the pull request moved rather than naming an author, since the counts do not say who wrote
+them. A re-review request is the one part that names you, because GitHub records who a review
+request is addressed to — and it wakes you on its own, since an author who resolves your threads
+themselves and asks you back without a word or a push is still asking. Only the moment it arrives
+wakes you; a request left standing holds the wait open without re-announcing itself. It reaches Done
+when every thread you opened is resolved with no re-review requested of you, or when the pull
+request merges or closes. `h9k task abandon <id>` is how you stop watching early — and it is the
+only lever that does, since `h9k task resolve` is the attestation exit from a Failed task alone. A review with nothing outstanding on it (an approval with no threads, a
+report you dismissed without posting) sits in Waiting for one poll interval and then closes out —
+and an answer that arrives *before* that first poll is caught by it rather than lost, which is the
+whole point of counting replies instead of comments.
+
+**Reading only what changed**: `h9k pr review <number-or-url> --since-my-review` opens a scoped lap
+over the deltas alone — the replies on threads you opened, verbatim, plus the commits pushed since
+your review and their diff. A re-review request standing against you is stated at the top of that
+packet, because it is the one thing that can summon a lap with nothing in either half. It skips the
+objective, the blast radius, the CI results and the earlier
+findings report outright (you read those in the first lap) and reports findings in the same shape,
+which you direct with the same two commands. Without the flag, a lap on a waiting review reads the
+pull request whole, exactly as the first one did.
+
+**A repeat `--from-pr`** on a pull request this node already holds — a review waiting on its author,
+one whose author has just answered, or one that closed out — **names that task instead of minting a
+second one**, and says which and what to do next. That existing task carries the findings, the
+verdict, and the whole record of the review; a second one starts from nothing. `--again` mints one
+deliberately when that is genuinely what you want. Any other live holder (a review still running, a
+findings park nobody has walked, a failed one) is refused as it always was.
 
 **Your own review lap, on top of that task** (PLAN.md §16 #149): `h9k pr review <number-or-url>`
 attaches to the `pr-review` task this node already holds for the pull request — auto-adopted from a
@@ -171,7 +209,8 @@ The lap **never ends on its own**. It ends when you run `h9k pr approve <task> -
 `h9k pr request-changes <task> --note "<text>" [--finding "<path:line: text>"]...`, each of which
 posts the GitHub review on the pull request's current head under your own login — the
 changes-requested one with every `--finding` as a line comment — records the verdict on the task,
-releases the worktree, and completes the task exactly as `h9k review resolve --merge-ready` does.
+releases the worktree, and parks the task on the pull request to wait for its author (above),
+exactly as `h9k review resolve --merge-ready` does.
 The review is posted *before* anything is recorded, so a post that fails records nothing and you
 simply run the command again; GitHub rejects the whole review when a `--finding` names a line its
 diff does not contain, which means nothing gets posted until every line is one it accepts. These

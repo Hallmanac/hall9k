@@ -36,7 +36,7 @@ h9k connection list          # every external account this install can reach, an
 ```
 
 The board answers four questions with three surfaces (Decisions Log #66). **State** is the
-lifecycle in seven words: Draft, Published, Working, Delivered, Done, Failed, Archived.
+lifecycle in eight words: Draft, Published, Working, Delivered, Waiting, Done, Failed, Archived — Waiting being a pr-review task whose posted review is waiting on its author (Decisions Log #160).
 **Delivered** is pushed-with-the-merge-not-yet-observed, and **Done** renders only at true
 closeout, which is the same bar the dependency rule uses. **Phase** is the line under a live row,
 composed from the run's records plus an observation of the recorded process - it never claims a
