@@ -348,7 +348,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         RunDetails afterPending = (await firstQuery.LoadAsync<RunDetails>(runId, cts.Token))!;
         afterPending.ExternalReviewState.Should().Be(ExternalReviewState.Landed);
         afterPending.ExternalReviewChecksPending.Should().BeTrue(
-            "the CI picture was incomplete, so this sweep never re-checked for unresolved threads");
+            "the provider's CI picture was incomplete as of this observation");
         afterPending.State.Should().Be(RunState.AwaitingReview);
 
         inspector.Snapshot = inspector.Snapshot with { HasPendingChecks = false };
@@ -3377,6 +3377,14 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// despite the per-obstruction cap already being spent — a newly opened human review
     /// thread is one of the two mechanical signals. The lap still counts toward the
     /// obstruction's own running total; the grant buys one exception, not a reset.
+    /// <para>
+    /// The obstruction that repeats here is the thread set's own. It used to be a failing check's,
+    /// with a newly opened human thread arriving on top of it — a shape review feedback now claims
+    /// for its own lap (Decisions Log #PLACEHOLDER-5657f3fa), which is a *different* obstruction and
+    /// so gets a fresh lap budget rather than needing this grant at all. What still needs the grant
+    /// is the identical thread set repeating while the task's own record has never seen its human
+    /// thread id: the same obstruction, the same spent cap, the same human-engagement signal.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_newly_opened_human_thread_grants_a_lap_despite_the_spent_progress_cap()
@@ -3387,13 +3395,12 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
             store, node, worktrees, repoPath, cts.Token,
-            priorAutomaticReopens: 2, priorObstructionKey: "FailingChecks:build");
+            priorAutomaticReopens: 2, priorObstructionKey: "ReviewFeedback:thread-new");
 
         FakeInspector inspector = new()
         {
             Snapshot = FakeInspector.Quiet() with
             {
-                FailingChecks = ["build"],
                 UnresolvedReviewThreadCount = 1,
                 UnresolvedHumanThreadCount = 1,
                 UnresolvedReviewThreadIds = ["thread-new"],
@@ -3669,8 +3676,51 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             .ExitCode.Should().Be(0, "an unmerged branch still holds work and is never deleted");
     }
 
+    /// <summary>
+    /// The pending-checks short-circuit, on the one reading it still owns: an incomplete CI picture
+    /// with no review feedback waiting behind it defers the checks read to the next sweep, because
+    /// acting now would hand a follow-up a partial failure list — and the merge stays held, which is
+    /// what a pre-approved task proves here. Unchanged by Decisions Log
+    /// #PLACEHOLDER-5657f3fa: that ruling only stops this gate short-circuiting REVIEW feedback,
+    /// and there is none on this pull request.
+    /// </summary>
     [Fact]
-    public async Task Pending_checks_defer_every_dispatch_decision()
+    public async Task Pending_checks_with_no_review_feedback_dispatch_nothing_and_still_hold_the_merge()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { FailingChecks = ["build"], HasPendingChecks = true },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
+            RunState.AwaitingReview, "an incomplete CI picture defers the checks read to the next sweep");
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+        inspector.MergeAttempts.Should().Be(0, "a pending check holds the merge — the bar is unchanged");
+        (await query.Events.FetchStreamAsync(taskId, token: cts.Token))
+            .Count(e => e.Data is Hall9k.Domain.Features.Tasks.Events.TaskReopened)
+            .Should().Be(0, "nothing was dispatched");
+    }
+
+    /// <summary>
+    /// The ruling this branch implements (Brian, 2026-09-09 about 09:25 EDT; Decisions Log
+    /// #PLACEHOLDER-5657f3fa): a broken CI may be what the review found, so a lap that addresses
+    /// review feedback is never held behind a pending check. Origin incident: arx-platform PR #2042
+    /// (task 52634952, ARX-4861), whose .NET Framework build stage lost its hosted Azure DevOps
+    /// agent at 00:10 and whose GitHub check never received a final status, so it read pending for
+    /// nine hours while four Copilot threads sat unaddressed and every sweep stopped at that gate.
+    /// </summary>
+    [Fact]
+    public async Task Unresolved_threads_dispatch_their_lap_even_while_a_check_is_still_pending()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
@@ -3682,15 +3732,183 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         {
             Snapshot = FakeInspector.Quiet() with
             {
-                FailingChecks = ["build"], HasPendingChecks = true, UnresolvedReviewThreadCount = 1,
+                HasPendingChecks = true,
+                UnresolvedReviewThreadCount = 4,
+                UnresolvedReviewThreadIds = ["PRRT_1", "PRRT_2", "PRRT_3", "PRRT_4"],
             },
         };
         await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
 
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(
-            RunState.AwaitingReview, "an incomplete CI picture defers action to the next sweep");
-        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+            RunState.Superseded, "the lap dispatched, so this run's watch ended with it");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+    }
+
+    /// <summary>
+    /// One sweep, one lap: failing checks observed alongside review feedback ride in the review
+    /// lap's own reason — and so its prompt — instead of buying a second lap for the same push. The
+    /// obstruction identity deliberately stays the threads' own, so a check flipping between
+    /// failing and pending can never mint a fresh obstruction with a fresh progress budget.
+    /// </summary>
+    [Fact]
+    public async Task Failing_checks_and_unresolved_threads_on_one_sweep_dispatch_exactly_one_lap_naming_both()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                FailingChecks = ["build (windows-latest)"],
+                UnresolvedReviewThreadCount = 2,
+                UnresolvedReviewThreadIds = ["PRRT_1", "PRRT_2"],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamAsync(taskId, token: cts.Token))
+            .Count(e => e.Data is Hall9k.Domain.Features.Tasks.Events.TaskReopened)
+            .Should().Be(1, "both obstructions ride in one lap — the second sweep is what this ruling removes");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.FollowUpKind.Should().Be(
+            FollowUpKind.ReviewFeedback, "the review feedback is the lap; the checks ride in its prompt");
+        task.FollowUpReason.Should().Contain("2 unresolved review thread(s)")
+            .And.Contain("build (windows-latest)", "the prompt names both, or the lap only knows half its job")
+            .And.NotContain(
+                "may be incomplete",
+                "the CI picture was complete on this sweep, so the failure list is the whole of it");
+
+        // The sweep observed them failing, so the record says so even though the lap it dispatched
+        // is the review feedback's.
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.FailingChecks.Should().Equal("build (windows-latest)");
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.LastAutomaticObstructionKey.Should().Be(
+            "ReviewFeedback:PRRT_1␟PRRT_2",
+            "the identity is the threads', never the check names — a check flipping red-to-pending "
+            + "must not read as a fresh obstruction with its own lap budget");
+    }
+
+    /// <summary>
+    /// The incident's exact shape, end to end: threads unaddressed, one check failed, another still
+    /// pending. One lap dispatches, it names both, and nothing waits for the pending check to
+    /// resolve first.
+    /// </summary>
+    [Fact]
+    public async Task Threads_with_both_a_failing_and_a_pending_check_still_ride_in_the_one_lap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                FailingChecks = ["build (ubuntu-latest)"],
+                HasPendingChecks = true,
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedReviewThreadIds = ["PRRT_1"],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamAsync(taskId, token: cts.Token))
+            .Count(e => e.Data is Hall9k.Domain.Features.Tasks.Events.TaskReopened)
+            .Should().Be(1);
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+        task.FollowUpReason.Should().Contain("1 unresolved review thread(s)")
+            .And.Contain("build (ubuntu-latest)")
+            // The partial-failure-list concern the pending short-circuit encodes has not gone away
+            // — it has stopped being a reason to withhold the lap. The prompt says the list may be
+            // short rather than presenting it as the whole CI picture (AGENTS.md, never guess at
+            // unobserved facts).
+            .And.Contain("may be incomplete");
+    }
+
+    /// <summary>
+    /// The same ruling read against the narrower fact: a human's changes-requested review is a lap
+    /// of its own (Decisions Log #159's asymmetry, and the 2026-09-06 ruling behind it), and it too
+    /// dispatches while a check is still pending rather than waiting for CI to settle first.
+    /// </summary>
+    [Fact]
+    public async Task A_changes_requested_review_dispatches_its_lap_even_while_a_check_is_still_pending()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new() { Snapshot = ChangesRequested() with { HasPendingChecks = true } };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Superseded);
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewRequestedChanges);
+        task.FollowUpReason.Should().Contain("@teammate");
+    }
+
+    /// <summary>
+    /// The blast radius of moving the failing-checks branch behind the thread branch: a run resting
+    /// on threads it has already declined and answered (Decisions Log #159 — a visible wait, not a
+    /// dispatch) still owes a lap for a check that failed. Before this ordering the checks branch
+    /// ran first and always caught it; the visible-wait return now has to sit behind that branch
+    /// rather than in front of it, or the failure would be swallowed every sweep.
+    /// </summary>
+    [Fact]
+    public async Task A_failing_check_still_dispatches_behind_threads_this_run_already_answered()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        await using (IDocumentSession triageSession = store.LightweightSession())
+        {
+            triageSession.Events.Append(runId, new ReviewThreadsTriaged(
+                runId,
+                [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "already addressed", "brianhallmanac", IsHuman: true)],
+                Now));
+            await triageSession.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                FailingChecks = ["build"],
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["PRRC_1"],
+                UnresolvedHumanThreadIds = ["PRRC_1"],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.FollowUpKind.Should().Be(
+            FollowUpKind.FailingChecks,
+            "no review feedback a lap could act on remains, so the failing check is what is left");
+        task.FollowUpReason.Should().Contain("build");
     }
 
     [Fact]
