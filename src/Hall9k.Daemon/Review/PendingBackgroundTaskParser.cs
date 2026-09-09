@@ -108,19 +108,37 @@ public static class PendingBackgroundTaskParser
     }
 
     /// <summary>
+    /// Matches a sub-clause that opens by referring back to something named earlier rather than
+    /// introducing a new subject of its own: a relative pronoun ("which", "who", "whose", "that")
+    /// or a bare "it". Used to keep <see cref="HasNegationCue"/> walking forward past the
+    /// "background"-naming sub-clause only while each next one is still talking about the same
+    /// background task by pronoun, e.g. "a background test, which never finished" — never past a
+    /// sub-clause that opens a new, unrelated statement with its own subject.
+    /// </summary>
+    private static readonly Regex BackReferringPronounPattern = new(
+        @"^\s*(which|who|whose|that|it)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
     /// True only when a negation is found in the sub-clause (see
-    /// <see cref="SubClauseSeparatorPattern"/>) that first names "background", or in any later
-    /// sub-clause of the same clause — never in one before it. A later sub-clause can deny the
-    /// earlier one by pronoun rather than repeating "background" itself ("a background test, which
-    /// never finished, so I killed it" — "never" lands in the sub-clause right after the one naming
-    /// "background", denying it by referring back to "which"), so scoping to only the
-    /// "background"-naming sub-clause itself would miss it. A sub-clause *before* the one naming
-    /// "background" is excluded even when it carries a negation word, because that negation has
-    /// nothing yet to deny: "I don't know how long this will take to complete, but the background
-    /// test is still running" must not have its earlier, unrelated "don't" suppress the later
-    /// sub-clause that actually names the pending background task (independent pre-PR review,
-    /// cycle 3, adversarial lens; cycle 4 generalized the scoping rule to also cover a later,
-    /// pronoun-referring sub-clause rather than only the "background"-naming one itself).
+    /// <see cref="SubClauseSeparatorPattern"/>) that first names "background", or in a run of
+    /// immediately-following sub-clauses that each keep referring back to it by pronoun rather than
+    /// introducing a new subject — never in one before it, and never past the first sub-clause that
+    /// moves on to something else. A later sub-clause can deny the earlier one by pronoun rather
+    /// than repeating "background" itself ("a background test, which never finished, so I killed
+    /// it" — "never" lands in the sub-clause right after the one naming "background", denying it by
+    /// referring back to "which"), so scoping to only the "background"-naming sub-clause itself
+    /// would miss it. But a sub-clause that instead opens with its own new subject denies something
+    /// else entirely, even when it shares the sentence: "the background build is still running, but
+    /// I don't expect it to fail" denies an expectation about failure, not whether the build is
+    /// still pending, so its "don't" must not suppress the genuine claim named earlier in the same
+    /// sentence (independent pre-PR review, cycle 5, adversarial lens — the prior fix scanned every
+    /// sub-clause through the end of the sentence once one of them named "background", letting an
+    /// unrelated negation anywhere later in the sentence suppress a real pending-task claim). A
+    /// sub-clause *before* the one naming "background" is excluded even when it carries a negation
+    /// word, because that negation has nothing yet to deny: "I don't know how long this will take to
+    /// complete, but the background test is still running" must not have its earlier, unrelated
+    /// "don't" suppress the later sub-clause that actually names the pending background task
+    /// (independent pre-PR review, cycle 3, adversarial lens).
     /// </summary>
     private static bool HasNegationCue(string clause)
     {
@@ -137,6 +155,18 @@ public static class PendingBackgroundTaskParser
         for (int i = backgroundIndex; i < segments.Length; i++)
         {
             string segment = segments[i];
+
+            if (i > backgroundIndex && string.IsNullOrWhiteSpace(segment))
+            {
+                // An artifact of two adjacent separator matches (e.g. ", but"), not a sub-clause
+                // of its own — skip it without treating it as an unrelated new subject.
+                continue;
+            }
+
+            if (i > backgroundIndex && !BackReferringPronounPattern.IsMatch(segment))
+            {
+                break;
+            }
 
             if (NegationWordPattern.IsMatch(segment)
                 || segment.Contains("n't", StringComparison.OrdinalIgnoreCase)

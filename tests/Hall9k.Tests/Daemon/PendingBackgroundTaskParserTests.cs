@@ -99,4 +99,20 @@ public sealed class PendingBackgroundTaskParserTests
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(
             "A background test, which never finished, so I killed it.")
             .Should().BeFalse();
+
+    /// <summary>
+    /// A negation in a later sub-clause that opens with its own new subject ("I") denies something
+    /// else entirely — an expectation about failure, not whether the background task is still
+    /// pending — and must not suppress the genuine pending-task claim named earlier in the same
+    /// sentence (independent pre-PR review, cycle 5, adversarial lens — the prior fix scanned every
+    /// sub-clause through the end of the sentence once one of them named "background", so this
+    /// unrelated "don't" wrongly suppressed the claim).
+    /// </summary>
+    [Theory]
+    [InlineData("The background build is still running, but I don't expect it to fail.")]
+    [InlineData("The background build is still running, but I don't think it matters.")]
+    [InlineData("The background build is still running, so I'm not going to wait for it.")]
+    public void A_negation_in_a_later_sub_clause_with_its_own_new_subject_does_not_suppress_a_genuine_pending_task(
+        string summary) =>
+        PendingBackgroundTaskParser.NamesPendingBackgroundTask(summary).Should().BeTrue();
 }
