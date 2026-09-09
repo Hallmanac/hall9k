@@ -45,7 +45,7 @@ half runs earlier still, immediately before the mandatory full pass just mention
 the base branch and, if it moved, rebases onto it right there in its own worktree, so the mandatory
 gate and pass read the rebased tree and the pull request that opens afterward is mergeable on
 arrival. A no-op rebase and a clean rebase both still run one mechanical step first: reassigning
-the log's own tail placeholder (PLAN.md §16, Decisions Log #PLACEHOLDER-6df5f975) its real number
+the log's own tail placeholder (PLAN.md §16, Decisions Log #162) its real number
 and rewriting every citation of it, committed on its own before the mandatory gate reruns. Beyond
 that step, neither costs anything extra; a conflict is handed to a narrow recovery session
 dispatched inside the same run (never a task reopen), and only a conflict that session cannot

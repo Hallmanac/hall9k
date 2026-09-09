@@ -190,7 +190,7 @@ rather than left to discover them.
 - Slice 1 before anything shiny; check SLICE-1.md before inventing work.
 - A **branch** appends its own decision to PLAN.md §16 (v0 Decisions Log) at the tail, under a
   placeholder from its task's own short id (`PLACEHOLDER-<shortid>`) rather than a hand-picked
-  number (Decisions Log #PLACEHOLDER-6df5f975). The mechanical pre-final-pass rebase step assigns
+  number (Decisions Log #162). The mechanical pre-final-pass rebase step assigns
   the true number, rewriting the entry, its note, and every citation — no agent renumbers it.
 - **Standing rules carry their origin incident.** When a failure produces a new rule (in
   this file, the decisions log, or a skill), record the concrete incident that created it

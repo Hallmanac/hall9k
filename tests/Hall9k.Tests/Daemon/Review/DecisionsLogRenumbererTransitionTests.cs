@@ -10,7 +10,7 @@ namespace Hall9k.Tests.Daemon.Review;
 
 /// <summary>
 /// Covers the narrower, transition-only shape <see cref="DecisionsLogRenumberer"/> handles
-/// besides its ordinary placeholder path (Decisions Log #PLACEHOLDER-6df5f975, acceptance
+/// besides its ordinary placeholder path (Decisions Log #162, acceptance
 /// criterion 3): a branch cut before this convention
 /// shipped, which chose a real number by hand at write time and now collides with an entry that
 /// reached the base after this branch's own fork point. That parallel-merge shape is renumbered
