@@ -212,7 +212,9 @@ session transcript when the first two have already named the task worth digging 
 The daemon opens the pull request; agents never do. The task reads **Delivered** from that moment
 until a merge is observed, which is the honest word for pushed-but-not-landed. While the pull
 request is open, the closeout monitor polls it: unresolved review threads from any reviewer and
-failing CI each dispatch a follow-up session onto the existing branch, bounded by a retry budget.
+failing CI each dispatch a follow-up session onto the existing branch, bounded by a retry budget —
+one session, not two, when both are seen on the same sweep, and never held back by a check that is
+still reporting, because a broken CI may be exactly what the review found.
 When the budget runs out, the row lands in **needs you** with `h9k pr resolve` as the lever.
 
 You merge. The platform never does. The observed merge is true closeout: it is the moment the run
