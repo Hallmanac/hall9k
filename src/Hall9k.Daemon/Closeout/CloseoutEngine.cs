@@ -947,9 +947,23 @@ public sealed class CloseoutEngine(
             // ever recognizes a thread id newly appearing, never a reply added to one it already
             // knows — so a reply on this thread was never going to grant a bypass either way, and
             // this exclusion costs nothing beyond what that gap already did.
+            //
+            // Scoped to snapshot.HumanThreadIds, not every declined/routed thread: the design this
+            // exclusion implements only ever leaves a HUMAN thread open on purpose (a bot thread
+            // gets resolved by the follow-up itself, per the same #159 asymmetry). Filtering on the
+            // outcome's own kind=/IsHuman self-report instead would trust the agent's own tag for a
+            // decision it was never meant to gate (see ReviewThreadOutcome.IsHuman's own doc); this
+            // reads the provider's own actor-type classification instead, the same one the sweep
+            // already trusts for UnresolvedHumanThreadCount. A bot thread whose resolveReviewThread
+            // mutation never landed therefore stays outstanding here, so it keeps buying a follow-up
+            // (and eventually the per-obstruction cap's own park) instead of stalling this run
+            // forever with no dispatch, no park, and — since this whole block returns ahead of
+            // TryAutoMergeAsync — no merge either (independent pre-PR review, cycle 3, adversarial
+            // and conformance lenses).
             IReadOnlyList<string> alreadyAnsweredThreadIds = [.. run.LastReviewThreadOutcomes
-                .Where(outcome => outcome.Disposition == ReviewThreadDisposition.Decline
-                    || outcome.Disposition == ReviewThreadDisposition.Route)
+                .Where(outcome => (outcome.Disposition == ReviewThreadDisposition.Decline
+                        || outcome.Disposition == ReviewThreadDisposition.Route)
+                    && snapshot.HumanThreadIds.Contains(outcome.ThreadId))
                 .Select(outcome => outcome.ThreadId)];
             IReadOnlyList<string> outstandingThreadIds = [.. snapshot.ThreadIds.Except(alreadyAnsweredThreadIds)];
 
