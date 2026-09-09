@@ -91,20 +91,31 @@ public static partial class RelayedText
     /// replacement character. Adoption makes that ordinary rather than exotic, because these
     /// strings are now issue titles.
     /// </summary>
-    public static string Truncate(string text, int max)
+    public static string Truncate(string text, int max) =>
+        text.Length <= max ? text : text[..CutLength(text, Math.Max(max - 1, 0))] + "…";
+
+    /// <summary>
+    /// How many chars of <paramref name="text"/> a cut at <paramref name="max"/> may keep without
+    /// splitting a character in half: the largest length no greater than <paramref name="max"/>
+    /// that lands on a text-element boundary. <see cref="Truncate"/>'s own rule, named separately
+    /// because a caller that appends something other than an ellipsis — a pull-request body
+    /// saying in prose that it was cut, a title cut at a word boundary instead — needs the
+    /// boundary answer without the ellipsis that comes with it, and a second hand-written
+    /// enumerator loop is a second answer that drifts.
+    /// </summary>
+    public static int CutLength(string text, int max)
     {
         if (text.Length <= max)
         {
-            return text;
+            return text.Length;
         }
 
-        int budget = Math.Max(max - 1, 0);
         int cut = 0;
         TextElementEnumerator elements = StringInfo.GetTextElementEnumerator(text);
         while (elements.MoveNext())
         {
             string element = elements.GetTextElement();
-            if (cut + element.Length > budget)
+            if (cut + element.Length > max)
             {
                 break;
             }
@@ -112,7 +123,7 @@ public static partial class RelayedText
             cut += element.Length;
         }
 
-        return text[..cut] + "…";
+        return cut;
     }
 
     /// <summary>
