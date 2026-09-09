@@ -58,19 +58,38 @@ this skill is not needed; GitHub merges it fine as-is.
      hand-picked one here would just be a second, competing guess for it to untangle.
    - **This branch's own tail entry already carries a real, hand-picked number that collides
      with an entry main gained** (a branch cut before the placeholder convention shipped).
-     Renumber it yourself, right here, the same way the pre-convention repository always did:
-     give it the log's next free number and append a hand-written "Renumbering placement note"
-     (PLAN.md's own §16 already carries about twenty of these; match their style) recording the
-     old number, the collision, and which citations elsewhere in the repository moved with it.
-     Do NOT leave this one for `DecisionsLogRenumberer` — its transition-shape check reads
-     against this branch's own fork point, but by the time it runs your own `git rebase
-     origin/<base>` in step 2 has already landed, so the branch's merge-base against
-     `origin/<base>` is now `origin/<base>`'s own tip, which already contains the number your
-     entry collided with. The check reads that as "already taken at the fork point" — the
-     signature of a genuine hand-numbering mistake, not a parallel merge — and always declines,
-     on every run this skill ever produces. Left unrenumbered, the duplicate only fails
-     `DecisionsLogNumberingGuardTests` at the mandatory final pass, and nothing mechanical will
-     ever fix it from there.
+     Whether you renumber it yourself here depends on which of this skill's two invocation paths
+     put you in front of this conflict — they leave the run in different states, and
+     `DecisionsLogRenumberer`'s transition-shape check reads that state, not just the diff:
+
+     - **Dispatched as this skill's own documented precondition** — a standalone follow-up
+       because GitHub reports the PR `CONFLICTING` against its base (the case the precondition
+       above describes). Renumber it yourself, right here, the same way the pre-convention
+       repository always did: give it the log's next free number and append a hand-written
+       "Renumbering placement note" (PLAN.md's own §16 already carries about twenty of these;
+       match their style) recording the old number, the collision, and which citations elsewhere
+       in the repository moved with it. Do NOT leave this one for `DecisionsLogRenumberer` on
+       this path — its transition-shape check reads against this branch's own fork point, but by
+       the time it runs your own `git rebase origin/<base>` in step 2 has already landed, so the
+       branch's merge-base against `origin/<base>` is now `origin/<base>`'s own tip, which
+       already contains the number your entry collided with. A standalone follow-up's run
+       carries no prior pre-final-pass rebase-recovery event, so the check has nothing else to
+       read and falls back to that freshly-advanced merge-base, sees "already taken at the fork
+       point" — the signature of a genuine hand-numbering mistake, not a parallel merge — and
+       declines. Left unrenumbered, the duplicate only fails `DecisionsLogNumberingGuardTests`
+       at the mandatory final pass, and nothing mechanical will ever fix it from there.
+     - **Invoked from inside an active run's own pre-final-pass rebase-recovery session**
+       (`ReviewEngine`'s `EnsureRebasedBeforeFinalPassAsync` hit this same conflict mid-run and
+       dispatched you to resolve it, rather than this being a standalone follow-up). Do NOT
+       renumber by hand here — leave it for `DecisionsLogRenumberer`. This path is not the one
+       the paragraph above describes: the run already carries a recorded
+       `LastPreFinalPassRebaseFromCommit` from before this conflict, which `RunAggregate`'s own
+       trailing-no-op guard keeps pointing at the branch's TRUE original fork point across this
+       re-entry, and the check reads that instead of the freshly-advanced merge-base — so it
+       correctly sees the collision as a parallel merge, not a hand-numbering mistake, and
+       renumbers on its own once this rebase lands. Hand-renumbering here would race the
+       mechanical step and hand citation-rewriting to judgment instead of the sweep AGENTS.md's
+       own "no agent renumbers it" rule exists to guarantee.
 
    Land a resolved conflict inside the commit being replayed (`git add <files>` then
    `git rebase --continue`), never as a separate "resolve conflict" commit. The mapping
