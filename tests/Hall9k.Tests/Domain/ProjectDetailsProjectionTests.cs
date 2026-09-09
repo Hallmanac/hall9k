@@ -42,6 +42,44 @@ public sealed class ProjectDetailsProjectionTests
         view.SettingsChangedAt.Should().Be(Now.AddMinutes(5));
     }
 
+    /// <summary>
+    /// The writing conventions read the platform default on a document nobody set one on, and an
+    /// operator's own text survives a later change that leaves the field absent (task 412afe6c) —
+    /// the same absent-means-left-alone contract every other setting on this event holds.
+    /// </summary>
+    [Fact]
+    public void Writing_conventions_default_to_the_platform_text_and_survive_updates_that_leave_them_absent()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+        view.WritingConventions.Should().Be(
+            WritingConventions.Default, "a project nobody configured still has a house style");
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: Optional<bool>.None,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(1), ChangedByOwnerId: DomainId.New(),
+            WritingConventions: Optional<WritingConventions>.Of(
+                WritingConventions.Parse("Terse. British spelling.")))), view);
+        view.WritingConventions.Value.Should().Be("Terse. British spelling.");
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: true,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(2), ChangedByOwnerId: DomainId.New())), view);
+        view.WritingConventions.Value.Should().Be(
+            "Terse. British spelling.", "a change that says nothing about them leaves them alone");
+    }
+
     [Fact]
     public void Commit_style_defaults_to_unknown_and_survives_updates_that_leave_it_absent()
     {

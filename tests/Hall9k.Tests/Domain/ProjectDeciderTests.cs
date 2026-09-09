@@ -275,6 +275,55 @@ public sealed class ProjectDeciderTests
         act.Should().Throw<DomainValidationException>().WithMessage("*is not a token*");
     }
 
+    /// <summary>
+    /// A project that never states a house style still has one: the platform's own, which is what
+    /// every composition prompt pastes (task 412afe6c).
+    /// </summary>
+    [Fact]
+    public void A_project_that_states_no_writing_conventions_carries_the_platform_default()
+    {
+        RegisteredProject().WritingConventions.Should().Be(WritingConventions.Default);
+    }
+
+    [Fact]
+    public void ChangeSettings_records_writing_conventions_and_clears_them_back_to_the_default()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        project.Apply(ChangeWritingConventions(project, WritingConventions.Parse("Terse. British spelling.")));
+        project.WritingConventions.Value.Should().Be("Terse. British spelling.");
+
+        project.Apply(ChangeWritingConventions(project, WritingConventions.Default));
+        project.WritingConventions.Should().Be(WritingConventions.Default,
+            "'default' restores the platform's own, which is what the CLI maps the word to");
+    }
+
+    /// <summary>
+    /// The refusal lands at the settings change, the same discipline the branch template follows:
+    /// what reaches the stream is what h9k project show prints and what every prompt pastes, so a
+    /// text nothing can render is refused where a human can still see and fix it.
+    /// </summary>
+    [Fact]
+    public void ChangeSettings_refuses_writing_conventions_a_terminal_cannot_show()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ChangeWritingConventions(
+            project, WritingConventions.Parse("Write plainly.").Value + (char)0x200B);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*U+200B*");
+    }
+
+    private static ProjectSettingsChanged ChangeWritingConventions(
+        ProjectAggregate project, WritingConventions conventions) =>
+        ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            writingConventions: Optional<WritingConventions>.Of(conventions));
+
     private static ProjectSettingsChanged ChangeBranchTemplate(ProjectAggregate project, BranchNameTemplate template) =>
         ProjectDecider.ChangeSettings(
             project,

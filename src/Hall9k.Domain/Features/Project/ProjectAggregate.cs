@@ -112,6 +112,11 @@ public sealed class ProjectAggregate
     /// <see cref="CloseLinkedIssueRule.WhenAllTasksClose"/> is what a new project starts with.
     /// </summary>
     public CloseLinkedIssueRule CloseLinkedIssue { get; private set; } = CloseLinkedIssueRule.WhenAllTasksClose;
+    /// <summary>
+    /// How prose an agent composes for people has to read on this project; the platform default
+    /// until an operator states their own (<see cref="Project.WritingConventions"/>).
+    /// </summary>
+    public WritingConventions WritingConventions { get; private set; } = WritingConventions.Default;
     public DateTimeOffset RegisteredAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
@@ -274,6 +279,11 @@ public sealed class ProjectAggregate
         {
             _neverCloseLabels.Clear();
             _neverCloseLabels.AddRange(@event.NeverCloseLabels.Value ?? []);
+        }
+
+        if (@event.WritingConventions.HasValue)
+        {
+            WritingConventions = @event.WritingConventions.Value ?? WritingConventions.Default;
         }
     }
 }

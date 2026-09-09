@@ -78,7 +78,8 @@ public static class ProjectDecider
         Optional<IReadOnlyList<LaunchText>> launchTexts = default,
         Optional<AgentModel> orchestratorModel = default,
         Optional<CloseLinkedIssueRule> closeLinkedIssue = default,
-        Optional<IReadOnlyList<string>> neverCloseLabels = default)
+        Optional<IReadOnlyList<string>> neverCloseLabels = default,
+        Optional<WritingConventions> writingConventions = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -306,6 +307,17 @@ public static class ProjectDecider
                 + "GitHub issue is closed at true closeout under a configurable rule).");
         }
 
+        // Parsed here rather than merely wrapped, the BranchNameTemplate discipline: what lands on
+        // the stream is what h9k project show prints back and what every composition prompt pastes
+        // verbatim, so a text past the length bound or carrying a layout-override character is
+        // refused at the command line instead of discovered in a prompt file nobody reads. Blank
+        // records the platform default, which is what makes --writing-conventions "" a clear.
+        if (writingConventions.HasValue)
+        {
+            writingConventions = Optional<WritingConventions>.Of(
+                WritingConventions.Parse(writingConventions.Value));
+        }
+
         // Trimmed and emptied of blanks the same way ContextLinks and VerifyCommands normalize
         // their own list input, so "epic, prd,, adr" and "epic,prd,adr" record identically and a
         // stray blank entry can never silently match every unlabeled issue.
@@ -354,7 +366,8 @@ public static class ProjectDecider
             LaunchTexts: launchTexts,
             OrchestratorModel: orchestratorModel,
             CloseLinkedIssue: closeLinkedIssue,
-            NeverCloseLabels: normalizedNeverCloseLabels);
+            NeverCloseLabels: normalizedNeverCloseLabels,
+            WritingConventions: writingConventions);
     }
 
     /// <summary>

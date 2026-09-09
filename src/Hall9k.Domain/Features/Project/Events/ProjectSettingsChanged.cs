@@ -188,4 +188,14 @@ public sealed record ProjectSettingsChanged(
     /// previously recorded list, the same idiom <see cref="VerifyCommands"/> and
     /// <see cref="ContextLinks"/> already use for "replace the whole list."
     /// </summary>
-    Optional<IReadOnlyList<string>> NeverCloseLabels = default);
+    Optional<IReadOnlyList<string>> NeverCloseLabels = default,
+    /// <summary>
+    /// How prose an agent composes for people has to read on this project (task: every piece of
+    /// prose the daemon posts to GitHub under the owner's login obeys the project's writing
+    /// conventions). <see cref="Project.WritingConventions.Default"/> is both the untouched
+    /// default and what present-with-blank restores, the same clearing idiom
+    /// <see cref="BranchNameTemplate"/> uses, and <see cref="Project.WritingConventions"/> carries
+    /// the origin incident. Trailing and optional so every stream written before this setting
+    /// existed replays byte-for-byte unchanged.
+    /// </summary>
+    Optional<WritingConventions> WritingConventions = default);
