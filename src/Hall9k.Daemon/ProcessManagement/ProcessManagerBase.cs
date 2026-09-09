@@ -137,6 +137,30 @@ public abstract class ProcessManagerBase : IProcessManager
         {
             List<int> lingering = [processId, .. CollectDescendants(processId)];
             process.Kill(entireProcessTree: true);
+
+            // entireProcessTree only reaches what is still parented under the root at the
+            // instant of the kill: a descendant reparented away during the grace wait above is
+            // just as unreachable here as it is in the root-exited branch below, so the same
+            // pre-grace snapshot is re-checked by pid-and-start-time identity rather than
+            // trusting the live tree alone (independent pre-PR review, cycle 1, adversarial
+            // lens).
+            foreach ((int descendantId, DateTimeOffset descendantStartedAt) in descendantSnapshotsBeforeExit)
+            {
+                if (lingering.Contains(descendantId))
+                {
+                    continue;
+                }
+
+                using Process? descendant = TryGet(descendantId, descendantStartedAt);
+                if (descendant is null)
+                {
+                    continue;
+                }
+
+                lingering.Add(descendantId);
+                descendant.Kill(entireProcessTree: true);
+            }
+
             return lingering;
         }
 
