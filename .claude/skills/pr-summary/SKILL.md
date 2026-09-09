@@ -1,6 +1,6 @@
 ---
 name: pr-summary
-description: Generate a pull-request title and description from the commits on the current branch. Use to replace an already-open PR's body, or to draft one for a PR opened outside Hall9k's own dispatch — never as a build session's own closing summary, since the daemon composes a fresh PR's body itself. Output is text only; it never opens the PR.
+description: Generate a pull-request title and description from the commits on the current branch. Primary use is a build session's own closing PR SUMMARY block, which the Hall9k daemon puts verbatim into the pull request it opens; the second use is replacing an already-open PR's body. A repo that ships its own PR-description rule wins for the prose. Output is text only; it never opens the PR.
 ---
 
 # PR Summary Generator
@@ -11,19 +11,36 @@ order the commits happened to land in. The output is the deliverable: **never ru
 or `gh pr edit`, and never open a PR** — the Hall9k daemon opens PRs (`PullRequestOpener`); agents
 are forbidden from doing so.
 
-**Use this skill to produce a full pull-request body, never as a build session's own closing
-summary.** When the daemon opens a fresh PR it composes the body itself — the work-item mention,
-the acceptance criteria, and the run/token footer are all written automatically, with whatever the
-session's own final message said folded in underneath (truncated to 4,000 characters and defused
-of closing keywords and control characters) as `## Agent summary`. Invoking this skill for that
-final message nests a second work-item line and a second, necessarily invented footer inside the
-daemon's real ones; that is not what this skill is for. Its two legitimate uses
-are a description for a PR opened outside Hall9k's own dispatch entirely, and replacing the body on
-an already-open PR — read the current body first (`gh pr view <number> --json body -q .body`),
-because it carries the real footer and, whenever the review loop left something behind, a
-`**Left unfixed:**` or `Review ride-alongs:` paragraph (Decisions Log #87) that has to survive
-into the replacement's `## For the reviewer` section rather than being silently dropped. Hand the
-drafted text back for a human to apply either way.
+**The primary use is a build session's own closing `PR SUMMARY:` block** (Decisions Log
+#PLACEHOLDER-f481c576). The headless build prompt's last step asks for it, and the daemon puts what
+you write straight into the pull request it opens: your title becomes the pull request's title, and
+your body sits verbatim between the platform's own bookkeeping. Write it into the final message
+under a line reading exactly `PR SUMMARY:`, placed before the `HANDOFF:` block, with `Title: <one
+line>` as its first line, a blank line, then the body.
+
+**The platform adds four things around your text, so leave all four out of it:**
+
+- `Work item: <url>` as the body's first line, when the task carries an external reference. A
+  work-item line of your own is dropped rather than shown twice.
+- The acceptance-criteria checklist, in a collapsed `<details><summary>Acceptance
+  criteria</summary>` block below your prose.
+- Any residual note the review loop left (`**Left unfixed:**`, `Review ride-alongs:`, a reduced
+  review-stage composition), below that.
+- The `---` rule and the ``Hall9k run `<id>` · <tokens> tokens`` footer, last.
+
+**A repo's own PR-description rule wins for the prose.** When the target repository ships one —
+arx-platform's `.claude/commands/git/pr-description.md` is the known case, and a PR-description or
+`pr-summary` skill under the repo's own `.claude/skills/` counts too — take the voice, the section
+shape, and the title convention from there, and use this skill only for what that rule does not
+say. Only when the repository ships none is this skill's own "How it should read" the whole answer.
+
+**The second use is replacing the body on an already-open PR**, or drafting one for a PR opened
+outside Hall9k's own dispatch entirely. For an already-open Hall9k PR, read the current body first
+(`gh pr view <number> --json body -q .body`), because it carries the real footer and, whenever the
+review loop left something behind, a `**Left unfixed:**` or `Review ride-alongs:` paragraph
+(Decisions Log #87) that has to survive into the replacement's `## For the reviewer` section rather
+than being silently dropped. Hand the drafted text back for a human to apply; this skill never
+edits a pull request itself.
 
 ## Process
 
@@ -60,15 +77,20 @@ drafted text back for a human to apply either way.
    and not built yet (AGENTS.md).
 
 5. **Write the body** per "How it should read" below, then output the final title and description
-   in a fenced code block so it can be copied or consumed verbatim.
+   in a fenced code block so it can be copied or consumed verbatim. In a build session, that block
+   goes into the final message under the `PR SUMMARY:` line described at the top; the daemon reads
+   it back from there and tolerates the fence.
 
 ## How it should read
 
 **Audience**: a colleague reviewing this on GitHub who hasn't read the diff yet.
 
-**The work-item line, conditional and first.** One line, `Work item: <url>`, only when step 2
-found one — a task carries at most one external reference, so use whichever it carries; when
-neither is present, the line is omitted entirely rather than left empty or guessed at.
+**The work-item line, conditional and first — and only for the second use.** One line,
+`Work item: <url>`, when step 2 found one and you are replacing an already-open PR's body or
+drafting one for a PR opened outside Hall9k. A task carries at most one external reference, so use
+whichever it carries; when neither is present, the line is omitted entirely rather than left empty
+or guessed at. In a build session's own `PR SUMMARY:` block, leave it out: the daemon writes it,
+and a second copy is dropped.
 
 **Then a sentence or two of orientation.** What this PR is and where it came from — a review, a
 ticket, a bug someone hit, a field report. Get into it from there. No `## Summary` heading
@@ -109,8 +131,8 @@ Leave the section out entirely only when none of the four apply — including no
 residual note to place; an empty or padded heading isn't worth the reviewer's scroll.
 
 **A short provenance note, plus the run/token footer — the note composed from what you actually
-know, the footer carried forward, never invented.** Both only apply to the second legitimate use
-above, replacing the body on an already-open Hall9k PR: that is the only case where you have both
+know, the footer carried forward, never invented.** Both apply only to the second use above,
+replacing the body on an already-open Hall9k PR: that is the only case where you have both
 a task id (from `task.md`) and an existing footer to read back.
 - The provenance note verbatim, with the task id you were actually given (from `task.md`'s
   frontmatter, or the caller's own context): "Composed by an agent session from Hall9k task `<id>`."
@@ -135,7 +157,8 @@ a task id (from `task.md`) and an existing footer to read back.
   here is a deliberate deviation from both until that lands, not a claim that either already
   matches it.
 
-Omit both for the first legitimate use above, a PR opened entirely outside Hall9k's own dispatch —
+Omit both from a build session's own `PR SUMMARY:` block, where the daemon writes the real footer
+itself and no provenance note belongs, and from a PR opened entirely outside Hall9k's dispatch —
 there's no task id to compose the note from and no existing footer to carry forward.
 
 ## Keep out
@@ -204,3 +227,9 @@ One line, describing the change rather than the activity. Include the ticket if 
 branch name carry one, in the usual form (`ABC-1234: <title>`). Prefer what the change does over
 what was done to the code: `Send mass messages from the configured specialist address` over
 `Refactor MassMessagingService`.
+
+Write the key in yourself rather than leaving it to the platform. For a Jira-referenced task the
+daemon puts it there when it is missing, idempotently, but a title you wrote the key into is a
+title in your own wording throughout; one it had to repair is not. A GitHub issue reference is
+never prefixed at all, by you or by the daemon: the work-item line cross-references it, and a bare
+`#42` on a squash-merge subject is an issue link nobody meant to make.

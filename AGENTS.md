@@ -158,8 +158,8 @@ Repo-resident Claude skills live in `.claude/skills/` and are available in every
 - **rebase-onto-main** — bring a PR branch conflicting with its base current: replay its own
   commits onto the moved base, resolve conflicts with judgment, never leave a conflict marker,
   re-run the gates against the rebased tree. The inverse of absorb-review-fixes (backlog 44)
-- **pr-summary** — generate a PR title/description from the branch's commits (text only — the
-  daemon opens PRs; agents never do)
+- **pr-summary** — write the `PR SUMMARY:` block a build session closes with, which the daemon puts
+  verbatim into its pull request (§16 #PLACEHOLDER-f481c576); a repo's own rule wins for the prose
 - **walk-pr-review-findings** — walk a pr-review task's findings report with the owner, finding by
   finding, and post only what they direct (a batched GitHub review or a plain comment) on their
   explicit go, under their own login. Use once such a task (§16 #99) parks NeedsHuman with one; an
