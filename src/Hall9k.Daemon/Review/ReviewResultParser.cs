@@ -305,6 +305,18 @@ public static class ReviewResultParser
     /// blank-check does not catch it: the tag is non-blank, so <see cref="CloseThreadDisposition"/>
     /// would otherwise record an outcome against a thread id no real GitHub thread has (cycle-1
     /// pre-PR review, adversarial finding).
+    /// <para>
+    /// The `resolve-review-threads` skill's own worked example
+    /// (`.claude/skills/resolve-review-threads/SKILL.md`) teaches the identical contract with a
+    /// differently spelled placeholder, `&lt;node id&gt;`, so an exact match against this literal
+    /// alone would miss a session that echoed the skill's example instead of this prompt's
+    /// (cycle-1 pre-PR review, both lenses, second round). <see cref="CloseThreadDisposition"/>
+    /// therefore recognizes either — and any other echoed placeholder — by the shape every one of
+    /// them shares (leading `&lt;`), the same path-first discipline
+    /// <see cref="ReviewVerdictValidation.IsPlaceholderLocation"/> uses for a location tag, rather
+    /// than an exact-literal comparison against this constant alone. No real GraphQL thread node
+    /// id is ever bracketed, so the shape check costs nothing on the happy path.
+    /// </para>
     /// </summary>
     public const string ThreadIdPlaceholder = "<the thread's node id>";
 
@@ -386,7 +398,7 @@ public static class ReviewResultParser
 
         Dictionary<string, string> header = HeaderTags(block[0][ThreadDispositionMarker.Length..]);
         string? threadId = Tag(header, "thread");
-        if (threadId.IsBlank() || string.Equals(threadId, ThreadIdPlaceholder, StringComparison.OrdinalIgnoreCase))
+        if (threadId.IsBlank() || threadId.StartsWith('<'))
         {
             return;
         }
