@@ -63,20 +63,37 @@ public static class DecisionsLogRenumberer
     private const string SectionDivider = "---";
 
     private static readonly Regex RealEntryHeadingPattern = new(@"^(\d+)\. \*\*", RegexOptions.Compiled);
-    private static readonly string[] ExcludedDirectoryNames = [".git", "bin", "obj", "node_modules"];
 
     /// <summary>
     /// The span of a genuine Decisions Log citation to a real (non-placeholder) entry number, in
-    /// this repository's own house style: <c>Decisions Log #N</c> or <c>§16 #N</c>, optionally
-    /// followed by a comma-separated list or a hyphenated range of further numbers (<c>Decisions
-    /// Log #26, #103, #104</c>; <c>§16 #38-#58</c>). <see cref="RewriteCitationsAsync"/>'s transition
-    /// shape only ever rewrites a <c>#&lt;oldNumber&gt;</c> occurrence that falls inside a match of
-    /// this pattern — never a bare <c>#&lt;oldNumber&gt;</c> anywhere else on the line, which this
-    /// repository's own number space (pull request numbers, issue numbers) can share by pure
-    /// coincidence with a Decisions Log entry's own number.
+    /// this repository's own house style: <c>Decisions Log #N</c>, <c>§16 #N</c>, or the
+    /// established lower-case shorthand <c>log #N</c> / <c>decision log #N</c> / <c>decisions log
+    /// #N</c> this repository's own prose actually favors — SLICE-1.md alone writes it as
+    /// <c>decision log #7, #8, #10</c>, and PLAN.md's roadmap table cites entries as bare
+    /// <c>(log #39)</c> throughout (independent pre-PR review, Copilot: the pattern originally
+    /// recognized only the capitalized "Decisions Log" phrase, so a transition-shape citation
+    /// written in this repository's own more common shorthand form was left stale after a
+    /// renumbering) — optionally followed by a comma-separated list or a hyphenated range of
+    /// further numbers (<c>Decisions Log #26, #103, #104</c>; <c>§16 #38-#58</c>; <c>log #34,
+    /// #61</c>) — or a bare parenthesised list or range with no qualifying words at all
+    /// (<c>(#144/#153)</c>, <c>(#38-#58)</c>, <c>(#12)</c>), this repository's own established
+    /// shorthand for a Decisions Log cross-reference once the qualifying words have already
+    /// appeared earlier in the same paragraph (independent pre-PR review, cycle 3, adversarial
+    /// lens: a repo-wide survey of every such parenthesised form across AGENTS.md, PLAN.md, docs/,
+    /// and this branch's own source comments found every single one citing a Decisions Log entry —
+    /// a pull request or issue number in this repository is always written with the word in front,
+    /// <c>PR #N</c> or <c>issue #N</c>, never bare inside parentheses alone). The lower-case "log"
+    /// form is anchored on a leading word boundary so it never matches inside an unrelated word
+    /// sharing the same suffix (<c>backlog #5</c>, <c>catalog #5</c>).
+    /// <see cref="RewriteCitationsAsync"/>'s transition shape only ever rewrites a
+    /// <c>#&lt;oldNumber&gt;</c> occurrence that falls inside a match of this pattern — never a
+    /// bare <c>#&lt;oldNumber&gt;</c> anywhere else on the line, which this repository's own number
+    /// space (pull request numbers, issue numbers) can share by pure coincidence with a Decisions
+    /// Log entry's own number.
     /// </summary>
     private static readonly Regex CitationQualifierPattern = new(
-        @"(?:Decisions Log|§16)\s+#\d+(?:\s*[-,]\s*#?\d+)*", RegexOptions.Compiled);
+        @"\bLog\s+#\d+(?:\s*[-,]\s*#?\d+)*|§16\s+#\d+(?:\s*[-,]\s*#?\d+)*|\(#\d+(?:\s*[-,/]\s*#?\d+)*\)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>
     /// Renumbers the Decisions Log's tail entry in <paramref name="worktreePath"/>'s PLAN.md, if
@@ -436,13 +453,18 @@ public static class DecisionsLogRenumberer
         string newCitation = $"#{newNumber}";
 
         List<string> filesRewritten = [];
-        foreach (string path in EnumerateTextFiles(worktreePath))
+        foreach (string relativePath in await ListTrackedFilesAsync(git, worktreePath, cancellationToken))
         {
             // PLAN.md is deliberately NOT skipped: its own tail entry heading was already
             // rewritten and re-written to disk above, so re-scanning it here is safe (the
             // heading carries no leading '#', so the citation pattern never matches it), and it
             // is exactly what catches another entry's own prose citing this one by number.
-            string relativePath = Path.GetRelativePath(worktreePath, path);
+            //
+            // Enumerated from `git ls-files` rather than walked off disk: a stray untracked file
+            // (an editor temp file, a scratch note) that happens to contain a matching citation
+            // must never be rewritten and swept into the renumbering commit's own `git add` below
+            // — only content this repository already tracks is this sweep's to touch.
+            string path = Path.Combine(worktreePath, relativePath);
 
             string content;
             try
@@ -555,19 +577,27 @@ public static class DecisionsLogRenumberer
         return filesRewritten;
     }
 
-    private static IEnumerable<string> EnumerateTextFiles(string root)
+    /// <summary>
+    /// Every path <c>git</c> itself considers tracked in <paramref name="worktreePath"/>, relative
+    /// to it and OS-separated — the citation sweep's only source of "what files exist to scan",
+    /// so an untracked file on disk (a stray editor temp file, a scratch note) is never read,
+    /// never rewritten, and never at risk of riding along in the renumbering commit's own
+    /// <c>git add</c> (independent pre-PR review, Copilot: RewriteCitationsAsync previously walked
+    /// the whole worktree off disk, which staged and committed any untracked file that happened to
+    /// contain a matching citation).
+    /// </summary>
+    private static async Task<List<string>> ListTrackedFilesAsync(
+        ProcessRunner git, string worktreePath, CancellationToken cancellationToken)
     {
-        foreach (string path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        ProcessResult result = await git("git", ["ls-files", "-z"], worktreePath, cancellationToken);
+        if (result.ExitCode != 0)
         {
-            string relative = Path.GetRelativePath(root, path);
-            string[] segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            if (segments.Any(segment => ExcludedDirectoryNames.Contains(segment)))
-            {
-                continue;
-            }
-
-            yield return path;
+            throw new InvalidOperationException($"git ls-files -z failed in {worktreePath}: {result.StandardError}");
         }
+
+        return [.. result.StandardOutput
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Select(relative => relative.Replace('/', Path.DirectorySeparatorChar))];
     }
 
     private static string NormalizeLineEndings(string text) => text.Replace("\r\n", "\n");

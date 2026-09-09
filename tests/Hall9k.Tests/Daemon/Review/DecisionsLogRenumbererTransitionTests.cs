@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon.Review;
@@ -23,16 +24,7 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
 
     public DecisionsLogRenumbererTransitionTests() => Directory.CreateDirectory(_repoPath);
 
-    public void Dispose()
-    {
-        try
-        {
-            Directory.Delete(_repoPath, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
-    }
+    public void Dispose() => TemporaryTree.TryDelete(_repoPath);
 
     [Fact]
     public async Task A_tail_number_colliding_with_an_entry_that_reached_base_after_the_fork_point_is_renumbered()
@@ -279,6 +271,17 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
     /// ever failed to exclude it, the citation sweep would rewrite the FIRST renumbering's own
     /// historical record to claim it assigned the number the SECOND renumbering actually picked,
     /// falsifying what the mechanical step actually did.
+    /// <para>
+    /// The note's own mention of the old number is written in <see cref="CitationQualifierPattern"/>'s
+    /// own qualified form — "Decisions Log #&lt;N&gt;" — not the mechanically generated note's bare
+    /// "assigned **#N**" (independent pre-PR review, cycle 3, conformance lens: a fixture using only
+    /// the bare form passes whether or not <c>FindPlacementNoteLines</c>'s exclusion exists at all,
+    /// since the sweep's own qualifier pattern never matches a bare mention in the first place, so
+    /// it never pins the exclusion it claims to). PLAN.md's own hand-written notes carry exactly
+    /// this qualified shape — "AGENTS.md's 'Decisions Log #147, #148' line" — when they record which
+    /// citation elsewhere in the repository moved with a renumbered entry, so the fixture mirrors
+    /// that real shape rather than inventing an unrealistic one.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_prior_renumbering_placement_note_is_never_rewritten_by_a_later_renumbering()
@@ -304,8 +307,8 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
             "> Renumbering placement note: this entry was appended under placeholder",
             "> `PLACEHOLDER-6df5f975` and assigned **#3** by the mechanical pre-final-pass",
             "> rebase step — the log's next free number once this branch was rebased onto its base.",
-            "> Every citation of the placeholder elsewhere in this repository was rewritten to",
-            "> `#3` in the same commit.",
+            "> Its only citation outside this file, AGENTS.md's \"Decisions Log #3\" line, moved",
+            "> with it in the same commit.",
         ]);
 
         DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
@@ -321,9 +324,15 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
         plan.Should().Contain(
             "assigned **#3** by the mechanical pre-final-pass",
             "the FIRST renumbering's own historical note must survive the SECOND renumbering's citation sweep untouched");
+        plan.Should().Contain(
+            "Decisions Log #3",
+            "the note's own qualified citation of the old number must survive too — this is the exact shape the sweep would otherwise catch");
         plan.Should().NotContain(
             "assigned **#4** by the mechanical pre-final-pass",
             "the sweep must never rewrite the first note's own historical number to the second renumbering's new one");
+        plan.Should().NotContain(
+            "Decisions Log #4",
+            "the sweep must never rewrite the first note's own qualified citation to the second renumbering's new number either");
     }
 
     /// <summary>
@@ -376,6 +385,64 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
         branchNotes.Should().Contain("citing Decisions Log #4.", "the genuine citation is rewritten");
         branchNotes.Should().Contain(
             "PR #3", "a bare digit match outside a Decisions Log citation form is never rewritten");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial lens (DecisionsLogRenumberer.cs:78): this
+    /// repository's own established shorthand for a Decisions Log cross-reference once the
+    /// qualifying words have already appeared earlier in the same paragraph — a bare parenthesised
+    /// list or range with no "Decisions Log"/"§16" words at all, like <c>(#144/#153)</c> in
+    /// <c>ReviewEngine.cs</c>'s own comments — used to fall outside <c>CitationQualifierPattern</c>
+    /// entirely, so a citation written this way was silently left pointing at the number the entry
+    /// no longer holds after a transition-shape renumbering.
+    /// </summary>
+    [Fact]
+    public async Task A_bare_parenthesised_citation_with_no_qualifying_words_is_still_rewritten()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+
+        string baseTipSha = await CommitPlanAsync("base's own entry, after the fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+        ]);
+
+        // This branch's own notes cite #3 twice in the repo's own bare-parenthetical shorthand —
+        // alone, and alongside another number in a slash-separated list — neither preceded by
+        // "Decisions Log" or "§16" on the same line, and a third line whose own "(PR #3)" carries
+        // the word "PR" inside the parentheses, which is never this repository's Decisions Log
+        // shorthand and must be left alone.
+        File.WriteAllText(
+            Path.Combine(_repoPath, "BranchNotes.md"),
+            "This branch's own notes, citing the fork-point decision (#3) directly.\n"
+            + "A second mention, alongside another entry (#2/#3), also bare.\n"
+            + "Origin incident (2026-08-17, PR #3): unrelated, not a citation.\n");
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Hand-numbered before the convention shipped.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, baseTipSha, "6df5f975", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.NewNumber.Should().Be(4);
+
+        string branchNotes = await File.ReadAllTextAsync(Path.Combine(_repoPath, "BranchNotes.md"));
+        branchNotes.Should().Contain(
+            "decision (#4) directly", "a bare, unqualified parenthetical citation is still rewritten");
+        branchNotes.Should().Contain(
+            "(#2/#4)", "a bare parenthetical citation inside a slash-separated list is still rewritten");
+        branchNotes.Should().Contain(
+            "PR #3", "a parenthetical carrying the word \"PR\" is never this repository's Decisions Log shorthand and is left alone");
     }
 
     /// <summary>
@@ -442,6 +509,80 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
             1,
             "exactly one line is this branch's own addition — a HashSet-based ownership check "
             + "would have excused it too, as already present at the base tip");
+    }
+
+    /// <summary>
+    /// Copilot review, PR #293: CitationQualifierPattern originally required the capitalized
+    /// "Decisions Log" phrase, so a citation written in this repository's own more common
+    /// lower-case shorthand ("log #N" / "decision log #N", the form SLICE-1.md and PLAN.md's own
+    /// roadmap table actually favor) was left stale after a renumbering.
+    /// </summary>
+    [Fact]
+    public async Task A_lowercase_log_shorthand_citation_is_rewritten()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+        File.WriteAllText(
+            Path.Combine(_repoPath, "Notes.md"),
+            "See decision log #3 for background.\n");
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Hand-numbered before the convention shipped.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, forkPointSha, "6df5f975", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.NewNumber.Should().Be(4);
+
+        string notes = await File.ReadAllTextAsync(Path.Combine(_repoPath, "Notes.md"));
+        notes.Should().Contain("decision log #4", "the lower-case shorthand citation is this branch's own and must be rewritten");
+        notes.Should().NotContain("#3");
+    }
+
+    /// <summary>
+    /// Copilot review, PR #293: the citation sweep originally walked every file on disk, so an
+    /// untracked file that happened to contain a matching citation was rewritten and, via
+    /// <c>filesRewritten</c>, swept into the renumbering commit's own <c>git add</c> — silently
+    /// staging and committing content the branch never asked git to track.
+    /// </summary>
+    [Fact]
+    public async Task An_untracked_file_containing_a_matching_citation_is_never_rewritten_or_staged()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+        await CommitPlanAsync("as if rebased onto base",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Base's own entry.** Landed on the base after this branch's fork point.",
+            "3. **This branch's own entry.** Hand-numbered before the convention shipped.",
+        ]);
+
+        string strayPath = Path.Combine(_repoPath, "Scratch.md");
+        File.WriteAllText(strayPath, "Untracked scratch note citing Decisions Log #3.\n");
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, forkPointSha, "6df5f975", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
+        result.FilesRewritten.Should().Be(0, "the only matching citation sits in an untracked file, which is never this sweep's to touch");
+
+        string strayContent = await File.ReadAllTextAsync(strayPath);
+        strayContent.Should().Contain("#3", "an untracked file is never rewritten by the citation sweep");
+
+        string statusOutput = await RunGitCapturingAsync(["status", "--porcelain"]);
+        statusOutput.Should().Contain("?? Scratch.md", "the untracked file must remain untracked, never staged by the renumbering commit");
     }
 
     private async Task<string> CommitPlanAsync(string message, IReadOnlyList<string> entries)
