@@ -23,7 +23,7 @@ h9k project list             # every project with its tasks counted by attention
 h9k project show <name>      # one project: home, registration, settings, rollup, newest tasks
 h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #121)
 h9k project set <name> --review-stage-composition <VALUE|default>   # which pre-PR review stages a run gets: full-pipeline (default), adversarial-only, conformance-only, skip-final-pass, none — also settable at node (h9k config set) and task (h9k task add/revise), task > project > node > default, frozen at each run's own dispatch; a value that removes a guarantee needs --accept-reduced-review (Decisions Log #129)
-h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub reviewer assignment to this install's own login auto-starts a pr-review task; default off (Decisions Log #34's amendment, #133)
+h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub reviewer assignment to this install's own login auto-starts a pr-review task. Default NORMAL for every project, new and existing; 'off' is an explicit opt-out. No request older than the project's own cutoff ever starts on its own (no backfill), every request is recorded and shown either way, and the state is printed at daemon start, in h9k status and in h9k project show (Decisions Log #34's amendment, #133, #161)
 h9k project set <name> --max-parallel-tasks <N|default>   # this project's own ceiling in TASK RUNS, enforced by the dispatcher: a ceiling never a reservation, 0 pauses the project (held even on an idle node, and nothing but a human raises it), 'default' clears it so the node ceiling alone decides; takes effect next dispatch cycle, no restart. --max-parallel is a quiet alias; the old session-denominated value it used to record is retired, not converted (Decisions Log #140)
 h9k project set <name> --priority high|normal|low|default   # which tier this project's ready work competes in for a FREE dispatch slot. Default normal, and free slots rotate: the eligible project longest unserved wins the next one, oldest task first within it (nothing to set on a single-project node). 'high' is focus — wins every free slot over lower tiers while it has ready work and RELEASES ITSELF when its queue drains, which is the opposite of the sticky --max-parallel-tasks 0 pause. 'default' is the clearing word, restoring normal. Nothing preempts; every claim logs why that project won (Decisions Log #141)
 h9k project set <name> --claim-gate off|tracker-assignee   # a task linked to a Jira card or GitHub issue is claimed on this install only while the tracker shows that item assigned to this install's own identity; default off (Decisions Log #142)
@@ -580,18 +580,57 @@ node on 2026-08-31, where the push hit a refspec that no longer existed and the 
 A task carrying no linked item renders `{key}` as `no-key` — nothing was observed, said out loud,
 rather than an empty segment or an invented card number.
 
-**A pull request GitHub assigns to this install's own login is a go signal in its own right, on a
-project that opts in** (idea e5e98a33, Decisions Log #34's own amendment, #133): `h9k project set
-<project> --auto-pr-review off|normal|first|now` (default `off`, today's behavior byte-for-byte)
-makes the daemon poll GitHub, on the closeout monitor's own interval-with-backoff shape, for open
-pull requests in that project's repo requesting this install's own login — read back from `gh`
-fresh every sweep, never a cached name — and mint, publish, and start a pr-review task exactly as
-`h9k task add --from-pr` would, recording the GitHub assignment as provenance rather than a human
-typing the command. The three non-off speeds are the general dispatch levers, not new scheduling
+**A pull request GitHub assigns to this install's own login is a go signal in its own right, on
+every project unless it has opted out** (idea e5e98a33, Decisions Log #34's own amendment, #133,
+amended by #161): `h9k project set <project> --auto-pr-review off|normal|first|now` chooses the
+speed, and `normal` is the default for every project, new and existing — the daemon polls GitHub,
+on the closeout monitor's own interval-with-backoff shape, for open
+pull requests in each project's repo requesting this install's own login — read back from `gh`
+fresh every sweep, never a cached name — and mints, publishes, and starts a pr-review task exactly
+as `h9k task add --from-pr` would, recording the GitHub assignment as provenance rather than a
+human typing the command.
+
+`off` is an explicit opt-out a human types, honoured for as long as it stands, and three
+properties bound the default (all of #161, whose origin incident was this feature sitting
+installed and silent on both nodes for three days):
+
+- **Its state is always printed**, at the default as much as at an explicit setting: one Info line
+  per project in `h9kd`'s own start-up log, one line per project in `h9k status`, and the
+  Auto pr-review row in `h9k project show` — each naming the effective value and whether it is the
+  project's own recorded choice or the platform default. Reading `ProjectDetails.AutoPrReview`
+  directly does not answer that question (an inline projection stores a field's initialised
+  default under its own key); `AutoPrReviewSetting` resolves it from the project's own stream.
+- **No backfill.** A review request whose GitHub requested-at time predates the project's
+  registration — or, for a project older than this behaviour, this install's own first run of it,
+  recorded once and never recomputed — never mints or starts anything on its own, whatever the
+  setting says. Nor does one whose requested-at could not be read at all.
+- **Every request is recorded once per pull request with its outcome, whatever the setting**, and
+  produces one Info line per pull request naming the pull request, the project, the setting and
+  the outcome. `h9k status` renders it as a needs-you row wherever nothing started, naming the
+  lever that ends that particular wait: both commands (`h9k task add --from-pr <n>`, or turning
+  the setting on) where an explicit `off` held it, and `h9k task add --from-pr <n>` alone where
+  the no-backfill cutoff did. Where a task is running it renders an informational row naming the
+  task and following it — never needs-you there, since the daemon is already on it. The row
+  clears when the request is withdrawn, the pull
+  request closes, or a task adopts it; turning the setting on clears an `off` row, and
+  deliberately does not clear one the no-backfill cutoff (or an unreadable requested-at) is
+  holding — the cutoff outranks the setting, so `h9k task add --from-pr` is the only lever that
+  ends those. Every row names the login GitHub made the request of rather than assuming it is the
+  reader's, since a row is kept per reviewer login and two installs can share one database. A row
+  is also kept per observing project and node, because the setting, the registration and the
+  install's own adoption moment are what graded it: a repository two projects both point at gets
+  one row each, and identical rows print once, so two of them appear only where the two projects
+  genuinely disagree about the same request. A row
+  whose covering task has closed says what actually holds a fresh mint back: nothing on an `off`
+  project, this same standing request where auto pr-review minted that task itself, and nothing at
+  all where a human adopted it by hand — the re-mint guard only ever matches a task the feature
+  created, so the next sweep is free to mint one of its own there.
+
+The three non-off speeds are the general dispatch levers, not new scheduling
 code: `normal` joins the ordinary queue, `first` also sets the queue-first marker (#127), and `now`
 claims it immediately, ceiling-exempt, through the same sentinel-node-id mechanism `h9k task start`
 uses (#103, #125) — so a human re-speeds any auto-created task afterward with the identical general
-levers. `now` is capped at one immediate, ceiling-exempt launch per sweep across every opted-in
+levers. `now` is capped at one immediate, ceiling-exempt launch per sweep across every
 project: the consent a human gives at `--auto-pr-review now` promises one extra concurrent agent
 session, not an unbounded burst of them if several pull requests are newly assigned in the same
 poll interval, so a candidate beyond that one launch is not dropped — it is minted, published and

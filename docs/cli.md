@@ -185,11 +185,41 @@ author, so neither verdict can be posted on a pull request the same account open
 own account's pull requests is what the lap plus `review resolve --merge-ready` is for; a posted
 verdict needs a second account.
 
-A project can opt in to starting that same task automatically instead of waiting on `--from-pr`:
-`h9k project set <name> --auto-pr-review off|normal|first|now` (default `off`) has the daemon poll
-GitHub for open pull requests in that project's repo requesting this install's own login, and
-mint, publish, and start a `pr-review` task at the chosen speed the moment GitHub reports the
-assignment.
+That task starts on its own by default, rather than waiting on `--from-pr`: the daemon polls
+GitHub for open pull requests in each project's repo requesting this install's own login, and
+mints, publishes, and starts a `pr-review` task the moment GitHub reports the assignment.
+`h9k project set <name> --auto-pr-review off|normal|first|now` chooses the speed, and `normal` is
+the default for every project, new and existing (Decisions Log #161 — it defaulted to `off` until
+2026-09-08, when the feature was found to have been installed and silent on both nodes for three
+days). `off` is an explicit opt-out, honoured for as long as it stands.
+
+Three things make that default safe to leave on:
+
+- **Its state is always printed.** `h9kd` logs one line per project at start naming whether auto
+  pr-review is on or off there and whether that is the project's own choice or the platform
+  default; `h9k status` prints the same fact as one line per project; `h9k project show` always
+  carries the Auto pr-review row with its effective value, its origin, and the command that
+  reverses it.
+- **No backfill.** A review request GitHub recorded before a project's registration — or, for a
+  project that predates this behaviour, before it first ran on this install — never starts a task
+  on its own, whatever the setting says. The cutoff is recorded once per install and never
+  recomputed, so a fortnight-old request cannot be swept up as though it had just arrived.
+- **Every request is recorded and shown, whatever the setting.** Each pull request GitHub requests
+  a review of is recorded once, with its outcome, and appears on `h9k status`: as a needs-you row
+  wherever nothing started, naming the lever that actually ends that wait — both commands where an
+  explicit `off` is what held it, and `h9k task add --from-pr` alone where the cutoff above did,
+  since turning the setting on would not start a stale request — and as an informational row
+  naming the task and following it wherever one is running — never needs-you there, since the
+  daemon is already doing the work. The row
+  clears when the request is withdrawn, the pull request closes, or a task adopts it; turning the
+  setting on clears an `off` row, and deliberately does not clear one held by the cutoff above —
+  a stale request stays stale, so the row keeps naming `h9k task add --from-pr` as the only lever
+  that ends it. Every row names the login GitHub made the request of rather than assuming it is
+  yours: a row is kept per reviewer login, and two installs with two `gh` authentications can
+  share one database. It is kept per observing project and install too, since a project's setting
+  and registration and an install's own cutoff are what graded it — so a repository two projects
+  both point at gets a row each, printed once where they agree and twice, each with its own
+  project's lever, only where they genuinely disagree.
 
 ### The claim gate
 

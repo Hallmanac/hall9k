@@ -388,15 +388,31 @@ the GitHub review on the pull request's current head under the reviewer's own lo
 verdict, and finalizes the task exactly as `h9k review resolve --merge-ready` does. The review is
 posted before anything is recorded, so a failed post records nothing at all.
 
-A project can opt in to starting that same `pr-review` task automatically: `h9k project set
-<name> --auto-pr-review off|normal|first|now` (default off) has the daemon poll GitHub, on the
-closeout monitor's own interval-with-backoff shape, for open pull requests in that project's repo
-requesting this install's own login — read back from `gh` fresh every sweep — and mint, publish,
-and start the task the review assignment names, at the chosen speed (`normal` joins the ordinary
-queue, `first` marks it queue-first, `now` claims it immediately, ceiling-exempt). One live task
-per pull request; a withdrawn assignment concludes the task honestly before its run dispatches, or
-is recorded as an observation only once it has. No scheduling code of its own: every speed reuses
-a general dispatch lever, and the review itself is unchanged.
+That same `pr-review` task starts automatically by default: the daemon polls GitHub, on the
+closeout monitor's own interval-with-backoff shape, for open pull requests in each project's repo
+requesting this install's own login — read back from `gh` fresh every sweep — and mints,
+publishes, and starts the task the review assignment names. `h9k project set <name>
+--auto-pr-review off|normal|first|now` chooses the speed (`normal` joins the ordinary queue,
+`first` marks it queue-first, `now` claims it immediately, ceiling-exempt), and `normal` is the
+default for every project, new and existing, since Decisions Log #161 (it was an opt-in
+defaulting to off until 2026-09-08, and had never minted a task on either node in the three days
+it was installed). `off` is an explicit opt-out and is honoured for as long as it stands.
+
+Three properties bound the default. Its state is always printed — one daemon-start line, one
+`h9k status` line, and one `h9k project show` row per project, each naming the effective value and
+whether it is the project's own choice or the platform default. There is no backfill: a request
+GitHub recorded before a project's registration, or before this behaviour first ran on this
+install (a cutoff recorded once per install and never recomputed), never starts a task on its own.
+And every request is recorded once per pull request with its outcome whatever the setting says, so
+`h9k status` carries a needs-you row wherever nothing started, naming the lever that ends that
+particular wait — both commands where an explicit `off` held it, `h9k task add --from-pr` alone
+where the cutoff did, since a stale request stays stale after the setting is turned on — and an
+informational row following the task wherever one is running, never needs-you there, because the
+daemon is already doing the work.
+
+One live task per pull request; a withdrawn assignment concludes the task honestly before its run
+dispatches, or is recorded as an observation only once it has. No scheduling code of its own:
+every speed reuses a general dispatch lever, and the review itself is unchanged.
 
 ### The claim gate
 
