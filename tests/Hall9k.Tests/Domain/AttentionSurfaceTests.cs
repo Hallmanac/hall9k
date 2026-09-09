@@ -651,6 +651,38 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
+    /// A bot-authored (Copilot or another agent) Decline/Route thread is resolved by the same
+    /// triage run before it ever pushes (resolve-review-threads skill step 9: "decline or route,
+    /// bot-authored: resolve it"), so it stops being genuinely unresolved the moment this run
+    /// reaches AwaitingReview — but LastReviewThreadOutcomes is never revisited after that point
+    /// and would otherwise keep counting it forever. Only the human-authored thread this run left
+    /// open on purpose (Decisions Log #159) may still be genuinely unresolved (independent pre-PR
+    /// review, cycle 6, adversarial finding).
+    /// </summary>
+    [Fact]
+    public void A_pre_approved_task_only_counts_the_human_authored_thread_from_a_mixed_triage()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/42";
+        TaskListItem preApproved = StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproved: true);
+
+        RunDetails mixedTriage = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 42);
+        mixedTriage.LastReviewThreadOutcomes =
+        [
+            new ReviewThreadOutcome(
+                "PRRC_1", ReviewThreadDisposition.Decline, "already resolved on GitHub", "copilot", IsHuman: false),
+            new ReviewThreadOutcome(
+                "PRRC_2", ReviewThreadDisposition.Decline, "left open for the human", "brianhallmanac", IsHuman: true),
+        ];
+
+        TaskStatusRow row = StatusFixtures.Compose(preApproved, mixedTriage);
+
+        row.Attention.Cause.Should().Contain("1 unresolved review thread(s) (1 from a human) to close",
+            "the bot thread was already resolved by this same triage run and must not be counted forever");
+    }
+
+    /// <summary>
     /// A stale, monotonic RunDetails.UnresolvedReviewThreads left over from a park-resolve-and-push
     /// round trip must not out-live the fix: once the run's own last triage shows nothing left
     /// Declined or Routed (everything Fixed instead), the pre-approved arm reads that, not the
