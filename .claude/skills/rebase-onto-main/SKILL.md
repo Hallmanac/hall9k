@@ -47,13 +47,30 @@ this skill is not needed; GitHub merges it fine as-is.
      lines, and picking either would silently drop real work. See "When a conflict is not
      yours to resolve" below.
 
-   **PLAN.md's own §16 v0 Decisions Log tail is never yours to number by hand here.** A
-   conflict there is always **keep both**: this branch's own entry (real number or
-   `PLACEHOLDER-<shortid>`) stays exactly as written, ordered after whatever main gained.
-   Never renumber, reorder, or pick a "winning" number while resolving this conflict — the
-   mechanical pre-final-pass rebase step (`DecisionsLogRenumberer`, invoked automatically once
-   this rebase lands, no agent session) is what assigns the real number, and a hand-picked one
-   here would just be a second, competing guess for it to untangle.
+   **PLAN.md's own §16 v0 Decisions Log tail is a conflict of two different shapes, and only
+   one of them is left for the mechanical step.** Either way, it is always **keep both**: this
+   branch's own entry stays exactly as written, ordered after whatever main gained. Which shape
+   decides whether you also renumber it yourself, right here:
+
+   - **This branch's own tail entry carries `PLACEHOLDER-<shortid>`.** Never renumber it by
+     hand. The mechanical pre-final-pass rebase step (`DecisionsLogRenumberer`, invoked
+     automatically once this rebase lands, no agent session) assigns the real number — a
+     hand-picked one here would just be a second, competing guess for it to untangle.
+   - **This branch's own tail entry already carries a real, hand-picked number that collides
+     with an entry main gained** (a branch cut before the placeholder convention shipped).
+     Renumber it yourself, right here, the same way the pre-convention repository always did:
+     give it the log's next free number and append a hand-written "Renumbering placement note"
+     (PLAN.md's own §16 already carries about twenty of these; match their style) recording the
+     old number, the collision, and which citations elsewhere in the repository moved with it.
+     Do NOT leave this one for `DecisionsLogRenumberer` — its transition-shape check reads
+     against this branch's own fork point, but by the time it runs your own `git rebase
+     origin/<base>` in step 2 has already landed, so the branch's merge-base against
+     `origin/<base>` is now `origin/<base>`'s own tip, which already contains the number your
+     entry collided with. The check reads that as "already taken at the fork point" — the
+     signature of a genuine hand-numbering mistake, not a parallel merge — and always declines,
+     on every run this skill ever produces. Left unrenumbered, the duplicate only fails
+     `DecisionsLogNumberingGuardTests` at the mandatory final pass, and nothing mechanical will
+     ever fix it from there.
 
    Land a resolved conflict inside the commit being replayed (`git add <files>` then
    `git rebase --continue`), never as a separate "resolve conflict" commit. The mapping

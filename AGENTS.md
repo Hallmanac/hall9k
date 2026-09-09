@@ -188,8 +188,8 @@ rather than left to discover them.
 ## Working agreements
 
 - Slice 1 before anything shiny; check SLICE-1.md before inventing work.
-- Decisions get appended to PLAN.md §16 (v0 Decisions Log) as they're made, at the tail, under a
-  placeholder from the task's own short id (`PLACEHOLDER-<shortid>`) rather than a hand-picked
+- A **branch** appends its own decision to PLAN.md §16 (v0 Decisions Log) at the tail, under a
+  placeholder from its task's own short id (`PLACEHOLDER-<shortid>`) rather than a hand-picked
   number (Decisions Log #PLACEHOLDER-6df5f975). The mechanical pre-final-pass rebase step assigns
   the true number, rewriting the entry, its note, and every citation — no agent renumbers it.
 - **Standing rules carry their origin incident.** When a failure produces a new rule (in
