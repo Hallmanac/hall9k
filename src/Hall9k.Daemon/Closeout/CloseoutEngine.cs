@@ -872,29 +872,70 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
-        if (snapshot.HasPendingChecks)
+        // Review feedback is detected ahead of every CI read below, and the pending-checks
+        // short-circuit that used to precede it now yields to it (Brian's ruling, 2026-09-09
+        // 09:25 EDT, Decisions Log #PLACEHOLDER-5657f3fa): a broken CI may be what the review
+        // found, so the fix lap must be allowed to run. Origin incident: arx-platform PR #2042,
+        // whose .NET Framework build stage lost its hosted agent and never received a final check
+        // status, so the check read pending for nine hours while four Copilot threads sat
+        // unaddressed and every sweep stopped at that gate.
+        //
+        // Computed before the short-circuit rather than inside the thread branch below, because
+        // the short-circuit's own condition now depends on the answer: a thread set this run has
+        // already answered in full is not feedback a lap could act on, so it must not buy the
+        // incomplete CI picture a dispatch that would spend a lap and get nothing for it.
+        IReadOnlyList<string> outstandingThreadIds = OutstandingReviewThreadIds(run, snapshot);
+        bool threadsNeedALap = snapshot.UnresolvedReviewThreadCount > 0
+            // snapshot.ThreadIds.Count == 0 is a deliberate extra arm, not a redundant one: the
+            // provider read always populates it 1:1 with UnresolvedReviewThreadCount
+            // (GitHubPullRequestInspector.ReadReviewObservation), but nothing here can tell an
+            // inspector reading that ids the count > 0 came before them existed
+            // (FakeInspector.Quiet() with { UnresolvedReviewThreadCount = N } and no ids, used
+            // throughout this class's own tests) — the empty answer out of
+            // OutstandingReviewThreadIds is identical for "nothing outstanding" and "no id-level
+            // data to compare against", and only the id list can tell them apart. Without this
+            // arm a bare count would read as fully accounted for and never dispatch.
+            && (snapshot.ThreadIds.Count == 0 || outstandingThreadIds.Count > 0);
+        bool reviewFeedbackNeedsALap = snapshot.ChangesRequested.Count > 0 || threadsNeedALap;
+
+        if (snapshot.HasPendingChecks && !reviewFeedbackNeedsALap)
         {
-            // The CI picture is incomplete; acting now would hand a follow-up run a
-            // partial failure list. The next sweep sees the full result.
+            // The CI picture is incomplete and no review feedback is waiting behind it; acting on
+            // the checks now would hand a follow-up run a partial failure list. The next sweep
+            // sees the full result, and the merge stays held meanwhile either way — this return
+            // sits ahead of TryAutoMergeAsync exactly as it always has.
             return InspectionOutcome.Inspected;
         }
 
-        if (snapshot.FailingChecks.Count > 0)
+        // Failing checks observed on the SAME sweep as review feedback ride in that one lap rather
+        // than buying a second one: the sentence the reopen records — and so the follow-up's own
+        // prompt — names both, and the lap's own post-fix gates decide whether CI is green
+        // afterwards. The obstruction identity deliberately stays the review feedback's own
+        // (the thread ids, the review urls) and never folds the check names in: a check flipping
+        // between failing and pending would otherwise read as a fresh obstruction every sweep and
+        // hand the progress cap an endless supply of laps to grant.
+        bool failingChecksRideAlong = reviewFeedbackNeedsALap && snapshot.FailingChecks.Count > 0;
+        // The list is named as observed, and said to be possibly incomplete where it genuinely is:
+        // with other checks still reporting, the very partial-failure-list concern the short-circuit
+        // above encodes applies to this rider too. It is no longer a reason to withhold the lap —
+        // the review feedback earns it either way — but handing a session a partial list as though
+        // it were the whole picture would be the guess the never-guess rule forbids, and a lap that
+        // reads "these and possibly more" runs its own full gates rather than stopping at two.
+        string failingChecksRider = failingChecksRideAlong
+            ? $" CI checks are failing on the same pull request: {string.Join(", ", snapshot.FailingChecks)}."
+                + (snapshot.HasPendingChecks
+                    ? " Other checks were still reporting when this was observed, so that list may be incomplete."
+                    : string.Empty)
+                + " Fix them in this same lap; the gates you run before you finish are what decide "
+                + "whether CI is green afterwards."
+            : string.Empty;
+        // Recorded whether or not this lap is the checks' own: the sweep observed them failing, and
+        // an observation the record drops is one no reader can tell from a green pull request
+        // (AGENTS.md, never guess at unobserved facts). Appended ahead of the review-feedback event
+        // below so the run's own state lands on what the dispatched lap actually answers.
+        if (failingChecksRideAlong)
         {
             session.Events.Append(run.Id, new PullRequestChecksFailed(run.Id, snapshot.FailingChecks, now));
-            await DispatchFollowUpOrParkAsync(
-                session, task, run, fence.Version,
-                FollowUpKind.FailingChecks,
-                snapshot.FailingChecks,
-                snapshot,
-                $"CI checks failing on the pull request: {string.Join(", ", snapshot.FailingChecks)}.",
-                // The pull request head this sweep just observed — the follow-up's own opening
-                // Discovery cycle seeds its diff instruction from it (task: a lap reviews only what
-                // it changed), so the reviewer reads the fix rather than the whole branch again.
-                now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
-                predecided: null, changesRequestedReviews: null,
-                cancellationToken);
-            return InspectionOutcome.Inspected;
         }
 
         // Checked ahead of the thread count, deliberately (task: a changes-requested pull-request
@@ -919,9 +960,10 @@ public sealed class CloseoutEngine(
                 // comment a new obstruction.
                 [.. changesRequested.Select(review => review.ReviewUrl)],
                 snapshot,
-                DescribeChangesRequested(changesRequested),
-                // Same reasoning as the FailingChecks branch above: seed the follow-up's own
-                // opening Discovery cycle from the pull request head this sweep just observed.
+                DescribeChangesRequested(changesRequested) + failingChecksRider,
+                // The pull request head this sweep just observed — the follow-up's own opening
+                // Discovery cycle seeds its diff instruction from it (task: a lap reviews only what
+                // it changed), so the reviewer reads the fix rather than the whole branch again.
                 now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
                 predecided: null,
                 changesRequestedReviews: changesRequested,
@@ -929,63 +971,8 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
-        if (snapshot.UnresolvedReviewThreadCount > 0)
+        if (threadsNeedALap)
         {
-            // A human-authored thread this exact run already declined or routed stays unresolved
-            // by design (Decisions Log #159: "a human-authored one stays open" — closing it is not
-            // the agent's to do). Left in snapshot.ThreadIds unchanged, it would otherwise read as
-            // a fresh obstruction on every sweep after this one, buying a second follow-up dispatch
-            // that can only repeat "never re-litigate a point a previous run already answered" and
-            // push nothing before the per-obstruction cap parks the run anyway (independent pre-PR
-            // review, cycle 1, adversarial lens: before this exclusion, the identical
-            // already-answered thread cost a wasted extra lap on the way to that same park).
-            // Excluding it from the DISPATCH decision only — snapshot.UnresolvedReviewThreadCount
-            // itself still gates everything below, including auto-merge, exactly as before, so a
-            // thread left open on purpose still blocks a pre-approved merge until the human closes
-            // it. Excluding it here does not risk missing real, later human engagement on it: the
-            // per-obstruction cap's own human-engagement bypass (HasHumanEngagement) already only
-            // ever recognizes a thread id newly appearing, never a reply added to one it already
-            // knows — so a reply on this thread was never going to grant a bypass either way, and
-            // this exclusion costs nothing beyond what that gap already did.
-            //
-            // Scoped to snapshot.HumanThreadIds, not every declined/routed thread: the design this
-            // exclusion implements only ever leaves a HUMAN thread open on purpose (a bot thread
-            // gets resolved by the follow-up itself, per the same #159 asymmetry). Filtering on the
-            // outcome's own kind=/IsHuman self-report instead would trust the agent's own tag for a
-            // decision it was never meant to gate (see ReviewThreadOutcome.IsHuman's own doc); this
-            // reads the provider's own actor-type classification instead, the same one the sweep
-            // already trusts for UnresolvedHumanThreadCount. A bot thread whose resolveReviewThread
-            // mutation never landed therefore stays outstanding here, so it keeps buying a follow-up
-            // (and eventually the per-obstruction cap's own park) instead of stalling this run
-            // forever with no dispatch, no park, and — since this whole block returns ahead of
-            // TryAutoMergeAsync — no merge either (independent pre-PR review, cycle 3, adversarial
-            // and conformance lenses).
-            IReadOnlyList<string> alreadyAnsweredThreadIds = [.. run.LastReviewThreadOutcomes
-                .Where(outcome => (outcome.Disposition == ReviewThreadDisposition.Decline
-                        || outcome.Disposition == ReviewThreadDisposition.Route)
-                    && snapshot.HumanThreadIds.Contains(outcome.ThreadId))
-                .Select(outcome => outcome.ThreadId)];
-            IReadOnlyList<string> outstandingThreadIds = [.. snapshot.ThreadIds.Except(alreadyAnsweredThreadIds)];
-
-            // snapshot.ThreadIds.Count > 0 is a deliberate extra guard, not a redundant one: the
-            // provider read always populates it 1:1 with UnresolvedReviewThreadCount
-            // (GitHubPullRequestInspector.ReadReviewObservation), but nothing here can tell an
-            // inspector reading that ids the count > 0 came before them existed
-            // (FakeInspector.Quiet() with { UnresolvedReviewThreadCount = N } and no ids, used
-            // throughout this class's own tests) — the empty-Except() answer is identical for
-            // "nothing outstanding" and "no id-level data to compare against", and only the id
-            // list can tell them apart. Skipping without it would treat a bare count as fully
-            // accounted for and never dispatch.
-            if (snapshot.ThreadIds.Count > 0 && outstandingThreadIds.Count == 0)
-            {
-                // Nothing left that a follow-up could act on: every unresolved thread is one this
-                // run already triaged as decline or route and replied to, waiting only on the human
-                // it was left open for. A visible wait, not a park (design ruling 3's own terms) —
-                // the next sweep re-reads and either finds the human closed it, or reads this exact
-                // same set and takes this same branch again, spending nothing either time.
-                return InspectionOutcome.Inspected;
-            }
-
             session.Events.Append(run.Id, new ReviewFeedbackReceived(
                 run.Id, snapshot.UnresolvedReviewThreadCount, now, snapshot.UnresolvedHumanThreadCount));
             await DispatchFollowUpOrParkAsync(
@@ -993,12 +980,45 @@ public sealed class CloseoutEngine(
                 FollowUpKind.ReviewFeedback,
                 outstandingThreadIds,
                 snapshot,
-                DescribeUnresolvedThreads(snapshot),
-                // Same reasoning as the FailingChecks branch above: seed the follow-up's own
+                DescribeUnresolvedThreads(snapshot) + failingChecksRider,
+                // Same reasoning as the changes-requested branch above: seed the follow-up's own
                 // opening Discovery cycle from the pull request head this sweep just observed.
                 now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
                 predecided: null, changesRequestedReviews: null,
                 cancellationToken);
+            return InspectionOutcome.Inspected;
+        }
+
+        // No review feedback needs a lap, so what is left is the checks on their own — and the
+        // short-circuit above already returned if the CI picture was still incomplete, so this
+        // branch reads a settled result exactly as it always has.
+        if (snapshot.FailingChecks.Count > 0)
+        {
+            session.Events.Append(run.Id, new PullRequestChecksFailed(run.Id, snapshot.FailingChecks, now));
+            await DispatchFollowUpOrParkAsync(
+                session, task, run, fence.Version,
+                FollowUpKind.FailingChecks,
+                snapshot.FailingChecks,
+                snapshot,
+                $"CI checks failing on the pull request: {string.Join(", ", snapshot.FailingChecks)}.",
+                // Same reasoning as the two review branches above: seed the follow-up's own opening
+                // Discovery cycle from the pull request head this sweep just observed.
+                now, snapshot.HeadCommit, stackReplayUpstreamCommit: null, stackReplayOntoCommit: null,
+                predecided: null, changesRequestedReviews: null,
+                cancellationToken);
+            return InspectionOutcome.Inspected;
+        }
+
+        if (snapshot.UnresolvedReviewThreadCount > 0)
+        {
+            // Nothing left that a follow-up could act on: every unresolved thread is one this run
+            // already triaged as decline or route and replied to, waiting only on the human it was
+            // left open for. A visible wait, not a park (design ruling 3's own terms) — the next
+            // sweep re-reads and either finds the human closed it, or reads this exact same set and
+            // takes this same branch again, spending nothing either time. Placed after the
+            // failing-checks branch above, not in front of it: a run resting on threads it has
+            // already answered still owes a lap for a check that failed, and returning here first
+            // would swallow it.
             return InspectionOutcome.Inspected;
         }
 
@@ -1309,6 +1329,51 @@ public sealed class CloseoutEngine(
             snapshot.OutstandingHumanReviewers, snapshot.HumanChangesRequestedBy,
             snapshot.HasEverRequestedHumanReviewer, snapshot.HumanReviewersAwaitingApproval));
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The unresolved review threads a follow-up could actually act on: every one this sweep
+    /// observed, less the human-authored ones this exact run already declined or routed.
+    /// <para>
+    /// A human-authored thread this run already declined or routed stays unresolved by design
+    /// (Decisions Log #159: "a human-authored one stays open" — closing it is not the agent's to
+    /// do). Left in <c>snapshot.ThreadIds</c> unchanged, it would otherwise read as a fresh
+    /// obstruction on every sweep after this one, buying a second follow-up dispatch that can only
+    /// repeat "never re-litigate a point a previous run already answered" and push nothing before
+    /// the per-obstruction cap parks the run anyway (independent pre-PR review, cycle 1,
+    /// adversarial lens: before this exclusion, the identical already-answered thread cost a wasted
+    /// extra lap on the way to that same park). This shapes the DISPATCH decision only —
+    /// <c>snapshot.UnresolvedReviewThreadCount</c> itself still gates everything downstream,
+    /// including auto-merge, exactly as before, so a thread left open on purpose still blocks a
+    /// pre-approved merge until the human closes it. Excluding it here does not risk missing real,
+    /// later human engagement on it: the per-obstruction cap's own human-engagement bypass
+    /// (HasHumanEngagement) already only ever recognizes a thread id newly appearing, never a reply
+    /// added to one it already knows — so a reply on this thread was never going to grant a bypass
+    /// either way, and this exclusion costs nothing beyond what that gap already did.
+    /// </para>
+    /// <para>
+    /// Scoped to <c>snapshot.HumanThreadIds</c>, not every declined/routed thread: the design this
+    /// exclusion implements only ever leaves a HUMAN thread open on purpose (a bot thread gets
+    /// resolved by the follow-up itself, per the same #159 asymmetry). Filtering on the outcome's
+    /// own <c>kind=</c>/<c>IsHuman</c> self-report instead would trust the agent's own tag for a
+    /// decision it was never meant to gate (see <c>ReviewThreadOutcome.IsHuman</c>'s own doc); this
+    /// reads the provider's own actor-type classification instead, the same one the sweep already
+    /// trusts for <c>UnresolvedHumanThreadCount</c>. A bot thread whose <c>resolveReviewThread</c>
+    /// mutation never landed therefore stays outstanding here, so it keeps buying a follow-up (and
+    /// eventually the per-obstruction cap's own park) instead of stalling this run forever with no
+    /// dispatch, no park, and — since the thread branch returns ahead of TryAutoMergeAsync — no
+    /// merge either (independent pre-PR review, cycle 3, adversarial and conformance lenses).
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> OutstandingReviewThreadIds(
+        RunDetails run, PullRequestSnapshot snapshot)
+    {
+        IReadOnlyList<string> alreadyAnsweredThreadIds = [.. run.LastReviewThreadOutcomes
+            .Where(outcome => (outcome.Disposition == ReviewThreadDisposition.Decline
+                    || outcome.Disposition == ReviewThreadDisposition.Route)
+                && snapshot.HumanThreadIds.Contains(outcome.ThreadId))
+            .Select(outcome => outcome.ThreadId)];
+        return [.. snapshot.ThreadIds.Except(alreadyAnsweredThreadIds)];
     }
 
     /// <summary>
