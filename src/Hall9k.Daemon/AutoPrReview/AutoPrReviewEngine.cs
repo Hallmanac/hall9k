@@ -2,6 +2,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -25,22 +26,130 @@ namespace Hall9k.Daemon.AutoPrReview;
 /// as that sibling's <c>Failures</c> does, keyed the identical way — a project this sweep could
 /// not reach at all (no repository resolved, gh itself unreachable) counts, one project's own
 /// unrelated trouble (a single unreadable pull request) does not widen the interval for every
-/// other opted-in project's own healthy reads.
+/// other project's own healthy reads. <see cref="ProjectsInspected"/> counts every registered
+/// project since Decisions Log #161, not only the opted-in ones — a project recorded as off is
+/// still read, because its requests are still recorded.
 /// </summary>
 public sealed record AutoPrReviewSweepResult(
     int ProjectsInspected, int ProjectsFailed, int TasksCreated, int AssignmentsRecalled);
 
 /// <summary>
-/// The auto-pr-review core (idea e5e98a33, PLAN.md §16 decision #34's amendment): for every
-/// project opted in with <c>h9k project set --auto-pr-review</c>, asks GitHub which open pull
-/// requests in that project's repo currently request this install's own login — read back from
-/// GitHub every sweep, never a configured or cached name — and for each one with no live task
-/// already watching it, mints, publishes, and starts a pr-review task exactly as
-/// <c>h9k task add --from-pr</c> would, at the project's chosen speed. The reviewer assignment on
-/// GitHub is the go signal; there is no scheduling code here beyond the three general dispatch
+/// What one candidate's own decision came to: the outcome recorded against the pull request, the
+/// task it produced or was covered by, whatever the outcome needs said in words to be actionable,
+/// and the request actor read for it (null when nothing read one — an already-covered candidate
+/// pays no timeline subprocess at all).
+/// </summary>
+internal sealed record MintAttempt(
+    ReviewRequestOutcome Outcome, Guid? TaskId, string? Detail, ReviewRequestActor? Actor = null);
+
+/// <summary>
+/// The words the once-per-pull-request Info line says about an outcome (Decisions Log #161), and
+/// the decision of whether a line is owed at all — pure, so both are testable without a sweep.
+/// </summary>
+internal static class AutoPrReviewObservation
+{
+    /// <summary>
+    /// A line is owed for a request nothing has recorded yet, and for one whose recorded answer
+    /// has actually changed since — never for a standing request whose answer is the same as last
+    /// tick's, which at a three-minute interval would bury every other line in the log.
+    /// <para>
+    /// The answer is the outcome <em>and</em> the task it names (independent pre-PR review, cycle
+    /// 1, adversarial lens, low): a genuine re-review mints a second task under the same
+    /// <see cref="ReviewRequestOutcome.TaskCreated"/> outcome, and comparing outcomes alone would
+    /// suppress the one line an operator watching the log has to see for it — the transition this
+    /// record exists to make visible. <paramref name="taskId"/> is the id the row is about to
+    /// carry, so a sweep that merely rediscovers the same task still says nothing.
+    /// </para>
+    /// </summary>
+    public static bool IsReportable(
+        ObservedReviewRequest? recorded, ReviewRequestOutcome outcome, Guid? taskId) =>
+        recorded is null || recorded.Outcome != outcome || recorded.TaskId != taskId;
+
+    /// <summary>
+    /// The outcome to record now, given whatever was recorded before. A request this install
+    /// minted a task for keeps <see cref="ReviewRequestOutcome.TaskCreated"/> when a later sweep
+    /// merely rediscovers that same task through the already-covered fast path: it is the same
+    /// fact restated, and letting it overwrite the record would both rewrite what this install
+    /// actually did about the request and spend a second Info line on one pull request on the
+    /// very next tick — the exact noise the one-line-per-pull-request rule exists to prevent.
+    /// A different task covering it (a human's own <c>--from-pr</c> adoption after this one was
+    /// abandoned) is a genuinely different answer and is recorded as such.
+    /// <para>
+    /// A row that already carries GitHub's own requested-at time keeps whatever it recorded when
+    /// this tick's timeline read came back without one (independent pre-PR review, cycle 1,
+    /// adversarial lens, low). <c>FindMostRecentRequestActorAsync</c> answers a flaky
+    /// <c>gh api graphql</c> the same way it answers a pull request GraphQL cannot resolve — an
+    /// actor with null fields — so a single hiccup against a standing request would otherwise
+    /// overwrite an <em>observed</em> timestamp's verdict with "GitHub's own requested-at time
+    /// could not be read", flip back on the next successful tick, and spend two Info lines and a
+    /// misleading <c>h9k status</c> row on a failure that changed nothing. A failed read is not
+    /// new information about the request, and the row's own <c>RequestedAt</c> is still there:
+    /// the honest record is the one an earlier sweep actually observed (AGENTS.md: never guess at
+    /// unobserved facts — including guessing that what was observed has stopped being true). The
+    /// hold itself is unaffected — nothing mints on a tick that could not read the time — and a
+    /// request first seen during the hiccup has no recorded time at all, so it is recorded as
+    /// unknown exactly as before.
+    /// </para>
+    /// </summary>
+    public static ReviewRequestOutcome Settle(
+        ObservedReviewRequest? recorded, ReviewRequestOutcome outcome, Guid? taskId) =>
+        recorded switch
+        {
+            not null when outcome == ReviewRequestOutcome.HeldRequestTimeUnknown
+                && recorded.RequestedAt is not null => recorded.Outcome,
+            not null when recorded.Outcome == ReviewRequestOutcome.TaskCreated
+                && outcome == ReviewRequestOutcome.AlreadyCovered
+                && taskId is not null
+                && recorded.TaskId == taskId => ReviewRequestOutcome.TaskCreated,
+            _ => outcome,
+        };
+
+    public static string Describe(ReviewRequestOutcome outcome, string? detail, Guid? taskId)
+    {
+        string task = taskId is { } id ? DomainId.Short(id) : "none";
+        string sentence = ReviewRequestOutcome.FromInput(outcome.Value) switch
+        {
+            { } known when known == ReviewRequestOutcome.TaskCreated =>
+                $"task {task} is created and reviewing",
+            { } known when known == ReviewRequestOutcome.AlreadyCovered =>
+                $"task {task} already covers it; nothing new was created",
+            { } known when known == ReviewRequestOutcome.HeldSettingOff =>
+                "nothing was created: auto pr-review is off here, so this one is yours to take by hand",
+            { } known when known == ReviewRequestOutcome.HeldBeforeCutoff =>
+                "nothing was created: the request predates this project's own auto-pr-review cutoff, so it "
+                + "never starts on its own (the no-backfill guard) and is yours to take by hand",
+            { } known when known == ReviewRequestOutcome.HeldRequestTimeUnknown =>
+                "nothing was created: GitHub's own requested-at time could not be read, so nothing proves "
+                + "the request postdates this project's own cutoff — yours to take by hand",
+            { } known when known == ReviewRequestOutcome.MintFailed =>
+                "nothing was created: the pull request could not be adopted",
+            _ => $"an outcome this build does not recognise ({RelayedText.OneLine(outcome.Value)})",
+        };
+
+        return detail.IsBlank() ? sentence : $"{sentence} ({detail})";
+    }
+}
+
+/// <summary>
+/// The auto-pr-review core (idea e5e98a33, PLAN.md §16 decision #34's amendment, amended again
+/// by #161): for every registered project, asks GitHub which open pull requests in that
+/// project's repo currently request this install's own login — read back from GitHub every
+/// sweep, never a configured or cached name — records each one once, and for each one with no
+/// live task already watching it, mints, publishes, and starts a pr-review task exactly as
+/// <c>h9k task add --from-pr</c> would, at the project's effective speed. The reviewer assignment
+/// on GitHub is the go signal; there is no scheduling code here beyond the three general dispatch
 /// levers this feature deliberately builds nothing new on top of: the ordinary claim rotation, the
 /// queue-first marker (Decisions Log #127), and the ceiling-exempt claim <c>h9k task start</c>
 /// already uses (Decisions Log #103, #125).
+/// <para>
+/// Every project, not only the opted-in ones (Decisions Log #161): the effective speed is
+/// <see cref="AutoPrReviewSetting"/>'s resolution — <c>Normal</c> unless this project recorded
+/// something else — and a project that recorded <c>off</c> still has its requests observed and
+/// recorded, because the row an operator has to act on is only possible if the request was seen
+/// at all. Two guards bound what that on-by-default reading may start: the no-backfill cutoff
+/// (<see cref="AutoPrReviewCutoff"/>) and the same one-live-task-per-pull-request dedup this
+/// engine has always enforced.
+/// </para>
 /// <para>
 /// The same sweep also watches every non-terminal task it previously auto-created
 /// (<see cref="TaskListItem.AutoPrReviewAssigneeLogin"/> non-null) for the mirror image: a
@@ -78,33 +187,78 @@ public sealed class AutoPrReviewEngine(
 
     private int _immediateLaunchesThisSweep;
 
+    /// <summary>
+    /// One Info line per project, at daemon start, naming whether auto pr-review is on or off
+    /// there and whether that is the project's own recorded choice or the platform default
+    /// (Decisions Log #161) — printed always, at the default too, because the origin incident was
+    /// not a wrong setting but an invisible one: the feature sat installed and silent on both
+    /// nodes for three days with nothing on any surface saying so.
+    /// <para>
+    /// It is also where this install's own no-backfill cutoff is first recorded, since the first
+    /// daemon start after the flip is exactly the moment the on-by-default behaviour arrives
+    /// here. A failure to reach the database is logged and swallowed by the monitor rather than
+    /// taking the poll loop down with it: the sweep re-records the cutoff on its own first tick.
+    /// </para>
+    /// </summary>
+    public async Task AnnounceSettingsAsync(CancellationToken cancellationToken)
+    {
+        DateTimeOffset adoptedAt = await EnsureDefaultAdoptionAsync(cancellationToken);
+
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<ProjectDetails> projects = await query.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        IReadOnlyDictionary<Guid, AutoPrReviewSetting> settings = await AutoPrReviewSetting.ResolveAllAsync(
+            query, projects.Select(project => project.Id), cancellationToken);
+
+        logger.LogInformation(
+            "Auto-pr-review is on by default (Decisions Log #161); this install adopted that on {AdoptedAt:u}, "
+            + "and no review request GitHub recorded before a project's own cutoff starts a task on its own",
+            adoptedAt);
+
+        foreach (ProjectDetails project in projects.OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            AutoPrReviewSetting setting = settings[project.Id];
+            logger.LogInformation(
+                "Auto pr-review is {State} for project {Project} — {Speed} ({Origin}); change it with "
+                + "h9k project set {Project} --auto-pr-review off|normal|first|now",
+                setting.OnOff, project.Name, setting.Speed.Value.ToLowerInvariant(), setting.Origin, project.Name);
+        }
+    }
+
     public async Task<AutoPrReviewSweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
         // Sequential ticks only (AutoPrReviewMonitor awaits one PollOnceAsync before starting the
         // next), so a plain field is safe here without any locking.
         _immediateLaunchesThisSweep = 0;
 
-        IReadOnlyList<ProjectDetails> optedIn;
+        DateTimeOffset adoptedAt = await EnsureDefaultAdoptionAsync(cancellationToken);
+
+        IReadOnlyList<ProjectDetails> projects;
+        IReadOnlyDictionary<Guid, AutoPrReviewSetting> settings;
         await using (IQuerySession query = store.QuerySession())
         {
-            // Fetched in full and filtered here rather than through MatchesSql: AutoPrReviewSpeed
-            // is a value object behind a JsonConverter like every other one in this codebase, and
-            // the project count on any real install is small enough that a client-side filter
-            // costs nothing an index would meaningfully save.
-            optedIn = [.. (await query.Query<ProjectDetails>().ToListAsync(cancellationToken))
-                .Where(project => project.AutoPrReview != AutoPrReviewSpeed.Off)];
+            // Every project, not only the ones this feature will act for (Decisions Log #161):
+            // a review request GitHub makes of this install's own login is recorded once per pull
+            // request whatever the project's setting says, because the off-row an operator has to
+            // act on is only possible if the request was observed at all. The cost is one
+            // gh pr list per project per tick rather than per opted-in project per tick — a
+            // human-timescale poll against a handful of projects, which is what the interval is
+            // sized for.
+            projects = await query.Query<ProjectDetails>().ToListAsync(cancellationToken);
+            settings = await AutoPrReviewSetting.ResolveAllAsync(
+                query, projects.Select(project => project.Id), cancellationToken);
         }
 
         int inspected = 0;
         int failed = 0;
         int created = 0;
         int recalled = 0;
-        foreach (ProjectDetails project in optedIn)
+        foreach (ProjectDetails project in projects)
         {
             inspected++;
             try
             {
-                (int projectCreated, int projectRecalled) = await SweepProjectAsync(project, cancellationToken);
+                (int projectCreated, int projectRecalled) = await SweepProjectAsync(
+                    project, settings[project.Id], adoptedAt, cancellationToken);
                 created += projectCreated;
                 recalled += projectRecalled;
             }
@@ -123,7 +277,53 @@ public sealed class AutoPrReviewEngine(
         return new AutoPrReviewSweepResult(inspected, failed, created, recalled);
     }
 
-    private async Task<(int Created, int Recalled)> SweepProjectAsync(ProjectDetails project, CancellationToken cancellationToken)
+    /// <summary>
+    /// This install's own adoption moment, read if it exists and written once if it does not —
+    /// never recomputed (Decisions Log #161), because a cutoff that moved every start would let
+    /// a request that was too old yesterday be too old again tomorrow while a fresh one in
+    /// between was never actionable at all. A racing second writer is answered by re-reading
+    /// rather than overwriting: whichever moment landed first is this install's honest one.
+    /// </summary>
+    private async Task<DateTimeOffset> EnsureDefaultAdoptionAsync(CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        AutoPrReviewDefaultAdoption? recorded =
+            await session.LoadAsync<AutoPrReviewDefaultAdoption>(node.NodeId, cancellationToken);
+        if (recorded is not null)
+        {
+            return recorded.AdoptedAt;
+        }
+
+        AutoPrReviewDefaultAdoption adoption = new() { Id = node.NodeId, AdoptedAt = DateTimeOffset.UtcNow };
+        session.Insert(adoption);
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Auto-pr-review recorded this install's on-by-default cutoff at {AdoptedAt:u}: a review request "
+                + "GitHub recorded before it never starts a task on its own (Decisions Log #161)",
+                adoption.AdoptedAt);
+            return adoption.AdoptedAt;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Insert, not Store, precisely so a second writer's own moment cannot overwrite the
+            // one already recorded: the duplicate-key failure is the guarantee, and the answer to
+            // it is to read back whoever won rather than to re-record.
+            await using IQuerySession retry = store.QuerySession();
+            if (await retry.LoadAsync<AutoPrReviewDefaultAdoption>(node.NodeId, cancellationToken) is { } theirs)
+            {
+                return theirs.AdoptedAt;
+            }
+
+            logger.LogWarning(exception, "Auto-pr-review could not record this install's on-by-default cutoff");
+            throw;
+        }
+    }
+
+    private async Task<(int Created, int Recalled)> SweepProjectAsync(
+        ProjectDetails project, AutoPrReviewSetting setting, DateTimeOffset adoptedAt,
+        CancellationToken cancellationToken)
     {
         Uri? repositoryUrl = project.RepositoryUrl
             ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(project.RepositoryPath, cancellationToken);
@@ -140,13 +340,293 @@ public sealed class AutoPrReviewEngine(
         IReadOnlyList<ReviewRequestedPullRequest> currentlyRequested =
             await reviewAssignments.ListReviewRequestedAsync(repository, login, project.RepositoryPath, cancellationToken);
 
-        int created = await CreateNewlyAssignedAsync(project, repository, login, currentlyRequested, cancellationToken);
+        DateTimeOffset cutoff = AutoPrReviewCutoff.For(project.RegisteredAt, adoptedAt);
+        int created = await ObserveRequestsAsync(
+            project, setting, repository, login, cutoff, currentlyRequested, cancellationToken);
         int recalled = await ConcludeWithdrawnAsync(project, repository, login, currentlyRequested, cancellationToken);
+        await ForgetWithdrawnObservationsAsync(repository, login, currentlyRequested, cancellationToken);
         return (created, recalled);
     }
 
     /// <summary>
-    /// One task per currently review-requested pull request this install has no live task
+    /// Every currently review-requested pull request, recorded once and acted on according to
+    /// this project's own effective setting and this install's no-backfill cutoff (Decisions Log
+    /// #161). The order the four questions are asked in is itself the decision:
+    /// <list type="number">
+    /// <item>Is a live task already covering it? Then nothing is asked of anyone, and no
+    /// <c>gh</c> call beyond the search is paid — the fast path this engine has always had.</item>
+    /// <item>Can GitHub's own requested-at time be read? Without it nothing proves the request
+    /// postdates the cutoff, so nothing starts on its own.</item>
+    /// <item>Does it postdate the cutoff? The no-backfill guard outranks the setting, because a
+    /// stale request stays stale after an operator turns the setting on — telling them
+    /// otherwise would be the one row that lies about its own lever.</item>
+    /// <item>Is the setting off here? Then the row is theirs to act on.</item>
+    /// </list>
+    /// </summary>
+    private async Task<int> ObserveRequestsAsync(
+        ProjectDetails project, AutoPrReviewSetting setting, string repository, string login,
+        DateTimeOffset cutoff, IReadOnlyList<ReviewRequestedPullRequest> currentlyRequested,
+        CancellationToken cancellationToken)
+    {
+        int created = 0;
+        foreach (ReviewRequestedPullRequest candidate in currentlyRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await using IDocumentSession session = store.LightweightSession();
+            // This node and this project, because they are the decider: the row this sweep reads
+            // back and grades against is the one its own setting, registration and adoption
+            // moment wrote, never another project's or another install's answer to the same
+            // question (ObservedReviewRequest.ComputeId).
+            string id = ObservedReviewRequest.ComputeId(
+                node.NodeId, project.Id, repository, candidate.Number, login);
+            ObservedReviewRequest? recorded = await session.LoadAsync<ObservedReviewRequest>(id, cancellationToken);
+
+            MintAttempt attempt = await DecideAsync(
+                session, project, setting, repository, login, cutoff, candidate, cancellationToken);
+            if (attempt.Outcome == ReviewRequestOutcome.TaskCreated)
+            {
+                created++;
+            }
+
+            await RecordObservationAsync(
+                session, project, setting, repository, login, candidate, recorded, attempt, cancellationToken);
+        }
+
+        return created;
+    }
+
+    private async Task<MintAttempt> DecideAsync(
+        IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
+        string login, DateTimeOffset cutoff, ReviewRequestedPullRequest candidate,
+        CancellationToken cancellationToken)
+    {
+        // A cheap fast path in front of the gh pr view subprocess the import below always pays
+        // (independent pre-PR review, cycle 1, conformance lens, low): the overwhelmingly common
+        // case on every sweep after the first is "a live task already covers this pull request",
+        // and a case-insensitive match against the reference guessed from repository — never
+        // gh's own canonical casing, per the discipline the canonical dedup check inside
+        // CreateOneAsync still enforces — catches it without ever shelling out. A guess that
+        // finds nothing here is not trusted as "nothing exists": it is only a fast path in front
+        // of the canonical check, never a replacement for it, so the import and the exact-match
+        // dedup still run regardless of what this finds.
+        string guessedReference = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#{candidate.Number}";
+        TaskListItem? likelyCovering = await session.Query<TaskListItem>()
+            .Where(task => task.MatchesSql("lower(d.data ->> 'externalReference') = lower(?)", guessedReference))
+            .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
+            .Where(task => task.MatchesSql(
+                "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
+                TaskType.PrReview.Value, TaskState.Done.Value))
+            // Newest first, the same task h9k status' own pane names as the covering one: which
+            // task this returns is now part of whether an Info line is owed at all
+            // (AutoPrReviewObservation.IsReportable), and an unordered FirstOrDefault over two
+            // rows could name a different one per tick — a line per tick for a request whose
+            // answer never changed.
+            .OrderByDescending(task => task.AddedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (likelyCovering is not null)
+        {
+            return new MintAttempt(ReviewRequestOutcome.AlreadyCovered, likelyCovering.Id, null);
+        }
+
+        // GitHub's own timestamp, read fresh every sweep and deliberately never reused from the
+        // row this candidate already has: the timeline read returns the MOST RECENT request for
+        // this login, so a re-request is a new answer to the same question. Serving a remembered
+        // one instead would hold a request the requester has since re-made — permanently, for a
+        // request older than the cutoff, since nothing else would ever move that comparison —
+        // and would feed a stale timestamp to IsGenuineReRequestAsync below, which is exactly the
+        // comparison that tells a genuine re-review apart from the same standing request. The
+        // cost is one graphql call per standing request per tick, which is what this path paid
+        // before the record existed; a candidate a live task already covers still returns above
+        // without paying it at all.
+        ReviewRequestActor actor = await reviewAssignments.FindMostRecentRequestActorAsync(
+            OwnerFrom(repository), NameFrom(repository), candidate.Number, login,
+            ReviewTimelineEventKind.Requested, project.RepositoryPath, cancellationToken);
+
+        if (actor.RequestedAt is null)
+        {
+            // Debug, not Info: a flaky graphql call and a pull request GraphQL genuinely cannot
+            // resolve are indistinguishable from here, and the recorded row is the surface that
+            // says which requests are held (AutoPrReviewObservation.Settle keeps an already-read
+            // time's own verdict rather than letting one bad tick rewrite it). This line is what
+            // makes a repeating read failure findable in the log without an Info line per tick.
+            logger.LogDebug(
+                "Auto-pr-review could not read GitHub's own requested-at time for {Repository}#{Number} on "
+                + "this tick; nothing starts on its own from a request whose time is unproven",
+                repository, candidate.Number);
+            return new MintAttempt(ReviewRequestOutcome.HeldRequestTimeUnknown, null, null, actor);
+        }
+
+        if (!AutoPrReviewCutoff.StartsOnItsOwn(actor.RequestedAt, cutoff))
+        {
+            return new MintAttempt(ReviewRequestOutcome.HeldBeforeCutoff, null, null, actor);
+        }
+
+        if (!setting.IsOn)
+        {
+            return new MintAttempt(ReviewRequestOutcome.HeldSettingOff, null, null, actor);
+        }
+
+        try
+        {
+            return await CreateOneAsync(session, project, setting, repository, candidate, login, actor, cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            // A race with GitHub itself (closed or merged between the search and the import) or a
+            // genuinely unreadable pull request: recorded as a refused mint and skipped rather
+            // than failing the whole project's sweep, since every other candidate this project
+            // offered is unrelated to this one's own trouble — and recorded rather than only
+            // logged, so the operator gets a row naming what to do by hand.
+            logger.LogWarning(
+                exception, "Auto-pr-review could not adopt {Repository}#{Number}; skipping this poll",
+                repository, candidate.Number);
+            return new MintAttempt(
+                ReviewRequestOutcome.MintFailed, null, RelayedText.OneLine(exception.Message), actor);
+        }
+    }
+
+    /// <summary>
+    /// The record itself, and the one Info line per pull request an orchestrator window's log
+    /// tail picks up (Decisions Log #161). The line is written when the row is new or when its
+    /// recorded answer — the outcome, or the task that answer names — actually changed; never on
+    /// every tick for a standing request whose answer is the same as last tick's, which would
+    /// bury the log, and never suppressed for a genuinely different one (an off project turned
+    /// on, a held request that finally minted, a re-review minting a second task under the same
+    /// outcome), which is exactly the transition the operator is watching for.
+    /// <para>
+    /// "Its recorded answer" means this decider's own: the row is keyed on the observing node and
+    /// project as well as the request (<see cref="ObservedReviewRequest.ComputeId"/>), so what a
+    /// second project pointing at the same repository — or a second install sharing this database
+    /// under the same <c>gh</c> login — graded the same request cannot flip this row's answer and
+    /// spend a line per tick saying so. One line per pull request per decider, and in the
+    /// ordinary single-project-single-node case that is one line per pull request.
+    /// </para>
+    /// </summary>
+    private async Task RecordObservationAsync(
+        IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
+        string login, ReviewRequestedPullRequest candidate, ObservedReviewRequest? recorded,
+        MintAttempt attempt, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        ObservedReviewRequest observed = recorded ?? new ObservedReviewRequest
+        {
+            Id = ObservedReviewRequest.ComputeId(
+                node.NodeId, project.Id, repository, candidate.Number, login),
+            FirstObservedAt = now,
+        };
+
+        ReviewRequestOutcome outcome = AutoPrReviewObservation.Settle(recorded, attempt.Outcome, attempt.TaskId);
+        // Read off recorded, not off observed: the two are the same object whenever a row already
+        // existed, so anything read after the assignments below would be this sweep's own answer.
+        Guid? taskId = attempt.TaskId ?? recorded?.TaskId;
+        bool reportable = AutoPrReviewObservation.IsReportable(recorded, outcome, taskId);
+        // Both are part of the row's own key, so they are restated rather than changed: a row
+        // this decider loaded by that key already carries them.
+        observed.ObservingNodeId = node.NodeId;
+        observed.ProjectId = project.Id;
+        observed.Repository = repository;
+        observed.Number = candidate.Number;
+        observed.PullRequestUrl = candidate.Url;
+        observed.ReviewerLogin = login;
+        observed.RequesterLogin = attempt.Actor?.Login ?? observed.RequesterLogin;
+        observed.RequestedAt = attempt.Actor?.RequestedAt ?? observed.RequestedAt;
+        observed.LastObservedAt = now;
+        observed.SettingWhenObserved = setting.Speed;
+        observed.SettingWasRecorded = setting.Recorded;
+        observed.Outcome = outcome;
+        // The detail belongs to the outcome it was recorded with: a settled outcome that kept an
+        // earlier sweep's answer keeps that sweep's own words too, rather than pairing last
+        // tick's sentence with this tick's rediscovery.
+        observed.OutcomeDetail = outcome == attempt.Outcome ? attempt.Detail : observed.OutcomeDetail;
+        observed.TaskId = taskId;
+
+        session.Store(observed);
+        await session.SaveChangesAsync(cancellationToken);
+
+        if (reportable)
+        {
+            logger.LogInformation(
+                "Auto-pr-review observed a review request: {Repository}#{Number} in project {Project} — "
+                + "auto pr-review is {State} here ({Speed}, {Origin}) — {Outcome}",
+                repository, candidate.Number, project.Name, setting.OnOff,
+                setting.Speed.Value.ToLowerInvariant(), setting.Origin,
+                AutoPrReviewObservation.Describe(outcome, observed.OutcomeDetail, observed.TaskId));
+        }
+    }
+
+    /// <summary>
+    /// Drops the rows for pull requests GitHub no longer reports as requesting this login — a
+    /// withdrawal, a merge, a close, or a submitted review that cleared the request all end it.
+    /// Absence from the search is enough here and deliberately not enough in
+    /// <c>ConcludeOneAsync</c>: dropping a row costs a re-record and one more log line if the
+    /// request returns, while abandoning a task on the same evidence would throw work away. It is
+    /// only ever reached after a successful search, since a <c>gh</c> failure throws out of
+    /// <c>SweepProjectAsync</c> before this runs.
+    /// <para>
+    /// Scoped to <paramref name="repository"/> and <paramref name="login"/> together — exactly
+    /// the scope of the search that produced <paramref name="currentlyRequested"/> — and
+    /// deliberately not to the sweeping project's or this node's own id, even though both are
+    /// part of a row's key (<see cref="ObservedReviewRequest.ComputeId"/>). What a row is keyed
+    /// on is who graded the request; what this search proves is whether GitHub still makes it,
+    /// which is one fact about the pull request and the login and no decider's own. So every
+    /// decider's row for a request GitHub has stopped reporting goes, including a second
+    /// project's pointing at the same repository and an install's that has since been
+    /// decommissioned — neither of which would otherwise ever be cleared, leaving a needs-you row
+    /// in <c>h9k status</c> for a request nobody is making. Narrower on the number alone, a row
+    /// recorded when the project pointed at a different repository would be deleted against a
+    /// search that never covered it (Copilot review, PR #292).
+    /// </para>
+    /// <para>
+    /// Only the rows about <paramref name="login"/> — the very login the search that produced
+    /// <paramref name="currentlyRequested"/> was scoped to (independent pre-PR review, cycle 1,
+    /// adversarial lens, medium). Two installs can share one database, which is why
+    /// <see cref="AutoPrReviewDefaultAdoption"/> is keyed per node, and a search run as one
+    /// <c>gh</c> authentication is no evidence at all about a request GitHub made of another
+    /// login: deleting on it would clear the other install's row every sweep, which that install
+    /// re-records on its own next tick — a delete line and an observe line per standing request
+    /// per tick, forever, and a <c>h9k status</c> row that appears or vanishes depending on which
+    /// daemon wrote last. The cost of the scope is that a row survives an install
+    /// re-authenticating <c>gh</c> as somebody else, since nothing this install can still observe
+    /// says whether that request stands; it is recorded evidence about a login, not a guess, and
+    /// the honest answer is to leave it rather than delete what can no longer be checked
+    /// (AGENTS.md: never guess at unobserved facts).
+    /// </para>
+    /// </summary>
+    private async Task ForgetWithdrawnObservationsAsync(
+        string repository, string login,
+        IReadOnlyList<ReviewRequestedPullRequest> currentlyRequested, CancellationToken cancellationToken)
+    {
+        HashSet<int> stillRequested = [.. currentlyRequested.Select(pullRequest => pullRequest.Number)];
+
+        await using IDocumentSession session = store.LightweightSession();
+        // lower() on both sides, the same discipline ComputeId's own key already applies: the
+        // repository a row recorded is spelled as the observing project's URL spelled it, and
+        // GitHub is under no obligation to match that casing from one project to the next.
+        IReadOnlyList<ObservedReviewRequest> observed = await session.Query<ObservedReviewRequest>()
+            .Where(request => request.MatchesSql("lower(d.data ->> 'repository') = lower(?)", repository))
+            .Where(request => request.MatchesSql("lower(d.data ->> 'reviewerLogin') = lower(?)", login))
+            .ToListAsync(cancellationToken);
+
+        bool anyForgotten = false;
+        foreach (ObservedReviewRequest request in observed
+            .Where(request => !stillRequested.Contains(request.Number)))
+        {
+            session.Delete(request);
+            anyForgotten = true;
+            logger.LogInformation(
+                "Auto-pr-review no longer sees a review of {Repository}#{Number} requested of {Login}; "
+                + "clearing its row", repository, request.Number, request.ReviewerLogin);
+        }
+
+        if (anyForgotten)
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// One task for one currently review-requested pull request this install has no live task
     /// watching yet — the mirror of <c>TaskAddCommand.RefuseSecondAdoptionAsync</c>'s own dedup
     /// query, since a manually-adopted <c>--from-pr</c> task and an auto-created one share the
     /// identical one-per-item rule (PLAN.md §3.1a): a Done pr-review does not block a fresh
@@ -165,61 +645,11 @@ public sealed class AutoPrReviewEngine(
     /// exactly the failure the one-live-task-per-pull-request rule exists to prevent.
     /// </para>
     /// </summary>
-    private async Task<int> CreateNewlyAssignedAsync(
-        ProjectDetails project, string repository, string login,
-        IReadOnlyList<ReviewRequestedPullRequest> currentlyRequested, CancellationToken cancellationToken)
+    private async Task<MintAttempt> CreateOneAsync(
+        IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
+        ReviewRequestedPullRequest candidate, string login, ReviewRequestActor actor,
+        CancellationToken cancellationToken)
     {
-        int created = 0;
-        foreach (ReviewRequestedPullRequest candidate in currentlyRequested)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            await using IDocumentSession session = store.LightweightSession();
-            try
-            {
-                created += await CreateOneAsync(session, project, repository, candidate, login, cancellationToken);
-            }
-            catch (DomainException exception)
-            {
-                // A race with GitHub itself (closed or merged between the search and the
-                // import) or a genuinely unreadable pull request: logged and skipped rather
-                // than failing the whole project's sweep, since every other candidate this
-                // project offered is unrelated to this one's own trouble.
-                logger.LogWarning(
-                    exception, "Auto-pr-review could not adopt {Repository}#{Number}; skipping this poll",
-                    repository, candidate.Number);
-            }
-        }
-
-        return created;
-    }
-
-    private async Task<int> CreateOneAsync(
-        IDocumentSession session, ProjectDetails project, string repository, ReviewRequestedPullRequest candidate,
-        string login, CancellationToken cancellationToken)
-    {
-        // A cheap fast path in front of the gh pr view subprocess the import below always pays
-        // (independent pre-PR review, cycle 1, conformance lens, low): the overwhelmingly common
-        // case on every sweep after the first is "a live task already covers this pull request",
-        // and a case-insensitive match against the reference guessed from repository — never
-        // gh's own canonical casing, per the discipline the canonical dedup check below still
-        // enforces — catches it without ever shelling out. A guess that finds nothing here is not
-        // trusted as "nothing exists": it is only a fast path in front of the canonical check,
-        // never a replacement for it, so the import and the exact-match dedup still run
-        // regardless of what this finds.
-        string guessedReference = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#{candidate.Number}";
-        bool likelyAlreadyCovered = await session.Query<TaskListItem>()
-            .Where(task => task.MatchesSql("lower(d.data ->> 'externalReference') = lower(?)", guessedReference))
-            .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
-            .Where(task => task.MatchesSql(
-                "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
-                TaskType.PrReview.Value, TaskState.Done.Value))
-            .AnyAsync(cancellationToken);
-        if (likelyAlreadyCovered)
-        {
-            return 0;
-        }
-
         // processRunner threaded through explicitly (independent pre-PR review, cycle 1,
         // adversarial lens): ImporterAsync's own default construction ignores whatever runner it
         // is handed unless asked, which silently shells to the real gh underneath this engine's
@@ -236,10 +666,13 @@ public sealed class AutoPrReviewEngine(
             .Where(task => task.MatchesSql(
                 "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
                 TaskType.PrReview.Value, TaskState.Done.Value))
+            // Newest first for the same reason the fast path above orders: this task's id is
+            // recorded against the request and decides whether a line is owed next tick.
+            .OrderByDescending(task => task.AddedAt)
             .FirstOrDefaultAsync(cancellationToken);
         if (existing is not null)
         {
-            return 0;
+            return new MintAttempt(ReviewRequestOutcome.AlreadyCovered, existing.Id, null, actor);
         }
 
         // Both terminal states, not Done alone (independent pre-PR review, cycle 1, both
@@ -268,10 +701,6 @@ public sealed class AutoPrReviewEngine(
             .OrderByDescending(task => task.AddedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
-        ReviewRequestActor actor = await reviewAssignments.FindMostRecentRequestActorAsync(
-            OwnerFrom(repository), NameFrom(repository), candidate.Number, login,
-            ReviewTimelineEventKind.Requested, project.RepositoryPath, cancellationToken);
-
         if (previousReview is not null
             && !await IsGenuineReRequestAsync(session, previousReview, actor.RequestedAt, cancellationToken))
         {
@@ -283,7 +712,9 @@ public sealed class AutoPrReviewEngine(
             logger.LogDebug(
                 "Auto-pr-review skipped {Repository}#{Number}: task {TaskId} already exists for this same "
                 + "standing request", repository, candidate.Number, DomainId.Short(previousReview.Id));
-            return 0;
+            return new MintAttempt(
+                ReviewRequestOutcome.AlreadyCovered, previousReview.Id,
+                "an earlier auto-created task already covered this same standing request", actor);
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -374,19 +805,23 @@ public sealed class AutoPrReviewEngine(
         // A Now-speed candidate beyond this sweep's own immediate-launch cap is not silently
         // downgraded: it still takes the queue-first marker First speed uses, so it takes the
         // next free ordinary dispatch slot rather than sitting until the next poll interval.
-        bool launchImmediately = project.AutoPrReview == AutoPrReviewSpeed.Now
+        bool launchImmediately = setting.Speed == AutoPrReviewSpeed.Now
             && ++_immediateLaunchesThisSweep <= MaxImmediateLaunchesPerSweep;
 
         Guid? deliberateRunId = null;
         int? deliberateLeaseGeneration = null;
-        if (project.AutoPrReview == AutoPrReviewSpeed.First
-            || (project.AutoPrReview == AutoPrReviewSpeed.Now && !launchImmediately))
+        string? deferral = null;
+        if (setting.Speed == AutoPrReviewSpeed.First
+            || (setting.Speed == AutoPrReviewSpeed.Now && !launchImmediately))
         {
-            if (project.AutoPrReview == AutoPrReviewSpeed.Now)
+            if (setting.Speed == AutoPrReviewSpeed.Now)
             {
-                logger.LogInformation(
-                    "Auto-pr-review deferred {Repository}#{Number} to the ordinary queue-first slot — "
-                    + "this sweep already used its one immediate ceiling-exempt launch", repository, candidate.Number);
+                // Carried on the observation's own outcome rather than logged on a line of its
+                // own (Decisions Log #161): one Info line per pull request is what an
+                // orchestrator window's log tail can rely on, so a fact about this pull request
+                // belongs in that line rather than beside it.
+                deferral = "deferred to the ordinary queue-first slot — this sweep already used its one "
+                    + "immediate ceiling-exempt launch";
             }
 
             TaskRevised revised = TaskDecider.Revise(
@@ -415,9 +850,13 @@ public sealed class AutoPrReviewEngine(
         session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
         await session.SaveChangesAsync(cancellationToken);
 
-        logger.LogInformation(
+        // No Info line of its own here (Decisions Log #161): the observation this mint answers
+        // logs exactly one Info line per pull request, and it names the task, the project, the
+        // setting and this outcome — a second line for the same pull request is the noise that
+        // rule exists to prevent. The task id is at Debug for a log read at that level.
+        logger.LogDebug(
             "Auto-created pr-review task {TaskId} for {Repository}#{Number}, assigned to {Login} at "
-            + "{Speed} speed", taskId, repository, candidate.Number, login, project.AutoPrReview.Value);
+            + "{Speed} speed", taskId, repository, candidate.Number, login, setting.Speed.Value);
 
         if (deliberateRunId is { } runId && deliberateLeaseGeneration is { } generation)
         {
@@ -452,7 +891,9 @@ public sealed class AutoPrReviewEngine(
             }
         }
 
-        return 1;
+        return new MintAttempt(
+            ReviewRequestOutcome.TaskCreated, taskId,
+            deferral ?? (launchImmediately ? "started immediately, ceiling-exempt" : null), actor);
     }
 
     /// <summary>
