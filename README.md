@@ -457,7 +457,12 @@ install and update, so the skill never writes it.
 
 `h9k orchestrator node` and `h9k orchestrator project [PROJECT]` print that window's daemon
 liveness, its launch text, its recipe and journal paths, and its last measured turn-one cost.
-Neither one launches anything; you copy the printed line into a fresh terminal yourself.
+Neither one launches anything; you copy the printed line into a fresh terminal yourself. The
+launch command itself always prints as a single line with exactly one trailing newline, never
+hand-wrapped at the terminal's width, whether you read it in an interactive terminal or pipe the
+output somewhere else — so it is paste-safe both ways: triple-click or drag-select the line in an
+interactive terminal, or pipe the command straight to your clipboard tool, `h9k orchestrator
+project hall9k | pbcopy` on macOS or `h9k orchestrator project hall9k | clip` on Windows.
 `h9k orchestrator launch-text show`/`set` reads and replaces that launch line, one setting per
 agent CLI, and `h9k orchestrator measure` runs a fixed one-turn probe against it so "lean" is a
 number you can watch rather than a promise: a same-day dry run of the skill's own first real run
