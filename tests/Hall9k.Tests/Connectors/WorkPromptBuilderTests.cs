@@ -427,6 +427,82 @@ public sealed class WorkPromptBuilderTests
             worktreePath: _worktreePath,
             isInteractive: isInteractive, isDeliberateHeadlessStart: isDeliberateHeadlessStart);
 
+    /// <summary>
+    /// Decisions Log #PLACEHOLDER-f481c576: the build session composes the pull request itself, so
+    /// the marker and the skill order have to be in the prompt that asks for it, not only in the
+    /// parser that reads it back.
+    /// </summary>
+    [Fact]
+    public void The_headless_build_prompt_asks_for_the_pull_request_summary_block()
+    {
+        string prompt = Build(isInteractive: false, isDeliberateHeadlessStart: false);
+
+        prompt.Should().Contain(PrSummaryParser.Marker).And.Contain($"{PrSummaryParser.TitlePrefix} <one line>");
+        prompt.IndexOf(PrSummaryParser.Marker, StringComparison.Ordinal)
+            .Should().BeGreaterThan(prompt.IndexOf("verify tree identity", StringComparison.Ordinal),
+                "it composes from the commits the recompose just made");
+    }
+
+    [Fact]
+    public void The_headless_build_prompt_names_the_repos_own_rule_first_and_the_shipped_skill_second()
+    {
+        string prompt = Build(isInteractive: false, isDeliberateHeadlessStart: false);
+
+        prompt.IndexOf(".claude/commands/git/pr-description.md", StringComparison.Ordinal)
+            .Should().BeGreaterThan(0).And
+            .BeLessThan(prompt.IndexOf("Only when the repository ships none", StringComparison.Ordinal),
+                "a repository with its own PR-description rule keeps its own voice");
+        prompt.Should().Contain("`pr-summary` skill");
+    }
+
+    [Fact]
+    public void The_pull_request_summary_step_says_what_the_platform_adds_around_it()
+    {
+        string prompt = Build(isInteractive: false, isDeliberateHeadlessStart: false);
+
+        prompt.Should().Contain("The work-item link, the acceptance criteria, and the run")
+            .And.Contain("No em dashes (U+2014)")
+            .And.Contain("Do not run `gh pr create` or `gh pr edit`");
+    }
+
+    /// <summary>
+    /// The parser this step promises reads a headless session's own stream-json result payload,
+    /// which an attended session never produces, so asking an operator's own session for the block
+    /// would be asking for text nothing reads.
+    /// </summary>
+    [Fact]
+    public void The_attended_interactive_prompt_never_asks_for_one()
+    {
+        Build(isInteractive: true, isDeliberateHeadlessStart: false).Should().NotContain(PrSummaryParser.Marker);
+    }
+
+    [Fact]
+    public void The_delegated_contractor_prompt_asks_for_it_too()
+    {
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Picking up midway.",
+            delegationBaseCommit: "abc1234");
+
+        prompt.Should().Contain(PrSummaryParser.Marker).And.Contain(".claude/commands/git/pr-description.md");
+    }
+
+    /// <summary>
+    /// The blast-radius arm: a contractor whose delegation base commit could not be read skips the
+    /// recompose entirely, so it has no numbered step 4 to hang this on. Its final message is
+    /// captured exactly the same way, so the step still applies, worded as a rule of its own.
+    /// </summary>
+    [Fact]
+    public void A_contractor_that_cannot_recompose_is_still_asked_for_one()
+    {
+        string prompt = WorkPromptBuilder.Build(
+            SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath,
+            isDeliberateHeadlessStart: true, isDelegatedContractor: true, delegationNote: "Picking up midway.",
+            delegationBaseCommit: null);
+
+        prompt.Should().Contain(PrSummaryParser.Marker);
+    }
+
     private static TaskDetails SomeTask() => new()
     {
         Id = DomainId.New(),

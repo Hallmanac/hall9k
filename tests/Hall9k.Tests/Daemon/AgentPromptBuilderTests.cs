@@ -2493,6 +2493,25 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// Decisions Log #PLACEHOLDER-f481c576: a fix session refreshes the pull request's own summary
+    /// opportunistically, so the sentence has to ask rather than require, and has to say what
+    /// silence means so a session that writes nothing knows it has not dropped anything.
+    /// </summary>
+    [Fact]
+    public void Review_fix_prompt_invites_a_refreshed_pull_request_summary_without_requiring_one()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 2);
+
+        prompt.Should().Contain("what a reviewer of the whole pull request needs to know")
+            .And.Contain(PrSummaryParser.Marker)
+            .And.Contain("otherwise write none and");
+        prompt.IndexOf(PrSummaryParser.Marker, StringComparison.Ordinal)
+            .Should().BeLessThan(prompt.IndexOf("RESOLUTION: fixed", StringComparison.Ordinal),
+                "the resolution line is still the last thing in the message");
+    }
+
+    /// <summary>
     /// The fix session follows the platform's disposition rather than re-deciding it, and the
     /// dispute lever covers a finding's grade as well as the finding (Decisions Log #63). An
     /// agent that could quietly re-grade a High as a Low would be choosing its own exit from
