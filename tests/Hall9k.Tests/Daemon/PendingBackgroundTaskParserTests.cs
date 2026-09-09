@@ -144,4 +144,20 @@ public sealed class PendingBackgroundTaskParserTests
         PendingBackgroundTaskParser.NamesPendingBackgroundTask(
             "The background build is still running, but no background chatter is worth mentioning here.")
             .Should().BeTrue();
+
+    /// <summary>
+    /// A still-in-flight word must land in the sub-clause that names "background" (or one
+    /// continuing it), not merely anywhere later in the same period-delimited clause — an
+    /// innocuous "For background," opener followed by an unrelated completion verb elsewhere in
+    /// the sentence must not read as a pending background task (independent pre-PR review, cycle
+    /// 3, conformance lens: the still-in-flight check previously scanned the whole raw clause,
+    /// letting "completed" match "complete" even though neither the "background"-naming sub-clause
+    /// nor any sub-clause continuing it ever mentions a still-in-flight word).
+    /// </summary>
+    [Fact]
+    public void A_still_in_flight_word_outside_the_background_sub_clause_chain_does_not_match() =>
+        PendingBackgroundTaskParser.NamesPendingBackgroundTask(
+            "For background, the failing test was already red on main before this cycle, and I re-ran "
+            + "the full suite in the foreground, which completed green.")
+            .Should().BeFalse();
 }
