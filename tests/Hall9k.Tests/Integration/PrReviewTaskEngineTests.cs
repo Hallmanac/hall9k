@@ -316,7 +316,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     /// <summary>
     /// A timeline carrying one <c>ReviewRequestedEvent</c> for <c>brian</c> at <see cref="Now"/> —
     /// the fact the no-backfill guard compares against a project's own cutoff (Decisions Log
-    /// #159). A test that expects a mint has to script this: a timeline with no requested-at in it
+    /// #161). A test that expects a mint has to script this: a timeline with no requested-at in it
     /// at all no longer mints anything, because nothing then proves the request postdates this
     /// install's own adoption of the on-by-default behaviour.
     /// </summary>
@@ -332,7 +332,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     /// This install's own on-by-default cutoff, recorded a day before <see cref="Now"/> so that a
     /// test project registered at <see cref="Now"/> is bounded by its own registration rather than
     /// by the real wall-clock moment <c>EnsureDefaultAdoptionAsync</c> would otherwise write
-    /// (Decisions Log #159). Without it every seeded request in this file is older than the
+    /// (Decisions Log #161). Without it every seeded request in this file is older than the
     /// cutoff and mints nothing — which is the guard working, not a defect.
     /// </summary>
     private static async Task SeedDefaultAdoptionAsync(
@@ -347,7 +347,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     /// Whether this gh invocation is <c>gh repo view --json url</c> — the read a project with no
     /// recorded repository URL falls back to in order to discover its own repository. Every
     /// scripted runner below has to refuse it now that a sweep reads every registered project
-    /// rather than only the opted-in ones (Decisions Log #159): answered with any of the JSON a
+    /// rather than only the opted-in ones (Decisions Log #161): answered with any of the JSON a
     /// test scripts for its own pull requests, a sibling test's URL-less project would resolve to
     /// THIS test's repository and mint this test's own candidate under itself, starving this test
     /// via the canonical dedup check. Refusing is also the truthful answer — nothing here knows
@@ -360,7 +360,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     /// Whether this gh invocation is asking about <paramref name="repository"/>, read off its own
     /// <c>--repo</c> argument. Every scripted <c>gh pr list</c> below needs the guard now that a
     /// sweep reads every registered project rather than only the opted-in ones (Decisions Log
-    /// #159): this class shares one Postgres database across its test methods, so a sibling
+    /// #161): this class shares one Postgres database across its test methods, so a sibling
     /// test's leftover project is swept inside this same PollOnceAsync call, and a list that
     /// answered for it too would hand it this test's own candidate — minting under the wrong
     /// project and starving this test's own via the canonical dedup check.
@@ -678,7 +678,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
                 return Task.FromResult(new ProcessResult(0, json, string.Empty));
             }
 
-            // graphql — the actor-provenance timeline read, and since Decisions Log #159 also the
+            // graphql — the actor-provenance timeline read, and since Decisions Log #161 also the
             // requested-at the no-backfill guard compares against this project's own cutoff. A
             // request GitHub recorded at this project's registration is inside its cutoff, so
             // both candidates are free to mint and the immediate-launch cap is what decides
@@ -1831,4 +1831,690 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             primarySessionResumer, Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
     }
+
+    // -------------------------------------------------------------------------------------
+    // On by default, visible always, no backfill (Decisions Log #161). Origin incident
+    // (2026-09-08): the feature sat installed and silent on both nodes for three days because it
+    // was a per-project opt-in defaulting to off and nothing surfaced that state; opting one
+    // project in then minted four tasks in a single sweep, two of them for August requests. Each
+    // test below owns a repository found nowhere else in this file, for the reason the mint-path
+    // tests already document: this class shares one Postgres database, and the dedup queries key
+    // on the canonical external reference alone, unscoped by project.
+    // -------------------------------------------------------------------------------------
+
+    /// <summary>A gh that answers for exactly one repository, with one review-requested pull request whose request GitHub recorded at <paramref name="requestedAt"/>.</summary>
+    private static ProcessRunner OneRequestedPullRequest(
+        string repository, int number, DateTimeOffset requestedAt, string login = "brian") =>
+        (fileName, arguments, _, _) =>
+        {
+            if (IsRepositoryHostRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
+            }
+
+            if (arguments.Contains("user"))
+            {
+                return Task.FromResult(new ProcessResult(0, login + "\n", string.Empty));
+            }
+
+            if (arguments.Contains("list"))
+            {
+                string listJson = $$"""
+                    [{"number":{{number}},"url":"https://github.com/{{repository}}/pull/{{number}}",
+                      "title":"Add rate limiting","body":"no links here"}]
+                    """;
+                return Task.FromResult(new ProcessResult(
+                    0, AsksAbout(arguments, repository) ? listJson : "[]", string.Empty));
+            }
+
+            if (arguments.Contains("view"))
+            {
+                int repoIndex = arguments.ToList().IndexOf("--repo");
+                string requestRepository = repoIndex >= 0 && repoIndex + 1 < arguments.Count
+                    ? arguments[repoIndex + 1]
+                    : repository;
+                string prJson = $$"""
+                    {"number":{{number}},"title":"Add rate limiting","body":"no links here","state":"OPEN",
+                     "url":"https://github.com/{{requestRepository}}/pull/{{number}}","baseRefName":"main"}
+                    """;
+                return Task.FromResult(new ProcessResult(0, prJson, string.Empty));
+            }
+
+            // Concatenated rather than a raw interpolated literal, exactly as the re-request
+            // test's own timeline is: the closing braces of GraphQL's own nesting outnumber what
+            // a $$""" literal can carry as content.
+            string timelineJson =
+                "{\"data\":{\"repository\":{\"pullRequest\":{\"timelineItems\":{\"nodes\":["
+                + "{\"__typename\":\"ReviewRequestedEvent\",\"createdAt\":\""
+                + requestedAt.ToString("yyyy-MM-ddTHH:mm:ss") + "Z\","
+                + "\"actor\":{\"login\":\"alice\"},\"requestedReviewer\":{\"__typename\":\"User\",\"login\":\""
+                + login + "\"}}"
+                + "]}}}}}";
+            return Task.FromResult(new ProcessResult(0, timelineJson, string.Empty));
+        };
+
+    /// <summary>Registers a project, optionally recording an explicit auto-pr-review speed, and records this install's own cutoff at <paramref name="adoptedAt"/>.</summary>
+    private static async Task SeedProjectAsync(
+        DocumentStore store, NodeContext node, Guid projectId, string name, string repository,
+        DateTimeOffset registeredAt, DateTimeOffset adoptedAt, Optional<AutoPrReviewSpeed> speed,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new AutoPrReviewDefaultAdoption { Id = node.NodeId, AdoptedAt = adoptedAt });
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), name, $"/tmp/{name}-repo",
+            new Uri($"https://github.com/{repository}"), "main", registeredAt);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+        if (speed.HasValue)
+        {
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            session.Events.Append(projectId, ProjectDecider.ChangeSettings(
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+                Optional<IReadOnlyList<ContextLink>>.None, registeredAt, node.OwnerId, autoPrReview: speed));
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The one row this pull request renders as — <c>Single</c> deliberately, since every caller
+    /// registers one project against its own repository and a second row for one request would be
+    /// a defect rather than a detail (the two-project and two-install cases assert over
+    /// <see cref="RowsForAsync"/> instead).
+    /// </summary>
+    private static async Task<ReviewRequestRow?> RowForAsync(
+        DocumentStore store, string repository, int number, DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        (await RowsForAsync(store, repository, number, now, cancellationToken)).SingleOrDefault();
+
+    /// <summary>
+    /// The flip itself: a project that never recorded a setting mints, publishes and assigns a
+    /// pr-review task for a request GitHub made after it was registered, and the pane says so
+    /// informationally rather than asking the operator for anything.
+    /// </summary>
+    [Fact]
+    public async Task A_project_with_no_recorded_setting_mints_on_a_new_request_and_shows_an_informational_row()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/default-on-test";
+        const int number = 9501;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-default-on", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        ListLogger<AutoPrReviewEngine> logger = new();
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddMinutes(5)),
+            logger);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+            // A second sweep, so the once-per-pull-request rule is actually under test: the
+            // request still stands and the answer has not changed, so it owes no second line.
+            await engine.PollOnceAsync(cts.Token);
+
+            logger.InformationLines.Where(line => line.Contains($"{repository}#{number}"))
+                .Should().HaveCount(1, "exactly one Info line per pull request is what a log tail can rely on");
+            logger.InformationLines.Should().ContainSingle(line =>
+                line.Contains($"{repository}#{number}")
+                && line.Contains("auto pr-review is on here (normal, default)")
+                && line.Contains("is created and reviewing"),
+                "the line names the pull request, the project, the setting and the outcome");
+
+            await using (IQuerySession query = store.QuerySession())
+            {
+                TaskListItem minted = (await query.Query<TaskListItem>()
+                    .Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+                minted.Type.Should().Be(TaskType.PrReview);
+                minted.State.Should().Be(TaskState.Queued, "normal speed joins the ordinary dispatch queue");
+                minted.WasAutoPrReviewCreated.Should().BeTrue();
+
+                ObservedReviewRequest observed = (await query
+                    .LoadAsync<ObservedReviewRequest>(ObservedReviewRequest.ComputeId(node.NodeId, projectId, repository, number, "brian"), cts.Token))!;
+                observed.Outcome.Should().Be(ReviewRequestOutcome.TaskCreated);
+                observed.TaskId.Should().Be(minted.Id, "the record carries its own outcome, not just the sighting");
+                observed.SettingWhenObserved.Should().Be(AutoPrReviewSpeed.Normal);
+                observed.SettingWasRecorded.Should().BeFalse("this project never recorded one — the default is what acted");
+                observed.RequestedAt.Should().Be(Now.AddMinutes(5), "GitHub's own time, not this install's poll time");
+            }
+
+            ReviewRequestRow row = (await RowForAsync(store, repository, number, Now.AddMinutes(10), cts.Token))!;
+            row.NeedsYou.Should().BeFalse("a busy login is not nagged for work the daemon is already doing");
+            row.Markup.Should().Contain($"a review of {repository}#{number} was requested of brian");
+            row.Markup.Should().Contain("is created and reviewing");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// The explicit opt-out still holds, and is still visible: nothing is minted, and the pane
+    /// asks the operator with both commands — the one that takes the review by hand and the one
+    /// that turns the setting on.
+    /// </summary>
+    [Fact]
+    public async Task An_explicit_off_mints_nothing_and_shows_a_needs_you_row_naming_both_commands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/explicit-off-test";
+        const int number = 9601;
+        const string projectName = "auto-pr-review-explicit-off";
+
+        await SeedProjectAsync(
+            store, node, projectId, projectName, repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off), cts.Token);
+
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddMinutes(5)),
+            NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token))
+                .Should().BeEmpty("an explicit opt-out is honoured for as long as it stands");
+
+            ObservedReviewRequest observed = (await query
+                .LoadAsync<ObservedReviewRequest>(ObservedReviewRequest.ComputeId(node.NodeId, projectId, repository, number, "brian"), cts.Token))!;
+            observed.Outcome.Should().Be(ReviewRequestOutcome.HeldSettingOff);
+            observed.SettingWasRecorded.Should().BeTrue();
+            observed.TaskId.Should().BeNull();
+        }
+
+        ReviewRequestRow row = (await RowForAsync(store, repository, number, Now.AddMinutes(10), cts.Token))!;
+        row.NeedsYou.Should().BeTrue("nothing started, so the operator is the one who has to act");
+        row.Markup.Should().Contain($"a review of {repository}#{number} was requested of brian");
+        row.Markup.Should().Contain("auto pr-review is off here");
+        row.Markup.Should().Contain($"h9k task add --project {projectName} --from-pr {number}");
+        row.Markup.Should().Contain($"h9k project set {projectName} --auto-pr-review normal");
+    }
+
+    /// <summary>
+    /// The no-backfill guard: a request GitHub recorded before a newly registered project's own
+    /// cutoff never starts a task on its own, even with the setting on by default. This is the
+    /// batch of four the 16:03 EDT sweep minted, prevented — and it surfaces as a needs-you row
+    /// carrying the request's age and the hand path, not as silence.
+    /// </summary>
+    [Fact]
+    public async Task An_old_request_on_a_newly_registered_project_never_starts_and_shows_a_needs_you_row()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/no-backfill-test";
+        const int number = 1568;
+        const string projectName = "auto-pr-review-no-backfill";
+
+        // Registered now, with the request GitHub recorded a fortnight earlier — exactly the
+        // August requests that had been sitting open on the real node.
+        await SeedProjectAsync(
+            store, node, projectId, projectName, repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddDays(-14)),
+            NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using (IQuerySession query = store.QuerySession())
+            {
+                (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token))
+                    .Should().BeEmpty("the request predates this project's own cutoff — no backfill");
+
+                ObservedReviewRequest observed = (await query
+                    .LoadAsync<ObservedReviewRequest>(ObservedReviewRequest.ComputeId(node.NodeId, projectId, repository, number, "brian"), cts.Token))!;
+                observed.Outcome.Should().Be(ReviewRequestOutcome.HeldBeforeCutoff);
+                observed.SettingWhenObserved.Should().Be(AutoPrReviewSpeed.Normal,
+                    "the setting was on — the guard, not the setting, is what held it");
+            }
+
+            // A second sweep changes nothing: the guard is not a one-time filter.
+            await engine.PollOnceAsync(cts.Token);
+            await using (IQuerySession query = store.QuerySession())
+            {
+                (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).ToListAsync(cts.Token))
+                    .Should().BeEmpty("a stale request stays stale on every later sweep");
+            }
+
+            ReviewRequestRow row = (await RowForAsync(store, repository, number, Now, cts.Token))!;
+            row.NeedsYou.Should().BeTrue();
+            row.Markup.Should().Contain("14d ago", "the age is what tells an operator this is one of the stale ones");
+            row.Markup.Should().Contain($"h9k task add --project {projectName} --from-pr {number}");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// The three always-printed surfaces (Decisions Log #161): the daemon's own start-up line,
+    /// <c>h9k status</c>'s per-project line, and <c>h9k project show</c>'s settings row. Each has
+    /// to name the effective value and its origin at the default as much as at an explicit
+    /// setting, since an invisible state is what the origin incident actually was.
+    /// </summary>
+    [Fact]
+    public async Task The_daemon_start_line_the_status_line_and_the_project_show_row_all_name_the_effective_setting()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid defaultProjectId = DomainId.New();
+        Guid offProjectId = DomainId.New();
+        const string defaultProjectName = "auto-pr-review-visible-default";
+        const string offProjectName = "auto-pr-review-visible-off";
+
+        await SeedProjectAsync(
+            store, node, defaultProjectId, defaultProjectName, "acme/visible-default-test", Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        await SeedProjectAsync(
+            store, node, offProjectId, offProjectName, "acme/visible-off-test", Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off), cts.Token);
+
+        ListLogger<AutoPrReviewEngine> logger = new();
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"), logger);
+
+        try
+        {
+            await engine.AnnounceSettingsAsync(cts.Token);
+
+            logger.Lines.Should().ContainSingle(line =>
+                line.Contains($"Auto pr-review is on for project {defaultProjectName}")
+                && line.Contains("normal (default)"));
+            logger.Lines.Should().ContainSingle(line =>
+                line.Contains($"Auto pr-review is off for project {offProjectName}")
+                && line.Contains("off (explicit)"));
+
+            await using IQuerySession query = store.QuerySession();
+            IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(query, Now, cts.Token);
+            ReviewRequestPaneContents pane = await ReviewRequestPane.ComposeAllAsync(query, rows, Now, cts.Token);
+
+            pane.SettingLines.Should().ContainSingle(line =>
+                line.Contains($"'{defaultProjectName}'") && line.Contains("normal, default"));
+            pane.SettingLines.Should().ContainSingle(line =>
+                line.Contains($"'{offProjectName}'") && line.Contains("off, explicit")
+                && line.Contains($"h9k project set {offProjectName} --auto-pr-review normal"));
+
+            ProjectDetails defaultProject = (await query.LoadAsync<ProjectDetails>(defaultProjectId, cts.Token))!;
+            defaultProject.AutoPrReview.Should().Be(AutoPrReviewSpeed.Off,
+                "the projection still carries the initialised default under its own key — which is exactly "
+                + "why the row below reads the stream instead");
+            string defaultRow = ProjectShowCommand.AutoPrReviewRow(
+                defaultProject, await AutoPrReviewSetting.ResolveAsync(query, defaultProjectId, cts.Token));
+            defaultRow.Should().Contain("normal").And.Contain("default").And.Contain("nothing recorded here");
+
+            ProjectDetails offProject = (await query.LoadAsync<ProjectDetails>(offProjectId, cts.Token))!;
+            string offRow = ProjectShowCommand.AutoPrReviewRow(
+                offProject, await AutoPrReviewSetting.ResolveAsync(query, offProjectId, cts.Token));
+            offRow.Should().Contain("off").And.Contain("explicit")
+                .And.Contain($"h9k project set {offProjectName} --auto-pr-review normal");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, defaultProjectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// The announcement above through the hosted service that actually ships it, rather than
+    /// through a direct engine call with an already-bootstrapped node. It is the one thing this
+    /// monitor does ahead of its own first timer tick, and it needs this node's identity: the
+    /// cutoff it records is keyed on <c>NodeId</c>, which throws until the dispatch loop has
+    /// waited for Postgres and bootstrapped. Origin incident (2026-08-21, restated against this
+    /// loop by this branch's own pre-PR review, cycle 1, adversarial lens): the host starts every
+    /// remaining hosted service the moment <c>DispatchLoop</c> reaches its first await, so an
+    /// unguarded read here was downgraded to "could not announce its per-project settings at
+    /// start" on every real daemon start — the first of Decisions Log #161's three visibility
+    /// surfaces deterministically never printed, and the no-backfill cutoff was first recorded a
+    /// full poll interval later.
+    /// </summary>
+    [Fact]
+    public async Task The_monitor_waits_for_this_node_to_have_an_identity_before_it_announces_anything()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext bootstrapped = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string projectName = "auto-pr-review-monitor-waits";
+
+        await SeedProjectAsync(
+            store, bootstrapped, projectId, projectName, "acme/monitor-waits-test", Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        // The monitor gets a node nothing has initialized, the way the host hands it one. The
+        // GitHub connection is seeded explicitly ahead of the deferred InitializeAsync call
+        // below, or NodeBootstrap.EnsureAsync falls through to GhLogin() and shells to the real
+        // gh (PLAN.md §16 #110).
+        await NodeBootstrapSeed.SeedGitHubConnectionAsync(store, cts.Token);
+        NodeContext node = new();
+        ListLogger<AutoPrReviewMonitor> monitorLogger = new();
+        ListLogger<AutoPrReviewEngine> engineLogger = new();
+        AutoPrReviewMonitor monitor = new(
+            new AutoPrReviewEngine(store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"), engineLogger),
+            node,
+            Options.Create(new DaemonOptions()),
+            monitorLogger);
+
+        await monitor.StartAsync(cts.Token);
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cts.Token);
+            monitorLogger.Lines.Should().BeEmpty(
+                "an announcement before bootstrap would throw on NodeContext and be downgraded to a warning");
+            engineLogger.Lines.Should().BeEmpty("nothing has been announced yet either");
+
+            await node.InitializeAsync(store, cts.Token);
+
+            for (int attempt = 0;
+                attempt < 100 && !engineLogger.Lines.Any(line => line.Contains(projectName));
+                attempt++)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cts.Token);
+            }
+
+            engineLogger.Lines.Should().ContainSingle(line =>
+                line.Contains($"Auto pr-review is on for project {projectName}") && line.Contains("normal (default)"),
+                "the per-project line prints as soon as the node knows who it is, not a poll interval later");
+            monitorLogger.Lines.Should().BeEmpty(
+                "nothing was downgraded to a warning, which is what the pre-bootstrap read produced");
+
+            await using IQuerySession query = store.QuerySession();
+            (await query.LoadAsync<AutoPrReviewDefaultAdoption>(node.NodeId, cts.Token))
+                .Should().NotBeNull("the announcement is also where this install's no-backfill cutoff is recorded");
+        }
+        finally
+        {
+            await monitor.StopAsync(CancellationToken.None);
+            await TurnOffAutoPrReviewAsync(store, projectId, bootstrapped.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// Two installs, one database — the deployment <see cref="AutoPrReviewDefaultAdoption"/> is
+    /// keyed per node for — with two <c>gh</c> authentications (independent pre-PR review, cycle
+    /// 1, adversarial lens): a sweep clears only the rows about the login it searched as. The
+    /// search that reported "no longer requested" was scoped to one login, so it is evidence
+    /// about that login and nothing else; deleting the other install's row on it would clear a
+    /// row that install re-records on its own next tick, forever, and make <c>h9k status</c> show
+    /// or hide a needs-you row depending on which daemon wrote last.
+    /// </summary>
+    [Fact]
+    public async Task A_sweep_clears_only_the_rows_about_the_login_it_searched_as()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/two-logins-test";
+        const int ours = 9601;
+        const int theirs = 9602;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-two-logins", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(ObservedRow(node.NodeId, projectId, repository, ours, "brian"));
+            seed.Store(ObservedRow(node.NodeId, projectId, repository, theirs, "otherbot"));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"),
+            NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(node.NodeId, projectId, repository, ours, "brian"), cts.Token))
+                .Should().BeNull("gh reported no request of brian, which is evidence about brian's own row");
+            (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(node.NodeId, projectId, repository, theirs, "otherbot"), cts.Token))
+                .Should().NotBeNull("a search run as brian says nothing about a review requested of otherbot");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// A withdrawal is cleared for every decider's row about that request, not only the sweeping
+    /// project's own and not only this node's (Copilot review, PR #292; independent pre-PR
+    /// review, cycle 1, adversarial lens). A row is keyed per decider because the outcome is
+    /// decided from that decider's own facts, but the search that proves GitHub no longer makes
+    /// the request is evidence about the repository and the login alone — so a second project
+    /// pointing at the same repository, and an install that has since gone away, both have their
+    /// rows cleared rather than left standing as a needs-you row for a request nobody is making.
+    /// A row about a repository this sweep never searched survives it, however that row's
+    /// pull-request number compares to the ones the search returned.
+    /// </summary>
+    [Fact]
+    public async Task A_sweep_clears_every_deciders_row_for_the_repository_and_login_it_searched()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid sweepingProjectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        Guid goneNodeId = DomainId.New();
+        const string shared = "acme/shared-repo-test";
+        const string elsewhere = "acme/never-searched-test";
+        const int number = 9701;
+
+        await SeedProjectAsync(
+            store, node, sweepingProjectId, "auto-pr-review-shared-repo", shared, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            // Another project on this install pointing at the same repository, and an install
+            // that is no longer here to clear its own row: both graded this same request, and
+            // this sweep's search is evidence about the request rather than about either of them.
+            seed.Store(ObservedRow(node.NodeId, otherProjectId, shared, number, "brian"));
+            seed.Store(ObservedRow(goneNodeId, sweepingProjectId, shared, number, "brian"));
+            // Same login and same number in another repository: no search this sweep ran covers
+            // it, so nothing here is evidence that request was withdrawn.
+            seed.Store(ObservedRow(node.NodeId, sweepingProjectId, elsewhere, number, "brian"));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"),
+            NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(node.NodeId, otherProjectId, shared, number, "brian"),
+                    cts.Token))
+                .Should().BeNull(
+                    "the search covered the repository and login the row is about — which project graded "
+                    + "it is no part of that evidence");
+            (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(goneNodeId, sweepingProjectId, shared, number, "brian"),
+                    cts.Token))
+                .Should().BeNull(
+                    "an install that is gone never clears its own row, and a needs-you row for a request "
+                    + "GitHub no longer makes would stand forever");
+            (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(node.NodeId, sweepingProjectId, elsewhere, number, "brian"),
+                    cts.Token))
+                .Should().NotBeNull("a search of one repository says nothing about a request in another");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, sweepingProjectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// Two projects on one install pointing at the same repository grade one standing request
+    /// differently — one recorded <c>off</c>, one on the default with a registration later than
+    /// the request — and each keeps its own answer, its own row and its own single Info line
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium). Keyed on the request alone
+    /// the two overwrote each other on one shared row every sweep, and every overwrite read as a
+    /// genuine change: two Info lines per tick forever, and a <c>h9k status</c> row flapping
+    /// between two causes and two levers.
+    /// </summary>
+    [Fact]
+    public async Task Two_projects_on_one_repository_each_keep_their_own_answer_and_their_own_row()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid offProjectId = DomainId.New();
+        Guid staleProjectId = DomainId.New();
+        const string repository = "acme/two-projects-test";
+        const int number = 9801;
+        const string offProject = "auto-pr-review-two-projects-off";
+        const string staleProject = "auto-pr-review-two-projects-stale";
+
+        // Registered before this install's own adoption, and explicitly opted out: the request
+        // clears its cutoff and is held by the setting.
+        await SeedProjectAsync(
+            store, node, offProjectId, offProject, repository, Now.AddDays(-2), Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off), cts.Token);
+        // Registered after the request GitHub recorded, and never opted out: on by default, and
+        // held by its own cutoff instead.
+        await SeedProjectAsync(
+            store, node, staleProjectId, staleProject, repository, Now.AddMinutes(30), Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+
+        ListLogger<AutoPrReviewEngine> logger = new();
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddMinutes(5)),
+            logger);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+            await engine.PollOnceAsync(cts.Token);
+
+            logger.InformationLines.Where(line => line.Contains($"{repository}#{number}"))
+                .Should().HaveCount(2,
+                    "one line per project, written once — not one per project per tick, which is what a "
+                    + "single shared row bought");
+
+            await using (IQuerySession query = store.QuerySession())
+            {
+                (await query.Query<TaskListItem>()
+                    .Where(task => task.ProjectId == offProjectId || task.ProjectId == staleProjectId)
+                    .ToListAsync(cts.Token))
+                    .Should().BeEmpty("one project opted out and the other's cutoff postdates the request");
+
+                ObservedReviewRequest held = (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(node.NodeId, offProjectId, repository, number, "brian"),
+                    cts.Token))!;
+                held.Outcome.Should().Be(ReviewRequestOutcome.HeldSettingOff);
+                ObservedReviewRequest stale = (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(node.NodeId, staleProjectId, repository, number, "brian"),
+                    cts.Token))!;
+                stale.Outcome.Should().Be(ReviewRequestOutcome.HeldBeforeCutoff,
+                    "the second project's own registration is what held this one — not the first's setting");
+            }
+
+            IReadOnlyList<ReviewRequestRow> rendered =
+                await RowsForAsync(store, repository, number, Now.AddMinutes(10), cts.Token);
+            rendered.Should().HaveCount(2, "the two projects disagree, so each row stands with its own lever");
+            rendered.Should().OnlyContain(row => row.NeedsYou);
+            rendered.Should().ContainSingle(row =>
+                row.Markup.Contains("auto pr-review is off here")
+                && row.Markup.Contains($"h9k project set {offProject} --auto-pr-review normal"));
+            rendered.Should().ContainSingle(row =>
+                row.Markup.Contains("it predates auto pr-review's start on this install")
+                && row.Markup.Contains($"h9k task add --project {staleProject} --from-pr {number}")
+                && !row.Markup.Contains("--auto-pr-review normal"));
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, offProjectId, node.OwnerId, cts.Token);
+            await TurnOffAutoPrReviewAsync(store, staleProjectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// Two installs sharing one database under one <c>gh</c> login each record their own row for
+    /// one request — the node is part of the row's key because its own adoption moment is half of
+    /// the cutoff that graded it — and where the two agree the pane says it once rather than
+    /// printing the same sentence twice (independent pre-PR review, cycle 1, adversarial lens,
+    /// medium).
+    /// </summary>
+    [Fact]
+    public async Task Two_installs_that_agree_about_one_request_print_one_row()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        NodeContext otherNode = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/two-installs-test";
+        const int number = 9901;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-two-installs", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off), cts.Token);
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(ObservedRow(node.NodeId, projectId, repository, number, "brian"));
+            seed.Store(ObservedRow(otherNode.NodeId, projectId, repository, number, "brian"));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        IReadOnlyList<ReviewRequestRow> rendered =
+            await RowsForAsync(store, repository, number, Now.AddMinutes(10), cts.Token);
+        rendered.Should().ContainSingle("both installs graded it the same way, so there is one thing to say");
+        rendered.Single().NeedsYou.Should().BeTrue("the project recorded an explicit off — nothing started");
+    }
+
+    private static async Task<IReadOnlyList<ReviewRequestRow>> RowsForAsync(
+        DocumentStore store, string repository, int number, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(query, now, cancellationToken);
+        ReviewRequestPaneContents pane = await ReviewRequestPane.ComposeAllAsync(query, rows, now, cancellationToken);
+        return [.. pane.Requests.Where(request => request.Repository == repository && request.Number == number)];
+    }
+
+    private static ObservedReviewRequest ObservedRow(
+        Guid nodeId, Guid projectId, string repository, int number, string reviewerLogin) => new()
+        {
+            Id = ObservedReviewRequest.ComputeId(nodeId, projectId, repository, number, reviewerLogin),
+            ObservingNodeId = nodeId,
+            ProjectId = projectId,
+            Repository = repository,
+            Number = number,
+            PullRequestUrl = $"https://github.com/{repository}/pull/{number}",
+            ReviewerLogin = reviewerLogin,
+            RequestedAt = Now,
+            FirstObservedAt = Now,
+            LastObservedAt = Now,
+            Outcome = ReviewRequestOutcome.HeldSettingOff,
+        };
 }

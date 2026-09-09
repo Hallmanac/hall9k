@@ -30,19 +30,21 @@ namespace Hall9k.Tests.Domain;
 /// bounded to <c>tests/Hall9k.Tests</c> would claim a coverage its own test name does not qualify.
 /// </para>
 /// <para>
-/// Two files are exempt, by repository-relative path exactly like
+/// Three files are exempt, by repository-relative path exactly like
 /// <see cref="ContainerRoutingGuardTests"/>'s single exemption:
 /// <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed"/> itself, which is where the one legitimate
-/// direct construction lives, and
-/// <c>tests/Hall9k.Tests/Integration/RenderSweepTests.cs</c>, whose
-/// <c>The_loop_waits_for_this_node_to_have_an_identity_before_its_first_sweep</c> case deliberately
-/// keeps its own direct construction and a deferred <c>InitializeAsync</c> call — the test exists
-/// to exercise the loop's pre-bootstrap window, so the initialization has to happen on its own
-/// schedule rather than bundled inside <c>NewNodeAsync</c> — made gh-safe instead by calling
-/// <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed.SeedGitHubConnectionAsync"/> explicitly,
-/// immediately before it (PLAN.md §16 #110). Neither exemption is file-wide: each names the exact
+/// direct construction lives, and two files whose own tests exercise a hosted service's
+/// pre-bootstrap window — <c>tests/Hall9k.Tests/Integration/RenderSweepTests.cs</c>'s
+/// <c>The_loop_waits_for_this_node_to_have_an_identity_before_its_first_sweep</c> and
+/// <c>tests/Hall9k.Tests/Integration/PrReviewTaskEngineTests.cs</c>'s
+/// <c>The_monitor_waits_for_this_node_to_have_an_identity_before_it_announces_anything</c>. Each
+/// deliberately keeps its own direct construction and a deferred <c>InitializeAsync</c> call —
+/// the whole point is the window before bootstrap, so the initialization has to happen on the
+/// test's own schedule rather than bundled inside <c>NewNodeAsync</c> — made gh-safe instead by
+/// calling <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed.SeedGitHubConnectionAsync"/>
+/// explicitly, immediately before it (PLAN.md §16 #110). No exemption is file-wide: each names the exact
 /// number of direct constructions its file is exempt for — one apiece — so a second one added
-/// anywhere else in either file still fails the build, and so does deleting the case an exemption
+/// anywhere else in any of them still fails the build, and so does deleting the case an exemption
 /// was granted for while leaving the exemption behind. Origin: the exemption was file-wide, and
 /// folding <c>CardPublicationEngineTests</c> and <c>ProjectHomeRenderEngineTests</c> into one
 /// <c>RenderSweepTests.cs</c> extended it over a second class's worth of tests that had never
@@ -93,6 +95,7 @@ public sealed class NodeBootstrapConventionGuardTests
         {
             [Path.Combine("tests", "Hall9k.Tests", "Fakes", "NodeBootstrapSeed.cs")] = 1,
             [Path.Combine("tests", "Hall9k.Tests", "Integration", "RenderSweepTests.cs")] = 1,
+            [Path.Combine("tests", "Hall9k.Tests", "Integration", "PrReviewTaskEngineTests.cs")] = 1,
         };
 
         string[] files =
