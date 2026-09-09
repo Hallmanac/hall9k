@@ -33,9 +33,10 @@ public static class PendingBackgroundTaskParser
     /// Phrases that turn "background" from something still pending into something explicitly
     /// avoided or already resolved: "rather than backgrounding it", "instead of the background
     /// run" — neither carries one of the standalone negation words below, so each is matched as
-    /// its own fixed cue instead. Checked within the same sub-clause as the pending-task claim
-    /// (see <see cref="HasNegationCue"/>), not the whole summary, so a negation elsewhere in a
-    /// long summary cannot silently suppress a genuine pending-task clause later on.
+    /// its own fixed cue instead. Checked within the sub-clause naming "background", or a later
+    /// one in the same clause (see <see cref="HasNegationCue"/>), not the whole summary, so a
+    /// negation elsewhere in a long summary cannot silently suppress a genuine pending-task clause
+    /// later on.
     /// </summary>
     private static readonly string[] NegationPhraseCues = ["rather than", "instead of"];
 
@@ -53,11 +54,11 @@ public static class PendingBackgroundTaskParser
     /// to anchor on.
     /// <para>
     /// This pattern alone is not enough to decide a negation applies: <see cref="HasNegationCue"/>
-    /// only counts a match found in the same sub-clause as the pending-task claim it would negate
-    /// (see that method's own remarks) — a negation word anywhere else in a longer clause, denying
-    /// something unrelated ("There's no way to shorten the test run, so it's still running in the
-    /// background..."), must not suppress a genuine still-in-flight mention later in the same
-    /// period-delimited clause (independent pre-PR review, cycle 2, adversarial lens).
+    /// only counts a match found in the sub-clause naming "background" or a later one (see that
+    /// method's own remarks) — a negation word in an earlier, unrelated sub-clause ("There's no way
+    /// to shorten the test run, so it's still running in the background..."), must not suppress a
+    /// genuine still-in-flight mention later in the same period-delimited clause (independent
+    /// pre-PR review, cycle 2, adversarial lens).
     /// </para>
     /// </summary>
     private static readonly Regex NegationWordPattern = new(
@@ -107,29 +108,35 @@ public static class PendingBackgroundTaskParser
     }
 
     /// <summary>
-    /// True only when a negation is found in the same sub-clause (see
-    /// <see cref="SubClauseSeparatorPattern"/>) as the "background" mention itself — i.e. in the
-    /// same narrow span as whatever the negation would need to be denying. A sub-clause that
-    /// doesn't name "background" is skipped outright, even when it happens to contain one of the
-    /// (deliberately common) <see cref="StillInFlightWords"/> — "complete", "finish", "wait", and
-    /// the rest read as ordinary English constantly, and a negation paired with one of them in an
-    /// unrelated earlier sub-clause ("I don't know how long this will take to complete, but the
-    /// background test is still running") must not reach across the boundary and suppress the
-    /// later sub-clause that actually names the pending background task (independent pre-PR
-    /// review, cycle 3, adversarial lens — this is the same reaching-across-the-boundary failure
-    /// cycle 2 fixed for standalone negation words, but triggered by a still-in-flight word instead
-    /// of "background" itself).
+    /// True only when a negation is found in the sub-clause (see
+    /// <see cref="SubClauseSeparatorPattern"/>) that first names "background", or in any later
+    /// sub-clause of the same clause — never in one before it. A later sub-clause can deny the
+    /// earlier one by pronoun rather than repeating "background" itself ("a background test, which
+    /// never finished, so I killed it" — "never" lands in the sub-clause right after the one naming
+    /// "background", denying it by referring back to "which"), so scoping to only the
+    /// "background"-naming sub-clause itself would miss it. A sub-clause *before* the one naming
+    /// "background" is excluded even when it carries a negation word, because that negation has
+    /// nothing yet to deny: "I don't know how long this will take to complete, but the background
+    /// test is still running" must not have its earlier, unrelated "don't" suppress the later
+    /// sub-clause that actually names the pending background task (independent pre-PR review,
+    /// cycle 3, adversarial lens; cycle 4 generalized the scoping rule to also cover a later,
+    /// pronoun-referring sub-clause rather than only the "background"-naming one itself).
     /// </summary>
     private static bool HasNegationCue(string clause)
     {
-        foreach (string segment in SubClauseSeparatorPattern.Split(clause))
-        {
-            bool namesPendingTaskClaim = segment.Contains("background", StringComparison.OrdinalIgnoreCase);
+        string[] segments = SubClauseSeparatorPattern.Split(clause);
 
-            if (!namesPendingTaskClaim)
-            {
-                continue;
-            }
+        int backgroundIndex = Array.FindIndex(
+            segments, segment => segment.Contains("background", StringComparison.OrdinalIgnoreCase));
+
+        if (backgroundIndex < 0)
+        {
+            return false;
+        }
+
+        for (int i = backgroundIndex; i < segments.Length; i++)
+        {
+            string segment = segments[i];
 
             if (NegationWordPattern.IsMatch(segment)
                 || segment.Contains("n't", StringComparison.OrdinalIgnoreCase)
