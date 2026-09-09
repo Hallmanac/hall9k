@@ -116,7 +116,7 @@ public sealed class DaemonOptions
 
     /// <summary>
     /// Auto-pr-review poll cadence (idea e5e98a33): how often this node asks gh which open pull
-    /// requests, in an opted-in project's repo (<c>h9k project set --auto-pr-review</c>), request
+    /// requests, in a registered project's repo, request
     /// this install's own login as a reviewer. The same interval-with-backoff shape as
     /// <see cref="PullRequestPollInterval"/>, on its own timer: a reviewer assignment is a
     /// human-timescale event exactly like a review or CI result, so the identical cadence answers

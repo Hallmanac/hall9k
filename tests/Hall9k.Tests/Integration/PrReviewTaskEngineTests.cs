@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Cli.Commands;
 using Hall9k.Daemon;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
@@ -10,9 +11,11 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -310,8 +313,73 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     // for every previously auto-created task this sweep watches.
     // -------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// A timeline carrying one <c>ReviewRequestedEvent</c> for <c>brian</c> at <see cref="Now"/> —
+    /// the fact the no-backfill guard compares against a project's own cutoff (Decisions Log
+    /// #159). A test that expects a mint has to script this: a timeline with no requested-at in it
+    /// at all no longer mints anything, because nothing then proves the request postdates this
+    /// install's own adoption of the on-by-default behaviour.
+    /// </summary>
+    private const string RequestedAtNowTimelineJson =
+        """
+        {"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[
+          {"__typename":"ReviewRequestedEvent","createdAt":"2026-09-04T12:00:00Z",
+           "actor":{"login":"alice"},"requestedReviewer":{"__typename":"User","login":"brian"}}
+        ]}}}}}
+        """;
+
+    /// <summary>
+    /// This install's own on-by-default cutoff, recorded a day before <see cref="Now"/> so that a
+    /// test project registered at <see cref="Now"/> is bounded by its own registration rather than
+    /// by the real wall-clock moment <c>EnsureDefaultAdoptionAsync</c> would otherwise write
+    /// (Decisions Log #159). Without it every seeded request in this file is older than the
+    /// cutoff and mints nothing — which is the guard working, not a defect.
+    /// </summary>
+    private static async Task SeedDefaultAdoptionAsync(
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new AutoPrReviewDefaultAdoption { Id = node.NodeId, AdoptedAt = Now.AddDays(-1) });
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether this gh invocation is <c>gh repo view --json url</c> — the read a project with no
+    /// recorded repository URL falls back to in order to discover its own repository. Every
+    /// scripted runner below has to refuse it now that a sweep reads every registered project
+    /// rather than only the opted-in ones (Decisions Log #159): answered with any of the JSON a
+    /// test scripts for its own pull requests, a sibling test's URL-less project would resolve to
+    /// THIS test's repository and mint this test's own candidate under itself, starving this test
+    /// via the canonical dedup check. Refusing is also the truthful answer — nothing here knows
+    /// what repository that project is.
+    /// </summary>
+    private static bool IsRepositoryHostRead(IReadOnlyList<string> arguments) =>
+        arguments.Count > 1 && arguments[0] == "repo" && arguments[1] == "view";
+
+    /// <summary>
+    /// Whether this gh invocation is asking about <paramref name="repository"/>, read off its own
+    /// <c>--repo</c> argument. Every scripted <c>gh pr list</c> below needs the guard now that a
+    /// sweep reads every registered project rather than only the opted-in ones (Decisions Log
+    /// #159): this class shares one Postgres database across its test methods, so a sibling
+    /// test's leftover project is swept inside this same PollOnceAsync call, and a list that
+    /// answered for it too would hand it this test's own candidate — minting under the wrong
+    /// project and starving this test's own via the canonical dedup check.
+    /// </summary>
+    private static bool AsksAbout(IReadOnlyList<string> arguments, string repository)
+    {
+        int repoIndex = arguments.ToList().IndexOf("--repo");
+        return repoIndex >= 0
+            && repoIndex + 1 < arguments.Count
+            && string.Equals(arguments[repoIndex + 1], repository, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static ProcessRunner ScriptedGh(string login, string timelineJson) => (fileName, arguments, _, _) =>
     {
+        if (IsRepositoryHostRead(arguments))
+        {
+            return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
+        }
+
         if (arguments.Contains("user"))
         {
             return Task.FromResult(new ProcessResult(0, login + "\n", string.Empty));
@@ -538,6 +606,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid projectId = DomainId.New();
+        await SeedDefaultAdoptionAsync(store, node, cts.Token);
         // A repository and pull request numbers found nowhere else in this file: every other
         // test's seed hardcodes acme/widgets#42, and CreateOneAsync's own dedup queries key on
         // the canonical external reference alone, unscoped by project — a collision there would
@@ -566,10 +635,14 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
               {"number":9102,"url":"https://github.com/acme/mint-cap-test/pull/9102","title":"Second","body":"no links here"}
             ]
             """;
-        const string emptyTimelineJson = """{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}""";
 
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsRepositoryHostRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
+            }
+
             if (arguments.Contains("user"))
             {
                 return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
@@ -577,7 +650,8 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
             if (arguments.Contains("list"))
             {
-                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+                return Task.FromResult(new ProcessResult(
+                    0, AsksAbout(arguments, repository) ? listJson : "[]", string.Empty));
             }
 
             if (arguments.Contains("view"))
@@ -604,9 +678,12 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
                 return Task.FromResult(new ProcessResult(0, json, string.Empty));
             }
 
-            // graphql — the actor-provenance timeline read; empty means unattributed, which
-            // never blocks minting a fresh candidate (no previous review exists to compare against).
-            return Task.FromResult(new ProcessResult(0, emptyTimelineJson, string.Empty));
+            // graphql — the actor-provenance timeline read, and since Decisions Log #159 also the
+            // requested-at the no-backfill guard compares against this project's own cutoff. A
+            // request GitHub recorded at this project's registration is inside its cutoff, so
+            // both candidates are free to mint and the immediate-launch cap is what decides
+            // which one starts.
+            return Task.FromResult(new ProcessResult(0, RequestedAtNowTimelineJson, string.Empty));
         };
 
         AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
@@ -684,6 +761,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid projectId = DomainId.New();
+        await SeedDefaultAdoptionAsync(store, node, cts.Token);
 
         // A repository, pull request and issue number found nowhere else in this file — see the
         // Now-speed cap test's own note on why: CreateOneAsync's dedup queries key on the
@@ -709,10 +787,14 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         const string listJson = """
             [{"number":9201,"url":"https://github.com/acme/mint-linked-issue-test/pull/9201","title":"Add rate limiting","body":"Closes #9202."}]
             """;
-        const string emptyTimelineJson = """{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}""";
 
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsRepositoryHostRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
+            }
+
             if (arguments.Contains("user"))
             {
                 return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
@@ -720,7 +802,8 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
             if (arguments.Contains("list"))
             {
-                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+                return Task.FromResult(new ProcessResult(
+                    0, AsksAbout(arguments, repository) ? listJson : "[]", string.Empty));
             }
 
             // The requested repository is echoed back into each response's own url rather than
@@ -752,7 +835,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
                 return Task.FromResult(new ProcessResult(0, prJson, string.Empty));
             }
 
-            return Task.FromResult(new ProcessResult(0, emptyTimelineJson, string.Empty));
+            return Task.FromResult(new ProcessResult(0, RequestedAtNowTimelineJson, string.Empty));
         };
 
         AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
@@ -828,6 +911,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         List<IReadOnlyList<string>> unexpectedCalls = [];
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsRepositoryHostRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
+            }
+
             if (arguments.Contains("user"))
             {
                 return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
@@ -835,7 +923,8 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
             if (arguments.Contains("list"))
             {
-                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+                return Task.FromResult(new ProcessResult(
+                    0, AsksAbout(arguments, repository) ? listJson : "[]", string.Empty));
             }
 
             // view/issue/graphql for THIS test's own repository should never be reached — the
@@ -893,6 +982,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         Guid projectId = DomainId.New();
         Guid firstReviewTaskId = DomainId.New();
+        await SeedDefaultAdoptionAsync(store, node, cts.Token);
         const string repository = "acme/mint-rereview-test";
         DateTimeOffset firstRequestedAt = Now.AddDays(-2);
         DateTimeOffset secondRequestedAt = Now;
@@ -960,6 +1050,11 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         ProcessRunner gh = (fileName, arguments, _, _) =>
         {
+            if (IsRepositoryHostRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
+            }
+
             if (arguments.Contains("user"))
             {
                 return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
@@ -967,7 +1062,8 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
             if (arguments.Contains("list"))
             {
-                return Task.FromResult(new ProcessResult(0, listJson, string.Empty));
+                return Task.FromResult(new ProcessResult(
+                    0, AsksAbout(arguments, repository) ? listJson : "[]", string.Empty));
             }
 
             if (arguments.Contains("view"))
