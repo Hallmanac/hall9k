@@ -1307,6 +1307,14 @@ survives intact.
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#169` in the same commit.
 
+PLACEHOLDER-30ecf914. **The shipped review-cap defaults drop to the values two nodes have actually run on for a week: `MaxAdversarialReviewCycles` 4 (was 10), `MaxFinalFullPassRounds` 2 (was 3), `LifetimeReviewCycleBudget` 20 (was 25) — amending #63 and #93** (Brian's ruling, 2026-09-10). Why: both nodes have run at adversarial 4, final-pass 2, lifetime 20 since early September, and a week of that has kept cost down without losing a single merge to a cap that a higher default would have resolved differently. Past four adversarial cycles the returns diminish rather than converge: 9a6d594d's two cap parks on 2026-09-09 (cycles 4 and 8) each surfaced a *new* English-heuristic edge case in a best-effort prompt, not the same one recurring, so a larger cap was never going to let that track settle on its own — it would only have spent more cycles finding more distinct edge cases. #63 set the adversarial track's original cap loosely, on the theory that the severity gate, not the counter, would end the track in practice; #93 set the final-pass round cap at 3 as an independent bound on the same theory. Both compiled defaults are amended here to the values actual operation has proven out, not to a new theory. **What does not change.** `MaxComplianceReviewCycles` stays 3 (Decisions Log #63): the conformance track's own convergence behavior is untouched by this ruling. `SessionCapPerRun` stays 3 (Decisions Log #111): unrelated to review-cycle counting. `MaxConcurrentTaskRuns`'s derived default stays 1 (Decisions Log #111): a fresh install lands on an unknown machine, and two live runs on this same Mac starved `ReviewEngineTests` to two-minute steps and forced two retries of task a5f07d69 on 2026-09-09 — unbounded parallelism is the origin of the container cap (#108, #157), and raising the run ceiling is a `h9k config set` a machine earns once it has proven its own headroom, which is the right direction for a default to be wrong in; it is deliberately not bundled into this ruling. **Does this block the later vision?** No: three compiled-default literals change in `OperatingSettings`, with every existing resolution order, override level, and rendering path (`OperatingSettingsResolver`, `OperatingSettingsRendering`, `ReviewCapResolver`) reading them exactly as before.
+
+> Renumbering placement note: this entry was appended under placeholder
+> `PLACEHOLDER-30ecf914` and will be assigned its true number by the
+> mechanical pre-final-pass rebase step — the log's next free number once
+> this branch is rebased onto its base. Every citation of the placeholder
+> elsewhere in this repository will be rewritten at that time.
+
 ---
 
 ## 17. Reference Materials

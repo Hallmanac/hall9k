@@ -972,7 +972,7 @@ cap is measured from the cycle it was reawakened at, not the run's absolute cycl
 it gets a genuine chance to fix what that pass found. A run that converges clean at cycle 1
 pays no extra pass at all. Because that relaxation means a track's own cap can never bound
 a track the mandatory pass keeps reawakening, `FinalFullPass` carries an independent cap of
-its own, `MaxFinalFullPassRounds` (3): however many cycles have run as `FinalFullPass`,
+its own, `MaxFinalFullPassRounds` (2): however many cycles have run as `FinalFullPass`,
 hitting that count without ever settling parks the run for a human, exactly like a capped
 track does. **MergeReady requires every lens clean.**
 
@@ -1040,7 +1040,7 @@ its own. The **empty terminal case** (a cycle whose findings all
 route away, so nothing is left to fix) ends the track from the gate cycle too, and not
 before it: while the other track can still rewrite the branch, a track retired early would
 never read the fix commits. It cannot spin on an unchanged tip, because a cycle with nothing
-anywhere left to fix derives `Settling` and ends the run whatever the track decided. Its cap is `MaxAdversarialReviewCycles` (10), and highs
+anywhere left to fix derives `Settling` and ends the run whatever the track decided. Its cap is `MaxAdversarialReviewCycles` (4), and highs
 still appearing there park the run as "the machine kept finding real problems", not as a
 spent budget. A track that concludes goes dormant and is deliberately never reawakened by
 the other track's fix sessions.
