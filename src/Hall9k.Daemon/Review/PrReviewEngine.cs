@@ -386,6 +386,13 @@ public sealed class PrReviewEngine(
             token => TouchActivityAsync(runId, token), cancellationToken);
         AgentResult? result = wait.Result;
 
+        if (wait.EndedAfterResultGrace)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the pr-review conformance session was ended after its result because it did not exit",
+                runId);
+        }
+
         if (wait.Lingering.Count > 0)
         {
             logger.LogWarning(

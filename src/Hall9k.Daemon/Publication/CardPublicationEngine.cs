@@ -774,10 +774,13 @@ public sealed class CardPublicationEngine(
             // is detached, so it can outlive the daemon, and killing it would throw away a card it
             // may be halfway through creating"). Unlike a run's own build/fix/review/rebase
             // sessions, this session is not about to be followed by a gate or another dispatch
-            // into the same worktree, so there is nothing here for a lingering process to race.
+            // into the same worktree, so there is nothing here for a lingering process to race —
+            // terminateAfterResultGrace: false keeps SessionResultWaiter's own post-result bound
+            // (restored independently, for the run pipeline's own callers) from forcing exactly
+            // the kill this comment explains this call site must never do on its own.
             result = (await SessionResultWaiter.WaitAsync(
                 RunPaths.StreamFile(RunPaths.GlobalDirectory(sessionId)), agent.ProcessId, agent.StartedAt,
-                processManager, onOutput: null, budget.Token)).Result;
+                processManager, onOutput: null, budget.Token, terminateAfterResultGrace: false)).Result;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

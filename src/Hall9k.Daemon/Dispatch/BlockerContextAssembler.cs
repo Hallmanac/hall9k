@@ -235,6 +235,13 @@ public sealed class BlockerContextAssembler(
                 RunPaths.SessionStreamFile(runDirectory, artifactName), agent.ProcessId, agent.StartedAt,
                 processManager, onOutput: null, budget.Token);
 
+            if (wait.EndedAfterResultGrace)
+            {
+                logger.LogWarning(
+                    "Run {RunId}: the context synthesis session was ended after its result because it did not exit",
+                    runId);
+            }
+
             if (wait.Lingering.Count > 0)
             {
                 logger.LogWarning(

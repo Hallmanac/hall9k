@@ -9,8 +9,14 @@ namespace Hall9k.Daemon.Execution;
 /// terminated (root included when it was still alive at the moment of the call) — a caller logs
 /// these by the session they belonged to instead of calling
 /// <see cref="IProcessManager.TerminateTree"/> a second time on an already-dead root.
+/// <paramref name="EndedAfterResultGrace"/> is true when the wait gave up on the root exiting by
+/// itself — <see cref="SessionResultWaiter.PostResultGrace"/> elapsed with a result already seen
+/// and the process still alive — and forced the termination that produced
+/// <paramref name="Lingering"/>, rather than the root having already died on its own; a caller
+/// logs this the same way it already logs a non-empty <paramref name="Lingering"/> (independent
+/// pre-PR review, cycle 3, human verdict).
 /// </summary>
-public sealed record SessionWaitResult(AgentResult? Result, IReadOnlyList<int> Lingering);
+public sealed record SessionWaitResult(AgentResult? Result, IReadOnlyList<int> Lingering, bool EndedAfterResultGrace = false);
 
 /// <summary>
 /// Waits for a spawned session's terminal result event by tailing its stream file. A result
@@ -36,6 +42,22 @@ public sealed record SessionWaitResult(AgentResult? Result, IReadOnlyList<int> L
 /// on every poll while the root is still alive, and terminates whatever that last snapshot still
 /// shows running once the root's own death confirms nothing legitimate is coming from it.
 /// </para>
+/// <para>
+/// Waiting for the root's own death is itself unbounded only up to <see cref="PostResultGrace"/>
+/// once a result has actually been seen: before that, a still-running process might still be
+/// mid-leg and there is nothing safe to act on, so the wait stays genuinely unbounded (bounded
+/// only by whatever <see cref="CancellationToken"/> a caller supplies) — but once a result is on
+/// disk, an unbounded wait for the root to exit on its own is a liveness regression, not a
+/// stronger correctness guarantee (independent pre-PR review, cycle 3, human verdict): before the
+/// whole-session-usage fix this waiter is part of, a session that wrote its result and then never
+/// exited was ended immediately by the tree kill on the result line, so the pipeline could never
+/// hang on a stuck process. <see cref="PostResultGrace"/> restores that bound — the root gets a
+/// short window to exit on its own so the whole-session usage record already on disk is read
+/// cleanly, and once it expires the root and its last known descendants are terminated and
+/// whatever the stream held by then is finalized, with <see cref="SessionWaitResult.EndedAfterResultGrace"/>
+/// telling a caller to log that this session was ended after its result because it did not exit,
+/// rather than let one stuck process block the daemon's whole monitor loop forever.
+/// </para>
 /// </summary>
 public static class SessionResultWaiter
 {
@@ -43,8 +65,22 @@ public static class SessionResultWaiter
     private static readonly TimeSpan DeadProcessGrace = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// How long a root that has already written a result line gets to exit on its own before
+    /// <see cref="WaitAsync"/> gives up and forces the termination itself — see this class's own
+    /// doc comment for why an unbounded wait past that point is a regression, not a stronger
+    /// guarantee. Not a configuration knob on purpose: nothing about "how long is safe to let a
+    /// finished session's process linger" is a per-install tuning question.
+    /// </summary>
+    internal static readonly TimeSpan PostResultGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// <paramref name="onOutput"/> is invoked whenever new output lands, which is how a caller
     /// keeps the run's last-activity fresh so stall detection covers the leg.
+    /// <paramref name="terminateAfterResultGrace"/> defaults on, restoring the bound documented on
+    /// this class; <see cref="Publication.CardPublicationEngine"/>'s own adopted/detached session
+    /// wait is the one caller that opts out, since keeping a session alive past its own result on
+    /// purpose is that call site's whole point (its own doc comment explains why), not the
+    /// pathology this bound exists to catch.
     /// </summary>
     public static async Task<SessionWaitResult> WaitAsync(
         string streamFile,
@@ -52,9 +88,11 @@ public static class SessionResultWaiter
         DateTimeOffset processStartedAt,
         IProcessManager processManager,
         Func<CancellationToken, Task>? onOutput,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool terminateAfterResultGrace = true)
     {
         DateTimeOffset? deadSince = null;
+        DateTimeOffset? resultSeenAt = null;
         long cursor = 0;
         bool sawAnyResult = false;
         StringBuilder partialLine = new();
@@ -84,6 +122,10 @@ public static class SessionResultWaiter
             // process's own death — checked below, on every poll from here on — is what confirms
             // no further result is coming (independent pre-PR review, cycle 3, adversarial lens).
             sawAnyResult |= sawResult;
+            if (sawAnyResult)
+            {
+                resultSeenAt ??= DateTimeOffset.UtcNow;
+            }
 
             if (processManager.IsAlive(processId, processStartedAt))
             {
@@ -96,6 +138,20 @@ public static class SessionResultWaiter
                     // pre-death snapshot can still name what a since-dead root left running
                     // (independent pre-PR review, cycle 3, conformance + adversarial lenses).
                     lastKnownDescendants = processManager.SnapshotDescendants(processId, processStartedAt);
+
+                    if (terminateAfterResultGrace
+                        && resultSeenAt is { } seenAt
+                        && DateTimeOffset.UtcNow - seenAt > PostResultGrace)
+                    {
+                        // The root had its chance to exit on its own and did not take it — force
+                        // it now rather than waiting on it forever, and finalize with whatever the
+                        // stream holds at this instant (ReadFinalResultAsync's own dedupe already
+                        // handles a stream holding more than one result line).
+                        AgentResult timedOutResult = await StreamTailReader.ReadFinalResultAsync(streamFile, cancellationToken);
+                        IReadOnlyList<int> forcedLingering =
+                            TerminateLingering(processManager, processId, processStartedAt, lastKnownDescendants);
+                        return new SessionWaitResult(timedOutResult, forcedLingering, EndedAfterResultGrace: true);
+                    }
                 }
             }
             else if (sawAnyResult)

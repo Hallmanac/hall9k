@@ -691,6 +691,62 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             logger, line => line.Contains("97887837") && line.Contains("177695"), cts.Token);
     }
 
+    /// <summary>
+    /// The regression a human reviewer caught in cycle 3 (h9k review resolve): before the
+    /// whole-session-usage fix this loop is part of, a session that wrote its result line and
+    /// then never exited was ended immediately by the tree kill on that line, so the pipeline
+    /// could never hang on a stuck process. Waiting unconditionally for the root's own death to
+    /// confirm the session's whole usage (the fix this class exercises elsewhere) removed that
+    /// bound entirely — a root that writes its result and then simply never exits would hang the
+    /// monitor forever. SessionResultWaiter.PostResultGrace restores the old safety without an
+    /// unconditional kill on the result line itself: the root gets a bounded grace to exit on its
+    /// own, and once that elapses the monitor forces the same termination and finalizes with
+    /// whatever the stream already held.
+    /// </summary>
+    [Fact]
+    public async Task A_root_that_stays_alive_after_its_result_is_ended_after_the_grace_and_the_run_still_finalizes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        ListLogger<RunSupervisor> logger = new();
+        RunSupervisor supervisor = NewSupervisor(store, node, logger: logger);
+        // Writes its result immediately, then keeps running well past
+        // SessionResultWaiter.PostResultGrace (30s) — a session that forgot to foreground a
+        // hung background task, or whose own process just never returns.
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine).Pause(90));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(
+            store, runId, "Verifying", cts.Token, timeout: TimeSpan.FromSeconds(75));
+        details.InputTokens.Should().Be(1200);
+        details.CacheReadInputTokens.Should().Be(840_000);
+
+        await WaitForLogLineAsync(
+            logger,
+            line => line.Contains("the build session was ended after its result because it did not exit"),
+            cts.Token);
+
+        // The tree is actually gone, not merely finalized on the stream: the whole point of the
+        // grace-then-terminate behavior is that a stuck root never keeps running unattended once
+        // the run has moved on.
+        bool stillRunning;
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            stillRunning = !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            stillRunning = false;
+        }
+
+        stillRunning.Should().BeFalse("the grace expiring must terminate the root rather than leave it running");
+    }
+
     [Fact]
     public async Task Daemon_restart_mid_run_adopts_the_orphan_and_completes_it()
     {
@@ -1859,9 +1915,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     private static async Task<RunDetails> WaitForStateAsync(
-        DocumentStore store, Guid runId, string state, CancellationToken cancellationToken)
+        DocumentStore store, Guid runId, string state, CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.Add(timeout ?? TimeSpan.FromSeconds(30));
         while (DateTimeOffset.UtcNow < deadline)
         {
             await using IQuerySession query = store.QuerySession();
