@@ -296,7 +296,7 @@ public sealed class DaemonOptions
 
     /// <summary>
     /// Cycles the adversarial track may run before the run parks (Decisions Log #63, amended
-    /// PLACEHOLDER-30ecf914). Reaching this many cycles means the machine kept finding real
+    /// #170). Reaching this many cycles means the machine kept finding real
     /// high-severity problems, a fact a human should look at rather than a budget that quietly
     /// ran out.
     /// </summary>

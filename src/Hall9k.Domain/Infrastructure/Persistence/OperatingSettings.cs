@@ -96,7 +96,7 @@ public sealed class OperatingSettings
 
     /// <summary>
     /// Mirrors <c>DaemonOptions.MaxAdversarialReviewCycles</c>'s shipped default (Decisions Log
-    /// #63, amended PLACEHOLDER-30ecf914): lowered from 10 after a week of two nodes running at
+    /// #63, amended #170): lowered from 10 after a week of two nodes running at
     /// this value with no cap park a higher cap would have resolved; past four cycles, returns
     /// diminish rather than converge (9a6d594d's cap parks at cycles 4 and 8 on 2026-09-09 each
     /// surfaced a new English-heuristic edge case, not the same one recurring).
@@ -105,7 +105,7 @@ public sealed class OperatingSettings
 
     /// <summary>
     /// Mirrors <c>DaemonOptions.MaxFinalFullPassRounds</c>'s shipped default (Decisions Log #93,
-    /// amended PLACEHOLDER-30ecf914): lowered from 3 alongside <see
+    /// amended #170): lowered from 3 alongside <see
     /// cref="DefaultMaxAdversarialReviewCycles"/> and <see cref="DefaultLifetimeReviewCycleBudget"/>,
     /// the same week of proven-out operation at this value.
     /// </summary>
@@ -116,7 +116,7 @@ public sealed class OperatingSettings
     /// that only genuine pathology — a task ground across strandings, retries, and follow-up
     /// rounds so many times that every per-run cap kept getting a fresh start — ever reaches it
     /// (origin: task b6dfcbe5 reached 52 review cycles across nine generations, 2026-08-30).
-    /// Lowered from 25 (Decisions Log #112, amended PLACEHOLDER-30ecf914) alongside the two caps
+    /// Lowered from 25 (Decisions Log #112, amended #170) alongside the two caps
     /// above, the same week of proven-out operation at this value; still generous enough that
     /// only pathology reaches it.
     /// </summary>
