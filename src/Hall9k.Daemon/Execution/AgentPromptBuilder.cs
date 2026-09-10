@@ -1388,6 +1388,22 @@ public static class AgentPromptBuilder
     /// before any fix work — "agents never close a human's thread" is the acceptance bar this
     /// asymmetry exists to meet). Bounded on purpose: one honest attempt per thread per follow-up,
     /// the never-loop rule the review park already runs on.
+    /// <para>
+    /// One thread is not answered here at all (Decisions Log #152, and the identical carve-out at
+    /// the top of the resolve-review-threads skill): a human reviewer whose own
+    /// <c>CHANGES_REQUESTED</c> verdict still stands. A disagreement with a standing review is
+    /// never posted by an agent — it is drafted, parked, and sent, edited or dropped by the
+    /// implementer. This lap reaches such a thread whenever the changes-requested fix lap
+    /// (<see cref="BuildReviewRequestedChanges"/>) already pushed and left the disputed thread
+    /// unresolved, and the next closeout sweep dispatched an ordinary <c>ReviewFeedback</c>
+    /// follow-up over it: without the carve-out stated HERE, this prompt's own decline rule told
+    /// that session to post its evidence into the thread of the person the implementer may have
+    /// deliberately left unanswered, which is the one act #152 exists to prevent. The skill states
+    /// it too, but a skill is a load away and the prompt is the last word (routed finding, run
+    /// 01a07d98, adversarial lens, cycle 3). #159 is untouched: a human's plain thread comment,
+    /// with no standing changes-requested verdict behind it, still gets the evidence-based decline
+    /// reply and still stays open for them to resolve.
+    /// </para>
     /// </summary>
     private static void AppendThreadHandlingRules(StringBuilder prompt, ProjectDetails project)
     {
@@ -1403,6 +1419,28 @@ public static class AgentPromptBuilder
         prompt.AppendLine("  - Human-authored thread: leave it open. The evidence is posted, but closing a");
         prompt.AppendLine("    person's thread for them is not yours to do — they read it and resolve it");
         prompt.AppendLine("    themselves.");
+        prompt.AppendLine("  - Human-authored thread whose reviewer's own `CHANGES_REQUESTED` verdict on this");
+        prompt.AppendLine("    pull request still stands: post NOTHING — no reply, no resolve. Telling a");
+        prompt.AppendLine("    person they are wrong is the implementer's to send, not an agent's, so a");
+        prompt.AppendLine("    disagreement with a standing review is never posted by you: draft the reply,");
+        prompt.AppendLine("    park it, and let them send it, edit it, or drop it (Decisions Log #152).");
+        prompt.AppendLine("    Read the verdicts before you reply to any human thread — `gh pr view --json");
+        prompt.AppendLine("    reviews` — and take each reviewer's latest `CHANGES_REQUESTED`, `APPROVED` or");
+        prompt.AppendLine("    `DISMISSED` as the one that stands, ignoring their `COMMENTED` ones: GitHub");
+        prompt.AppendLine("    wraps a plain thread reply in a COMMENTED review, so reading a reviewer's");
+        prompt.AppendLine("    newest review of ANY type hides a changes-requested verdict that is still");
+        prompt.AppendLine("    blocking the merge. It stands until that reviewer changes it themselves, so an");
+        prompt.AppendLine("    earlier lap having already pushed fixes does not lift it. Park it through the");
+        prompt.AppendLine("    section below, with the drafted reply in the block:");
+        prompt.AppendLine(
+            $"    `{ReviewResultParser.DisagreementMarker}` (carrying `at=` and `thread=`), "
+            + $"`{ReviewResultParser.ReviewerAskedMarker}`,");
+        prompt.AppendLine(
+            $"    `{ReviewResultParser.DisagreementReasoningMarker}`, "
+            + $"`{ReviewResultParser.ProposedReplyMarker}`. The thread stays open and unanswered,");
+        prompt.AppendLine("    and nothing is pushed until a human decides. It still gets its triage block");
+        prompt.AppendLine("    above (`disposition=decline`) — that is measurement only and reaches nobody,");
+        prompt.AppendLine("    and it is what stops the next sweep dispatching another lap over this thread.");
         prompt.AppendLine("- **route**: reply naming the idea you filed and why it is out of scope here, then");
         prompt.AppendLine("  apply the same bot-resolves / human-stays-open rule decline uses.");
         prompt.AppendLine("- **A question gets an answer, not a code change.** If the honest answer is \"yes,");
@@ -1462,6 +1500,17 @@ public static class AgentPromptBuilder
     /// as it does to a review finding, so a disagreement the agent cannot honestly judge goes
     /// to a human with both positions recorded. RunSupervisor reads the marker this section
     /// asks for and parks the run rather than pushing.
+    /// <para>
+    /// It is also where <see cref="AppendThreadHandlingRules"/>'s standing-review carve-out lands
+    /// (Decisions Log #152), which is why the gate below is not "undecidable" alone: that
+    /// disagreement may be one the session could answer with evidence, and it is withheld anyway
+    /// because sending it is the implementer's act. The park itself is the ordinary thread-dispute
+    /// park — <c>RunSupervisor</c> appends <c>ReviewDisagreementParked</c>, and with it the three
+    /// <c>h9k review resolve</c> posting choices, only for a
+    /// <see cref="FollowUpKind.ReviewRequestedChanges"/> lap — so this prompt names no posting flag
+    /// a human running <c>h9k review resolve</c> here would be refused: the drafted reply is in the
+    /// dispute file the park's reason points at, and they post it themselves.
+    /// </para>
     /// </summary>
     private static void AppendThreadDisputeRules(StringBuilder prompt)
     {
@@ -1471,14 +1520,21 @@ public static class AgentPromptBuilder
         prompt.AppendLine("position and yours are both defensible and the choice belongs to a human. Do not");
         prompt.AppendLine("pick a side to close the thread, and do not argue it across runs.");
         prompt.AppendLine();
+        prompt.AppendLine("A disagreement with a reviewer whose `CHANGES_REQUESTED` verdict still stands");
+        prompt.AppendLine("comes here too, even when you could answer it yourself with evidence — that reply");
+        prompt.AppendLine("is the implementer's to send, and this is where you hand it over.");
+        prompt.AppendLine();
         prompt.AppendLine("Handle every thread you honestly can first — replies you post land on the pull");
-        prompt.AppendLine("request immediately — then, if one is genuinely undecidable:");
+        prompt.AppendLine("request immediately — then, for each thread that is genuinely undecidable or is");
+        prompt.AppendLine("one of those standing-review disagreements:");
         prompt.AppendLine();
         prompt.AppendLine($"- Close your summary with a line reading exactly `{DisputeMarker}` (the last");
         prompt.AppendLine("  line of the summary, above the HANDOFF block the section below asks for).");
         prompt.AppendLine($"- Above that line, under the `{ThreadDispositionSummaryMarker}` line the triage");
         prompt.AppendLine("  section above asks for, record BOTH positions: what the reviewer asked for and");
-        prompt.AppendLine("  their reasoning, what you would do instead and yours, and what you already did.");
+        prompt.AppendLine("  their reasoning, what you would do instead and yours, and what you already did —");
+        prompt.AppendLine("  and for a standing-review disagreement, the reply you drafted for them to send,");
+        prompt.AppendLine($"  under the `{ReviewResultParser.ProposedReplyMarker}` line the section above names.");
         prompt.AppendLine("- The platform parks the run for a human (NeedsHuman) with that text saved beside");
         prompt.AppendLine("  the run, and nothing is pushed until they decide. They resume it with");
         prompt.AppendLine("  `h9k review resolve`.");
