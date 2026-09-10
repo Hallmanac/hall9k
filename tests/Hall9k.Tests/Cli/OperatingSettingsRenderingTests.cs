@@ -146,4 +146,40 @@ public sealed class OperatingSettingsRenderingTests
 
         row.Value.Should().Contain("read only as a fallback when max-concurrent-task-runs is absent");
     }
+
+    /// <summary>
+    /// A fresh node with nothing overridden must render the shipped review-cap defaults — 4, 2
+    /// and 20 — not whatever an earlier build happened to compile in (independent pre-PR review,
+    /// cycle 1, conformance lens: nothing previously pinned these three rows to their defaults).
+    /// </summary>
+    [Fact]
+    public void Fresh_node_review_cap_rows_render_the_shipped_defaults()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+
+        IReadOnlyList<(string Label, string Value)> rows = OperatingSettingsRendering.Rows(report);
+
+        rows.Single(r => r.Label == "max-adversarial-review-cycles").Value.Should().Be("4 (default)");
+        rows.Single(r => r.Label == "max-final-full-pass-rounds").Value.Should().Be("2 (default)");
+        rows.Single(r => r.Label == "lifetime-review-cycle-budget").Value.Should().Be("20 (default)");
+    }
+
+    /// <summary>The counterpart case: a node's own configured value renders instead, with its origin named.</summary>
+    [Fact]
+    public void A_configured_review_cap_row_renders_its_own_value_and_origin()
+    {
+        OperatingSettingsReport template = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+        OperatingSettingsReport report = template with
+        {
+            MaxAdversarialReviewCycles = new ResolvedSetting<int>(7, SettingOrigin.PlatformConfigFile, "config.json"),
+            MaxFinalFullPassRounds = new ResolvedSetting<int>(5, SettingOrigin.PlatformConfigFile, "config.json"),
+            LifetimeReviewCycleBudget = new ResolvedSetting<int>(30, SettingOrigin.PlatformConfigFile, "config.json"),
+        };
+
+        IReadOnlyList<(string Label, string Value)> rows = OperatingSettingsRendering.Rows(report);
+
+        rows.Single(r => r.Label == "max-adversarial-review-cycles").Value.Should().Be("7 (config: config.json)");
+        rows.Single(r => r.Label == "max-final-full-pass-rounds").Value.Should().Be("5 (config: config.json)");
+        rows.Single(r => r.Label == "lifetime-review-cycle-budget").Value.Should().Be("30 (config: config.json)");
+    }
 }
