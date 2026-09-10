@@ -645,6 +645,13 @@ public sealed partial class VerificationRunner(
                 unfinished = null;
                 result = wait.Result;
 
+                if (wait.EndedAfterResultGrace)
+                {
+                    logger.LogWarning(
+                        "Run {RunId}: the automatic uncommitted-work recovery session was ended after its result because it did not exit",
+                        run.Id);
+                }
+
                 if (wait.Lingering.Count > 0)
                 {
                     logger.LogWarning(

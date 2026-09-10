@@ -408,6 +408,7 @@ public sealed class RunSupervisor(
             string streamFile = RunPaths.StreamFile(runDirectory);
             (long cursor, bool sawAnyResult) = await LoadMonitorStateAsync(runId, cancellationToken);
             DateTimeOffset? deadSince = null;
+            DateTimeOffset? resultSeenAt = null;
             IReadOnlyList<(int Id, DateTimeOffset StartedAt)> lastKnownDescendants = [];
             StringBuilder partialLine = new();
 
@@ -426,6 +427,10 @@ public sealed class RunSupervisor(
                 // confirms no further leg is coming (independent pre-PR review, cycle 3,
                 // adversarial lens).
                 sawAnyResult |= sawResult;
+                if (sawAnyResult)
+                {
+                    resultSeenAt ??= DateTimeOffset.UtcNow;
+                }
 
                 if (newCursor > cursor)
                 {
@@ -438,7 +443,9 @@ public sealed class RunSupervisor(
                     await SaveActivityAsync(runId, cursor, sawAnyResult, cancellationToken);
                 }
 
-                if (processManager.IsAlive(processId, processStartedAt))
+                bool alive = processManager.IsAlive(processId, processStartedAt);
+                bool endedAfterResultGrace = false;
+                if (alive)
                 {
                     deadSince = null;
                     if (sawAnyResult)
@@ -450,15 +457,35 @@ public sealed class RunSupervisor(
                         // a since-dead root left running (independent pre-PR review, cycle 3,
                         // conformance + adversarial lenses).
                         lastKnownDescendants = processManager.SnapshotDescendants(processId, processStartedAt);
+
+                        // Waiting for the root's own death is bounded once a result is already on
+                        // disk (independent pre-PR review, cycle 3, human verdict): before the
+                        // whole-session-usage fix this loop is part of, a session that wrote its
+                        // result and then never exited was ended immediately by the tree kill on
+                        // the result line, so the pipeline could never hang on a stuck process.
+                        // SessionResultWaiter.PostResultGrace restores that bound here too — the
+                        // root gets the same short window to exit on its own before this forces
+                        // the same finalization the death branch below takes.
+                        endedAfterResultGrace = resultSeenAt is { } seenAt
+                            && DateTimeOffset.UtcNow - seenAt > SessionResultWaiter.PostResultGrace;
                     }
                 }
-                else if (sawAnyResult)
+
+                if ((!alive && sawAnyResult) || endedAfterResultGrace)
                 {
                     // Only a re-read of the whole file finds the line that accounts for the whole
                     // session (StreamTailReader.ReadFinalResultAsync's own doc comment; discovery
-                    // cc9b7aec) — safe to do now that the process dying confirms this is the last
-                    // one there will be.
+                    // cc9b7aec) — safe to do now that the process dying (or the post-result grace
+                    // expiring on a root that would not) confirms this is the last one there will
+                    // be.
                     AgentResult result = await StreamTailReader.ReadFinalResultAsync(streamFile, cancellationToken);
+
+                    if (endedAfterResultGrace)
+                    {
+                        logger.LogWarning(
+                            "Run {RunId}: the build session was ended after its result because it did not exit",
+                            runId);
+                    }
 
                     // The daemon terminates a completed session's process tree before it starts
                     // any gate or another session in the same worktree (task: the daemon
@@ -504,6 +531,7 @@ public sealed class RunSupervisor(
                         processStartedAt = resumed.ProcessStartedAt;
                         cursor = 0;
                         deadSince = null;
+                        resultSeenAt = null;
                         sawAnyResult = false;
                         lastKnownDescendants = [];
                         partialLine.Clear();
@@ -512,7 +540,7 @@ public sealed class RunSupervisor(
 
                     return;
                 }
-                else
+                else if (!alive)
                 {
                     // Give buffered output a moment to land before declaring death.
                     deadSince ??= DateTimeOffset.UtcNow;

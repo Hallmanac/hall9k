@@ -4803,6 +4803,13 @@ public sealed class ReviewEngine(
             streamFile, processId, processStartedAt, processManager,
             token => TouchActivityAsync(runId, token), cancellationToken);
 
+        if (wait.EndedAfterResultGrace)
+        {
+            logger.LogWarning(
+                "Run {RunId}: {SessionLabel} was ended after its result because it did not exit",
+                runId, sessionLabel);
+        }
+
         if (wait.Lingering.Count > 0)
         {
             logger.LogWarning(
