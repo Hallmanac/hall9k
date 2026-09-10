@@ -1407,7 +1407,7 @@ public static class WorkPromptBuilder
 
     /// <summary>
     /// AGENTS.md's own bullet beside the foreground-gates rule (Decisions Log
-    /// §16 #PLACEHOLDER-18b7a833): a dispatched session never generates host load to reproduce or
+    /// §16 #169): a dispatched session never generates host load to reproduce or
     /// prove a flaky or timing-dependent test. Folded into <see cref="AppendForegroundGatesRule"/>
     /// itself, both branches, so it reaches every leg that already carries that rule without a
     /// separate call site to keep in sync — and called directly from the two bare <c>--resume</c>

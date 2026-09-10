@@ -213,4 +213,4 @@ rather than left to discover them.
   and leave the fix best-effort — this never forbids running this project's own gates, and adds no
   new gate, timeout, or setting. Origin: 2026-09-10 09:36 EDT, Windows, task 2c6e95f7, run 01a08b83
   — forty pwsh stress loops (4.4 GB, CPU pinned) starved h9kd and Postgres for seven minutes and
-  forced a machine reboot (PLAN.md §16 #PLACEHOLDER-18b7a833).
+  forced a machine reboot (PLAN.md §16 #169).
