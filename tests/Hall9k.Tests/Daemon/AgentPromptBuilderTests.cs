@@ -3923,7 +3923,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
             sinceSha: null, priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null);
 
         prompt.Should().Contain(
-            "severity=high;\nscope=in-scope; track=conformance",
+            "severity=high;" + Environment.NewLine + "scope=in-scope; track=conformance",
             "the grading instruction, not the unrelated track-tag example elsewhere in this prompt, must pin high/in-scope/conformance together");
         prompt.Should().Contain("generated host load to", "the instruction must name the specific defect it is grading");
         prompt.Should().Contain(

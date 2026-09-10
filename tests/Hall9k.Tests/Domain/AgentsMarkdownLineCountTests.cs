@@ -14,7 +14,7 @@ namespace Hall9k.Tests.Domain;
 /// <c>ORCHESTRATOR-WINDOW.md</c> and the <c>hall9k-cli-reference</c> skill instead, loaded only
 /// when actually needed rather than on every turn.
 /// <para>
-/// The ceiling reads 204, four over the recommendation, and every line over is recorded rather
+/// The ceiling reads 216, sixteen over the recommendation, and every line over is recorded rather
 /// than rounded off: on 2026-09-07 two branches each added one standing git invariant to the Git
 /// rules section, and the one that merged first (`h9k pr request-changes`, Decisions Log #149)
 /// took the file to exactly 200. The second — an agent never tells a human reviewer they are wrong
@@ -38,10 +38,10 @@ namespace Hall9k.Tests.Domain;
 /// stress loops, the memory and CPU figures, the seven minutes, the reboot), the same as the Git
 /// rules section's own origin-incident bullets do, rather than a bare citation the way #167's own
 /// bullet reads — the incident is what makes the rule's balance legible on its own, not only in
-/// PLAN.md. Wrapped at the same ~100 columns every other bullet here uses, the same as #167's own
-/// bullet just above it — the length comes from the incident's own facts, not from choosing not to
-/// wrap, and this raise is the honest, disclosed one the note two paragraphs up warns a future
-/// addition not to fake through an unrelated reflow: nine more lines, ceiling to 216.
+/// PLAN.md. Wrapped the same way #167's own bullet just above it is, not forced onto one long line
+/// — the length comes from the incident's own facts, not from choosing not to wrap, and this raise
+/// is the honest, disclosed one the note two paragraphs up warns a future addition not to fake
+/// through an unrelated reflow: nine more lines, ceiling to 216.
 /// This is a fourth raise, the one the paragraph above said not to take — taken anyway because
 /// cutting existing content to make room would have meant shortening doctrine this task did not
 /// touch and has no standing to judge as safe to compress; a real future addition should still
