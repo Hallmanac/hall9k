@@ -797,11 +797,20 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
 
     /// <summary>
     /// A restarted daemon is not evidence that the session it spawned died. That session is
-    /// detached, so it can outlive the daemon, and killing it would throw away a card it may be
-    /// halfway through creating — it is waited on instead.
+    /// detached, so it can outlive the daemon, and its own already-printed result — read here
+    /// off the stream rather than discarded — is not thrown away merely because the daemon
+    /// missed it the first time.
+    /// <para>
+    /// It is not waited on forever, though: <see cref="SessionResultWaiter"/> only finalizes off
+    /// a dead process (discovery cc9b7aec), so a still-alive session is tailed until the
+    /// publication ceiling, the same as a freshly-dispatched one — a live agent nothing is
+    /// tracking any more, past the point the pending marker clears, is exactly the second-card
+    /// shape this class exists to prevent (independent pre-PR review, conformance + adversarial
+    /// lenses, cycle 1), whether it was adopted or not.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task An_adopted_session_that_is_still_running_is_waited_on_rather_than_assumed_dead()
+    public async Task An_adopted_session_that_is_still_running_past_the_ceiling_is_stopped_with_its_result_captured()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -819,9 +828,10 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
             .PollOnceAsync(cts.Token);
 
         sweep.Adopted.Should().Be(1);
-        processes.Terminations.Should().NotContain(
+        processes.Terminations.Should().Contain(
             termination => termination.ProcessId == 4242,
-            "a live session is picked back up, not killed");
+            "the ceiling elapsed with the process still alive, so it is stopped rather than left "
+            + "running with nothing tracking it");
 
         await using IQuerySession query = store.QuerySession();
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;

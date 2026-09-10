@@ -215,6 +215,14 @@ public sealed class BlockerContextAssembler(
     /// and an abandoned agent burning tokens for nobody is worse than no condensing at all.
     /// Cancellation of the daemon itself propagates as it should, and is not a timeout — the
     /// caller terminates the session on that path before letting it through.
+    /// <para>
+    /// Expiry does not mean the session said nothing: <see cref="SessionResultWaiter"/> only
+    /// ever finalizes off a dead process (discovery cc9b7aec), so a still-alive session can
+    /// already carry a result on disk when the ceiling elapses. The stream is re-read directly
+    /// before terminating, so that result — and its usage — is not discarded merely because
+    /// this budget, deliberately short next to a build session's own, ran out first
+    /// (independent pre-PR review, adversarial lens, cycle 1).
+    /// </para>
     /// </summary>
     private async Task<AgentResult?> WaitWithinBudgetAsync(
         Guid runId, string runDirectory, string artifactName, SpawnedAgent agent, CancellationToken cancellationToken)
@@ -247,10 +255,37 @@ public sealed class BlockerContextAssembler(
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            AgentResult? result = await TryReadAlreadyPresentResultAsync(runDirectory, artifactName, cancellationToken);
             logger.LogWarning(
-                "Run {RunId}: the context synthesis exceeded {Timeout} — terminating it and starting on the raw handoffs",
-                runId, _options.BlockerSynthesisTimeout);
+                "Run {RunId}: the context synthesis exceeded {Timeout} — terminating it{Reported}",
+                runId, _options.BlockerSynthesisTimeout,
+                result is null ? " and starting on the raw handoffs" : " after it had already reported a result");
             Terminate(runId, agent);
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Best-effort re-read of whatever the synthesis session's stream already holds, used only
+    /// once the ceiling has elapsed on a process that never died. Null covers both an absent
+    /// stream file and one with no parseable result line yet — either way, honestly nothing to
+    /// report, not a guess dressed up as one.
+    /// </summary>
+    private static async Task<AgentResult?> TryReadAlreadyPresentResultAsync(
+        string runDirectory, string artifactName, CancellationToken cancellationToken)
+    {
+        string streamFile = RunPaths.SessionStreamFile(runDirectory, artifactName);
+        if (!File.Exists(streamFile))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await StreamTailReader.ReadFinalResultAsync(streamFile, cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
             return null;
         }
     }
