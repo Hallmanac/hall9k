@@ -132,7 +132,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--max-adversarial-review-cycles <N>")]
         [Description(
             "This node's cycle cap for the adversarial review track (DaemonOptions.MaxAdversarialReviewCycles, "
-            + "default 4, Decisions Log #63, amended PLACEHOLDER-30ecf914). Same resolution order, and "
+            + "default 4, Decisions Log #63, amended #170). Same resolution order, and "
             + "same lack of a 'default' clearing word, as --max-compliance-review-cycles.")]
         public int? MaxAdversarialReviewCycles { get; init; }
 
