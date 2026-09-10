@@ -143,6 +143,81 @@ public sealed class StackedPromptTests
         prompt.Should().NotContain($"origin/{ParentBranch}...HEAD");
     }
 
+    /// <summary>
+    /// The one same-session re-prompt a verdict-less pass gets restates the finding contract, and
+    /// that contract carries the scope rule — so it has to name the boundary the resumed session's
+    /// OWN original prompt named (routed finding, run 01a07933, conformance lens, cycle 5). Handed
+    /// the project's base instead, a stacked child's resumed reviewer is told a scope rule that
+    /// contradicts the one it was dispatched with, and grades the parent's already-reviewed lines
+    /// in-scope on the child's pull request.
+    /// </summary>
+    [Fact]
+    public void A_verdict_reprompt_on_a_stacked_child_scopes_against_its_recorded_fork_point()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), cycle: 2, ReviewMode.Discovery,
+            mechanicsOverride: new AgentPromptBuilder.ReviewMechanicsOverride(ParentBranch, ForkPoint));
+
+        prompt.Should().Contain($"absent from `git diff {ForkPoint}...HEAD`",
+            "the resumed session's scope rule is the one its original prompt gave it");
+        prompt.Should().Contain($"pre-existing on `{ParentBranch}`",
+            "out-of-scope means pre-existing on the branch this child is a delta against, not the project's");
+        prompt.Should().NotContain("origin/main",
+            "the project's own base would tag the parent's lines as this branch's own work");
+    }
+
+    /// <summary>
+    /// The same re-prompt with no fork point recorded still names the parent's branch, exactly as
+    /// the original pass's own prompt does when the run observed no commit to name.
+    /// </summary>
+    [Fact]
+    public void A_verdict_reprompt_on_a_stacked_child_with_no_fork_point_scopes_against_the_parent_branch()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), cycle: 2, ReviewMode.Discovery,
+            mechanicsOverride: new AgentPromptBuilder.ReviewMechanicsOverride(ParentBranch));
+
+        prompt.Should().Contain($"absent from `git diff origin/{ParentBranch}...HEAD`");
+        prompt.Should().NotContain("origin/main...HEAD");
+    }
+
+    /// <summary>
+    /// The re-prompt takes the whole override, not a base string: a foreign pull request's own
+    /// mechanics ride on the same record, so the parameter carries that arm too. No production
+    /// path dispatches it today — <c>PrReviewEngine</c> fails a verdict-less pr-review run for the
+    /// owner to retry rather than re-prompting it — so this pins the wiring, not an observed lap.
+    /// </summary>
+    [Fact]
+    public void A_verdict_reprompt_carries_the_foreign_pull_request_arm_of_the_override_too()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), cycle: 1, ReviewMode.Discovery,
+            mechanicsOverride: new AgentPromptBuilder.ReviewMechanicsOverride(
+                "release/2026-09", DiffIsForeignPullRequest: true));
+
+        prompt.Should().Contain("there is no fix-and-re-review cycle here",
+            "the foreign-PR arm of the finding contract is what a pr-review lens answers in");
+        prompt.Should().Contain("pre-existing on `release/2026-09`",
+            "and the reviewed pull request's own base is the scope boundary, never the project's");
+    }
+
+    /// <summary>
+    /// And the ordinary run's re-prompt is byte-identical with the override absent, which is what
+    /// keeps this off every unstacked review.
+    /// </summary>
+    [Fact]
+    public void An_unstacked_verdict_reprompt_is_unchanged()
+    {
+        string withoutOverride = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), cycle: 2, ReviewMode.Discovery);
+        string withNullOverride = AgentPromptBuilder.BuildReviewVerdictReprompt(
+            SomeProject(), cycle: 2, ReviewMode.Discovery, mechanicsOverride: null);
+
+        withNullOverride.Should().Be(withoutOverride);
+        withoutOverride.Should().Contain("absent from `git diff origin/main...HEAD`");
+        withoutOverride.Should().NotContain(ForkPoint).And.NotContain(ParentBranch);
+    }
+
     [Fact]
     public void An_unstacked_review_pass_is_unchanged_by_a_recorded_fork_point()
     {

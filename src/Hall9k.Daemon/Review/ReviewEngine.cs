@@ -1624,10 +1624,26 @@ public sealed class ReviewEngine(
         // entirely, so a re-prompt that restated severity and scope but not track would come back
         // untagged and get attributed to every active track by SplitForTrack's own conservative
         // default, rather than the one it actually belongs to.
+        // The re-prompt restates the finding contract, and that contract carries the scope rule, so
+        // it is handed the same override property the pass being resumed was dispatched with —
+        // ReviewContext.StackedMechanics, which is what both DispatchReviewPassAsync and
+        // DispatchVerifyPassAsync read this run's base pair off. Without it the resumed session is
+        // told to scope against origin/<project base> while its own original prompt scoped it
+        // against a stacked parent's branch or this run's recorded fork point, and the two
+        // contradict each other: the parent's already-reviewed lines get graded in-scope on the
+        // child's pull request (routed finding, run 01a07933, conformance lens, cycle 5). This is
+        // the run's currently recorded base pair, which is the same one the resumed pass was
+        // dispatched with unless a replay checkpoint or a retarget moved it mid-flight; nothing
+        // records a base per PASS, so on a run whose base did move this is the only boundary that
+        // was ever observed rather than a guess at the one the session first read.
         string prompt = verdictless.Mode == ReviewMode.Verify
             ? AgentPromptBuilder.BuildReviewVerdictReprompt(
-                context.Project, run.ReviewCycle, verdictless.Mode, run.ActiveReviewLenses)
-            : AgentPromptBuilder.BuildReviewVerdictReprompt(context.Project, run.ReviewCycle, verdictless.Mode);
+                context.Project, run.ReviewCycle, verdictless.Mode,
+                verifyTracks: run.ActiveReviewLenses,
+                mechanicsOverride: context.StackedMechanics)
+            : AgentPromptBuilder.BuildReviewVerdictReprompt(
+                context.Project, run.ReviewCycle, verdictless.Mode,
+                mechanicsOverride: context.StackedMechanics);
         // The resumed session keeps the model it was dispatched on: the chain is NOT
         // re-resolved here, or the milestone would record a model the session never ran on
         // (log #33). An older stream that recorded no model stays honestly Unknown.
