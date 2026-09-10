@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Hall9k.Connectors.Processes;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -158,7 +159,7 @@ public static class GateInfrastructureFailureClassifier
         TimeSpan threshold = gateTimeout * 0.8;
         foreach (string evidenceFile in Directory.EnumerateFiles(gateWaitEvidenceDirectory))
         {
-            string content;
+            string? content;
             try
             {
                 if (new FileInfo(evidenceFile).Length > MaxWaitEvidenceBytes)
@@ -166,9 +167,20 @@ public static class GateInfrastructureFailureClassifier
                     continue;
                 }
 
-                content = File.ReadAllText(evidenceFile);
+                // ShareTolerantFile, never File.ReadAllText: the waiting process rewrites this
+                // file on every periodic refresh, and File.ReadAllText's FileShare.Read is
+                // refused outright for the whole of that rewrite's own File.WriteAllText — so
+                // the one file that proves a genuinely unresolved wait would be skipped for
+                // landing on the wrong millisecond. Same defect as the gate log's own read (see
+                // ShareTolerantFile's origin incident), same fix.
+                content = ShareTolerantFile.TryReadAllText(evidenceFile);
             }
             catch (IOException)
+            {
+                continue;
+            }
+
+            if (content is null)
             {
                 continue;
             }

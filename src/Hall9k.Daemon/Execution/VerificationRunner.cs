@@ -1654,6 +1654,26 @@ public sealed partial class VerificationRunner(
             // recording the environmental hiccup as a conclusive "main is broken" verdict — exactly
             // the mistake RunGateAsync's own ReadFullOutput(logFile) above already avoids for the
             // run's own real gate (independent pre-PR review, cycle 1, both lenses, high/medium).
+            // A comparison whose own log could not be read is the same unobserved fact as the run's
+            // own gate log being unreadable (see UnreadableGateLog), and it reaches this method as
+            // null rather than as empty text precisely so it cannot be mistaken for "the base
+            // branch's gate printed nothing and failed". Classifying an empty string here would
+            // find no marker, and a marker-free failure is recorded as a conclusive
+            // CleanBaseGateVerdict with basePasses: false and replayed to every later run against
+            // this base commit — "main is broken" stated from a fact nobody saw, which is the
+            // never-guess rule this branch exists to honour (independent pre-PR review, cycle 1,
+            // both lenses, medium). Treated exactly like the infrastructure hiccup below: nothing
+            // recorded, nothing reported, the comparison retried on the next run.
+            if (result.FullOutput is null)
+            {
+                logger.LogInformation(
+                    "Run {RunId}: the clean-base comparison for gate '{Gate}' failed, but its own output log " +
+                    "could not be read, so nothing was actually observed about the base branch and nothing " +
+                    "was recorded — {Detail}",
+                    runId, gate.Name, result.OutputTail);
+                return null;
+            }
+
             if (GateInfrastructureFailureClassifier.IsInfrastructureFailure(result.FullOutput))
             {
                 logger.LogInformation(
