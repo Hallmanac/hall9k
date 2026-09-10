@@ -406,9 +406,9 @@ public sealed class RunSupervisor(
         try
         {
             string streamFile = RunPaths.StreamFile(runDirectory);
-            (long cursor, bool sawAnyResult) = await LoadMonitorStateAsync(runId, cancellationToken);
+            (long cursor, bool sawAnyResult, DateTimeOffset? resultSeenAt) =
+                await LoadMonitorStateAsync(runId, cancellationToken);
             DateTimeOffset? deadSince = null;
-            DateTimeOffset? resultSeenAt = null;
             IReadOnlyList<(int Id, DateTimeOffset StartedAt)> lastKnownDescendants = [];
             StringBuilder partialLine = new();
 
@@ -439,8 +439,12 @@ public sealed class RunSupervisor(
                     // 3, adversarial lens): the cursor can advance past the run's only result line
                     // on this very poll, and a daemon restart between this save and the process
                     // later dying would otherwise resume tailing from a cursor with nothing left
-                    // unread to re-set the in-memory flag this once was.
-                    await SaveActivityAsync(runId, cursor, sawAnyResult, cancellationToken);
+                    // unread to re-set the in-memory flag this once was. resultSeenAt travels with
+                    // them for the same reason (independent pre-PR review, cycle 4, adversarial
+                    // lens): without it, a restart or orphan adoption mid-grace restarts
+                    // PostResultGrace's clock from the moment monitoring resumes instead of from
+                    // when the result was actually first seen.
+                    await SaveActivityAsync(runId, cursor, sawAnyResult, resultSeenAt, cancellationToken);
                 }
 
                 bool alive = processManager.IsAlive(processId, processStartedAt);
@@ -1732,14 +1736,15 @@ public sealed class RunSupervisor(
         return task?.Type == TaskType.PrReview;
     }
 
-    private async Task<(long Cursor, bool SawResult)> LoadMonitorStateAsync(Guid runId, CancellationToken cancellationToken)
+    private async Task<(long Cursor, bool SawResult, DateTimeOffset? ResultSeenAt)> LoadMonitorStateAsync(Guid runId, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         RunActivity? activity = await query.LoadAsync<RunActivity>(runId, cancellationToken);
-        return (activity?.StreamBytesRead ?? 0, activity?.SawResult ?? false);
+        return (activity?.StreamBytesRead ?? 0, activity?.SawResult ?? false, activity?.ResultSeenAt);
     }
 
-    private async Task SaveActivityAsync(Guid runId, long cursor, bool sawResult, CancellationToken cancellationToken)
+    private async Task SaveActivityAsync(
+        Guid runId, long cursor, bool sawResult, DateTimeOffset? resultSeenAt, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Store(new RunActivity
@@ -1748,6 +1753,7 @@ public sealed class RunSupervisor(
             LastActivityAt = DateTimeOffset.UtcNow,
             StreamBytesRead = cursor,
             SawResult = sawResult,
+            ResultSeenAt = resultSeenAt,
         });
         await session.SaveChangesAsync(cancellationToken);
     }
