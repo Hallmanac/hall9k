@@ -3131,10 +3131,21 @@ public static class AgentPromptBuilder
     /// the original's in full, omitting it here would have a restated finding arrive untagged and
     /// get attributed to every active track rather than the one it actually belongs to.
     /// </para>
+    /// <para>
+    /// <paramref name="mechanicsOverride"/> is the one the pass being re-prompted was dispatched
+    /// with — its run's own recorded base pair, threaded through rather than recomputed here
+    /// (routed finding, run 01a07933, conformance lens, cycle 5): the finding contract below
+    /// carries the scope rule, and a resumed session handed
+    /// <c>origin/{project.BaseBranch}</c> when its original prompt scoped it against a stacked
+    /// parent's branch or that run's recorded fork point would grade parent-owned lines in-scope on
+    /// the child's pull request. Null for every ordinary run, which is what keeps an unstacked
+    /// re-prompt byte-identical.
+    /// </para>
     /// </summary>
     public static string BuildReviewVerdictReprompt(
         ProjectDetails project, int cycle, ReviewMode? mode = null,
-        IReadOnlyList<ReviewLens>? verifyTracks = null)
+        IReadOnlyList<ReviewLens>? verifyTracks = null,
+        ReviewMechanicsOverride? mechanicsOverride = null)
     {
         ReviewMode resolvedMode = mode ?? ReviewMode.Discovery;
         StringBuilder prompt = new();
@@ -3170,7 +3181,7 @@ public static class AgentPromptBuilder
 
         prompt.AppendLine("- End your final message with exactly one verdict line, nothing after it:");
         prompt.AppendLine("  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.");
-        AppendFindingContract(prompt, project, resolvedMode);
+        AppendFindingContract(prompt, project, resolvedMode, mechanicsOverride);
         if (verifyTracks is { Count: > 0 })
         {
             AppendVerifyTrackTagContract(prompt, verifyTracks);
