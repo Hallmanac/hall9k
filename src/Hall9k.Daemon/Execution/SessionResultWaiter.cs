@@ -4,9 +4,12 @@ using Hall9k.Daemon.ProcessManagement;
 namespace Hall9k.Daemon.Execution;
 
 /// <summary>
-/// Waits for a spawned session's terminal result event by tailing its stream file: the
-/// completion signal is the stream's final result line, never the exit code (Decisions Log
-/// #2). Shared by every caller that spawns a session and then blocks on it — the pre-PR
+/// Waits for a spawned session's terminal result event by tailing its stream file. A result
+/// line alone does not finalize the wait: a stream can hold more than one, so completion also
+/// requires <paramref name="processManager"/> to report the process gone before the whole
+/// file is re-read for the session's real, combined result (discovery cc9b7aec) — the exit
+/// code itself is still never consulted (Decisions Log #2), only whether the process has
+/// exited. Shared by every caller that spawns a session and then blocks on it — the pre-PR
 /// review loop's legs (log #24) and the context-synthesis pass (log #36) — so the grace
 /// window after process death, which exists so buffered output still gets read, behaves
 /// identically wherever a session is awaited.
