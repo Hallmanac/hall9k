@@ -124,17 +124,20 @@ public sealed class FakeProcessManager : IProcessManager
     {
         lock (_gate)
         {
-            // The real implementation still walks and kills whatever is left running under a
-            // root that has already exited on its own — a lingering descendant, reparented away
-            // from its dying parent, is exactly the pathology this method exists to catch
-            // (ProcessManagerBase.TerminateTree's own "root exited" branch) — so this never bails
-            // out early just because the root itself is no longer alive. Every call is recorded
-            // here whether or not it finds anything still alive to kill, the same idempotent-
-            // no-op-but-still-asked shape Process.Kill on an already-exited handle has.
-            IEnumerable<int> candidates = _alive.Contains(processId)
-                ? [processId, .. CollectDescendants(processId)]
-                : CollectDescendants(processId);
-            List<int> lingering = [.. candidates.Where(_alive.Contains)];
+            // Matches the real ProcessManagerBase.TerminateTree's own documented contract: empty
+            // when the root is already gone, because a dead root's former children have already
+            // been reparented away from it with no relation left to observe (IProcessManager's
+            // own doc on this method) — this fake used to keep walking descendants of an
+            // already-dead root, which the real implementation never does (independent pre-PR
+            // review, cycle 3, adversarial lens). A caller that needs to reach a root's
+            // descendants after it has died relies on a pre-death SnapshotDescendants call
+            // instead, exactly like the real implementation requires.
+            if (!_alive.Contains(processId))
+            {
+                return [];
+            }
+
+            List<int> lingering = [processId, .. CollectDescendants(processId).Where(_alive.Contains)];
             foreach (int pid in lingering)
             {
                 _alive.Remove(pid);
@@ -143,6 +146,26 @@ public sealed class FakeProcessManager : IProcessManager
             _terminations.Add((processId, startedAt));
             _treeTerminations.Add((processId, startedAt, lingering));
             return lingering;
+        }
+    }
+
+    /// <summary>
+    /// Matches the real <see cref="ProcessManagerBase.SnapshotDescendants"/>: non-lethal, empty
+    /// when the root itself is not alive, the currently-alive descendants otherwise. Fabricated
+    /// start times are fine here — this fake's <see cref="IsAlive"/> and <see cref="Terminate"/>
+    /// key off the pid alone, never the start time a test passes back in, since pid-reuse
+    /// detection belongs to the real implementation, not this seam.
+    /// </summary>
+    public IReadOnlyList<(int ProcessId, DateTimeOffset StartedAt)> SnapshotDescendants(int processId, DateTimeOffset startedAt)
+    {
+        lock (_gate)
+        {
+            if (!_alive.Contains(processId))
+            {
+                return [];
+            }
+
+            return [.. CollectDescendants(processId).Where(_alive.Contains).Select(id => (id, DateTimeOffset.UtcNow))];
         }
     }
 

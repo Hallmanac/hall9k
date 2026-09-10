@@ -55,4 +55,26 @@ public interface IProcessManager
     /// the same worktree).
     /// </summary>
     IReadOnlyList<int> TerminateTree(int processId, DateTimeOffset startedAt);
+
+    /// <summary>
+    /// Best-effort, non-lethal snapshot of every currently-alive descendant of
+    /// <paramref name="processId"/>, paired with each one's own start time so a caller can
+    /// re-check its identity later without the bare-pid reuse risk Decisions Log #2 exists to
+    /// close — nothing is killed here. Empty when the root itself is not alive under the given
+    /// identity, or when enumeration finds nothing.
+    /// <para>
+    /// A caller waiting on a session that must be allowed to keep running past its first result
+    /// line (a stream can hold more than one — discovery cc9b7aec) cannot call
+    /// <see cref="TerminateTree"/> the instant that line appears without risking killing a
+    /// session that was always going to finish on its own; it can only act once the root is
+    /// confirmed dead. But <see cref="TerminateTree"/>'s own snapshot-then-kill sequence needs to
+    /// run before that confirmation, not after — a descendant reparents away from its dying
+    /// parent essentially atomically with the parent's own exit becoming observable, so a
+    /// snapshot attempted only after death is confirmed can no longer find it at all. Refreshing
+    /// this on every poll while the root is still alive keeps a recent, pre-death view on hand,
+    /// so a caller can still individually terminate whatever the root leaves behind even though
+    /// the root itself is gone by the time that decision is safe to make.
+    /// </para>
+    /// </summary>
+    IReadOnlyList<(int ProcessId, DateTimeOffset StartedAt)> SnapshotDescendants(int processId, DateTimeOffset startedAt);
 }

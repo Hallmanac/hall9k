@@ -406,21 +406,15 @@ public sealed class RunSupervisor(
         try
         {
             string streamFile = RunPaths.StreamFile(runDirectory);
-            long cursor = await LoadCursorAsync(runId, cancellationToken);
+            (long cursor, bool sawAnyResult) = await LoadMonitorStateAsync(runId, cancellationToken);
             DateTimeOffset? deadSince = null;
-            bool sawAnyResult = false;
+            IReadOnlyList<(int Id, DateTimeOffset StartedAt)> lastKnownDescendants = [];
             StringBuilder partialLine = new();
 
             while (!cancellationToken.IsCancellationRequested)
             {
                 (long newCursor, bool sawResult) =
                     await StreamTailReader.ReadNewLinesAsync(streamFile, cursor, partialLine, cancellationToken);
-
-                if (newCursor > cursor)
-                {
-                    cursor = newCursor;
-                    await SaveActivityAsync(runId, cursor, cancellationToken);
-                }
 
                 // The line this poll found only signals a leg is done — a stream can hold more
                 // than one result line, and in the common shape the process keeps running for
@@ -433,9 +427,30 @@ public sealed class RunSupervisor(
                 // adversarial lens).
                 sawAnyResult |= sawResult;
 
+                if (newCursor > cursor)
+                {
+                    cursor = newCursor;
+                    // Persisted together, not the cursor alone (independent pre-PR review, cycle
+                    // 3, adversarial lens): the cursor can advance past the run's only result line
+                    // on this very poll, and a daemon restart between this save and the process
+                    // later dying would otherwise resume tailing from a cursor with nothing left
+                    // unread to re-set the in-memory flag this once was.
+                    await SaveActivityAsync(runId, cursor, sawAnyResult, cancellationToken);
+                }
+
                 if (processManager.IsAlive(processId, processStartedAt))
                 {
                     deadSince = null;
+                    if (sawAnyResult)
+                    {
+                        // Refreshed every poll rather than taken once the root is confirmed dead
+                        // below: a descendant reparents away from its dying parent essentially
+                        // atomically with the parent's own exit (IProcessManager.SnapshotDescendants'
+                        // own doc), so only the most recent pre-death snapshot can still name what
+                        // a since-dead root left running (independent pre-PR review, cycle 3,
+                        // conformance + adversarial lenses).
+                        lastKnownDescendants = processManager.SnapshotDescendants(processId, processStartedAt);
+                    }
                 }
                 else if (sawAnyResult)
                 {
@@ -449,9 +464,12 @@ public sealed class RunSupervisor(
                     // any gate or another session in the same worktree (task: the daemon
                     // terminates a completed session's process tree before it starts any gate or
                     // another session in the same worktree) — the root process dying, confirmed
-                    // above, is not proof every process it backgrounded has actually exited too;
-                    // TerminateTree no-ops for free when it already has.
-                    IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
+                    // above, is not proof every process it backgrounded has actually exited too.
+                    // TerminateTree no-ops for free on the root once it already has, so the last
+                    // pre-death descendant snapshot above covers what it can no longer find
+                    // (independent pre-PR review, cycle 3, conformance + adversarial lenses).
+                    IReadOnlyList<int> lingering = SessionResultWaiter.TerminateLingering(
+                        processManager, processId, processStartedAt, lastKnownDescendants);
                     if (lingering.Count > 0)
                     {
                         logger.LogWarning(
@@ -487,6 +505,7 @@ public sealed class RunSupervisor(
                         cursor = 0;
                         deadSince = null;
                         sawAnyResult = false;
+                        lastKnownDescendants = [];
                         partialLine.Clear();
                         continue;
                     }
@@ -1685,14 +1704,14 @@ public sealed class RunSupervisor(
         return task?.Type == TaskType.PrReview;
     }
 
-    private async Task<long> LoadCursorAsync(Guid runId, CancellationToken cancellationToken)
+    private async Task<(long Cursor, bool SawResult)> LoadMonitorStateAsync(Guid runId, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         RunActivity? activity = await query.LoadAsync<RunActivity>(runId, cancellationToken);
-        return activity?.StreamBytesRead ?? 0;
+        return (activity?.StreamBytesRead ?? 0, activity?.SawResult ?? false);
     }
 
-    private async Task SaveActivityAsync(Guid runId, long cursor, CancellationToken cancellationToken)
+    private async Task SaveActivityAsync(Guid runId, long cursor, bool sawResult, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Store(new RunActivity
@@ -1700,6 +1719,7 @@ public sealed class RunSupervisor(
             Id = runId,
             LastActivityAt = DateTimeOffset.UtcNow,
             StreamBytesRead = cursor,
+            SawResult = sawResult,
         });
         await session.SaveChangesAsync(cancellationToken);
     }

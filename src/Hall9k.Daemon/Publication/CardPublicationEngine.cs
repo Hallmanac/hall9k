@@ -775,9 +775,9 @@ public sealed class CardPublicationEngine(
             // may be halfway through creating"). Unlike a run's own build/fix/review/rebase
             // sessions, this session is not about to be followed by a gate or another dispatch
             // into the same worktree, so there is nothing here for a lingering process to race.
-            result = await SessionResultWaiter.WaitAsync(
+            result = (await SessionResultWaiter.WaitAsync(
                 RunPaths.StreamFile(RunPaths.GlobalDirectory(sessionId)), agent.ProcessId, agent.StartedAt,
-                processManager, onOutput: null, budget.Token);
+                processManager, onOutput: null, budget.Token)).Result;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

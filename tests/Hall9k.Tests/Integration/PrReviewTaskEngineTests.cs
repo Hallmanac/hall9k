@@ -1316,20 +1316,18 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
 
-        // Every completed session's own process is now routinely torn down the instant its
-        // result arrives (task: the daemon terminates a completed session's process tree before
-        // it starts any gate or another session in the same worktree) — pid 7000 is torn down
-        // TWICE here: once by that routine cleanup the moment its result arrived, and again by
-        // the crash sweep, which still finds the stream showing it in flight because the crash
-        // happened before PrReviewConformanceCompleted ever cleared that bookkeeping. The
-        // redundant second kill-tree call is harmless (idempotent on an already-dead pid), and
-        // this test's own point survives unchanged: the crash sweep reaches the conformance
-        // session specifically.
-        executor.Processes.Terminations.Should().OnlyContain(
+        // A completed session's process tree is only torn down once SessionResultWaiter confirms
+        // the root has exited (discovery cc9b7aec); pid 7000 is a synchronous, already-completed
+        // scripted spawn that ScriptedExecutor's own doc says is never observed alive, so
+        // IProcessManager.TerminateTree correctly finds nothing left to clean up for it (its own
+        // documented contract). What this test actually guards survives untouched:
+        // TerminateInFlightConformanceSessionAsync's own crash-sweep call is a plain,
+        // unconditional processManager.Terminate — distinct from TerminateTree, and never gated
+        // on having observed the pid alive — so it still reaches the conformance session because
+        // the stream still shows it in flight when the crash lands.
+        executor.Processes.Terminations.Should().ContainSingle(
             termination => termination.ProcessId == 7_000,
-            "the conformance lens's own session is the only one this run ever dispatches");
-        executor.Processes.Terminations.Count.Should().Be(
-            2, "the routine post-completion cleanup and the crash sweep both reach it");
+            "the crash sweep terminates the conformance session that was still in flight when the loop crashed");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;

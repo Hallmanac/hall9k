@@ -4784,42 +4784,33 @@ public sealed class ReviewEngine(
     /// last-activity fresh while output flows so h9k status stall detection covers review
     /// legs. Null means the session genuinely died without a result.
     /// <para>
-    /// Terminates the session's own process tree the moment a result lands (task: the daemon
-    /// terminates a completed session's process tree before it starts any gate or another session
-    /// in the same worktree) — before this method returns, so every caller (a review pass, a fix
-    /// session, or a rebase-recovery session) gets the guarantee for free rather than each having
-    /// to remember it. Origin: a session's own last message can report a result while the
-    /// underlying process — and whatever it backgrounded, like a `dotnet test` run — is still
-    /// alive; <see cref="SessionResultWaiter.WaitAsync"/> returns the instant it parses that result
-    /// line, without ever checking whether the process producing it has actually exited.
-    /// <see cref="IProcessManager.TerminateTree"/> is a no-op when the process is already gone (the
-    /// ordinary case), so this costs nothing on the path that behaved correctly.
+    /// Terminates whatever the session's process tree left running before this method returns
+    /// (task: the daemon terminates a completed session's process tree before it starts any gate
+    /// or another session in the same worktree), so every caller (a review pass, a fix session,
+    /// or a rebase-recovery session) gets the guarantee for free rather than each having to
+    /// remember it. <see cref="SessionResultWaiter.WaitAsync"/> only finalizes once the process
+    /// itself is confirmed dead — required so a still-running session's first result line (a
+    /// stream can hold more than one, discovery cc9b7aec) is never read as its last — so the
+    /// cleanup it returns already covers both the root and whatever it backgrounded, like a
+    /// `dotnet test` run left alive behind it.
     /// </para>
     /// </summary>
     private async Task<AgentResult?> WaitForSessionResultAsync(
         Guid runId, string streamFile, int processId, DateTimeOffset processStartedAt, string sessionLabel,
         CancellationToken cancellationToken)
     {
-        AgentResult? result = await SessionResultWaiter.WaitAsync(
+        SessionWaitResult wait = await SessionResultWaiter.WaitAsync(
             streamFile, processId, processStartedAt, processManager,
             token => TouchActivityAsync(runId, token), cancellationToken);
 
-        // Gated on a result actually landing: a session that died without ever producing one
-        // (SessionResultWaiter.WaitAsync's own grace-window path) already confirmed the process
-        // itself gone with nothing to react to, and is a different failure mode entirely from the
-        // one this cleanup exists for — a session that completed and left something behind.
-        if (result is not null)
+        if (wait.Lingering.Count > 0)
         {
-            IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
-            if (lingering.Count > 0)
-            {
-                logger.LogWarning(
-                    "Run {RunId}: {SessionLabel} left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
-                    runId, sessionLabel, lingering.Count, string.Join(", ", lingering));
-            }
+            logger.LogWarning(
+                "Run {RunId}: {SessionLabel} left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                runId, sessionLabel, wait.Lingering.Count, string.Join(", ", wait.Lingering));
         }
 
-        return result;
+        return wait.Result;
     }
 
     private async Task TouchActivityAsync(Guid runId, CancellationToken cancellationToken)

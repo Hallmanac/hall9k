@@ -400,6 +400,9 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
 
         public IReadOnlyList<int> TerminateTree(int processId, DateTimeOffset startedAt) =>
             processes.TerminateTree(processId, startedAt);
+
+        public IReadOnlyList<(int ProcessId, DateTimeOffset StartedAt)> SnapshotDescendants(int processId, DateTimeOffset startedAt) =>
+            processes.SnapshotDescendants(processId, startedAt);
     }
 
     /// <summary>

@@ -231,27 +231,18 @@ public sealed class BlockerContextAssembler(
         budget.CancelAfter(_options.BlockerSynthesisTimeout);
         try
         {
-            AgentResult? result = await SessionResultWaiter.WaitAsync(
+            SessionWaitResult wait = await SessionResultWaiter.WaitAsync(
                 RunPaths.SessionStreamFile(runDirectory, artifactName), agent.ProcessId, agent.StartedAt,
                 processManager, onOutput: null, budget.Token);
 
-            // Task: the daemon terminates a completed session's process tree before it starts
-            // any gate or another session in the same worktree — the stream's result line is not
-            // proof this session's own process has actually exited. No-op, and free, when it has.
-            // Gated on a result actually landing: a session that died without ever producing one
-            // is a different failure mode, already confirmed gone by the grace-window wait above.
-            if (result is not null)
+            if (wait.Lingering.Count > 0)
             {
-                IReadOnlyList<int> lingering = processManager.TerminateTree(agent.ProcessId, agent.StartedAt);
-                if (lingering.Count > 0)
-                {
-                    logger.LogWarning(
-                        "Run {RunId}: the context synthesis session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
-                        runId, lingering.Count, string.Join(", ", lingering));
-                }
+                logger.LogWarning(
+                    "Run {RunId}: the context synthesis session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                    runId, wait.Lingering.Count, string.Join(", ", wait.Lingering));
             }
 
-            return result;
+            return wait.Result;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

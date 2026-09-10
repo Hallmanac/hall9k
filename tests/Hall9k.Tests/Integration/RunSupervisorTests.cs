@@ -727,6 +727,61 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The regression an independent pre-PR review (cycle 3, adversarial lens) caught: the
+    /// process's own death, not the result line, is what confirms a session's completion (task:
+    /// a leg's recorded token usage), so the tail's cursor can advance past that line — and get
+    /// persisted — well before the process it was tailing actually exits. If a daemon restart
+    /// lands in that window, the restarted monitor resumes from the saved cursor with nothing
+    /// left unread to re-signal "a result was already seen", so a persisted flag has to carry
+    /// that fact across the restart instead — otherwise the run would end up failed even though
+    /// its one and only result line was on disk the whole time.
+    /// </summary>
+    [Fact]
+    public async Task Daemon_restart_after_the_only_result_line_still_completes_once_the_process_later_dies()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        // Prints its only result line immediately, then keeps running for ~3s — the shape a
+        // session leaves when it forgets to foreground a background task before its own process
+        // exits on its own.
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine).Pause(3));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        using (CancellationTokenSource firstDaemon = new())
+        {
+            RunSupervisor doomed = NewSupervisor(store, node);
+            doomed.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, firstDaemon.Token);
+            // Long enough for the tail to read the result line and persist the cursor past it
+            // while the scripted process is still alive and sleeping; short enough that it has
+            // not exited yet.
+            await Task.Delay(TimeSpan.FromSeconds(1.2), cts.Token);
+            firstDaemon.Cancel();
+        }
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            Hall9k.Domain.Features.Run.Documents.RunActivity? activity =
+                await query.LoadAsync<Hall9k.Domain.Features.Run.Documents.RunActivity>(runId, cts.Token);
+            activity!.SawResult.Should().BeTrue(
+                "the first daemon already read the run's only result line before it was stopped");
+        }
+
+        // The "restarted daemon": adoption finds the still-live process and resumes tailing from
+        // the persisted cursor, with nothing left unread past it.
+        RunSupervisor restarted = NewSupervisor(store, node);
+        await restarted.AdoptOrphansAsync(cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+        details.State.Should().Be(
+            RunState.Verifying,
+            "the restarted daemon must complete the run off the persisted SawResult flag once the process finally dies, not fail it as though nothing was ever reported");
+        details.InputTokens.Should().Be(1200);
+        details.CacheReadInputTokens.Should().Be(840_000);
+    }
+
+    /// <summary>
     /// h9k task deliver pushes the branch and appends AgentSessionCompleted on an interactive
     /// run's stream with the delivering node's own id (Decisions Log #103), moving it to
     /// Verifying with no monitor. This proves the pickup half of that hand-off:

@@ -22,13 +22,13 @@ public abstract class ProcessManagerBase : IProcessManager
     private static readonly TimeSpan StartTimeTolerance = TimeSpan.FromSeconds(2);
 
     // How long a process found alive gets to exit on its own before TerminateTree treats it as
-    // lingering rather than mid-teardown: the daemon's own poll can land inside the few hundred
-    // milliseconds an ordinary session spends exiting after its terminal result line lands on
-    // disk (SessionResultWaiter/RunSupervisor return the instant that line is parsed, never
-    // waiting for the process itself to exit), so "found alive at this instant" alone cannot
-    // tell a well-behaved session still tearing down from the genuinely lingering background
-    // gate this method exists to catch — one persists for minutes, not fractions of a second, so
-    // this window costs nothing against a real positive.
+    // lingering rather than mid-teardown: SessionResultWaiter/RunSupervisor only call this once
+    // the root is already confirmed dead (discovery cc9b7aec), but the daemon's own poll can
+    // still land inside the few hundred milliseconds an ordinary session spends exiting between
+    // that confirmation and this call actually running, so "found alive at this instant" alone
+    // cannot tell a well-behaved session still tearing down from the genuinely lingering
+    // background gate this method exists to catch — one persists for minutes, not fractions of a
+    // second, so this window costs nothing against a real positive.
     private static readonly TimeSpan LingeringGraceWindow = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan LingeringGracePollInterval = TimeSpan.FromMilliseconds(25);
 
@@ -213,6 +213,18 @@ public abstract class ProcessManagerBase : IProcessManager
         }
 
         return stillAliveDescendants;
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<(int ProcessId, DateTimeOffset StartedAt)> SnapshotDescendants(int processId, DateTimeOffset startedAt)
+    {
+        using Process? process = TryGet(processId, startedAt);
+        if (process is null)
+        {
+            return [];
+        }
+
+        return [.. CollectDescendants(processId).Select(TrySnapshotStartTime).OfType<(int Id, DateTimeOffset StartedAt)>()];
     }
 
     private static (int Id, DateTimeOffset StartedAt)? TrySnapshotStartTime(int processId)
