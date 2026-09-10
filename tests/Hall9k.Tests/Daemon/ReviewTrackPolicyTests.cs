@@ -250,7 +250,7 @@ public sealed class ReviewTrackPolicyTests
     /// <summary>
     /// The cap and the gate both take a cycle number and they are deliberately not the same
     /// number. A human's needs-fixes resolution re-grants the cap (log #22), but the gate is a
-    /// statement about how converged the diff is by cycle eleven — re-opening full rigor there
+    /// statement about how converged the diff is by cycle five — re-opening full rigor there
     /// would restart the nit-churn tail exactly where the gate exists to end it. Uses a Medium
     /// rather than the old Low here (Decisions Log #87 moved Low off the fix bucket entirely,
     /// which would leave this test unable to tell "still fixed, not re-reviewed" apart from
@@ -263,7 +263,7 @@ public sealed class ReviewTrackPolicyTests
             .Should().BeFalse("the human granted a fresh round of cycles");
 
         ReviewTrackPlan plan = Decide(
-            ReviewLens.Adversarial, cycle: 11, ReviewVerdict.NeedsFixes,
+            ReviewLens.Adversarial, cycle: 5, ReviewVerdict.NeedsFixes,
             Finding(ReviewSeverity.Medium, ReviewFindingScope.InScope, "Auth.cs:9"));
 
         plan.Continues.Should().BeFalse("past the gate a medium is fixed without forcing another cycle");
