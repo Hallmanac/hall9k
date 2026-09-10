@@ -640,27 +640,16 @@ public sealed partial class VerificationRunner(
             timeoutSource.CancelAfter(options.Value.UncommittedWorkRecoveryTimeout);
             try
             {
-                result = await SessionResultWaiter.WaitAsync(
+                SessionWaitResult wait = await SessionResultWaiter.WaitAsync(
                     streamFile, agent.ProcessId, agent.StartedAt, processManager, onOutput: null, timeoutSource.Token);
                 unfinished = null;
+                result = wait.Result;
 
-                // The daemon terminates a completed session's process tree the instant its
-                // terminal result arrives (task: the daemon terminates a completed session's
-                // process tree before it starts any gate or another session in the same
-                // worktree) — the stream's result line is not proof this session's own process
-                // has actually exited. A no-op, and free, on the ordinary path where it already
-                // has. Gated on a result actually landing: a session that died without ever
-                // producing one is a different failure mode, already confirmed gone by the
-                // grace-window wait above.
-                if (result is not null)
+                if (wait.Lingering.Count > 0)
                 {
-                    IReadOnlyList<int> lingering = processManager.TerminateTree(agent.ProcessId, agent.StartedAt);
-                    if (lingering.Count > 0)
-                    {
-                        logger.LogWarning(
-                            "Run {RunId}: the automatic uncommitted-work recovery session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
-                            run.Id, lingering.Count, string.Join(", ", lingering));
-                    }
+                    logger.LogWarning(
+                        "Run {RunId}: the automatic uncommitted-work recovery session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                        run.Id, wait.Lingering.Count, string.Join(", ", wait.Lingering));
                 }
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

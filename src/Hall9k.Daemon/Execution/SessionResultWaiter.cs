@@ -4,6 +4,15 @@ using Hall9k.Daemon.ProcessManagement;
 namespace Hall9k.Daemon.Execution;
 
 /// <summary>
+/// A completed wait: the session's own result, or null when it genuinely died without one, plus
+/// every pid <see cref="SessionResultWaiter.WaitAsync"/> itself found still running behind it and
+/// terminated (root included when it was still alive at the moment of the call) — a caller logs
+/// these by the session they belonged to instead of calling
+/// <see cref="IProcessManager.TerminateTree"/> a second time on an already-dead root.
+/// </summary>
+public sealed record SessionWaitResult(AgentResult? Result, IReadOnlyList<int> Lingering);
+
+/// <summary>
 /// Waits for a spawned session's terminal result event by tailing its stream file. A result
 /// line alone does not finalize the wait: a stream can hold more than one, so completion also
 /// requires <paramref name="processManager"/> to report the process gone before the whole
@@ -13,6 +22,20 @@ namespace Hall9k.Daemon.Execution;
 /// review loop's legs (log #24) and the context-synthesis pass (log #36) — so the grace
 /// window after process death, which exists so buffered output still gets read, behaves
 /// identically wherever a session is awaited.
+/// <para>
+/// Also owns the process-tree cleanup a completed session leaves behind (task: the daemon
+/// terminates a completed session's process tree before it starts any gate or another session
+/// in the same worktree): a result line being on disk is not proof the process that wrote it,
+/// or whatever it backgrounded, has actually exited. Waiting for the root's own death — required
+/// so a still-running session's first result line is never read as its last (independent pre-PR
+/// review, cycle 3, adversarial lens) — means <see cref="IProcessManager.TerminateTree"/> can no
+/// longer be called while the root is likely still alive the way it once was; by the time this
+/// method is ready to call it, the root is already gone, and a dead root's reparented children
+/// are no longer discoverable through it at all. So this keeps its own rolling, best-effort
+/// snapshot of the root's descendants (<see cref="IProcessManager.SnapshotDescendants"/>) refreshed
+/// on every poll while the root is still alive, and terminates whatever that last snapshot still
+/// shows running once the root's own death confirms nothing legitimate is coming from it.
+/// </para>
 /// </summary>
 public static class SessionResultWaiter
 {
@@ -20,11 +43,10 @@ public static class SessionResultWaiter
     private static readonly TimeSpan DeadProcessGrace = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// The session's result, or null when it genuinely died without one.
-    /// <paramref name="onOutput"/> is invoked whenever new output lands, which is how a
-    /// caller keeps the run's last-activity fresh so stall detection covers the leg.
+    /// <paramref name="onOutput"/> is invoked whenever new output lands, which is how a caller
+    /// keeps the run's last-activity fresh so stall detection covers the leg.
     /// </summary>
-    public static async Task<AgentResult?> WaitAsync(
+    public static async Task<SessionWaitResult> WaitAsync(
         string streamFile,
         int processId,
         DateTimeOffset processStartedAt,
@@ -36,6 +58,7 @@ public static class SessionResultWaiter
         long cursor = 0;
         bool sawAnyResult = false;
         StringBuilder partialLine = new();
+        IReadOnlyList<(int Id, DateTimeOffset StartedAt)> lastKnownDescendants = [];
 
         while (true)
         {
@@ -65,6 +88,15 @@ public static class SessionResultWaiter
             if (processManager.IsAlive(processId, processStartedAt))
             {
                 deadSince = null;
+                if (sawAnyResult)
+                {
+                    // Refreshed every poll rather than taken once: a descendant reparents away
+                    // from its dying parent essentially atomically with the parent's own exit
+                    // (IProcessManager.SnapshotDescendants' own doc), so only the most recent
+                    // pre-death snapshot can still name what a since-dead root left running
+                    // (independent pre-PR review, cycle 3, conformance + adversarial lenses).
+                    lastKnownDescendants = processManager.SnapshotDescendants(processId, processStartedAt);
+                }
             }
             else if (sawAnyResult)
             {
@@ -72,7 +104,10 @@ public static class SessionResultWaiter
                 // leg (StreamTailReader.ReadFinalResultAsync's own doc comment; discovery
                 // cc9b7aec) — safe to do now that the process dying confirms this is the last
                 // one there will be.
-                return await StreamTailReader.ReadFinalResultAsync(streamFile, cancellationToken);
+                AgentResult result = await StreamTailReader.ReadFinalResultAsync(streamFile, cancellationToken);
+                IReadOnlyList<int> lingering =
+                    TerminateLingering(processManager, processId, processStartedAt, lastKnownDescendants);
+                return new SessionWaitResult(result, lingering);
             }
             else
             {
@@ -81,11 +116,44 @@ public static class SessionResultWaiter
                 deadSince ??= DateTimeOffset.UtcNow;
                 if (DateTimeOffset.UtcNow - deadSince > DeadProcessGrace)
                 {
-                    return null;
+                    return new SessionWaitResult(null, []);
                 }
             }
 
             await Task.Delay(TailInterval, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Terminates whatever the session's process tree left running now that its root is
+    /// confirmed dead (or, on the rare poll that catches the root mid-exit, still alive):
+    /// <see cref="IProcessManager.TerminateTree"/> handles the root itself and anything still
+    /// parented under it at the moment of the call (a no-op once the root is fully gone, per its
+    /// own doc), and <paramref name="lastKnownDescendants"/> — the most recent pre-death
+    /// snapshot, already reparented away from the tree <see cref="IProcessManager.TerminateTree"/>
+    /// can still see — covers what that call alone can no longer find. Shared by
+    /// <see cref="WaitAsync"/> and <see cref="RunSupervisor.MonitorAsync"/>'s own inline poll
+    /// loop, which needs the identical sequence but never calls this method through
+    /// <see cref="WaitAsync"/> itself.
+    /// </summary>
+    internal static IReadOnlyList<int> TerminateLingering(
+        IProcessManager processManager,
+        int processId,
+        DateTimeOffset processStartedAt,
+        IReadOnlyList<(int Id, DateTimeOffset StartedAt)> lastKnownDescendants)
+    {
+        List<int> lingering = [.. processManager.TerminateTree(processId, processStartedAt)];
+        foreach ((int id, DateTimeOffset startedAt) in lastKnownDescendants)
+        {
+            if (lingering.Contains(id) || !processManager.IsAlive(id, startedAt))
+            {
+                continue;
+            }
+
+            processManager.Terminate(id, startedAt);
+            lingering.Add(id);
+        }
+
+        return lingering;
     }
 }

@@ -101,6 +101,17 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         /// </summary>
         public HashSet<int> NullSummaryErrorAtSpawnIndex { get; } = [];
 
+        /// <summary>
+        /// Spawn indexes whose process is marked alive for slightly more than one
+        /// SessionResultWaiter/RunSupervisor poll interval before dying on its own, instead of
+        /// this class's own default "never alive" shape (this class's own doc above) — the shape
+        /// a real session takes when a test needs at least one poll with the root still alive so
+        /// IProcessManager.SnapshotDescendants can capture a lingering descendant before it
+        /// reparents away and becomes unreachable (task: a leg's recorded token usage is read
+        /// from a fresh, full re-read of its stream file).
+        /// </summary>
+        public HashSet<int> SpawnIndexesThatStayAliveBriefly { get; } = [];
+
         public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
         {
             if (Spawns.Count == 0)
@@ -140,6 +151,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             await File.WriteAllTextAsync(
                 RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
                 line + "\n", cancellationToken);
+
+            if (SpawnIndexesThatStayAliveBriefly.Contains(spawnIndex))
+            {
+                Processes.MarkAlive(processId);
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(1_100));
+                    Processes.MarkDead(processId);
+                });
+            }
 
             return new SpawnedAgent(processId, Now);
         }
@@ -807,10 +828,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         // The fix session's own process (pid 6002, the third spawn) left a background dotnet test
         // still running behind it — a descendant process still alive when its final message
         // arrived (task: the daemon terminates a completed session's process tree before it
-        // starts any gate or another session in the same worktree).
+        // starts any gate or another session in the same worktree). Its own root is kept alive
+        // for slightly more than one poll (task: a leg's recorded token usage), the shape a real
+        // session takes, so SnapshotDescendants gets the chance to see the descendant before the
+        // root's own death reparents it out of reach.
         const int fixSessionProcessId = 6_002;
         const int lingeringDescendantProcessId = 6_999;
         executor.Processes.MarkDescendant(fixSessionProcessId, lingeringDescendantProcessId);
+        executor.SpawnIndexesThatStayAliveBriefly.Add(2);
 
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
@@ -838,10 +863,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         // The process-tree cleanup: the fix session's own lingering descendant is gone before the
         // reverify gate — which the recovery session that commits the stranded file runs ahead
-        // of — ever touches the same worktree.
-        executor.Processes.TreeTerminations.Should().Contain(
-            termination => termination.ProcessId == fixSessionProcessId
-                && termination.Lingering.Contains(lingeringDescendantProcessId),
+        // of — ever touches the same worktree. By the time completion is confirmed, the fix
+        // session's own root is already dead (SessionResultWaiter only finalizes off a dead
+        // process — discovery cc9b7aec), so TerminateTree itself finds nothing left to walk from;
+        // the descendant is instead terminated individually off the pre-death SnapshotDescendants
+        // view SessionResultWaiter.TerminateLingering keeps (task: a leg's recorded token usage).
+        executor.Processes.Terminations.Should().Contain(
+            termination => termination.ProcessId == lingeringDescendantProcessId,
             "the fix session's own backgrounded test run is torn down the instant its terminal result arrives");
         executor.Processes.IsAlive(lingeringDescendantProcessId, Now).Should().BeFalse(
             "a lingering child gone before the next gate starts is exactly what this task requires");
@@ -7449,21 +7477,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         mergeReady.Should().BeTrue("the transient error is retried once, not failed");
         executor.Spawns.Should().HaveCount(3, "conformance's error costs one extra spawn; adversarial dispatches once");
 
-        // Every completed session's own process is now routinely torn down the instant its
-        // result arrives (task: the daemon terminates a completed session's process tree before
-        // it starts any gate or another session in the same worktree) — pid 6000 (the errored
-        // conformance attempt) and 6002 (its retry) both show up here on that account alone. What
-        // this test actually guards, still true: pid 6001, the sibling adversarial pass, is never
-        // torn down BECAUSE OF the other lens's error — it is torn down once, on its own natural
-        // completion, exactly like every other session, never a second time as collateral damage.
-        executor.Processes.Terminations.Should().OnlyContain(
-            termination => new[] { 6_000, 6_001, 6_002 }.Contains(termination.ProcessId),
-            "only the three sessions this cycle actually spawned may ever be torn down");
-        executor.Processes.Terminations.Should().Contain(
-            termination => termination.ProcessId == 6_001,
-            "the adversarial pass is torn down once, on its own routine completion");
-        executor.Processes.Terminations.Count(termination => termination.ProcessId == 6_001).Should().Be(
-            1, "the sibling adversarial pass must never be terminated a second time on the other lens's account");
+        // A completed session's process tree is torn down once SessionResultWaiter confirms the
+        // root itself has exited (discovery cc9b7aec) — every session here is a synchronous,
+        // already-completed scripted spawn that ScriptedExecutor's own doc says is never observed
+        // alive, so IProcessManager.TerminateTree correctly finds nothing left to clean up for any
+        // of the three (its own documented contract: empty once the root is already gone). What
+        // this test actually guards survives on the assertions below instead: pid 6001, the
+        // sibling adversarial pass, keeps its own clean verdict untouched by the other lens's
+        // error, and only one retry event is ever recorded for the errored conformance lens.
+        executor.Processes.Terminations.Should().BeEmpty(
+            "none of these scripted sessions are ever observed alive for TerminateTree to find");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -7621,21 +7644,19 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeFalse();
-        // Every completed session's own process is now routinely torn down the instant its
-        // result arrives (task: the daemon terminates a completed session's process tree before
-        // it starts any gate or another session in the same worktree) — pids 6000 and 6001, the
-        // cycle's two already-concluded passes, show up here on that account alone. Pid 6002, the
-        // fix session, is torn down TWICE: once by that same routine cleanup the moment its
-        // result arrived, and again by the crash sweep below, which still finds the stream
-        // showing it in flight because the crash happened before RecordFixResultAsync ever
-        // cleared that bookkeeping — the redundant second kill-tree call is harmless (idempotent
-        // on an already-dead pid), and this test's own point survives unchanged: the crash sweep
-        // reaches the fix session specifically, not only review passes.
-        executor.Processes.Terminations.Select(termination => termination.ProcessId).Should().Contain(
-            [6_000, 6_001, 6_002],
-            "every session this cycle spawned is torn down, the fix session (still in flight when the crash hit) among them");
-        executor.Processes.Terminations.Count(termination => termination.ProcessId == 6_002).Should().Be(
-            2, "the routine post-completion cleanup and the crash sweep both reach the fix session");
+        // A completed review pass's process tree is only torn down once SessionResultWaiter
+        // confirms the root has exited (discovery cc9b7aec); pids 6000 and 6001 are synchronous,
+        // already-completed scripted spawns that ScriptedExecutor's own doc says are never
+        // observed alive, so IProcessManager.TerminateTree correctly finds nothing left to clean
+        // up for either of them (its own documented contract). What this test actually guards
+        // survives untouched: TerminateInFlightSessionsAsync's own crash-sweep call is a plain,
+        // unconditional processManager.Terminate — distinct from TerminateTree, and never gated
+        // on having observed the pid alive — so it still reaches the fix session specifically,
+        // pid 6002, because the stream still shows it in flight when the crash lands, proving the
+        // sweep covers the fix phase and not only review passes.
+        executor.Processes.Terminations.Should().ContainSingle(
+            termination => termination.ProcessId == 6_002,
+            "the crash sweep terminates the fix session that was still in flight when the loop crashed");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;

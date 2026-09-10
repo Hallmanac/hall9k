@@ -374,6 +374,9 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
 
         public IReadOnlyList<int> TerminateTree(int processId, DateTimeOffset startedAt) =>
             inner.TerminateTree(processId, startedAt);
+
+        public IReadOnlyList<(int ProcessId, DateTimeOffset StartedAt)> SnapshotDescendants(int processId, DateTimeOffset startedAt) =>
+            inner.SnapshotDescendants(processId, startedAt);
     }
 
     [Fact]
