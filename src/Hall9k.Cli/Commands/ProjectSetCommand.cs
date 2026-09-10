@@ -217,13 +217,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [CommandOption("--max-adversarial-review-cycles <N|default>")]
         [Description(
             "This project's cycle cap for the adversarial review track (Decisions Log #63). Same "
-            + "resolution order and clearing idiom as --max-compliance-review-cycles; the compiled default is 10.")]
+            + "resolution order and clearing idiom as --max-compliance-review-cycles; the compiled default is 4.")]
         public string? MaxAdversarialReviewCycles { get; init; }
 
         [CommandOption("--max-final-full-pass-rounds <N|default>")]
         [Description(
             "This project's cap on consecutive mandatory final-full-pass rounds (Decisions Log #93). Same "
-            + "resolution order and clearing idiom as --max-compliance-review-cycles; the compiled default is 3.")]
+            + "resolution order and clearing idiom as --max-compliance-review-cycles; the compiled default is 2.")]
         public string? MaxFinalFullPassRounds { get; init; }
 
         [CommandOption("--lifetime-review-cycle-budget <N|default>")]
@@ -231,7 +231,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             "This project's task-lifetime review-cycle budget — cycles counted across every run and "
             + "follow-up a task has had, immune to the per-run resets a stranding, retry, or follow-up round "
             + "otherwise gives the three caps above. Same resolution order and clearing idiom as "
-            + "--max-compliance-review-cycles; the compiled default is 25.")]
+            + "--max-compliance-review-cycles; the compiled default is 20.")]
         public string? LifetimeReviewCycleBudget { get; init; }
 
         [CommandOption("--review-stage-composition <COMPOSITION|default>")]

@@ -132,7 +132,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--max-adversarial-review-cycles <N>")]
         [Description(
             "This node's cycle cap for the adversarial review track (DaemonOptions.MaxAdversarialReviewCycles, "
-            + "default 10, Decisions Log #63) — deliberately far larger than the conformance cap, since the "
+            + "default 4, Decisions Log #63) — larger than the conformance cap, since the "
             + "severity gate, not this counter, is what ends the track in practice. Same resolution order, and "
             + "same lack of a 'default' clearing word, as --max-compliance-review-cycles.")]
         public int? MaxAdversarialReviewCycles { get; init; }
@@ -140,14 +140,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [CommandOption("--max-final-full-pass-rounds <N>")]
         [Description(
             "This node's cap on consecutive mandatory final-full-pass rounds (DaemonOptions.MaxFinalFullPassRounds, "
-            + "default 3, Decisions Log #93) — the independent bound for a track the final pass keeps "
+            + "default 2, Decisions Log #93) — the independent bound for a track the final pass keeps "
             + "reawakening. Same resolution order, and same lack of a 'default' clearing word, as "
             + "--max-compliance-review-cycles.")]
         public int? MaxFinalFullPassRounds { get; init; }
 
         [CommandOption("--lifetime-review-cycle-budget <N>")]
         [Description(
-            "This node's task-lifetime review-cycle budget (DaemonOptions.LifetimeReviewCycleBudget, default 25) "
+            "This node's task-lifetime review-cycle budget (DaemonOptions.LifetimeReviewCycleBudget, default 20) "
             + "— cycles counted across every run and follow-up a task has had, immune to the per-run resets a "
             + "stranding, retry, or follow-up round otherwise gives the three caps above. Generous by design: it "
             + "only catches genuine pathology. Once exceeded, every subsequent settle point parks for a human "
