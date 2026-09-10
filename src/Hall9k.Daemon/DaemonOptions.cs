@@ -295,11 +295,10 @@ public sealed class DaemonOptions
     public int MaxComplianceReviewCycles { get; set; } = OperatingSettings.DefaultMaxComplianceReviewCycles;
 
     /// <summary>
-    /// Cycles the adversarial track may run before the run parks (Decisions Log #63). It is
-    /// deliberately far larger than the conformance cap: the severity gate, not the counter, is
-    /// what ends this track in practice, and reaching this many cycles means the machine kept
-    /// finding real high-severity problems — a fact a human should look at rather than a
-    /// budget that quietly ran out.
+    /// Cycles the adversarial track may run before the run parks (Decisions Log #63, amended
+    /// PLACEHOLDER-30ecf914). Reaching this many cycles means the machine kept finding real
+    /// high-severity problems, a fact a human should look at rather than a budget that quietly
+    /// ran out.
     /// </summary>
     public int MaxAdversarialReviewCycles { get; set; } = OperatingSettings.DefaultMaxAdversarialReviewCycles;
 
