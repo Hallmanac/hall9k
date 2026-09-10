@@ -20,4 +20,15 @@ public sealed class RunActivity
     /// set it again — reading a completed session as one that never reported anything.
     /// </summary>
     public bool SawResult { get; set; }
+
+    /// <summary>
+    /// When the tail first found a result line, persisted alongside <see cref="SawResult"/> for
+    /// the same reason: a daemon restart or orphan adoption between that poll and the session's
+    /// own process later dying must resume <c>RunSupervisor.MonitorAsync</c>'s
+    /// <c>SessionResultWaiter.PostResultGrace</c> clock from when the result was actually seen,
+    /// not from the moment the restarted daemon happens to resume monitoring — an in-memory-only
+    /// clock restarts the grace window from "now" on every adoption, silently widening the bound
+    /// this field exists to keep exact (independent pre-PR review, cycle 4, adversarial lens).
+    /// </summary>
+    public DateTimeOffset? ResultSeenAt { get; set; }
 }

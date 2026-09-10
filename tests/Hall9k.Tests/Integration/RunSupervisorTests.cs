@@ -838,6 +838,70 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The regression an independent pre-PR review (cycle 4, adversarial lens) caught:
+    /// RunActivity.ResultSeenAt did not exist yet, so a restarted daemon's MonitorAsync always
+    /// initialized its own in-memory resultSeenAt to null even when the persisted SawResult flag
+    /// was already true — restarting SessionResultWaiter.PostResultGrace's 30-second clock from
+    /// the moment the restarted daemon resumed tailing rather than from when the result was
+    /// actually first seen, silently widening the bound the same task's own PostResultGrace fix
+    /// exists to hold exact. This proves the clock survives the restart: a result line lands, the
+    /// first daemon is stopped roughly 20 seconds later (well inside the 30-second grace), and the
+    /// restarted daemon must still force the root's termination close to 30 seconds after the
+    /// result was first seen rather than close to 30 seconds after the restart.
+    /// </summary>
+    [Fact]
+    public async Task Daemon_restart_mid_grace_still_bounds_the_wait_from_when_the_result_was_first_seen()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        // Writes its result immediately, then keeps running well past PostResultGrace (30s) even
+        // measured from the very start of the test — a root that never exits.
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine).Pause(90));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        Stopwatch elapsed = Stopwatch.StartNew();
+
+        using (CancellationTokenSource firstDaemon = new())
+        {
+            RunSupervisor doomed = NewSupervisor(store, node);
+            doomed.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, firstDaemon.Token);
+            // Long enough that the first daemon has already read the result line and persisted
+            // ResultSeenAt well before it is stopped, short enough to stay inside the 30s grace.
+            await Task.Delay(TimeSpan.FromSeconds(20), cts.Token);
+            firstDaemon.Cancel();
+        }
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            Hall9k.Domain.Features.Run.Documents.RunActivity? activity =
+                await query.LoadAsync<Hall9k.Domain.Features.Run.Documents.RunActivity>(runId, cts.Token);
+            activity!.SawResult.Should().BeTrue("the first daemon already read the run's only result line");
+            activity.ResultSeenAt.Should().NotBeNull(
+                "the persisted timestamp is what lets the restarted daemon resume the grace clock instead of restarting it");
+        }
+
+        // The "restarted daemon": adoption finds the still-live process and resumes tailing with
+        // the persisted ResultSeenAt, not a fresh one.
+        RunSupervisor restarted = NewSupervisor(store, node);
+        await restarted.AdoptOrphansAsync(cts.Token);
+
+        RunDetails details = await WaitForStateAsync(
+            store, runId, "Verifying", cts.Token, timeout: TimeSpan.FromSeconds(40));
+
+        // Bug behavior would restart the 30s grace clock at the ~20s mark, forcing termination
+        // around 50s total; the fix keeps the original clock, forcing it around 30s total. 42s
+        // sits well below the buggy bound and with margin above the fixed one.
+        elapsed.Elapsed.Should().BeLessThan(
+            TimeSpan.FromSeconds(42),
+            "the grace clock must run from when the result was first seen, not from when the restarted daemon resumed monitoring");
+
+        details.InputTokens.Should().Be(1200);
+        details.CacheReadInputTokens.Should().Be(840_000);
+    }
+
+    /// <summary>
     /// h9k task deliver pushes the branch and appends AgentSessionCompleted on an interactive
     /// run's stream with the delivering node's own id (Decisions Log #103), moving it to
     /// Verifying with no monitor. This proves the pickup half of that hand-off:
