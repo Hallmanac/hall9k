@@ -48,8 +48,17 @@ public enum GateCheckOutcome
 /// one-time file read <c>ReadFullOutput</c> already pays elsewhere, not a second, ongoing one.
 /// Left empty for <see cref="GateCheckOutcome.Passed"/> and
 /// <see cref="GateCheckOutcome.Inconclusive"/>: neither caller classifies those.
+/// <para>
+/// <c>null</c> means something different again, and only ever on <see cref="GateCheckOutcome.Failed"/>:
+/// the log exists and genuinely could not be read, so nobody saw what the gate printed. Folding that
+/// into <see cref="string.Empty"/> would hand a classifying caller "the gate printed nothing" for a
+/// fact nobody observed, and a marker-free output is exactly what makes a failure look like the work's
+/// own — the never-guess rule this type's reader (<see cref="ShareTolerantFile"/>) exists to honour.
+/// A caller that classifies on this text has to handle the null; one that only reports
+/// <see cref="OutputTail"/> never sees it.
+/// </para>
 /// </param>
-public sealed record GateCheckResult(GateCheckOutcome Outcome, string OutputTail, string FullOutput = "");
+public sealed record GateCheckResult(GateCheckOutcome Outcome, string OutputTail, string? FullOutput = "");
 
 /// <summary>
 /// Runs one gate command against some checkout — a clean base-branch checkout being validated
@@ -239,7 +248,11 @@ public static class AdHocGateRunner
                 return string.Empty;
             }
 
-            using FileStream stream = new(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            // FileShare.ReadWrite | FileShare.Delete for the reason ShareTolerantFile's own doc
+            // spells out: this log's writer may still hold it, and this method's own `finally`
+            // deletes it. The bounded seek is why this cannot simply call ShareTolerantFile.
+            using FileStream stream = new(
+                logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             long tailLength = Math.Min(stream.Length, MaxOutputTailLength);
             stream.Seek(-tailLength, SeekOrigin.End);
 
@@ -272,18 +285,14 @@ public static class AdHocGateRunner
     /// mirrors <c>VerificationRunner.ReadFullOutput</c>'s own identical bounded-by-being-a-single-
     /// read approach for the run's own real gate, not the tail-only <see cref="ReadTailOutput"/>
     /// this method's other caller (a plain pass/fail check, never a classification) still uses.
+    /// Null flows straight out to <see cref="GateCheckResult.FullOutput"/> rather than collapsing
+    /// into <see cref="string.Empty"/>: the whole reason this branch's reader distinguishes
+    /// unreadable from empty is so the one caller that classifies on this text can too, and
+    /// <c>VerificationRunner.RunGateAsync</c>'s own <c>ReadFullOutput</c> keeps the same shape for
+    /// the same reason (independent pre-PR review, cycle 1, both lenses, medium: this reader used
+    /// to swallow the distinction the same sentence of the decisions log claimed it honoured).
     /// </summary>
-    private static string ReadFullOutput(string logFile)
-    {
-        try
-        {
-            return File.Exists(logFile) ? File.ReadAllText(logFile).Trim() : string.Empty;
-        }
-        catch (IOException)
-        {
-            return string.Empty;
-        }
-    }
+    private static string? ReadFullOutput(string logFile) => ShareTolerantFile.TryReadAllText(logFile)?.Trim();
 
     private static string Tail(string content)
     {

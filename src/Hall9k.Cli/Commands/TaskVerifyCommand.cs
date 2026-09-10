@@ -620,7 +620,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         TimeSpan threshold = gateTimeout * 0.8;
         foreach (string file in Directory.EnumerateFiles(gateWaitDirectory))
         {
-            string content;
+            string? content;
             try
             {
                 if (new FileInfo(file).Length > MaxWaitEvidenceBytes)
@@ -628,12 +628,23 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                     continue;
                 }
 
-                content = File.ReadAllText(file);
+                // ShareTolerantFile, never File.ReadAllText, mirroring
+                // GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt's own fix for the
+                // identical defect (this project cannot reference Hall9k.Daemon): the waiting
+                // process rewrites this file periodically, and FileShare.Read is refused for the
+                // whole of that rewrite, so the one file proving an unresolved wait would be
+                // skipped for landing on the wrong millisecond.
+                content = ShareTolerantFile.TryReadAllText(file);
             }
             catch (IOException)
             {
                 // Deleted or rewritten between the enumeration and the read by a class whose own
                 // wait just resolved — not this gate's own evidence to report; try the next file.
+                continue;
+            }
+
+            if (content is null)
+            {
                 continue;
             }
 
