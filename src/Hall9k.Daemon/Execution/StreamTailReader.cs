@@ -4,9 +4,12 @@ namespace Hall9k.Daemon.Execution;
 
 /// <summary>
 /// Incremental tail over a session's stream.jsonl: reads only the bytes past the caller's
-/// cursor, buffers a trailing partial line across calls, and stops at the terminal result
-/// event. Shared by RunSupervisor (main session) and ReviewEngine (review and fix legs)
-/// so neither re-reads a long transcript from the start on every poll.
+/// cursor, buffers a trailing partial line across calls, and stops at the next result
+/// event — which, on a stream holding more than one, is a leg finishing rather than the
+/// session's own terminal line (<see cref="ReadFinalResultAsync"/> is what a caller re-reads
+/// the whole file with once it independently confirms the process has exited). Shared by
+/// RunSupervisor (main session) and ReviewEngine (review and fix legs) so neither re-reads a
+/// long transcript from the start on every poll.
 /// </summary>
 internal static class StreamTailReader
 {

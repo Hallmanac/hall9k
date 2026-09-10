@@ -683,9 +683,12 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         details.CacheReadInputTokens.Should().Be(97_887_837, "the whole session's own cache reads, not the reaction leg's 324,100");
         details.OutputTokens.Should().Be(177_695, "the whole session's own output, not the reaction leg's 1,814");
 
-        logger.Lines.Should().Contain(
-            line => line.Contains("97887837") && line.Contains("177695"),
-            "the completion log line must report the same figures TokensRecorded carries");
+        // CompleteRunAsync's own log line is written after the SaveChangesAsync that
+        // WaitForStateAsync above just observed, not before it — polling here rather than
+        // asserting once outright is what keeps this from racing that write (independent
+        // pre-PR review, adversarial lens, cycle 1).
+        await WaitForLogLineAsync(
+            logger, line => line.Contains("97887837") && line.Contains("177695"), cts.Token);
     }
 
     [Fact]
@@ -1847,6 +1850,30 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         }
 
         throw new TimeoutException($"Run {runId} never recorded {count} {typeof(T).Name} event(s).");
+    }
+
+    /// <summary>
+    /// Polls a <see cref="ListLogger{T}"/> for a line matching <paramref name="predicate"/>,
+    /// rather than reading <see cref="ListLogger{T}.Lines"/> exactly once: a caller that has
+    /// just observed the projection's own committed state cannot assume every log line the
+    /// same method call goes on to write has landed yet.
+    /// </summary>
+    private static async Task WaitForLogLineAsync<T>(
+        ListLogger<T> logger, Func<string, bool> predicate, CancellationToken cancellationToken)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (logger.Lines.Any(predicate))
+            {
+                return;
+            }
+
+            await Task.Delay(100, cancellationToken);
+        }
+
+        throw new TimeoutException(
+            $"No log line matched within the wait; lines were: {string.Join(" | ", logger.Lines)}");
     }
 
     private static RunSupervisor NewSupervisor(
