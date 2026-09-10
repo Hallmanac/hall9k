@@ -69,7 +69,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         public List<AgentSpawnRequest> Spawns { get; } = [];
 
-        /// <summary>The OS seam the engine shares with this executor: scripted sessions are alive, dead ones are not.</summary>
+        /// <summary>
+        /// The OS seam the engine shares with this executor. A spawn that writes a result here
+        /// already ran the scripted session to completion synchronously before returning, exactly
+        /// the shape a real single-shot review-pass or fix-session invocation leaves once it has
+        /// exited — so no pid is ever marked alive, and SessionResultWaiter.WaitAsync completes
+        /// off the result file alone instead of waiting out a process that will never die.
+        /// </summary>
         public FakeProcessManager Processes { get; } = new();
 
         /// <summary>Lets a test mutate configuration between legs, the way a config edit mid-run would.</summary>
@@ -135,7 +141,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
                 line + "\n", cancellationToken);
 
-            Processes.MarkAlive(processId);
             return new SpawnedAgent(processId, Now);
         }
     }

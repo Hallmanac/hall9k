@@ -648,6 +648,46 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         supervisor.ActiveCount.Should().Be(0, "IsDeliberateHeadlessStart is false, so this run was never a candidate");
     }
 
+    // Trimmed from run 01a07574-4db1's own stream.jsonl (discovery cc9b7aec): a build session
+    // that spawned a background subagent wrote this 5-turn reaction leg's own result first —
+    // before this fix, the daemon read this line and stopped, recording 1,814 output tokens
+    // for a session that actually ran 302 turns over 76 minutes.
+    private const string SubagentReactionResultLine =
+        """{"type":"result","subtype":"success","is_error":false,"num_turns":5,"duration_ms":29137,"total_cost_usd":24.780697800000002,"usage":{"input_tokens":10,"cache_creation_input_tokens":59074,"cache_read_input_tokens":324100,"output_tokens":1814}}""";
+
+    // The same run's own true final line, immediately after the one above.
+    private const string WholeSessionResultLine =
+        """{"type":"result","subtype":"success","is_error":false,"num_turns":302,"duration_ms":4586641,"total_cost_usd":24.780697800000002,"usage":{"input_tokens":602,"cache_creation_input_tokens":454222,"cache_read_input_tokens":97887837,"output_tokens":177695}}""";
+
+    [Fact]
+    public async Task A_stream_holding_two_result_lines_records_the_whole_sessions_usage_and_the_completion_line_matches()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        ListLogger<RunSupervisor> logger = new();
+        RunSupervisor supervisor = NewSupervisor(store, node, logger: logger);
+        // The process stays alive between the two lines, the way the real run this is trimmed
+        // from does (a background subagent's own reaction leg completes minutes before the
+        // session's real terminal line) — proves the monitor waits for the process to actually
+        // die instead of acting on the first result line it sees (independent pre-PR review,
+        // cycle 3, adversarial lens: a same-tick re-read can't tell these two shapes apart).
+        int processId = SpawnFakeAgent(runId,
+            FakeAgentScript.New().Emit(SubagentReactionResultLine).Pause(2).Emit(WholeSessionResultLine));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+        RunDetails details = await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+
+        details.CacheReadInputTokens.Should().Be(97_887_837, "the whole session's own cache reads, not the reaction leg's 324,100");
+        details.OutputTokens.Should().Be(177_695, "the whole session's own output, not the reaction leg's 1,814");
+
+        logger.Lines.Should().Contain(
+            line => line.Contains("97887837") && line.Contains("177695"),
+            "the completion log line must report the same figures TokensRecorded carries");
+    }
+
     [Fact]
     public async Task Daemon_restart_mid_run_adopts_the_orphan_and_completes_it()
     {

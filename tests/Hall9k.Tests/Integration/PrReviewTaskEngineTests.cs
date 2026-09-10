@@ -1169,10 +1169,13 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
     /// <summary>
     /// Scripted stand-in for the conformance lens's own claude session: the spawn writes the
-    /// given summary as a terminal result event straight into the session's stream file, so
-    /// <c>SessionResultWaiter</c> reads it back without ever needing the fake process to be
-    /// alive. A null summary spawns nothing and reports a process that never existed — the
-    /// died-without-a-result path — mirroring <c>ReviewEngineTests.ScriptedExecutor</c>.
+    /// given summary as a terminal result event straight into the session's stream file, then
+    /// returns without ever marking the pid alive — the scripted session already ran to
+    /// completion synchronously, exactly the shape a real single-shot invocation leaves once it
+    /// has exited, so <c>SessionResultWaiter</c> completes off the result file alone rather than
+    /// waiting out a process that will never die. A null summary spawns nothing and reports a
+    /// process that never existed — the died-without-a-result path — mirroring
+    /// <c>ReviewEngineTests.ScriptedExecutor</c>.
     /// </summary>
     private sealed class ScriptedExecutor(string? summary) : IExecutor
     {
@@ -1203,7 +1206,6 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
                 RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
                 line + "\n", cancellationToken);
 
-            Processes.MarkAlive(processId);
             return new SpawnedAgent(processId, PrReviewNow);
         }
     }

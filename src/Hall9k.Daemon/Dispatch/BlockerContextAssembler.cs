@@ -230,12 +230,17 @@ public sealed class BlockerContextAssembler(
             // Task: the daemon terminates a completed session's process tree before it starts
             // any gate or another session in the same worktree — the stream's result line is not
             // proof this session's own process has actually exited. No-op, and free, when it has.
-            IReadOnlyList<int> lingering = processManager.TerminateTree(agent.ProcessId, agent.StartedAt);
-            if (lingering.Count > 0)
+            // Gated on a result actually landing: a session that died without ever producing one
+            // is a different failure mode, already confirmed gone by the grace-window wait above.
+            if (result is not null)
             {
-                logger.LogWarning(
-                    "Run {RunId}: the context synthesis session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
-                    runId, lingering.Count, string.Join(", ", lingering));
+                IReadOnlyList<int> lingering = processManager.TerminateTree(agent.ProcessId, agent.StartedAt);
+                if (lingering.Count > 0)
+                {
+                    logger.LogWarning(
+                        "Run {RunId}: the context synthesis session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                        runId, lingering.Count, string.Join(", ", lingering));
+                }
             }
 
             return result;

@@ -10,19 +10,19 @@ namespace Hall9k.Daemon.Execution;
 /// </summary>
 internal static class StreamTailReader
 {
-    internal static async Task<(long Cursor, bool SawResult, AgentResult? Result)> ReadNewLinesAsync(
+    internal static async Task<(long Cursor, bool SawResult)> ReadNewLinesAsync(
         string streamFile, long cursor, StringBuilder partialLine, CancellationToken cancellationToken)
     {
         if (!File.Exists(streamFile))
         {
-            return (cursor, false, null);
+            return (cursor, false);
         }
 
         await using FileStream stream = new(
             streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         if (stream.Length <= cursor)
         {
-            return (cursor, false, null);
+            return (cursor, false);
         }
 
         stream.Seek(cursor, SeekOrigin.Begin);
@@ -43,9 +43,9 @@ internal static class StreamTailReader
                 {
                     string line = partialLine.ToString();
                     partialLine.Clear();
-                    if (StreamJsonParser.TryParseResult(line, out AgentResult result))
+                    if (StreamJsonParser.TryParseResult(line, out AgentResult _))
                     {
-                        return (stream.Position, true, result);
+                        return (stream.Position, true);
                     }
                 }
                 else
@@ -55,6 +55,85 @@ internal static class StreamTailReader
             }
         }
 
-        return (stream.Position, false, null);
+        return (stream.Position, false);
+    }
+
+    /// <summary>
+    /// Re-reads the whole stream file once a caller's incremental tail has seen a result
+    /// line, and returns the session's actual combined result. Claude Code can print more than
+    /// one top-level "result" event into a single stream — a background subagent's task
+    /// notification produces its own short reaction leg's result ahead of the session's real
+    /// terminal one — so <see cref="ReadNewLinesAsync"/> finding the first one only ever signals
+    /// that a leg is done, never which line (or lines) actually account for the whole thing
+    /// (discovery cc9b7aec, run 01a07574-4db1: a 76-minute, 302-turn session recorded 1,814
+    /// output tokens because the daemon read a 5-turn reaction leg instead).
+    ///
+    /// <c>total_cost_usd</c> is cumulative to the moment a line is printed, so two lines
+    /// sharing the exact same cost describe the same underlying spend rather than two separate
+    /// legs — the reaction-leg shape above prints the parent session's own running cost onto a
+    /// subagent's own result line. Lines are grouped by cost first, keeping the larger-turn-count
+    /// line per group, so a reaction leg's own small usage figure is discarded rather than
+    /// counted twice. What is left after that dedupe is one line per genuinely separate billing
+    /// increment (the shape a resumed-in-place leg or a review-fix session's own trailing leg
+    /// produces): usage and <c>num_turns</c> there are per-leg and disjoint, so both sum; cost
+    /// only ever grows, so the largest wins; and <c>is_error</c>/the summary text come from the
+    /// leg carrying that largest cost, since it is the chronologically final one. A stream
+    /// holding exactly one result line, or several that all dedupe to one group, returns that
+    /// line unchanged.
+    /// </summary>
+    internal static async Task<AgentResult> ReadFinalResultAsync(string streamFile, CancellationToken cancellationToken)
+    {
+        await using FileStream stream = new(
+            streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
+
+        List<AgentResult> results = [];
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            if (StreamJsonParser.TryParseResult(line, out AgentResult candidate))
+            {
+                results.Add(candidate);
+            }
+        }
+
+        if (results.Count == 0)
+        {
+            throw new InvalidOperationException($"Stream file holds no parseable result line: {streamFile}");
+        }
+
+        if (results.Count == 1)
+        {
+            return results[0];
+        }
+
+        // A missing cost can't be deduped by value — grouped by index instead, so it stands as
+        // its own leg rather than silently merging with every other line missing one.
+        List<AgentResult> legs = [.. results
+            .Select((result, index) => (result, key: result.CostUsd is { } cost ? (object)cost : index))
+            .GroupBy(item => item.key, item => item.result)
+            .Select(group => group.OrderByDescending(result => result.Turns ?? -1).First())];
+
+        if (legs.Count == 1)
+        {
+            return legs[0];
+        }
+
+        AgentResult finalLeg = legs
+            .OrderByDescending(result => result.CostUsd ?? -1m)
+            .ThenByDescending(result => result.Turns ?? -1)
+            .First();
+
+        return finalLeg with
+        {
+            InputTokens = legs.Sum(result => result.InputTokens),
+            CacheReadInputTokens = legs.Sum(result => result.CacheReadInputTokens),
+            CacheCreationInputTokens = legs.Sum(result => result.CacheCreationInputTokens),
+            OutputTokens = legs.Sum(result => result.OutputTokens),
+            // A leg missing its own num_turns makes the sum itself unobserved, not partial —
+            // StreamJsonParser.TryParseResult already refuses to guess a missing turns count as
+            // zero, and summing only the legs that do carry one would read as an observed total
+            // for a session that never happened (AGENTS.md's never-guess-at-unobserved-facts).
+            Turns = legs.All(result => result.Turns.HasValue) ? legs.Sum(result => result.Turns ?? 0) : null,
+        };
     }
 }

@@ -31,18 +31,15 @@ public static class SessionResultWaiter
     {
         DateTimeOffset? deadSince = null;
         long cursor = 0;
+        bool sawAnyResult = false;
         StringBuilder partialLine = new();
 
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            (long newCursor, bool sawResult, AgentResult? result) =
+            (long newCursor, bool sawResult) =
                 await StreamTailReader.ReadNewLinesAsync(streamFile, cursor, partialLine, cancellationToken);
-            if (sawResult)
-            {
-                return result;
-            }
 
             if (newCursor > cursor)
             {
@@ -53,7 +50,28 @@ public static class SessionResultWaiter
                 }
             }
 
-            if (!processManager.IsAlive(processId, processStartedAt))
+            // The line this poll found only signals a leg is done — a stream can hold more than
+            // one result line, and in the common shape the process keeps running for seconds to
+            // minutes after the first one before the leg's real terminal line lands. Acting on
+            // the first line the instant it appears would read that still-running leg as
+            // finished, so this only remembers a result was seen and keeps tailing; the
+            // process's own death — checked below, on every poll from here on — is what confirms
+            // no further result is coming (independent pre-PR review, cycle 3, adversarial lens).
+            sawAnyResult |= sawResult;
+
+            if (processManager.IsAlive(processId, processStartedAt))
+            {
+                deadSince = null;
+            }
+            else if (sawAnyResult)
+            {
+                // Only a re-read of the whole file finds the line that accounts for the whole
+                // leg (StreamTailReader.ReadFinalResultAsync's own doc comment; discovery
+                // cc9b7aec) — safe to do now that the process dying confirms this is the last
+                // one there will be.
+                return await StreamTailReader.ReadFinalResultAsync(streamFile, cancellationToken);
+            }
+            else
             {
                 // The grace window keeps polling above, so buffered output that lands
                 // after death still gets read before this gives up.
@@ -62,10 +80,6 @@ public static class SessionResultWaiter
                 {
                     return null;
                 }
-            }
-            else
-            {
-                deadSince = null;
             }
 
             await Task.Delay(TailInterval, cancellationToken);
