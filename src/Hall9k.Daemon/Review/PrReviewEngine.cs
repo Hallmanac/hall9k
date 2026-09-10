@@ -387,13 +387,18 @@ public sealed class PrReviewEngine(
 
         // Task: the daemon terminates a completed session's process tree before it starts any
         // gate or another session in the same worktree — the stream's result line is not proof
-        // this session's own process has actually exited. No-op, and free, when it has.
-        IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
-        if (lingering.Count > 0)
+        // this session's own process has actually exited. No-op, and free, when it has. Gated on
+        // a result actually landing: a session that died without ever producing one is a
+        // different failure mode, already confirmed gone by the grace-window wait above.
+        if (result is not null)
         {
-            logger.LogWarning(
-                "Run {RunId}: the pr-review conformance session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
-                runId, lingering.Count, string.Join(", ", lingering));
+            IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
+            if (lingering.Count > 0)
+            {
+                logger.LogWarning(
+                    "Run {RunId}: the pr-review conformance session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                    runId, lingering.Count, string.Join(", ", lingering));
+            }
         }
 
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))

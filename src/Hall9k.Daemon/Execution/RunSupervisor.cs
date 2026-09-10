@@ -408,11 +408,12 @@ public sealed class RunSupervisor(
             string streamFile = RunPaths.StreamFile(runDirectory);
             long cursor = await LoadCursorAsync(runId, cancellationToken);
             DateTimeOffset? deadSince = null;
+            bool sawAnyResult = false;
             StringBuilder partialLine = new();
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                (long newCursor, bool sawResult, AgentResult? result) =
+                (long newCursor, bool sawResult) =
                     await StreamTailReader.ReadNewLinesAsync(streamFile, cursor, partialLine, cancellationToken);
 
                 if (newCursor > cursor)
@@ -421,15 +422,35 @@ public sealed class RunSupervisor(
                     await SaveActivityAsync(runId, cursor, cancellationToken);
                 }
 
-                if (sawResult)
+                // The line this poll found only signals a leg is done — a stream can hold more
+                // than one result line, and in the common shape the process keeps running for
+                // seconds to minutes after the first one (a background subagent's reaction leg,
+                // or a resumed-in-place leg) before the session's real terminal line lands. Acting
+                // on the first line the instant it appears would read that still-running session
+                // as finished, so this only remembers a result was seen and keeps tailing; the
+                // process's own death — checked below, on every poll from here on — is what
+                // confirms no further leg is coming (independent pre-PR review, cycle 3,
+                // adversarial lens).
+                sawAnyResult |= sawResult;
+
+                if (processManager.IsAlive(processId, processStartedAt))
                 {
-                    // The daemon terminates a completed session's process tree the instant its
-                    // terminal result arrives (task: the daemon terminates a completed session's
-                    // process tree before it starts any gate or another session in the same
-                    // worktree) — before CompleteRunAsync ever reaches a gate. Read: the stream's
-                    // result line is not proof the underlying process (and whatever it
-                    // backgrounded) has actually exited; TerminateTree no-ops for free when it
-                    // already has.
+                    deadSince = null;
+                }
+                else if (sawAnyResult)
+                {
+                    // Only a re-read of the whole file finds the line that accounts for the whole
+                    // session (StreamTailReader.ReadFinalResultAsync's own doc comment; discovery
+                    // cc9b7aec) — safe to do now that the process dying confirms this is the last
+                    // one there will be.
+                    AgentResult result = await StreamTailReader.ReadFinalResultAsync(streamFile, cancellationToken);
+
+                    // The daemon terminates a completed session's process tree before it starts
+                    // any gate or another session in the same worktree (task: the daemon
+                    // terminates a completed session's process tree before it starts any gate or
+                    // another session in the same worktree) — the root process dying, confirmed
+                    // above, is not proof every process it backgrounded has actually exited too;
+                    // TerminateTree no-ops for free when it already has.
                     IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
                     if (lingering.Count > 0)
                     {
@@ -451,7 +472,7 @@ public sealed class RunSupervisor(
                     }
 
                     (int ProcessId, DateTimeOffset ProcessStartedAt)? retried =
-                        await CompleteRunAsync(runId, runDirectory, taskId, result!, cancellationToken);
+                        await CompleteRunAsync(runId, runDirectory, taskId, result, cancellationToken);
                     if (retried is { } resumed)
                     {
                         // A session that reports an error result is retried once in place
@@ -465,14 +486,14 @@ public sealed class RunSupervisor(
                         processStartedAt = resumed.ProcessStartedAt;
                         cursor = 0;
                         deadSince = null;
+                        sawAnyResult = false;
                         partialLine.Clear();
                         continue;
                     }
 
                     return;
                 }
-
-                if (!processManager.IsAlive(processId, processStartedAt))
+                else
                 {
                     // Give buffered output a moment to land before declaring death.
                     deadSince ??= DateTimeOffset.UtcNow;
@@ -480,18 +501,18 @@ public sealed class RunSupervisor(
                     {
                         if (isDeliberateHeadlessStart)
                         {
-                            // Same reasoning as the sawResult branch above: a process that died
+                            // Same reasoning as the sawAnyResult branch above: a process that died
                             // without ever writing a result line is not this run kind's ordinary
-                            // FailRunAsync case either. Unlike the sawResult branch, though, this
-                            // signal is strictly weaker than a reported error, not stronger — the
-                            // agent never got the chance to say whether it considered the work
-                            // finished — so HandleDeliberateHeadlessStartExitAsync treats a null
-                            // result with at least as much suspicion as an IsError one, flagging
-                            // needs-you unconditionally rather than trusting whatever the worktree
-                            // happens to hold (independent pre-PR review, cycle 1, conformance
-                            // lens: a killed/crashed process whose last checkpoint commit landed on
-                            // a clean tree must never sail through auto-delivery just because
-                            // nothing was left dirty).
+                            // FailRunAsync case either. Unlike that branch, though, this signal is
+                            // strictly weaker than a reported error, not stronger — the agent never
+                            // got the chance to say whether it considered the work finished — so
+                            // HandleDeliberateHeadlessStartExitAsync treats a null result with at
+                            // least as much suspicion as an IsError one, flagging needs-you
+                            // unconditionally rather than trusting whatever the worktree happens to
+                            // hold (independent pre-PR review, cycle 1, conformance lens: a
+                            // killed/crashed process whose last checkpoint commit landed on a clean
+                            // tree must never sail through auto-delivery just because nothing was
+                            // left dirty).
                             await HandleDeliberateHeadlessStartExitAsync(runId, taskId, runDirectory, result: null, cancellationToken);
                             return;
                         }
@@ -499,10 +520,6 @@ public sealed class RunSupervisor(
                         await FailRunAsync(runId, taskId, ReadStandardErrorTail(runDirectory), cancellationToken);
                         return;
                     }
-                }
-                else
-                {
-                    deadSince = null;
                 }
 
                 await Task.Delay(TailInterval, cancellationToken);

@@ -781,12 +781,29 @@ public sealed class CardPublicationEngine(
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(
-                "Task {TaskId}: the card-publication session exceeded {Timeout} — terminating it",
-                taskId, _options.CardPublicationTimeout);
-            Terminate(taskId, agent);
-            result = null;
-            timedOut = true;
+            // The ceiling elapsing means the process never died within it — SessionResultWaiter
+            // only ever finalizes off a dead process (discovery cc9b7aec) — not that nothing was
+            // ever said: an adopted session can carry a result on disk from well before this
+            // sweep started watching it. Reading the stream directly here, the same terminal read
+            // SessionResultWaiter itself would have used, is what tells "already answered, still
+            // running" apart from "genuinely produced nothing" — and only the second one is a
+            // session worth killing.
+            result = await TryReadAlreadyPresentResultAsync(sessionId, cancellationToken);
+            if (result is null)
+            {
+                logger.LogWarning(
+                    "Task {TaskId}: the card-publication session exceeded {Timeout} — terminating it",
+                    taskId, _options.CardPublicationTimeout);
+                Terminate(taskId, agent);
+                timedOut = true;
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: the card-publication session exceeded {Timeout} but had already reported "
+                    + "a result — picked it up rather than terminating a session that already answered",
+                    taskId, _options.CardPublicationTimeout);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -836,6 +853,31 @@ public sealed class CardPublicationEngine(
             : CheckTheBoard;
 
         return (false, $"{what} {tail}", result);
+    }
+
+    /// <summary>
+    /// Best-effort re-read of whatever the session's stream already holds, used only once the
+    /// publication ceiling has elapsed on a process that never died. Null covers both an absent
+    /// stream file and one with no parseable result line yet — either way, honestly nothing to
+    /// report, not a guess dressed up as one.
+    /// </summary>
+    private static async Task<AgentResult?> TryReadAlreadyPresentResultAsync(
+        Guid sessionId, CancellationToken cancellationToken)
+    {
+        string streamFile = RunPaths.StreamFile(RunPaths.GlobalDirectory(sessionId));
+        if (!File.Exists(streamFile))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await StreamTailReader.ReadFinalResultAsync(streamFile, cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

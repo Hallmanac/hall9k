@@ -4804,12 +4804,19 @@ public sealed class ReviewEngine(
             streamFile, processId, processStartedAt, processManager,
             token => TouchActivityAsync(runId, token), cancellationToken);
 
-        IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
-        if (lingering.Count > 0)
+        // Gated on a result actually landing: a session that died without ever producing one
+        // (SessionResultWaiter.WaitAsync's own grace-window path) already confirmed the process
+        // itself gone with nothing to react to, and is a different failure mode entirely from the
+        // one this cleanup exists for — a session that completed and left something behind.
+        if (result is not null)
         {
-            logger.LogWarning(
-                "Run {RunId}: {SessionLabel} left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
-                runId, sessionLabel, lingering.Count, string.Join(", ", lingering));
+            IReadOnlyList<int> lingering = processManager.TerminateTree(processId, processStartedAt);
+            if (lingering.Count > 0)
+            {
+                logger.LogWarning(
+                    "Run {RunId}: {SessionLabel} left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                    runId, sessionLabel, lingering.Count, string.Join(", ", lingering));
+            }
         }
 
         return result;

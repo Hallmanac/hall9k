@@ -173,6 +173,12 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
                     ["result"] = summary,
                 });
                 await File.WriteAllTextAsync(RunPaths.StreamFile(request.RunDirectory), line + "\n", cancellationToken);
+
+                // The scripted session has now fully ended, the same way a real single-shot
+                // invocation's process exits once its terminal result is on disk — left alive
+                // here, SessionResultWaiter.WaitAsync would wait out the full publication
+                // ceiling instead of completing off the result it already has.
+                processes.MarkDead(pid);
             }, cancellationToken);
 
             return Task.FromResult(new SpawnedAgent(pid, Now));

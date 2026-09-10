@@ -125,9 +125,12 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
 
     /// <summary>
     /// Writes the scripted summary as a session's terminal result event, the way a real
-    /// claude session ends (log #2). A null script spawns a process that never reports one.
+    /// claude session ends (log #2), then returns without marking the pid alive — the scripted
+    /// session already ran to completion synchronously, so SessionResultWaiter completes off the
+    /// result file alone rather than waiting out a process that will never die. A null script
+    /// spawns a process that never reports one.
     /// </summary>
-    private sealed class ScriptedExecutor(string? summary, FakeProcessManager processes) : IExecutor
+    private sealed class ScriptedExecutor(string? summary) : IExecutor
     {
         private int _nextPid = 7000;
 
@@ -148,7 +151,6 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
                 return new SpawnedAgent(pid, Now);
             }
 
-            processes.MarkAlive(pid);
             string line = JsonSerializer.Serialize(new Dictionary<string, object?>
             {
                 ["type"] = "result",
@@ -172,7 +174,7 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
         TaskDetails dependent = await SeedAsync(store, runId, blockerCount: 3, cts.Token);
 
         FakeProcessManager processes = new();
-        ScriptedExecutor executor = new("condensed", processes);
+        ScriptedExecutor executor = new("condensed");
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
             .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
@@ -193,7 +195,7 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
         TaskDetails dependent = await SeedAsync(store, runId, blockerCount: 4, cts.Token);
 
         FakeProcessManager processes = new();
-        ScriptedExecutor executor = new("## What your blockers handed down\n\nAll four agreed on one convention.", processes);
+        ScriptedExecutor executor = new("## What your blockers handed down\n\nAll four agreed on one convention.");
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
             .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
@@ -222,7 +224,7 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
         TaskDetails dependent = await SeedAsync(store, runId, blockerCount: 4, cts.Token);
 
         FakeProcessManager processes = new();
-        ScriptedExecutor executor = new(null, processes);
+        ScriptedExecutor executor = new(null);
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
             .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
@@ -250,7 +252,7 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
 
         FakeProcessManager processes = new();
         ScriptedExecutor executor = new(
-            "Sure — here is a summary of what the four blockers said.", processes);
+            "Sure — here is a summary of what the four blockers said.");
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
             .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 
@@ -384,7 +386,7 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
         TaskDetails dependent = await SeedAsync(store, runId, blockerCount: 0, cts.Token);
 
         FakeProcessManager processes = new();
-        ScriptedExecutor executor = new("condensed", processes);
+        ScriptedExecutor executor = new("condensed");
         string? context = await NewAssembler(store, executor, processes, threshold: 3)
             .AssembleAsync(runId, RunPaths.GlobalDirectory(runId), dependent, SomeProject(), "/tmp/worktree", ExecutorMode.Subscription, cts.Token);
 

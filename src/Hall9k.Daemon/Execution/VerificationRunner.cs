@@ -649,13 +649,18 @@ public sealed partial class VerificationRunner(
                 // process tree before it starts any gate or another session in the same
                 // worktree) — the stream's result line is not proof this session's own process
                 // has actually exited. A no-op, and free, on the ordinary path where it already
-                // has.
-                IReadOnlyList<int> lingering = processManager.TerminateTree(agent.ProcessId, agent.StartedAt);
-                if (lingering.Count > 0)
+                // has. Gated on a result actually landing: a session that died without ever
+                // producing one is a different failure mode, already confirmed gone by the
+                // grace-window wait above.
+                if (result is not null)
                 {
-                    logger.LogWarning(
-                        "Run {RunId}: the automatic uncommitted-work recovery session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
-                        run.Id, lingering.Count, string.Join(", ", lingering));
+                    IReadOnlyList<int> lingering = processManager.TerminateTree(agent.ProcessId, agent.StartedAt);
+                    if (lingering.Count > 0)
+                    {
+                        logger.LogWarning(
+                            "Run {RunId}: the automatic uncommitted-work recovery session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                            run.Id, lingering.Count, string.Join(", ", lingering));
+                    }
                 }
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
