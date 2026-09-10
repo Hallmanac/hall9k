@@ -97,7 +97,7 @@ public sealed class OperatingSettings
     /// <summary>
     /// Mirrors <c>DaemonOptions.MaxAdversarialReviewCycles</c>'s shipped default (Decisions Log
     /// #63, amended PLACEHOLDER-30ecf914): lowered from 10 after a week of two nodes running at
-    /// this value with no cap park a higher cap would have resolved — past four cycles, returns
+    /// this value with no cap park a higher cap would have resolved; past four cycles, returns
     /// diminish rather than converge (9a6d594d's cap parks at cycles 4 and 8 on 2026-09-09 each
     /// surfaced a new English-heuristic edge case, not the same one recurring).
     /// </summary>
