@@ -205,3 +205,12 @@ rather than left to discover them.
 - A headless session runs its gates in the foreground, never behind
   `run_in_background`/`Monitor`/`ScheduleWakeup`, and never ends its turn with one still
   pending — it is killed the instant it finishes (PLAN.md §16 #167).
+- **A dispatched session never generates host load to reproduce or prove a flaky or timing-dependent
+  test** — no parallel copies of a suite or test, no stress or spin loops, no deliberate memory
+  pressure, no CPU pinning, nothing whose purpose is to make a flake appear or prove it gone.
+  Reproduce it deterministically instead (a fake, controlled scheduling, an injected delay), run the
+  suite once in the foreground, or hand off honestly that it would not reproduce deterministically
+  and leave the fix best-effort — this never forbids running this project's own gates, and adds no
+  new gate, timeout, or setting. Origin: 2026-09-10 09:36 EDT, Windows, task 2c6e95f7, run 01a08b83
+  — forty pwsh stress loops (4.4 GB, CPU pinned) starved h9kd and Postgres for seven minutes and
+  forced a machine reboot (PLAN.md §16 #PLACEHOLDER-18b7a833).
