@@ -786,24 +786,27 @@ public sealed class CardPublicationEngine(
             // ever said: an adopted session can carry a result on disk from well before this
             // sweep started watching it. Reading the stream directly here, the same terminal read
             // SessionResultWaiter itself would have used, is what tells "already answered, still
-            // running" apart from "genuinely produced nothing" — and only the second one is a
-            // session worth killing.
+            // running" apart from "genuinely produced nothing" — but either way the process is
+            // still alive and this is the only place watching it: leaving it running past this
+            // point is exactly the detached-session-still-writing-a-card shape this class exists
+            // to prevent (independent pre-PR review, conformance + adversarial lenses, cycle 1).
             result = await TryReadAlreadyPresentResultAsync(sessionId, cancellationToken);
             if (result is null)
             {
                 logger.LogWarning(
                     "Task {TaskId}: the card-publication session exceeded {Timeout} — terminating it",
                     taskId, _options.CardPublicationTimeout);
-                Terminate(taskId, agent);
-                timedOut = true;
             }
             else
             {
                 logger.LogInformation(
                     "Task {TaskId}: the card-publication session exceeded {Timeout} but had already reported "
-                    + "a result — picked it up rather than terminating a session that already answered",
+                    + "a result — capturing it before terminating the still-running session",
                     taskId, _options.CardPublicationTimeout);
             }
+
+            Terminate(taskId, agent);
+            timedOut = true;
         }
         catch (OperationCanceledException)
         {
@@ -825,8 +828,11 @@ public sealed class CardPublicationEngine(
         // absence of a report, and a session stopped mid-flight is the likeliest of the three to
         // have left one behind.
         string what = timedOut
-            ? $"The session was still running after {_options.CardPublicationTimeout} and was stopped "
-              + $"without a verified card key. Its prompt and transcript are in {RunPaths.GlobalDirectory(sessionId)}."
+            ? Summarize(result) is { } saidBeforeStopped
+                ? $"The session was still running after {_options.CardPublicationTimeout} and was stopped "
+                  + $"without a verified card key, though it had already reported: {saidBeforeStopped}"
+                : $"The session was still running after {_options.CardPublicationTimeout} and was stopped "
+                  + $"without a verified card key. Its prompt and transcript are in {RunPaths.GlobalDirectory(sessionId)}."
             : Summarize(result) is { } said
                 ? $"The session ended without a verified card key. It said: {said}"
                 : "The session ended without a verified card key and left no result to read. Its prompt and "
