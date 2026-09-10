@@ -204,4 +204,4 @@ rather than left to discover them.
   the later vision?"
 - A headless session runs its gates in the foreground, never behind
   `run_in_background`/`Monitor`/`ScheduleWakeup`, and never ends its turn with one still
-  pending — it is killed the instant it finishes (PLAN.md §16 #PLACEHOLDER-9a6d594d).
+  pending — it is killed the instant it finishes (PLAN.md §16 #167).
