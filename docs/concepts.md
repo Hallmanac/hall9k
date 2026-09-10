@@ -485,7 +485,7 @@ is what `h9k review resolve` answers.
 
 A per-track cap and the mandatory pass's own round cap are not the only way a run reaches
 `h9k review resolve`. A task also carries a **lifetime review-cycle budget**
-(`LifetimeReviewCycleBudget`, default 25) that counts every review cycle the task has ever spent,
+(`LifetimeReviewCycleBudget`, default 20) that counts every review cycle the task has ever spent,
 across every run and every follow-up it has had — a stranding, a `task retry`, and a `pr resolve`
 follow-up all spend from the same odometer, and nothing resets it, unlike the per-track caps a
 `ReviewParkResolved` verdict does reset. Checked at every settle point, so it can park a run that
