@@ -22,11 +22,11 @@ public sealed class ReviewCapResolverTests
 
         caps.MaxComplianceReviewCycles.Value.Should().Be(3);
         caps.MaxComplianceReviewCycles.Level.Should().Be(ReviewCapLevel.Default);
-        caps.MaxAdversarialReviewCycles.Value.Should().Be(10);
+        caps.MaxAdversarialReviewCycles.Value.Should().Be(4);
         caps.MaxAdversarialReviewCycles.Level.Should().Be(ReviewCapLevel.Default);
-        caps.MaxFinalFullPassRounds.Value.Should().Be(3);
+        caps.MaxFinalFullPassRounds.Value.Should().Be(2);
         caps.MaxFinalFullPassRounds.Level.Should().Be(ReviewCapLevel.Default);
-        caps.LifetimeReviewCycleBudget.Value.Should().Be(25);
+        caps.LifetimeReviewCycleBudget.Value.Should().Be(20);
         caps.LifetimeReviewCycleBudget.Level.Should().Be(ReviewCapLevel.Default);
     }
 
@@ -81,7 +81,7 @@ public sealed class ReviewCapResolverTests
         caps.MaxAdversarialReviewCycles.Level.Should().Be(ReviewCapLevel.Project);
         caps.MaxFinalFullPassRounds.Value.Should().Be(2);
         caps.MaxFinalFullPassRounds.Level.Should().Be(ReviewCapLevel.Project);
-        caps.LifetimeReviewCycleBudget.Value.Should().Be(25, "nothing set this one anywhere");
+        caps.LifetimeReviewCycleBudget.Value.Should().Be(20, "nothing set this one anywhere");
         caps.LifetimeReviewCycleBudget.Level.Should().Be(ReviewCapLevel.Default);
     }
 
