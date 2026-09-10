@@ -1817,7 +1817,7 @@ public static class AgentPromptBuilder
     /// This is also the one review lens that reads a fix session's own closing summary
     /// (<paramref name="priorFixPosition"/>), so it is the one place that instructs a reviewer to
     /// grade evidence of host-load flake reproduction there as a high-severity conformance finding
-    /// (Decisions Log §16 #PLACEHOLDER-18b7a833) — <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>
+    /// (Decisions Log §16 #169) — <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>
     /// tells a session not to generate that load; this tells the reviewer what to do if one did anyway.
     /// </summary>
     /// <param name="tracks">The still-active tracks this pass stands in for.</param>

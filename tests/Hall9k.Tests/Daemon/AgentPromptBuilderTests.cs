@@ -3833,7 +3833,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// <summary>
     /// Task 18b7a833: a dispatched session never generates host load to reproduce or prove a
     /// flaky or timing-dependent test (AGENTS.md, beside the foreground-gates bullet; PLAN.md
-    /// §16 #PLACEHOLDER-18b7a833). <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>
+    /// §16 #169). <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>
     /// is folded into <see cref="WorkPromptBuilder.AppendForegroundGatesRule"/> itself, so every
     /// leg the theory above already covers carries it for free — plus the two bare `--resume`
     /// retry legs (<c>BuildBudgetRetry</c>, <c>BuildSessionErrorRetry</c>), which never call

@@ -394,7 +394,7 @@ one test starves all of them. A flake is reproduced deterministically instead �
 scheduling, or an injected delay — with the gate then run once, in the foreground, the same as any
 other gate; a flake that will not reproduce deterministically is left best-effort and said so
 plainly in the handoff, rather than proven at the host's expense (PLAN.md §16
-#PLACEHOLDER-18b7a833).
+#169).
 
 Each gate is also validated once, at `h9k project set --verify` time, against a clean checkout of
 the project's own base branch — a gate that cannot pass there refuses the whole `project set`
