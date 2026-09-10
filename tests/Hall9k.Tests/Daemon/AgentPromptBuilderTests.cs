@@ -799,6 +799,62 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("closing a", "the reason it stays open is stated, not just the rule");
     }
 
+    /// <summary>
+    /// The one thread a ReviewFeedback lap answers nothing on (Decisions Log #152, and the
+    /// resolve-review-threads skill's own carve-out): a human reviewer whose CHANGES_REQUESTED
+    /// verdict still stands. The lap reaches one whenever the changes-requested fix lap pushed and
+    /// left the disputed thread unresolved, and this prompt's own decline rule — the last word a
+    /// session reads, with the skill a load away — told it to post its evidence into the thread of
+    /// the person the implementer may deliberately have left unanswered (routed finding, run
+    /// 01a07d98, adversarial lens, cycle 3). The disagreement is drafted and parked instead, for
+    /// the implementer to send, edit, or drop.
+    /// </summary>
+    [Fact]
+    public void Follow_up_prompt_never_posts_a_disagreement_into_a_standing_changes_requested_thread()
+    {
+        string prompt = AgentPromptBuilder.BuildFollowUp(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().Contain("`CHANGES_REQUESTED` verdict on this",
+            "the carve-out is scoped to a standing review, not to every thread a human opened");
+        prompt.Should().Contain("post NOTHING — no reply, no resolve");
+        prompt.Should().Contain("never posted by you: draft the reply,");
+        prompt.Should().Contain("send it, edit it, or drop it (Decisions Log #152)",
+            "the three choices belong to the implementer, and the ruling is cited where it applies");
+        prompt.Should().Contain("gh pr view --json",
+            "a standing verdict is a fact to read off the pull request, not one to assume from the threads");
+        prompt.Should().Contain("ignoring their `COMMENTED` ones",
+            "a reviewer's newest review of any type masks the verdict a plain thread reply wrapped "
+            + "in a COMMENTED review left standing — the same read Decisions Log #150 fixed");
+        prompt.Should().Contain("PROPOSED REPLY:",
+            "the drafted reply rides in the park's own block, which is what a human sends from");
+        prompt.Should().Contain(AgentPromptBuilder.DisputeMarker,
+            "the carve-out lands on the park this prompt already teaches");
+        prompt.Should().Contain("standing-review disagreements",
+            "the dispute section's own gate must admit it, not only a genuinely undecidable thread");
+        prompt.Should().NotContain("--post-reply-as-written",
+            "those choices live on a changes-requested lap's park, and h9k review resolve refuses them here");
+    }
+
+    /// <summary>
+    /// The carve-out above is narrow on purpose: a bot's disagreement is still answered in-thread
+    /// and resolved there, and a human's plain thread comment still gets the evidence-based decline
+    /// reply Decisions Log #159 rules for — one honest attempt, then the human resolves it.
+    /// </summary>
+    [Fact]
+    public void Follow_up_prompt_keeps_the_reply_once_rule_for_threads_outside_the_carve_out()
+    {
+        string prompt = AgentPromptBuilder.BuildFollowUp(
+            SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().Contain("**decline**: reply with the evidence",
+            "an evidence-backed decline is still posted where no standing review is in play");
+        prompt.Should().Contain("Bot-authored thread: resolve it. The evidence is what a bot needed",
+            "a bot's thread is unchanged by the carve-out");
+        prompt.Should().Contain("One honest attempt per thread per follow-up; never re-litigate",
+            "the reply-once rule survives");
+    }
+
     [Fact]
     public void Narrative_follow_up_demands_fixups_by_file_ownership_and_the_tree_identity_check()
     {
