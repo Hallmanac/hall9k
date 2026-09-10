@@ -483,6 +483,28 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// Classification reads the gate's whole output, not just the 400-character tail kept for
     /// the recorded summary: a marker logged early in a large `dotnet test` run must not be
     /// pushed out of that fixed-size window and go unclassified (adversarial review, cycle 1).
+    /// <para>
+    /// This case and
+    /// <see cref="A_gate_that_hangs_after_writing_an_infrastructure_marker_still_classifies_and_retries"/>
+    /// were the two flakes that failed three unrelated review laps' full test gate on this
+    /// repository's Windows node (2026-09-09 19:35 and 21:16 EDT, 2026-09-09 22:35 EDT), always
+    /// under a full suite run and never in isolation. Both assert a <see cref="GateRetried"/> and
+    /// both lost it the same way: <c>VerificationRunner</c> read the gate's redirected log with
+    /// <c>File.ReadAllText</c>, whose <see cref="FileShare.Read"/> Windows refuses outright while
+    /// any other handle on that file carries write access, and swallowed the resulting
+    /// <see cref="IOException"/> into a placeholder string carrying no infrastructure marker — so
+    /// a gate that failed on the environment was recorded as the agent's own broken work and
+    /// denied the retry. The reader is now
+    /// <see cref="Hall9k.Connectors.Processes.ShareTolerantFile"/>, which tolerates a concurrent
+    /// writer, an unreadable log classifies as infrastructure rather than as the agent's fault,
+    /// and the timeout path waits for the tree it killed to actually be gone before reading what
+    /// it wrote (<c>Process.Kill</c> is asynchronous). Candidates ruled out along the way: the
+    /// retry budget is per run, not shared, both in this method's own local state and in the
+    /// persisted <see cref="RunDetails.PendingGateRetry"/> keyed by run id
+    /// (<see cref="Two_runs_in_the_same_store_each_get_their_own_gate_retry_budget"/> pins it);
+    /// and the whole-output and 400-character-tail paths never diverge, since classification has
+    /// only ever read the whole output and the tail only ever shapes the recorded summary.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_connection_class_signature_pushed_out_of_the_tail_still_classifies_as_infrastructure()
@@ -510,6 +532,121 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.FailureReason.Should().Contain("infrastructure-classified");
+    }
+
+    /// <summary>
+    /// A gate log the daemon could not read is an unobserved fact, not an observed absence of
+    /// output, so it never counts as evidence the agent's work is what failed (AGENTS.md's
+    /// never-guess rule). The read itself now tolerates a concurrent writer, which is what made
+    /// the two flakes above disappear; this pins the policy behind it, for the residue that
+    /// tolerance cannot cover — a log genuinely locked against every reader.
+    /// <para>
+    /// Deterministic on both platforms by construction: the test holds the gate's own log path
+    /// open with <see cref="FileShare.None"/> for the whole run, which .NET enforces through a
+    /// real exclusive <c>flock</c> on Unix and through the share mode itself on Windows, so the
+    /// runner's read is refused every time rather than on an unlucky millisecond.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_gate_whose_log_cannot_be_read_classifies_as_infrastructure_rather_than_as_the_agents_work()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("flaky", GateScript.New().Print("a real assertion failure").Exit(1).Command)],
+            cts.Token);
+
+        string runDirectory = RunPaths.GlobalDirectory(runId);
+        Directory.CreateDirectory(runDirectory);
+        using FileStream locked = new(
+            Path.Combine(runDirectory, "verify-flaky.log"), FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+
+        passed.Should().BeFalse("the log stays unreadable across the retry, so the run still fails");
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<GateRetried>().Should().ContainSingle(
+            "an unreadable log earns the gate its one retry — nothing was observed about the work")
+            .Which.Cause.Should().Contain("could not be read");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.FailureReason.Should().Contain("infrastructure-classified",
+            "the recorded reason must say the environment failed, not that the agent's work did");
+    }
+
+    /// <summary>
+    /// A gate the operating system refused to launch produced no evidence about anything, so it
+    /// classifies as infrastructure whatever words the spawn failure happened to use. The
+    /// classifier's marker list recognizes what a gate PRINTED, and a gate that never started
+    /// printed nothing — running the exception's own message past that list only ever produced
+    /// "no match", which used to mean "blame the agent's work" and deny the retry.
+    /// </summary>
+    [Fact]
+    public async Task A_gate_the_operating_system_refuses_to_launch_classifies_as_infrastructure()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("flaky", GateScript.Passes)], cts.Token);
+
+        // The one spawn failure that is portable to arrange: a working directory that is not
+        // there. Both platforms surface it as the Win32Exception RunGateAsync already catches.
+        TemporaryTree.Delete(_worktree);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+
+        passed.Should().BeFalse("the worktree is still missing on the retry, so the run still fails");
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<GateRetried>().Should().ContainSingle(
+            "a gate that never started earns its one retry rather than failing the task outright")
+            .Which.Cause.Should().Contain("could not start");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.FailureReason.Should().Contain("infrastructure-classified");
+    }
+
+    /// <summary>
+    /// The gate retry budget is per run, and this is what says so out loud. It is the candidate
+    /// the two flakes above were first suspected of — a sibling test in the same Postgres store
+    /// consuming the single retry another asserts on — and it was never the cause: the in-call
+    /// budget is <c>VerifyAsync</c>'s own local state, and the persisted half
+    /// (<see cref="RunDetails.PendingGateRetry"/>, PLAN.md §16's backlog-53 entry) hangs off the
+    /// run document, keyed by run id. Two runs sharing one store, one Marten schema and one gate
+    /// name each get their own.
+    /// </summary>
+    [Fact]
+    public async Task Two_runs_in_the_same_store_each_get_their_own_gate_retry_budget()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        // One marker file per run, so each run's own first attempt is the one that fails
+        // infrastructure-style and its own retry is the one that passes. A shared marker would
+        // make the second run pass on its first attempt and prove nothing.
+        string firstMarker = Path.Combine(_worktree, "budget-marker-one");
+        string secondMarker = Path.Combine(_worktree, "budget-marker-two");
+        (Guid firstTaskId, Guid firstRunId) = await SeedAsync(store, [FlakyOnceGate(firstMarker)], cts.Token);
+        (Guid secondTaskId, Guid secondRunId) = await SeedAsync(store, [FlakyOnceGate(secondMarker)], cts.Token);
+
+        bool firstPassed = await NewRunner(store).VerifyAsync(
+            firstRunId, firstTaskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+        bool secondPassed = await NewRunner(store).VerifyAsync(
+            secondRunId, secondTaskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+
+        firstPassed.Should().BeTrue("the first run's own retry is the attempt that passes");
+        secondPassed.Should().BeTrue(
+            "the second run brings its own retry budget — the first run's spend is recorded against "
+            + "the first run's document, not against the store or the gate name");
+
+        await using IQuerySession query = store.QuerySession();
+        foreach (Guid runId in new[] { firstRunId, secondRunId })
+        {
+            var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+            events.Select(e => e.Data).OfType<GateRetried>().Should().ContainSingle(
+                "each run records exactly its own one retry");
+            events.Select(e => e.Data).OfType<RunFailed>().Should().BeEmpty("a passing retry never fails the run");
+        }
     }
 
     /// <summary>
@@ -582,6 +719,19 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// Classification must read what the gate actually wrote, not the synthetic timeout
     /// message, or a startup hang is never retried and is blamed on the agent's work
     /// (adversarial review, cycle 2).
+    /// <para>
+    /// The flakier half of the pair described on
+    /// <see cref="A_connection_class_signature_pushed_out_of_the_tail_still_classifies_as_infrastructure"/>,
+    /// and the half whose mechanism was reproduced outright: measured on an idle Windows host,
+    /// one read in thirty taken immediately after <c>Process.Kill(entireProcessTree: true)</c> —
+    /// exactly what this case's own one-second <c>VerifyGateTimeout</c> triggers — was refused
+    /// with a sharing violation, because <c>Kill</c> only asks the operating system to terminate
+    /// and returns while the gate's own shell still holds the redirected log. The runner now
+    /// waits for that tree to be gone before reading it, and reads it through
+    /// <see cref="Hall9k.Connectors.Processes.ShareTolerantFile"/> either way. What is NOT the
+    /// cause, also measured on the same host: the gate itself reaches its marker 11-29 ms after
+    /// the spawn, so the one-second budget is not racing process startup.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_gate_that_hangs_after_writing_an_infrastructure_marker_still_classifies_and_retries()
@@ -1726,6 +1876,16 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         }
     }
 
+
+    /// <summary>
+    /// A gate that fails with an infrastructure signature the first time it runs and passes the
+    /// second, told apart by whether <paramref name="marker"/> is already there.
+    /// </summary>
+    private static VerifyCommand FlakyOnceGate(string marker) =>
+        new("flaky", GateScript.New().BranchOnFile(
+            marker,
+            GateScript.New().Print("ok").Exit(0),
+            GateScript.New().CreateFile(marker).Print(ConnectionRefused).Exit(1)).Command);
 
     private static VerificationRunner NewRunner(
         DocumentStore store, IExecutor? executor = null, IProcessManager? processManager = null) =>

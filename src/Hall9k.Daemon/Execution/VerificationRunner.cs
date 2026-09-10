@@ -1019,10 +1019,22 @@ public sealed partial class VerificationRunner(
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            string startFailure = $"Gate '{gate.Name}' could not start: {exception.Message}";
-            return (false, startFailure,
-                GateInfrastructureFailureClassifier.IsInfrastructureFailure(startFailure),
-                GateInfrastructureFailureClassifier.MatchingExcerpt(startFailure), false);
+            // A gate the operating system refused to launch at all is an infrastructure failure by
+            // construction, whatever words the exception happened to use: not one line of the
+            // agent's work ran, so nothing was observed about it, and the classifier's marker list
+            // has no business being consulted (it recognizes what a gate PRINTED, and this gate
+            // printed nothing). Previously this ran the message past the marker list, which
+            // matches none of the shapes a spawn failure actually takes — "The system cannot find
+            // the file specified", a desktop-heap or memory refusal under load — so a machine that
+            // could not start the gate was recorded as the agent's own broken work and denied the
+            // one retry that would have cleared it (AGENTS.md: never guess at unobserved facts).
+            string startFailure =
+                $"Gate '{gate.Name}' could not start: {exception.Message} Nothing of the gate ran, so this " +
+                "says nothing about the work under test.";
+
+            // No excerpt: BuildRetryCause labels one "Matching signature", and nothing matched
+            // here — the classification came from the spawn failing, not from anything printed.
+            return (false, startFailure, true, null, false);
         }
 
         using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1034,15 +1046,37 @@ public sealed partial class VerificationRunner(
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             process.Kill(entireProcessTree: true);
+
+            // Kill only ASKS the operating system to terminate the tree; it returns before the
+            // tree is actually gone (Process.Kill's own documented contract). The classification
+            // just below reads what the gate wrote, so reading here — while the gate's own shell
+            // still holds the redirected log and may still be writing its last line into it —
+            // reads a file mid-teardown. Waiting for the root's own exit first is what makes
+            // "what the gate wrote before it was killed" a settled fact rather than a race,
+            // bounded so a process the operating system cannot reap never wedges the run.
+            await WaitForKilledProcessAsync(process, cancellationToken);
+
             string timeoutFailure = $"Gate '{gate.Name}' exceeded the {options.Value.VerifyGateTimeout.TotalMinutes:0}-minute timeout.";
 
             // A hang classifies on what the gate actually wrote before it was killed, not on
             // this synthetic message — the message never carries a marker, so a container that
             // never comes up (a startup hang, not a non-zero exit) would otherwise be silently
             // unclassifiable and blamed on the agent's work (adversarial review, cycle 2).
-            string timeoutOutput = ReadFullOutput(logFile);
-            bool timeoutIsInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutOutput);
-            string? timeoutExcerpt = GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput);
+            // A log nobody could read is not the same as a gate that printed nothing: it is an
+            // unobserved fact, so it classifies as infrastructure rather than being pinned on
+            // work this run never got to look at (see UnreadableGateLog).
+            string? timeoutOutput = ReadFullOutput(logFile);
+            bool timeoutIsInfrastructureFailure =
+                timeoutOutput is null || GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutOutput);
+            string? timeoutExcerpt = timeoutOutput is null
+                ? null
+                : GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput);
+            if (timeoutOutput is null)
+            {
+                timeoutFailure =
+                    $"{timeoutFailure} Also {UnreadableGateLog(logFile)}, so nothing is known about what it " +
+                    "wrote before it was killed.";
+            }
 
             // A gate whose own permit wait is still unresolved at the moment of the kill is a
             // second, distinct shape of infrastructure timeout: the process never got past
@@ -1078,10 +1112,17 @@ public sealed partial class VerificationRunner(
                 // to a full, unscoped run of this one gate costs the rare intersect-to-zero case
                 // a second gate run rather than a silent false green or a spurious failure of a
                 // perfectly good fix.
-                string scopedOutput = ReadFullOutput(logFile);
-                if (ScopedRunExecutedNoTests(scopedOutput))
+                // A log nobody could read cannot show a VSTest summary either, and TestGateScope's
+                // own contract is that a run which executed nothing never stands in for a passed
+                // one — so an unreadable log takes the fallback rather than being assumed to have
+                // executed tests. It costs one extra full gate run in a case that should not
+                // happen at all now that the read tolerates a concurrent writer.
+                string? scopedOutput = ReadFullOutput(logFile);
+                if (scopedOutput is null || ScopedRunExecutedNoTests(scopedOutput))
                 {
-                    string vacuityDescription = DescribeScopedRunVacuity(scopedOutput);
+                    string vacuityDescription = scopedOutput is null
+                        ? $"{UnreadableGateLog(logFile)}, so whether the scoped run executed any tests is unknown"
+                        : DescribeScopedRunVacuity(scopedOutput);
                     logger.LogWarning(
                         "Gate '{Gate}': {Description} (filter \"{Filter}\" combined with the gate's own " +
                         "configured filter); falling back to a full run of this gate",
@@ -1101,11 +1142,74 @@ public sealed partial class VerificationRunner(
         // Classification reads the gate's whole output, never just the truncated tail kept
         // for the summary: a marker logged early in a large `dotnet test` run must not be
         // pushed out of a fixed-size window and go unclassified (adversarial review, cycle 1).
-        string fullOutput = ReadFullOutput(logFile);
+        // A log that could not be read at all is the unobserved case, not the empty one, and is
+        // classified as infrastructure for the reason UnreadableGateLog spells out.
+        string? fullOutput = ReadFullOutput(logFile);
+        if (fullOutput is null)
+        {
+            return (false,
+                $"Gate '{gate.Name}' exited {process.ExitCode}, and {UnreadableGateLog(logFile)}, so nothing " +
+                "is known about why it failed.",
+                true, null, false);
+        }
+
         bool isInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(fullOutput);
         string summary = $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {TailOf(fullOutput)}";
         return (false, summary, isInfrastructureFailure, GateInfrastructureFailureClassifier.MatchingExcerpt(fullOutput), false);
     }
+
+    /// <summary>
+    /// Waits for a tree this method just killed to actually be gone. <c>Process.Kill</c> is
+    /// asynchronous by contract — it asks the operating system to terminate and returns — so the
+    /// gate's own last writes and its handle on the redirected log both outlive the call, and a
+    /// classifier reading that log immediately afterward is reading a file mid-teardown. Bounded
+    /// at <see cref="KilledGateReapBudget"/>: a few seconds spent letting a killed gate finish
+    /// dying is what makes the next read a settled observation, and a tree the operating system
+    /// still has not reaped inside that budget is left alone rather than waited on forever.
+    /// <para>
+    /// The caller only reaches this path when the run itself was NOT cancelled, so
+    /// <paramref name="cancellationToken"/> can only fire here as a daemon shutdown arriving
+    /// mid-wait — which is a reason to stop waiting, not to keep the shutdown blocked behind the
+    /// reap budget, so it is linked in rather than ignored (independent pre-PR review, cycle 1,
+    /// conformance lens, low). Either way the wait ending early only costs the read that follows
+    /// its settledness, and <see cref="ShareTolerantFile"/> makes that read survive a writer that
+    /// still holds the log.
+    /// </para>
+    /// </summary>
+    private static async Task WaitForKilledProcessAsync(Process process, CancellationToken cancellationToken)
+    {
+        using CancellationTokenSource reaping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        reaping.CancelAfter(KilledGateReapBudget);
+        try
+        {
+            await process.WaitForExitAsync(reaping.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Still not reaped, or the daemon is shutting down. Nothing here can make the
+            // operating system finish, and the read that follows tolerates a writer that still
+            // holds the log, so carry on.
+        }
+    }
+
+    /// <summary>
+    /// How long a gate killed for exceeding <see cref="DaemonOptions.VerifyGateTimeout"/> is given
+    /// to actually die before the run stops waiting on it. Not a configurable setting: this is the
+    /// operating system's own teardown latency, measured in milliseconds in practice, and the
+    /// budget exists only so a tree that never dies cannot wedge the gate loop.
+    /// </summary>
+    private static readonly TimeSpan KilledGateReapBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Names the log that could not be read, as a clause each caller finishes with what that
+    /// costs where it stands: a failing gate learns nothing about why it failed, a passing scoped
+    /// gate learns nothing about whether it executed any tests. Either way an unreadable log is
+    /// an unobserved fact, not an observed absence of output, so it never counts as evidence the
+    /// agent's work is what failed (AGENTS.md's never-guess rule) — the caller classifies it as
+    /// infrastructure, spending the gate's one retry on a second look instead.
+    /// </summary>
+    private static string UnreadableGateLog(string logFile) =>
+        $"its own output log ({logFile}) could not be read";
 
     /// <summary>
     /// Commits the branch carries beyond the base — the SMALLEST count any boundary the base is
@@ -1831,17 +1935,19 @@ public sealed partial class VerificationRunner(
     private static string Sanitize(string name) =>
         new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
 
-    private static string ReadFullOutput(string logFile)
-    {
-        try
-        {
-            return File.Exists(logFile) ? File.ReadAllText(logFile).Trim() : string.Empty;
-        }
-        catch (IOException)
-        {
-            return "(unreadable)";
-        }
-    }
+    /// <summary>
+    /// The gate's whole captured output — empty when the gate wrote nothing, and <c>null</c> when
+    /// the log exists but genuinely could not be read. Those two are different facts and every
+    /// caller here treats them differently: the first is evidence about the gate, the second is
+    /// the absence of evidence about anything.
+    /// <para>
+    /// Read through <see cref="ShareTolerantFile"/> rather than <c>File.ReadAllText</c>, whose
+    /// <see cref="FileShare.Read"/> is refused outright while the gate's own shell still holds the
+    /// redirected log — the flake that cost three review laps their full test gate on 2026-09-09
+    /// and 2026-09-10; that type's own doc carries the incident and the measurement.
+    /// </para>
+    /// </summary>
+    private static string? ReadFullOutput(string logFile) => ShareTolerantFile.TryReadAllText(logFile)?.Trim();
 
     private static string TailOf(string content) =>
         content.IsBlank() ? "(empty)" : content.Length <= 400 ? content : content[^400..];
