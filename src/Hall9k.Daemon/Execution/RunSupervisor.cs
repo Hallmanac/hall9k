@@ -1254,7 +1254,7 @@ public sealed class RunSupervisor(
         try
         {
             SpawnedAgent agent = await primarySessionResumer.ResumeAsync(
-                session, runDetails, task, project, AgentPromptBuilder.BuildSessionErrorRetry(), cancellationToken);
+                session, runDetails, task, project, AgentPromptBuilder.BuildSessionErrorRetry(task), cancellationToken);
             await session.SaveChangesAsync(cancellationToken);
             return (BuildSessionRetryOutcome.Resumed, agent.ProcessId, agent.StartedAt);
         }

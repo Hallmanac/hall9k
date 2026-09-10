@@ -387,6 +387,15 @@ process is killed the instant it finishes, so a backgrounded gate is left waitin
 notification that never arrives, and the daemon tears down a completed session's own process tree
 before the next gate or session touches the same worktree (PLAN.md §16 #167).
 
+A session also never generates host load to reproduce or prove a flaky or timing-dependent test:
+no parallel copies of a suite or test, no stress or spin loops, no deliberate memory pressure, no
+CPU pinning. The host also runs the daemon, Postgres, and other sessions, so loading it to chase
+one test starves all of them. A flake is reproduced deterministically instead — a fake, controlled
+scheduling, or an injected delay — with the gate then run once, in the foreground, the same as any
+other gate; a flake that will not reproduce deterministically is left best-effort and said so
+plainly in the handoff, rather than proven at the host's expense (PLAN.md §16
+#PLACEHOLDER-18b7a833).
+
 Each gate is also validated once, at `h9k project set --verify` time, against a clean checkout of
 the project's own base branch — a gate that cannot pass there refuses the whole `project set`
 outright (`--accept-broken-gate` records it anyway, with a loud warning). A run that later fails a

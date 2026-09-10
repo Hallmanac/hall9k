@@ -194,7 +194,7 @@ public sealed class TokenBudgetRetryEngine(
         try
         {
             SpawnedAgent agent = await primarySessionResumer.ResumeAsync(
-                session, run, task, project, AgentPromptBuilder.BuildBudgetRetry(), cancellationToken);
+                session, run, task, project, AgentPromptBuilder.BuildBudgetRetry(task), cancellationToken);
             await session.SaveChangesAsync(cancellationToken);
 
             supervisor.StartMonitoring(

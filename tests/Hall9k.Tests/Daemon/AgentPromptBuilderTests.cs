@@ -3841,9 +3841,12 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// their own cases so a future refactor cannot silently drop the rule from either one without
     /// a test noticing. The forbidden shapes are named in every leg's prompt regardless; the
     /// permitted deterministic-reproduction path is only stated for a leg actually told to run
-    /// this project's own gates — the read-only verify leg and the commit-only recovery leg run
-    /// nothing at all, so telling them "run the suite once" would contradict their own surrounding
-    /// "never run anything" instruction.
+    /// this project's own gates — the read-only verify leg, the commit-only recovery leg, and a
+    /// pr-review task's resumed retry legs (independent pre-PR review, cycle 1, both lenses: those
+    /// two retry legs resume the read-only adversarial lens over a foreign pull request, which
+    /// must never be told to edit and run that pull request's own code) run nothing at all, so
+    /// telling them "run the suite once" would contradict their own surrounding "never run
+    /// anything" instruction.
     /// </summary>
     [Theory]
     [InlineData("build", true)]
@@ -3854,6 +3857,8 @@ public sealed class AgentPromptBuilderTests : IDisposable
     [InlineData("commit recovery", false)]
     [InlineData("budget retry", true)]
     [InlineData("session error retry", true)]
+    [InlineData("budget retry (pr-review)", false)]
+    [InlineData("session error retry (pr-review)", false)]
     public void Every_headless_leg_states_the_no_host_load_for_flake_reproduction_rule(string leg, bool sessionRunsGates)
     {
         string prompt = leg switch
@@ -3871,8 +3876,10 @@ public sealed class AgentPromptBuilderTests : IDisposable
                 tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
                 priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null),
             "commit recovery" => AgentPromptBuilder.BuildUncommittedWorkRecovery(SomeTask(), ["src/Feature.cs"]),
-            "budget retry" => AgentPromptBuilder.BuildBudgetRetry(),
-            "session error retry" => AgentPromptBuilder.BuildSessionErrorRetry(),
+            "budget retry" => AgentPromptBuilder.BuildBudgetRetry(SomeTask()),
+            "session error retry" => AgentPromptBuilder.BuildSessionErrorRetry(SomeTask()),
+            "budget retry (pr-review)" => AgentPromptBuilder.BuildBudgetRetry(SomePrReviewTask()),
+            "session error retry (pr-review)" => AgentPromptBuilder.BuildSessionErrorRetry(SomePrReviewTask()),
             _ => throw new ArgumentOutOfRangeException(nameof(leg)),
         };
 
@@ -3900,8 +3907,11 @@ public sealed class AgentPromptBuilderTests : IDisposable
     /// Task 18b7a833: the one review lens that reads a fix session's own closing summary back
     /// (<see cref="AgentPromptBuilder.BuildReviewVerify"/>'s "What the fix session did about
     /// them" section) grades a host-load flake reproduction it finds there — or in the commits
-    /// themselves — as a high-severity conformance finding citing AGENTS.md's rule, rather than
-    /// crediting the load as evidence the fix session tried hard.
+    /// themselves — as a high-severity conformance finding citing the rule the fix session's own
+    /// prompt already carried, rather than crediting the load as evidence the fix session tried
+    /// hard. Citing the fix session's own prompt rather than AGENTS.md by name (independent pre-PR
+    /// review, cycle 1, adversarial lens) matters because this prompt renders for every registered
+    /// project, not only Hall9k's own.
     /// </summary>
     [Fact]
     public void The_review_verify_prompt_grades_host_load_flake_reproduction_as_a_high_severity_conformance_finding()
@@ -3912,10 +3922,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
             priorFixPosition: "Reproduced the flake by running forty parallel copies of the suite.",
             sinceSha: null, priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null);
 
-        prompt.Should().Contain("severity=high;");
-        prompt.Should().Contain("track=conformance");
-        prompt.Should().Contain("AGENTS.md's rule");
-        prompt.Should().Contain("host load");
+        prompt.Should().Contain(
+            "severity=high;\nscope=in-scope; track=conformance",
+            "the grading instruction, not the unrelated track-tag example elsewhere in this prompt, must pin high/in-scope/conformance together");
+        prompt.Should().Contain("generated host load to", "the instruction must name the specific defect it is grading");
+        prompt.Should().Contain(
+            "citing the no-host-load-for-flake-reproduction rule the fix",
+            "the citation must point at the rule the fix session's own prompt actually carried, not a project-specific doc that may not exist for every project this prompt renders for");
     }
 
     /// <summary>
@@ -3975,6 +3988,13 @@ public sealed class AgentPromptBuilderTests : IDisposable
     {
         Objective = "Add rate limiting to auth endpoints",
         AcceptanceCriteria = ["Requests over the limit get 429"],
+    };
+
+    private static TaskDetails SomePrReviewTask() => new()
+    {
+        Type = TaskType.PrReview,
+        Objective = "Review pull request #42",
+        AcceptanceCriteria = ["Every finding is verified before it is reported"],
     };
 
     private static ProjectDetails SomeProject() => new()

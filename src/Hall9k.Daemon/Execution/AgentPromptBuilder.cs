@@ -7,6 +7,7 @@ using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -1961,11 +1962,21 @@ public static class AgentPromptBuilder
         prompt.AppendLine(
             "make the flake appear or to prove it gone — report it as its own finding at `severity=high;");
         prompt.AppendLine(
-            "scope=in-scope; track=conformance`, citing AGENTS.md's rule against it (the bullet beside the");
+            "scope=in-scope; track=conformance`, citing the no-host-load-for-flake-reproduction rule the fix");
         prompt.AppendLine(
-            "foreground-gates rule), regardless of whether the flake itself got fixed: that host load is a");
+            "session's own prompt already carried (stated beside the foreground-gates rule), regardless of");
         prompt.AppendLine(
-            "conformance defect on its own, not evidence the fix session tried hard.");
+            "whether the flake itself got fixed: that host load is a conformance defect on its own, not");
+        prompt.AppendLine(
+            "evidence the fix session tried hard. Use `track=conformance` for this even if conformance is not");
+        prompt.AppendLine(
+            "named among the still-active tracks above — a tag naming a track that already concluded counts");
+        prompt.AppendLine(
+            "against whichever track is still active this round the same as an untagged finding does (see the");
+        prompt.AppendLine(
+            "tagging rule below), so the finding still lands rather than vanishing into a track nobody is");
+        prompt.AppendLine(
+            "reading for anymore.");
 
         prompt.AppendLine();
         prompt.AppendLine("## How to review");
@@ -3325,8 +3336,19 @@ public static class AgentPromptBuilder
     /// <see cref="WorkPromptBuilder.AppendForegroundGatesRule"/> nor
     /// <see cref="WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule"/>, and a session mid-fix
     /// on a flaky test is exactly the one this rule most needs to reach.
+    /// <paramref name="task"/> decides which half of that rule applies
+    /// (independent pre-PR review, cycle 1, both lenses): a pr-review task's primary session is
+    /// the read-only adversarial lens over another contributor's pull request
+    /// (<c>PrimarySessionResumer.ResumeAsync</c>'s own <c>UntrustedWorkingDirectory</c> check),
+    /// and this leg is what resumes it — <c>TokenBudgetRetryEngine.RetryOneAsync</c> diverts only
+    /// the conformance-lens exhaustion case back into the review loop; a primary-session
+    /// exhaustion falls through to here regardless of task type. Telling that resumed session to
+    /// inject a fix and "run the suite once, in the foreground" would have it edit and execute a
+    /// foreign pull request's own code under the owner's credentials, exactly the shape
+    /// <see cref="BuildReviewVerify"/> and <see cref="BuildUncommittedWorkRecovery"/> already
+    /// avoid via <c>sessionRunsGates: false</c>.
     /// </summary>
-    public static string BuildBudgetRetry()
+    public static string BuildBudgetRetry(TaskDetails task)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("Your previous session paused mid-task: the subscription usage window ran out");
@@ -3335,7 +3357,8 @@ public static class AgentPromptBuilder
         prompt.AppendLine("and continue toward the acceptance criteria you were already given. Do not restart");
         prompt.AppendLine("or re-derive work already done.");
         prompt.AppendLine();
-        WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(prompt);
+        WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(
+            prompt, sessionRunsGates: task.Type != TaskType.PrReview);
 
         return prompt.ToString();
     }
@@ -3351,9 +3374,13 @@ public static class AgentPromptBuilder
     /// or project context is restated — a resumed session already has all of it — this is only
     /// the nudge to continue rather than restart, with the same one exception
     /// <see cref="BuildBudgetRetry"/> carries:
-    /// <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>.
+    /// <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>, gated on
+    /// <paramref name="task"/> the same way <see cref="BuildBudgetRetry"/> is — this leg resumes
+    /// the same read-only pr-review primary session (<c>RunSupervisor.ResumeBuildSessionErrorRetryAsync</c>
+    /// resumes whichever session <see cref="RunSessionLeg.Build"/> names, pr-review's adversarial
+    /// lens included) and must not tell it to edit and run a foreign pull request's own code.
     /// </summary>
-    public static string BuildSessionErrorRetry()
+    public static string BuildSessionErrorRetry(TaskDetails task)
     {
         StringBuilder prompt = new();
         prompt.AppendLine("Your previous session ended with an error partway through — most likely a transient");
@@ -3361,7 +3388,8 @@ public static class AgentPromptBuilder
         prompt.AppendLine("off — check `git status` and `git diff` for anything uncommitted — and continue toward");
         prompt.AppendLine("the acceptance criteria you were already given. Do not restart or re-derive work already done.");
         prompt.AppendLine();
-        WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(prompt);
+        WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(
+            prompt, sessionRunsGates: task.Type != TaskType.PrReview);
 
         return prompt.ToString();
     }
