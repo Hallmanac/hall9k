@@ -38,10 +38,10 @@ namespace Hall9k.Tests.Domain;
 /// stress loops, the memory and CPU figures, the seven minutes, the reboot), the same as the Git
 /// rules section's own origin-incident bullets do, rather than a bare citation the way #167's own
 /// bullet reads — the incident is what makes the rule's balance legible on its own, not only in
-/// PLAN.md. Deliberately left as long, unwrapped lines rather than reflowed at ~100 columns
-/// (matching the existing precedent at the P2P-design bullet above and the "human reviewer" Git
-/// rule) specifically so this raise is the honest, disclosed one the note two paragraphs up warns
-/// a future addition not to fake through an unrelated reflow: nine more lines, ceiling to 216.
+/// PLAN.md. Wrapped at the same ~100 columns every other bullet here uses, the same as #167's own
+/// bullet just above it — the length comes from the incident's own facts, not from choosing not to
+/// wrap, and this raise is the honest, disclosed one the note two paragraphs up warns a future
+/// addition not to fake through an unrelated reflow: nine more lines, ceiling to 216.
 /// This is a fourth raise, the one the paragraph above said not to take — taken anyway because
 /// cutting existing content to make room would have meant shortening doctrine this task did not
 /// touch and has no standing to judge as safe to compress; a real future addition should still
