@@ -3831,6 +3831,94 @@ public sealed class AgentPromptBuilderTests : IDisposable
             .Contain("Run this project's own build and test gates");
 
     /// <summary>
+    /// Task 18b7a833: a dispatched session never generates host load to reproduce or prove a
+    /// flaky or timing-dependent test (AGENTS.md, beside the foreground-gates bullet; PLAN.md
+    /// §16 #PLACEHOLDER-18b7a833). <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>
+    /// is folded into <see cref="WorkPromptBuilder.AppendForegroundGatesRule"/> itself, so every
+    /// leg the theory above already covers carries it for free — plus the two bare `--resume`
+    /// retry legs (<c>BuildBudgetRetry</c>, <c>BuildSessionErrorRetry</c>), which never call
+    /// <c>AppendForegroundGatesRule</c> at all and so needed their own direct call, added here as
+    /// their own cases so a future refactor cannot silently drop the rule from either one without
+    /// a test noticing. The forbidden shapes are named in every leg's prompt regardless; the
+    /// permitted deterministic-reproduction path is only stated for a leg actually told to run
+    /// this project's own gates — the read-only verify leg and the commit-only recovery leg run
+    /// nothing at all, so telling them "run the suite once" would contradict their own surrounding
+    /// "never run anything" instruction.
+    /// </summary>
+    [Theory]
+    [InlineData("build", true)]
+    [InlineData("review fix", true)]
+    [InlineData("human-resolved fix", true)]
+    [InlineData("rebase recovery", true)]
+    [InlineData("verify", false)]
+    [InlineData("commit recovery", false)]
+    [InlineData("budget retry", true)]
+    [InlineData("session error retry", true)]
+    public void Every_headless_leg_states_the_no_host_load_for_flake_reproduction_rule(string leg, bool sessionRunsGates)
+    {
+        string prompt = leg switch
+        {
+            "build" => AgentPromptBuilder.Build(SomeTask(), SomeProject(), "task/1-slug", _worktreePath),
+            "review fix" => AgentPromptBuilder.BuildReviewFix(
+                SomeTask(), SomeProject(), "task/1-slug", "findings go here", cycle: 1),
+            "human-resolved fix" => AgentPromptBuilder.BuildReviewFix(
+                SomeTask(), SomeProject(), "task/1-slug",
+                "Human review verdict (h9k review resolve): needs fixes.\n\nFix the validation bug.", cycle: 1),
+            "rebase recovery" => AgentPromptBuilder.BuildPreFinalPassRebase(
+                SomeTask(), SomeProject(), "task/1-slug", CommitStyle.Append, pullRequestUrl: null),
+            "verify" => AgentPromptBuilder.BuildReviewVerify(
+                SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+                tracks: [ReviewLens.Conformance], priorFindings: "none", priorFixPosition: "none", sinceSha: null,
+                priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null),
+            "commit recovery" => AgentPromptBuilder.BuildUncommittedWorkRecovery(SomeTask(), ["src/Feature.cs"]),
+            "budget retry" => AgentPromptBuilder.BuildBudgetRetry(),
+            "session error retry" => AgentPromptBuilder.BuildSessionErrorRetry(),
+            _ => throw new ArgumentOutOfRangeException(nameof(leg)),
+        };
+
+        prompt.Should().Contain("stress or spin loops",
+            $"the {leg} leg's prompt must name the forbidden host-load shapes concretely");
+        prompt.Should().Contain("CPU pinning",
+            $"the {leg} leg's prompt must name CPU pinning as a forbidden shape");
+        prompt.Should().Contain("deliberate memory",
+            $"the {leg} leg's prompt must name deliberate memory pressure as a forbidden shape");
+        if (sessionRunsGates)
+        {
+            prompt.Should().Contain("Reproduce it deterministically instead",
+                $"the {leg} leg's prompt must name the permitted deterministic-reproduction path");
+            prompt.Should().Contain("leave the fix best-effort",
+                $"the {leg} leg's prompt must permit an honest best-effort handoff when a flake will not reproduce");
+        }
+        else
+        {
+            prompt.Should().NotContain("run the suite once",
+                $"the {leg} leg is never asked to run anything, so the rule must not tell it to run the suite");
+        }
+    }
+
+    /// <summary>
+    /// Task 18b7a833: the one review lens that reads a fix session's own closing summary back
+    /// (<see cref="AgentPromptBuilder.BuildReviewVerify"/>'s "What the fix session did about
+    /// them" section) grades a host-load flake reproduction it finds there — or in the commits
+    /// themselves — as a high-severity conformance finding citing AGENTS.md's rule, rather than
+    /// crediting the load as evidence the fix session tried hard.
+    /// </summary>
+    [Fact]
+    public void The_review_verify_prompt_grades_host_load_flake_reproduction_as_a_high_severity_conformance_finding()
+    {
+        string prompt = AgentPromptBuilder.BuildReviewVerify(
+            SomeTask(), SomeProject(), "task/1-slug", cycle: 2,
+            tracks: [ReviewLens.Conformance], priorFindings: "none",
+            priorFixPosition: "Reproduced the flake by running forty parallel copies of the suite.",
+            sinceSha: null, priorCycleMode: ReviewMode.Discovery, priorCycleSinceSha: null);
+
+        prompt.Should().Contain("severity=high;");
+        prompt.Should().Contain("track=conformance");
+        prompt.Should().Contain("AGENTS.md's rule");
+        prompt.Should().Contain("host load");
+    }
+
+    /// <summary>
     /// AC1: the prompt names the foreground timeout the session actually has, not a compile-time
     /// constant — <c>ClaudeExecutor</c> sizes <c>BASH_MAX_TIMEOUT_MS</c> from the live
     /// <c>DaemonOptions.VerifyGateTimeout</c> an operator can move away from its 30-minute

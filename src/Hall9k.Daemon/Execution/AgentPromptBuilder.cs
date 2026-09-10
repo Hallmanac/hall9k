@@ -1813,6 +1813,11 @@ public static class AgentPromptBuilder
     /// pass is spec-aware by design: verify each fix actually landed and check its blast radius,
     /// rather than re-deriving the whole diff from a blank slate. It answers for every track named
     /// in <paramref name="tracks"/> at once, tagging each finding with which one it belongs to.
+    /// This is also the one review lens that reads a fix session's own closing summary
+    /// (<paramref name="priorFixPosition"/>), so it is the one place that instructs a reviewer to
+    /// grade evidence of host-load flake reproduction there as a high-severity conformance finding
+    /// (Decisions Log §16 #PLACEHOLDER-18b7a833) — <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>
+    /// tells a session not to generate that load; this tells the reviewer what to do if one did anyway.
     /// </summary>
     /// <param name="tracks">The still-active tracks this pass stands in for.</param>
     /// <param name="priorFindings">The prior cycle's own merged findings document, verbatim.</param>
@@ -1945,6 +1950,22 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
             prompt.AppendLine(QuoteAsHistory(priorFixPosition));
         }
+
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "If that summary, or the commits the fix session produced, shows it generated host load to");
+        prompt.AppendLine(
+            "reproduce or prove a flaky or timing-dependent test — parallel copies of a suite or test, stress");
+        prompt.AppendLine(
+            "or spin loops, deliberate memory pressure, CPU pinning, or any other load whose purpose was to");
+        prompt.AppendLine(
+            "make the flake appear or to prove it gone — report it as its own finding at `severity=high;");
+        prompt.AppendLine(
+            "scope=in-scope; track=conformance`, citing AGENTS.md's rule against it (the bullet beside the");
+        prompt.AppendLine(
+            "foreground-gates rule), regardless of whether the flake itself got fixed: that host load is a");
+        prompt.AppendLine(
+            "conformance defect on its own, not evidence the fix session tried hard.");
 
         prompt.AppendLine();
         prompt.AppendLine("## How to review");
@@ -3298,7 +3319,12 @@ public static class AgentPromptBuilder
     /// after the subscription usage window very likely reset, with the full transcript and
     /// worktree exactly as the exhausted attempt left them. No task or project context is
     /// restated — a resumed session already has all of it — this is only the nudge to
-    /// continue rather than restart.
+    /// continue rather than restart. The one exception is
+    /// <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>: a resumed
+    /// session otherwise never sees that rule at all, since this leg calls neither
+    /// <see cref="WorkPromptBuilder.AppendForegroundGatesRule"/> nor
+    /// <see cref="WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule"/>, and a session mid-fix
+    /// on a flaky test is exactly the one this rule most needs to reach.
     /// </summary>
     public static string BuildBudgetRetry()
     {
@@ -3308,6 +3334,8 @@ public static class AgentPromptBuilder
         prompt.AppendLine("where you left off — check `git status` and `git diff` for anything uncommitted —");
         prompt.AppendLine("and continue toward the acceptance criteria you were already given. Do not restart");
         prompt.AppendLine("or re-derive work already done.");
+        prompt.AppendLine();
+        WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(prompt);
 
         return prompt.ToString();
     }
@@ -3321,7 +3349,9 @@ public static class AgentPromptBuilder
     /// signature of an overload or rate-limit window rather than a defect in the work itself) —
     /// with the full transcript and worktree exactly as the errored attempt left them. No task
     /// or project context is restated — a resumed session already has all of it — this is only
-    /// the nudge to continue rather than restart.
+    /// the nudge to continue rather than restart, with the same one exception
+    /// <see cref="BuildBudgetRetry"/> carries:
+    /// <see cref="WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule"/>.
     /// </summary>
     public static string BuildSessionErrorRetry()
     {
@@ -3330,6 +3360,8 @@ public static class AgentPromptBuilder
         prompt.AppendLine("provider-side hiccup, not a problem with the work itself. Resume exactly where you left");
         prompt.AppendLine("off — check `git status` and `git diff` for anything uncommitted — and continue toward");
         prompt.AppendLine("the acceptance criteria you were already given. Do not restart or re-derive work already done.");
+        prompt.AppendLine();
+        WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(prompt);
 
         return prompt.ToString();
     }

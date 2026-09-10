@@ -1401,6 +1401,77 @@ public static class WorkPromptBuilder
             prompt.AppendLine($"  `timeout` up to `BASH_MAX_TIMEOUT_MS`, {foregroundCeilingMinutes} minutes today, in");
             prompt.AppendLine("  case anything you do run needs it.");
         }
+
+        AppendNoHostLoadForFlakeReproductionRule(prompt, "  ", sessionRunsGates);
+    }
+
+    /// <summary>
+    /// AGENTS.md's own bullet beside the foreground-gates rule (Decisions Log
+    /// §16 #PLACEHOLDER-18b7a833): a dispatched session never generates host load to reproduce or
+    /// prove a flaky or timing-dependent test. Folded into <see cref="AppendForegroundGatesRule"/>
+    /// itself, both branches, so it reaches every leg that already carries that rule without a
+    /// separate call site to keep in sync — and called directly from the two bare <c>--resume</c>
+    /// retry legs (<c>AgentPromptBuilder.BuildBudgetRetry</c>, <c>BuildSessionErrorRetry</c>),
+    /// which restate no other doctrine at all and so never reach
+    /// <see cref="AppendForegroundGatesRule"/> any other way.
+    /// <para>
+    /// Origin: 2026-09-10 09:36 EDT on the Windows node, task 2c6e95f7 (the two
+    /// <c>VerificationRunnerTests</c> gate-retry tests that had flaked the night before), run
+    /// 01a08b83 — the build session spawned forty pwsh stress loops (4.4 GB, CPU pinned) to try to
+    /// reproduce the flake under load; h9kd and its own Postgres connections were starved for
+    /// seven minutes, the run was orphaned, and Brian rebooted the machine. Brian's ruling the same
+    /// day: "We should never stress the host just to chase down a stupid test" — some flaky tests
+    /// will happen, and the right response fixes them as well as possible without proving the fix
+    /// at the expense of other logic, host processes, or memory; the ruling does not forbid running
+    /// this project's own gates, only load whose purpose is to chase or prove a flake. Same family
+    /// as Decisions Log #108, #132, and #157 (the Postgres container cap exists because unbounded
+    /// parallelism OOM'd the Mac; a faster test suite does less work, never more at once).
+    /// </para>
+    /// <para>
+    /// <paramref name="indent"/> lets a caller already inside a bulleted continuation block (every
+    /// <see cref="AppendForegroundGatesRule"/> caller) match its own two-space indent, while the two
+    /// bare-prose retry legs call this with no indent at all.
+    /// </para>
+    /// <para>
+    /// <paramref name="sessionRunsGates"/> mirrors <see cref="AppendForegroundGatesRule"/>'s own
+    /// parameter (independent pre-PR review, this task's own ride-along finding): the forbidden
+    /// shapes are stated either way — even a read-only reviewer or a commit-only recovery session
+    /// must never reach for one — but the permitted deterministic-reproduction path only makes
+    /// sense for a session actually told to run this project's own gates. An earlier draft stated
+    /// "then run the suite once, in the foreground, the same as any other gate" unconditionally,
+    /// which directly followed — and contradicted — the read-only/commit-only branch's own "never
+    /// start anything" wording for <see cref="AgentPromptBuilder.BuildReviewVerify"/> and
+    /// <see cref="AgentPromptBuilder.BuildUncommittedWorkRecovery"/>.
+    /// </para>
+    /// </summary>
+    public static void AppendNoHostLoadForFlakeReproductionRule(
+        StringBuilder prompt, string indent = "", bool sessionRunsGates = true)
+    {
+        prompt.AppendLine(
+            $"{indent}Never generate host load to reproduce or prove a flaky or timing-dependent test: no");
+        prompt.AppendLine(
+            $"{indent}parallel copies of a suite or test, no stress or spin loops, no deliberate memory");
+        prompt.AppendLine(
+            $"{indent}pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove");
+        prompt.AppendLine(
+            $"{indent}it gone. This host also runs the daemon, Postgres, and other sessions, and loading it");
+        prompt.AppendLine($"{indent}to chase one test starves all of them.");
+        if (sessionRunsGates)
+        {
+            prompt.AppendLine(
+                $"{indent}Reproduce it deterministically instead — a fake, controlled scheduling, or an injected");
+            prompt.AppendLine(
+                $"{indent}delay — then run the suite once, in the foreground, the same as any other gate. When");
+            prompt.AppendLine(
+                $"{indent}a flake will not reproduce deterministically, say so plainly in your handoff — leave the fix best-effort rather than proving it at the host's expense.");
+        }
+        else
+        {
+            prompt.AppendLine(
+                $"{indent}That holds even though this session runs nothing itself: never reach for load like");
+            prompt.AppendLine(
+                $"{indent}this, even informally, to settle a question about a flaky or timing-dependent test.");
+        }
     }
 
     /// <summary>
