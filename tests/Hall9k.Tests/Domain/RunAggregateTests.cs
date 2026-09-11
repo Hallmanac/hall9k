@@ -1578,6 +1578,58 @@ public sealed class RunAggregateTests
             "the observed no-op resets the round count the same as any other confirmed no-op");
         run.PreFinalPassRebaseAwaitingGate.Should().BeTrue(
             "the renumbering commit itself moved this branch's tip past whatever was last gated");
+        run.PreFinalPassRebaseAwaitingGateFromRealRebase.Should().BeFalse(
+            "the event that most recently (re-)raised PreFinalPassRebaseAwaitingGate here was the renumbering-only " +
+            "no-op, not a real rebase — EligibleForSettlingGateRepair must not treat a gate break at this tip as " +
+            "rebase-caused");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial lens: once an earlier real rebase's own
+    /// full-scope gate has already passed (clearing <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/>
+    /// and <see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>), a LATER no-op
+    /// re-check that only commits a Decisions Log renumbering must not make the tip look
+    /// rebase-caused again. Before this fix, <c>ReviewEngine.EligibleForSettlingGateRepair</c> read
+    /// <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/> for this, which the trailing-no-op
+    /// guard in <see cref="RunAggregate.Apply(RunRebasedOntoBase)"/> deliberately leaves pointing at
+    /// the earlier real rebase across this later no-op — so a gate failure right after the
+    /// renumbering-only no-op would have wrongly looked repair-eligible.
+    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/> is set directly off
+    /// each triggering event's own <c>WasNoOp</c> instead, with no trailing-guard staleness to
+    /// account for.
+    /// </summary>
+    [Fact]
+    public void A_renumbering_only_no_op_after_an_earlier_real_rebase_already_gated_is_not_from_a_real_rebase()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+
+        run.Apply(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: false,
+            "Rebased cleanly from abc1234567 to def7654321.", Now));
+        run.PreFinalPassRebaseAwaitingGate.Should().BeTrue();
+        run.PreFinalPassRebaseAwaitingGateFromRealRebase.Should().BeTrue();
+
+        run.Apply(new VerificationPassed(DomainId.New(), Now, RanFullScope: true));
+        run.PreFinalPassRebaseAwaitingGate.Should().BeFalse("the full-scope gate gated the rebased tip clean");
+        run.PreFinalPassRebaseAwaitingGateFromRealRebase.Should().BeFalse();
+
+        // A later Settling entry: origin still has not moved, but a fix session's own new
+        // Decisions Log placeholder needed the mechanical rebase step's renumbering commit.
+        run.Apply(new RunRebasedOntoBase(
+            id, "def7654321", "def7654321", WasNoOp: true, RecoveredByAgentSession: false,
+            "origin/main has not moved since this branch's own merge base, but the Decisions Log's "
+            + "tail entry still needed the mechanical rebase step's own renumbering commit.",
+            Now, DecisionsLogRenumbered: true));
+
+        run.PreFinalPassRebaseAwaitingGate.Should().BeTrue(
+            "the renumbering commit itself moved this branch's tip past the gate that already passed");
+        run.PreFinalPassRebaseAwaitingGateFromRealRebase.Should().BeFalse(
+            "no real rebase sits behind this tip — only the earlier one, which already gated clean — so a gate " +
+            "failure here must keep today's fail-hard contract rather than spend a repair session on it");
     }
 
     /// <summary>
