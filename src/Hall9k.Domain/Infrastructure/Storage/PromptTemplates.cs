@@ -75,6 +75,43 @@ public static class PromptTemplates
 
     private static string ExtractFragment(string raw, string fragment, string relativePath)
     {
+        (int start, int end, string[] lines) = LocateFragment(raw, fragment, relativePath);
+        List<string> body = lines[(start + 1)..end].ToList();
+        if (body.Count > 0 && body[^1].Length == 0)
+        {
+            body.RemoveAt(body.Count - 1);
+        }
+
+        return string.Join('\n', body);
+    }
+
+    /// <summary>
+    /// Every named fragment marker in <paramref name="raw"/>, in file order — the same
+    /// <c>===name===</c> syntax <see cref="Load"/> parses a single one of. Lets a caller (namely
+    /// <see cref="Hall9k.Cli.Prompts.TemplatePublisher"/>'s fill-missing-files pass) tell whether a
+    /// canonical revision added a fragment to a file an operator's own override already carries,
+    /// without duplicating the marker syntax here.
+    /// </summary>
+    public static IReadOnlyList<string> FragmentNames(string raw)
+    {
+        string[] lines = raw.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        return [.. lines.Where(IsFragmentMarker).Select(line => line[3..^3])];
+    }
+
+    /// <summary>
+    /// One named fragment's marker line together with its body, verbatim, from the marker to the
+    /// next marker or the end of <paramref name="raw"/> — unlike <see cref="Load"/>, the marker
+    /// line itself is kept and no trailing blank line is dropped, so the result can be appended
+    /// straight onto a file that already ends in one.
+    /// </summary>
+    public static string ExtractFragmentBlock(string raw, string fragment, string relativePath)
+    {
+        (int start, int end, string[] lines) = LocateFragment(raw, fragment, relativePath);
+        return string.Join('\n', lines[start..end]);
+    }
+
+    private static (int Start, int End, string[] Lines) LocateFragment(string raw, string fragment, string relativePath)
+    {
         string[] lines = raw.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
         string marker = $"==={fragment}===";
         int start = Array.IndexOf(lines, marker);
@@ -95,13 +132,7 @@ public static class PromptTemplates
             }
         }
 
-        List<string> body = lines[(start + 1)..end].ToList();
-        if (body.Count > 0 && body[^1].Length == 0)
-        {
-            body.RemoveAt(body.Count - 1);
-        }
-
-        return string.Join('\n', body);
+        return (start, end, lines);
     }
 
     /// <summary>
