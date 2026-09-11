@@ -23,7 +23,8 @@ public sealed record AgentResult(
     long OutputTokens,
     decimal? CostUsd,
     int? Turns,
-    string? Summary = null)
+    string? Summary = null,
+    int? DurationMs = null)
 {
     public TokensRecorded ToTokensRecorded(Guid runId, DateTimeOffset recordedAt, AgentModel model) =>
         new(runId, InputTokens, OutputTokens, CostUsd, recordedAt, CacheReadInputTokens, CacheCreationInputTokens, model);
@@ -102,9 +103,21 @@ public static class StreamJsonParser
                 ? text.GetString()
                 : null;
 
+            // Alongside num_turns on the result payload, not under usage — and the same
+            // never-guess discipline: absent or unparseable is null, never zero, so a session
+            // this parser could not time never reads as one that finished instantly (task: a
+            // session that exits at once with no work done is treated as the node failing to
+            // launch sessions — the launch-failure classifier depends on this being an honest
+            // "unknown" rather than a guessed zero).
+            int? durationMs = root.TryGetProperty("duration_ms", out JsonElement durationElement)
+                && durationElement.ValueKind == JsonValueKind.Number
+                && durationElement.TryGetInt32(out int durationValue)
+                ? durationValue
+                : null;
+
             result = new AgentResult(
                 isError, inputTokens, cacheReadInputTokens, cacheCreationInputTokens, outputTokens, costUsd, turns,
-                summary);
+                summary, durationMs);
             return true;
         }
         catch (JsonException)
