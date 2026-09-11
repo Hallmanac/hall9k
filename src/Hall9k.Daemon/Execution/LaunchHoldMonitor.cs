@@ -1,6 +1,9 @@
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
+using Marten;
+using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
@@ -26,6 +29,7 @@ public sealed class LaunchHoldMonitor(
     LaunchHoldEngine engine,
     RunSupervisor supervisor,
     NodeContext node,
+    IDocumentStore store,
     IOptions<DaemonOptions> options,
     ILogger<LaunchHoldMonitor> logger) : BackgroundService
 {
@@ -89,6 +93,18 @@ public sealed class LaunchHoldMonitor(
                 // before the next one starts. Every run still held then belongs to that hold's
                 // own probe and backoff, not to this loop.
                 if (await engine.CurrentHoldAsync(nodeId, cancellationToken) is { LaunchHoldActive: true })
+                {
+                    return;
+                }
+
+                // The dispatcher's own claim gate reopened the instant the hold cleared and may
+                // already have filled slots this same loop's own earlier resumes just occupied
+                // (independent pre-PR review, cycle 1, adversarial lens, low): resuming every held
+                // run in one burst regardless of the node's own concurrency ceiling can put more
+                // live session trees on this node than it is configured to carry. The rest stay
+                // LaunchHeld for a later tick to pick up once a slot frees, the same idempotent
+                // "found at most once" shape this loop already relies on.
+                if (await AtOrOverCeilingAsync(nodeId, cancellationToken))
                 {
                     return;
                 }
@@ -188,8 +204,44 @@ public sealed class LaunchHoldMonitor(
             return false;
         }
 
+        // "Still Running" alone is not this feature's own evidence (criterion 3: "the first
+        // launch that records tokens clears the hold") — a process stuck retrying a failing API
+        // call stays alive without ever doing any work, so this reads the probed session's own
+        // in-flight stream file for the identical nonzero-usage evidence ClearIfEvidencedAsync
+        // already requires from a session's terminal result, just off an in-flight transcript
+        // instead of waiting for the session to finish (independent pre-PR review, cycle 1,
+        // conformance lens). Reading off an unfinished transcript rather than only the terminal
+        // result is deliberate: without an early check here at all, this method could never clear
+        // ahead of a genuinely working session finishing, reopening the "blocked for the session's
+        // entire length" problem it exists to solve in the first place.
+        string streamFile = RunPaths.StreamFile(RunPaths.ResolveCurrentDirectory(probed.RunDirectory));
+        if (!await StreamTailReader.HasRecordedUsageAsync(streamFile, cancellationToken))
+        {
+            return false;
+        }
+
         return await engine.ClearIfEvidencedAsync(
             nodeId, probed.ProcessStartedAt ?? hold.LaunchHoldLastEventAt, cancellationToken);
+    }
+
+    /// <summary>
+    /// Mirrors <c>NodeLoad</c>'s own live-run counting predicate (Decisions Log #64, #111) for
+    /// exactly the states that occupy a concurrency slot, without pulling in the lease/LiveSlot
+    /// machinery a fresh claim's own dispatch-handoff window needs — this sweep only ever resumes
+    /// an EXISTING held run, never claims a new one, so that window's own edge case does not apply
+    /// here.
+    /// </summary>
+    private async Task<bool> AtOrOverCeilingAsync(Guid nodeId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession session = store.QuerySession();
+        int liveRuns = await session.Query<RunDetails>()
+            .Where(run => run.NodeId == nodeId)
+            .Where(run => run.MatchesSql(
+                "d.data ->> 'state' in (?, ?, ?, ?)",
+                RunState.Dispatched.Value, RunState.Running.Value,
+                RunState.Verifying.Value, RunState.UnderReview.Value))
+            .CountAsync(cancellationToken);
+        return liveRuns >= Math.Max(1, options.Value.MaxConcurrentTaskRuns);
     }
 
     /// <summary>

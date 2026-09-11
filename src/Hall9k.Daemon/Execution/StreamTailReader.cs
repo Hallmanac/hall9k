@@ -139,4 +139,39 @@ internal static class StreamTailReader
             Turns = legs.All(result => result.Turns.HasValue) ? legs.Sum(result => result.Turns ?? 0) : null,
         };
     }
+
+    /// <summary>
+    /// Whether a still-running session's own stream file has printed real evidence of work yet —
+    /// any line reporting nonzero token usage, whether that is the session's own terminal
+    /// "result" line or an intermediate turn (<see cref="StreamJsonParser.LineReportsNonzeroUsage"/>'s
+    /// own doc). Used by <see cref="Hall9k.Daemon.Execution.LaunchHoldMonitor"/>'s own
+    /// probe-still-running clear (task: a session that exits at once with no work done is treated
+    /// as the node failing to launch sessions) — "the process is still alive" alone is not this
+    /// feature's own evidence (criterion 3: "the first launch that records tokens clears the
+    /// hold"); a process stuck retrying a failing API call stays alive without ever doing any work
+    /// (independent pre-PR review, cycle 1, conformance lens). Reads the whole file rather than
+    /// tailing from a cursor, the same one-shot read <see cref="ReadFinalResultAsync"/> uses,
+    /// since this is called at most once per probe rather than on every poll.
+    /// </summary>
+    internal static async Task<bool> HasRecordedUsageAsync(string streamFile, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(streamFile))
+        {
+            return false;
+        }
+
+        await using FileStream stream = new(
+            streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
+
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            if (StreamJsonParser.LineReportsNonzeroUsage(line))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
