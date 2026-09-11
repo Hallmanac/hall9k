@@ -379,7 +379,12 @@ Before any review happens, the run's own gates run in its worktree: whatever the
 configures with `h9k project set --verify "name=command"`. For this repository that is
 `dotnet build` and `dotnet test`. A gate failure fails the run with the failing gate and its
 output recorded, fails the task with it, and releases the lease. Nothing automatic follows: the
-task is `Failed` and waiting on one of the three human exits.
+task is `Failed` and waiting on one of the three human exits. One mandatory gate is the exception:
+the full-scope gate that runs immediately before the pull request settles gets one narrow repair
+lap inside the same run — no task reopen — when the run's branch was rebased onto its base
+immediately beforehand and the gate fails on that real rebase; only a repair round that cannot
+make the gate pass falls back to the ordinary fail-hard contract described here (PLAN.md §16,
+Decisions Log #PLACEHOLDER-01a0766f).
 
 Every headless session runs these gates in the foreground and never with a background tool
 (`run_in_background`, `Monitor`, `ScheduleWakeup`) still pending when its turn ends — the session's

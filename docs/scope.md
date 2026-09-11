@@ -49,7 +49,13 @@ the log's own tail placeholder (PLAN.md §16, Decisions Log #162) its real numbe
 and rewriting every citation of it, committed on its own before the mandatory gate reruns. Beyond
 that step, neither costs anything extra; a conflict is handed to a narrow recovery session
 dispatched inside the same run (never a task reopen), and only a conflict that session cannot
-honestly resolve parks for a human (PLAN.md Decisions Log #138).
+honestly resolve parks for a human (PLAN.md Decisions Log #138). A rebase that applies cleanly but
+leaves that mandatory gate itself failing gets the same shape of second chance rather than failing
+the run outright: one narrow repair session dispatched inside the same run, carrying the gate's own
+output, bounded by its own round cap distinct from the rebase-recovery session's — and a repair
+round that lands still earns a fresh-context review before the run may settle, the same guarantee a
+recovered rebase already gets. Only a repair round that cannot make the gate pass parks for a human
+(PLAN.md §16, Decisions Log #PLACEHOLDER-01a0766f).
 
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a
