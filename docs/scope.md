@@ -7,7 +7,7 @@ Hall9k has been building Hall9k since the pipeline first ran end to end. Anythin
 but unbuilt" names the file that holds the design, so you can read it rather than take this
 page's word for it.
 
-Last reconciled against the tree on 2026-08-28.
+Last reconciled against the tree on 2026-09-11.
 
 ---
 
@@ -377,6 +377,10 @@ GitHub's case) is provider business. Nothing about the record touches the Jira w
 Jira card's content is still composed by an agent and executed only through `h9k task write-jira`.
 
 ### Pull-request review
+
+A second front door onto this same review machinery, beside the deliberate `h9k task add --from-pr`
+below: a pull request GitHub requests a review of, from the install's own login, mints and starts
+this same kind of task on its own (see "starts automatically by default" further down).
 
 `h9k task add --from-pr` adopts an existing, open pull request (a number, `owner/repo#42`, or a
 URL) as a `pr-review` task: read-only, on the owner's behalf, and never a build. The node pulls
