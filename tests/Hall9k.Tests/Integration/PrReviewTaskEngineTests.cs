@@ -12,6 +12,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.AutoPrReview;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -838,6 +839,114 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         }
     }
 
+    /// <summary>
+    /// The freshness half of the rule above (Copilot review, PR #317): a hold raised mid-sweep,
+    /// after this candidate's own pull-request lookup but before <c>CreateOneAsync</c>'s
+    /// immediate-launch decision, must still be caught. The old per-sweep field was sampled once
+    /// at <c>PollOnceAsync</c>'s own start, before any GitHub fetch ran — a hold raised anywhere
+    /// after that point, including here, would have been invisible to it, and this sweep would
+    /// have claimed and launched straight into the outage.
+    /// </summary>
+    [Fact]
+    public async Task Now_speed_immediate_launch_re_checks_the_launch_hold_freshly_before_claiming()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        await SeedDefaultAdoptionAsync(store, node, cts.Token);
+        const string repository = "acme/mint-hold-fresh-test";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), "auto-pr-review-now-hold-fresh",
+                "/tmp/auto-pr-review-now-hold-fresh-repo", new Uri($"https://github.com/{repository}"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+                Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
+                autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Now));
+            session.Events.Append(projectId, optedIn);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string listJson = """
+            [
+              {"number":9301,"url":"https://github.com/acme/mint-hold-fresh-test/pull/9301","title":"Held","body":"no links here"}
+            ]
+            """;
+
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        ProcessRunner gh = async (fileName, arguments, _, _) =>
+        {
+            if (IsRepositoryHostRead(arguments))
+            {
+                return new ProcessResult(1, string.Empty, "no repository this test knows");
+            }
+
+            if (arguments.Contains("user"))
+            {
+                return new ProcessResult(0, "brian\n", string.Empty);
+            }
+
+            if (arguments.Contains("list"))
+            {
+                return new ProcessResult(0, AsksAbout(arguments, repository) ? listJson : "[]", string.Empty);
+            }
+
+            if (arguments.Contains("view"))
+            {
+                int number = arguments
+                    .Select(argument => int.TryParse(argument, out int parsed) ? parsed : (int?)null)
+                    .First(parsed => parsed.HasValue)!.Value;
+                int repoIndex = arguments.ToList().IndexOf("--repo");
+                string requestRepository = repoIndex >= 0 && repoIndex + 1 < arguments.Count
+                    ? arguments[repoIndex + 1]
+                    : repository;
+                string json = $$"""
+                    {"number":{{number}},"title":"Pull request #{{number}}","body":"no links here",
+                     "state":"OPEN","url":"https://github.com/{{requestRepository}}/pull/{{number}}","baseRefName":"main"}
+                    """;
+
+                // This candidate's own pull-request lookup has already run; raising here proves
+                // the check right before the launch decision, not the sweep's own start, is what
+                // this sweep actually acts on.
+                await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+                return new ProcessResult(0, json, string.Empty);
+            }
+
+            return new ProcessResult(0, RequestedAtNowTimelineJson, string.Empty);
+        };
+
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, launchHold, NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            TaskListItem minted = (await query.Query<TaskListItem>()
+                .Where(task => task.ProjectId == projectId)
+                .ToListAsync(cts.Token)).Single();
+
+            IReadOnlyList<JasperFx.Events.IEvent> stream = await query.Events.FetchStreamAsync(minted.Id, token: cts.Token);
+            stream.Select(recorded => recorded.Data).OfType<TaskClaimed>().Should().BeEmpty(
+                "the hold was raised mid-sweep, after this candidate's own lookup but before its launch decision — a fresh check must still catch it");
+            stream.Select(recorded => recorded.Data).OfType<TaskRevised>().Should().ContainSingle(
+                revised => revised.QueuePriority.HasValue && revised.QueuePriority.Value,
+                "a Now candidate caught by a hold raised mid-sweep still takes the queue-first marker");
+        }
+        finally
+        {
+            await launchHold.ClearIfActiveAsync(node.NodeId, CancellationToken.None);
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
     /// <summary>Restores a test-created project to AutoPrReview.Off so PollOnceAsync's later, unrelated sweeps in this same shared-database test class never revisit it.</summary>
     private static async Task TurnOffAutoPrReviewAsync(DocumentStore store, Guid projectId, Guid ownerId, CancellationToken cancellationToken)
     {
@@ -1320,6 +1429,176 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// The conformance lens's session exiting the 2026-09-07 outage's own way: one turn, zero
+    /// tokens, sub-second, an authentication error. Written straight into the session's stream
+    /// file with no live pid, exactly as <see cref="ScriptedExecutor"/> does for a working one.
+    /// </summary>
+    private sealed class ZeroWorkExecutor : IExecutor
+    {
+        private const string ZeroWorkResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"duration_ms":150,"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0},"result":"Failed to authenticate: OAuth session expired"}""";
+
+        public FakeProcessManager Processes { get; } = new();
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(request.RunDirectory);
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
+                ZeroWorkResultLine + "\n", cancellationToken);
+            return new SpawnedAgent(7_500, PrReviewNow);
+        }
+    }
+
+    /// <summary>
+    /// The conformance lens's session erroring in the ordinary way — several turns, real tokens
+    /// spent, no zero-work shape and no budget-exhaustion text — so a different run's own standing
+    /// launch hold is the only reason this result should ever join one rather than fail outright.
+    /// </summary>
+    private sealed class OrdinaryErrorExecutor : IExecutor
+    {
+        private const string OrdinaryErrorResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":4,"duration_ms":45000,"usage":{"input_tokens":1200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":80},"result":"Hit a transient snag."}""";
+
+        public FakeProcessManager Processes { get; } = new();
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(request.RunDirectory);
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
+                OrdinaryErrorResultLine + "\n", cancellationToken);
+            return new SpawnedAgent(7_600, PrReviewNow);
+        }
+    }
+
+    /// <summary>
+    /// The conformance lens's own half of the join-instead-of-failing rule
+    /// (Copilot review, PR #317, "suppressed comments": <c>AwaitConformanceAsync</c> used to send
+    /// any ordinary error straight to <c>FailAsync</c>, unlike <c>ReviewEngine</c>'s identical
+    /// branch for the review pass). An error that is not itself the zero-work shape, landing while
+    /// a DIFFERENT run's launch failure already holds this node, must hold this run too instead of
+    /// failing it — resuming here would almost certainly hit the same outage.
+    /// </summary>
+    [Fact]
+    public async Task A_conformance_session_error_while_a_different_runs_hold_stands_joins_it_instead_of_failing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        try
+        {
+            await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+
+            (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            OrdinaryErrorExecutor ordinaryError = new();
+            PrReviewEngine engine = NewPrReviewEngine(store, ordinaryError, ordinaryError.Processes, new NoOpWorktreeManager());
+            await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+            await engine.ReviewAsync(runId, taskId, cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+            run!.State.Should().Be(
+                RunState.LaunchHeld, "the conformance lens's own ordinary error joins the standing hold rather than failing the run");
+
+            List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+            events.OfType<RunFailed>().Should().BeEmpty("joining the hold must never fail the run");
+            events.OfType<RunLaunchHeld>().Should().ContainSingle();
+
+            TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            task.State.Value.Should().Be("Claimed", "the work is intact; the node, not this task, is what's waiting");
+
+            NodeDetails? hold = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+            hold!.LaunchHoldRunIds.Should().Contain(runId);
+            hold.LaunchHoldCauseText.Should().Be(
+                "Failed to authenticate", "a genuine error joins the episode; it never becomes its own cause");
+        }
+        finally
+        {
+            // This class shares one node across every test, and AutoPrReviewEngine's own sweep
+            // reads this hold; a raised one must not leak into a sibling.
+            await launchHold.ClearIfActiveAsync(node.NodeId, CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// The conformance lens's own launch-hold branch (independent pre-PR review, cycle 3,
+    /// conformance lens), on the one run shape it can reach with a sentinel node id: a Now-speed
+    /// auto-pr-review run, which carries <see cref="Guid.Empty"/> on <c>NodeId</c> and names its
+    /// daemon only on <c>DispatchingNodeId</c>. A zero-work conformance session must hold the run
+    /// rather than fail it, raise the hold on that dispatching node (never on the sentinel, which
+    /// no probe reads, found by the cycle-4 fix session), and flag the lens so the next pass
+    /// redispatches it fresh instead of waiting on the dead session's leftover stream file.
+    /// </summary>
+    [Fact]
+    public async Task A_zero_work_conformance_session_holds_the_run_on_its_dispatching_node_and_redispatches_on_resume()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(
+            store, node, cts.Token, asNowSpeedSentinel: true);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        try
+        {
+            ZeroWorkExecutor zeroWork = new();
+            PrReviewEngine heldEngine = NewPrReviewEngine(store, zeroWork, zeroWork.Processes, new NoOpWorktreeManager());
+            await heldEngine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+            await heldEngine.ReviewAsync(runId, taskId, cts.Token);
+
+            await using (IQuerySession query = store.QuerySession())
+            {
+                RunAggregate? held = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+                held!.State.Should().Be(RunState.LaunchHeld, "the node never launched a working conformance session; that is not this run's fault");
+                held.PrReviewConformanceLaunchHeld.Should().BeTrue();
+                (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.State.Value.Should().Be("Claimed");
+            }
+
+            NodeDetails? hold = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+            hold!.LaunchHoldActive.Should().BeTrue(
+                "the hold belongs to the daemon that launched the session, which is the only node whose probe can ever find and clear it");
+            hold.LaunchHoldRunIds.Should().Contain(runId);
+
+            ScriptedExecutor working = new(
+                "Reviewed the pull request against its own title and description; it matches.\n\nVERDICT: merge-ready");
+            await NewPrReviewEngine(store, working, working.Processes, new NoOpWorktreeManager())
+                .ReviewAsync(runId, taskId, cts.Token);
+
+            await using IQuerySession resumedQuery = store.QuerySession();
+            RunAggregate? resumed = await resumedQuery.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+            resumed!.State.Should().Be(RunState.ReviewParked, "the redispatched conformance lens finished and the report parked");
+            (await resumedQuery.Events.FetchStreamAsync(runId, token: cts.Token))
+                .Select(e => e.Data).OfType<PrReviewConformanceDispatched>().Should().HaveCount(
+                    2, "the held lens was redispatched fresh rather than waited on");
+        }
+        finally
+        {
+            // This class shares one node across every test, and AutoPrReviewEngine's own sweep
+            // reads this hold; a raised one must not leak into a sibling.
+            await launchHold.ClearIfActiveAsync(node.NodeId, CancellationToken.None);
+        }
+    }
+
+    /// <summary>
     /// The terminal-failure path <see cref="PrReviewEngine.RejectUnusableVerdictAsync"/> guards
     /// (verify cycle-2 conformance finding, `PrReviewEngine.cs:639`): no equivalent test existed
     /// for the conformance lens's own verdict gate, only for the three reclaim-fence points —
@@ -1716,8 +1995,15 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     /// opened with <c>h9k pr review --no-worktree</c> (Decisions Log #149). Nothing was ever
     /// checked out, so finalize has nothing to release.
     /// </param>
+    /// <param name="asNowSpeedSentinel">
+    /// Claims the task the way auto-pr-review's own "now" speed does
+    /// (<c>AutoPrReviewEngine.CreateOneAsync</c>): deliberately, with no lease, and the run
+    /// dispatched under the ceiling-exempt <see cref="Guid.Empty"/> <c>NodeId</c> with this node
+    /// only on <c>DispatchingNodeId</c>.
+    /// </param>
     private async Task<(Guid TaskId, Guid RunId, string RunDirectory)> SeedClaimedPrReviewRunAsync(
-        DocumentStore store, NodeContext node, CancellationToken cancellationToken, bool withoutWorktree = false)
+        DocumentStore store, NodeContext node, CancellationToken cancellationToken, bool withoutWorktree = false,
+        bool asNowSpeedSentinel = false)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -1742,6 +2028,18 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
                 null, null, new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#42"),
                 PrReviewNow, node.OwnerId),
             node.OwnerId, PrReviewNow);
+        if (asNowSpeedSentinel)
+        {
+            TaskClaimed deliberate = TaskDecider.ClaimDeliberately(
+                task, node.OwnerId, runId, PrReviewNow, dependencyOverrideAcknowledged: false);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, deliberate]);
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, Guid.Empty, node.OwnerId, deliberate.LeaseGeneration, sessionId, worktreePath, "pr/42",
+                ExecutorMode.Subscription, PrReviewNow, RunDirectory: runDirectory, DispatchingNodeId: node.NodeId));
+            await session.SaveChangesAsync(cancellationToken);
+            return (taskId, runId, runDirectory);
+        }
+
         TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, PrReviewNow);
         session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
         session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = PrReviewNow });

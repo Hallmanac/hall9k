@@ -77,4 +77,36 @@ public sealed class LaunchFailureClassifierTests
         LaunchFailureClassifier.IsLaunchFailure(budgetShaped, MaxDuration).Should().BeTrue(
             "this classifier never reads Summary for anything but a fallback; text is the caller's own, separate check");
     }
+
+    /// <summary>
+    /// The hold's own evidence (independent pre-PR review, cycle 3, conformance lens, criterion 3:
+    /// "the first launch that records tokens clears the hold") is deliberately not "not
+    /// <see cref="LaunchFailureClassifier.IsLaunchFailure"/>": a zero-token result that misses the
+    /// narrow shape for an unrelated reason proves nothing about whether this node can launch.
+    /// </summary>
+    [Theory]
+    [InlineData(5_000)]
+    [InlineData(null)]
+    public void A_zero_token_result_outside_the_launch_failure_shape_is_still_not_evidence(int? durationMs)
+    {
+        AgentResult missedTheShape = ZeroWork() with { DurationMs = durationMs };
+
+        LaunchFailureClassifier.IsLaunchFailure(missedTheShape, MaxDuration).Should().BeFalse(
+            "a slow or unmeasured duration misses the zero-work shape");
+        LaunchFailureClassifier.RecordedTokens(missedTheShape).Should().BeFalse(
+            "missing the shape is not the same as spending tokens; this result must leave a standing hold alone");
+    }
+
+    [Fact]
+    public void Any_recorded_input_tokens_count_as_evidence() =>
+        LaunchFailureClassifier.RecordedTokens(ZeroWork() with { InputTokens = 1 }).Should().BeTrue();
+
+    [Fact]
+    public void Cache_read_tokens_alone_count_as_evidence() =>
+        LaunchFailureClassifier.RecordedTokens(ZeroWork() with { CacheReadInputTokens = 840_000 }).Should().BeTrue(
+            "a cached session's input arrives almost entirely as cache reads (log #30)");
+
+    [Fact]
+    public void Output_tokens_alone_count_as_evidence() =>
+        LaunchFailureClassifier.RecordedTokens(ZeroWork() with { OutputTokens = 1 }).Should().BeTrue();
 }

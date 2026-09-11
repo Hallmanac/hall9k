@@ -190,6 +190,149 @@ public sealed class LaunchHoldEngineTests(PostgresFixture postgres) : IClassFixt
         (await engine.CurrentHoldAsync(node.NodeId, cts.Token))!.LaunchHoldActive.Should().BeFalse();
     }
 
+    /// <summary>
+    /// The wedge-open fix (independent pre-PR review, cycle 3, both lenses): once every held run's
+    /// own claim moved on, nothing could ever supply evidence again, so the hold must clear rather
+    /// than stand forever. And never before that: a run still held keeps it standing.
+    /// </summary>
+    [Fact]
+    public async Task ClearIfNothingLeftHeldAsync_clears_once_every_held_run_moved_on_and_not_before()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine engine = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await RetireEveryHeldRunAsync(store, engine, node, cts.Token);
+
+        Guid runId = DomainId.New();
+        await SeedLaunchHeldRunAsync(store, node, runId, Now, cts.Token);
+        await engine.RaiseOrJoinAsync(node.NodeId, runId, "Failed to authenticate", cts.Token);
+
+        (await engine.ClearIfNothingLeftHeldAsync(node.NodeId, cts.Token)).Should().BeFalse(
+            "the run is still LaunchHeld; the probe can still relaunch it");
+        (await engine.CurrentHoldAsync(node.NodeId, cts.Token))!.LaunchHoldActive.Should().BeTrue();
+
+        await SupersedeAsync(store, runId, cts.Token);
+
+        (await engine.ClearIfNothingLeftHeldAsync(node.NodeId, cts.Token)).Should().BeTrue(
+            "the only held run's claim moved on, so nothing is left that could ever clear this hold with evidence");
+        (await engine.CurrentHoldAsync(node.NodeId, cts.Token))!.LaunchHoldActive.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The race the force-clear must not lose (independent pre-PR review, cycle 4, adversarial
+    /// lens): an unrelated run joins the hold on the node stream before its own
+    /// <see cref="RunLaunchHeld"/> lands on the run stream, so for that window no
+    /// <see cref="RunState.LaunchHeld"/> query sees it, yet the hold already names it. Clearing
+    /// then would reopen the claim gate into a node that just failed another launch.
+    /// </summary>
+    [Fact]
+    public async Task ClearIfNothingLeftHeldAsync_keeps_a_hold_a_run_joined_before_its_own_hold_event_landed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine engine = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await RetireEveryHeldRunAsync(store, engine, node, cts.Token);
+
+        Guid movedOn = DomainId.New();
+        await SeedLaunchHeldRunAsync(store, node, movedOn, Now, cts.Token);
+        await engine.RaiseOrJoinAsync(node.NodeId, movedOn, "Failed to authenticate", cts.Token);
+        await SupersedeAsync(store, movedOn, cts.Token);
+
+        // The unrelated run: its session just completed the zero-work way and joined the hold
+        // (RunSupervisor.CompleteRunAsync's node-stream step), but its own RunLaunchHeld has not
+        // been appended yet, so RunDetails still reads the Running state its session ran in.
+        Guid joining = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<RunAggregate>(joining, new RunDispatched(
+                joining, DomainId.New(), node.NodeId, node.OwnerId, 1, DomainId.New(),
+                "/wt/joining", "task/joining", ExecutorMode.Subscription, Now));
+            session.Events.Append(joining, new RunProcessStarted(joining, 4485, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await engine.RaiseOrJoinAsync(node.NodeId, joining, "Failed to authenticate", cts.Token);
+        (await engine.HeldRunsAsync(node.NodeId, cts.Token)).Should().BeEmpty(
+            "the precondition for the race: no LaunchHeld query can see the joining run yet");
+
+        (await engine.ClearIfNothingLeftHeldAsync(node.NodeId, cts.Token)).Should().BeFalse(
+            "the hold names a run that is still live, so its own join is still landing");
+        (await engine.CurrentHoldAsync(node.NodeId, cts.Token))!.LaunchHoldActive.Should().BeTrue();
+
+        await SupersedeAsync(store, joining, cts.Token);
+        (await engine.ClearIfNothingLeftHeldAsync(node.NodeId, cts.Token)).Should().BeTrue(
+            "once that run's own claim moves on too, nothing is left to wait on");
+    }
+
+    /// <summary>
+    /// The versioned raise (independent pre-PR review, cycle 3, conformance lens): runs finishing
+    /// within milliseconds of the same outage used to each read the hold inactive and each append
+    /// a raise, logging two warn lines and resetting the run count so an earlier join vanished.
+    /// Whatever order these concurrent calls actually interleave in, the outcome must be one
+    /// episode naming every run. This is a regression guard, not a deterministic reproduction of
+    /// the race: the calls may happen to serialize on a given run.
+    /// </summary>
+    [Fact]
+    public async Task Concurrent_raises_record_one_episode_and_count_every_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine engine = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        int raisedBefore;
+        await using (IQuerySession before = store.QuerySession())
+        {
+            raisedBefore = (await before.Events.FetchStreamAsync(node.NodeId, token: cts.Token))
+                .Select(e => e.Data).OfType<NodeLaunchHoldRaised>().Count();
+        }
+
+        Guid[] runs = [DomainId.New(), DomainId.New(), DomainId.New(), DomainId.New()];
+        await Task.WhenAll(runs.Select(runId =>
+            engine.RaiseOrJoinAsync(node.NodeId, runId, "Failed to authenticate", cts.Token)));
+
+        NodeDetails? details = await engine.CurrentHoldAsync(node.NodeId, cts.Token);
+        details!.LaunchHoldActive.Should().BeTrue();
+        details.LaunchHoldRunIds.Should().BeEquivalentTo(runs, "no concurrent join may be dropped by a second raise resetting the count");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamAsync(node.NodeId, token: cts.Token))
+            .Select(e => e.Data).OfType<NodeLaunchHoldRaised>().Count().Should().Be(
+                raisedBefore + 1, "concurrent launch failures still raise exactly one episode");
+    }
+
+    /// <summary>
+    /// A genuine error that is not the zero-work shape waits on a different run's standing hold
+    /// rather than spending its one retry, but it is no launch failure itself, so it must never
+    /// raise a hold of its own (independent pre-PR review, cycle 4: deciding from a separate read
+    /// and then calling <see cref="LaunchHoldEngine.RaiseOrJoinAsync"/> turned that join into a
+    /// raise whenever a clear landed in between).
+    /// </summary>
+    [Fact]
+    public async Task JoinIfActiveAsync_joins_a_standing_hold_but_never_raises_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine engine = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        Guid genuineError = DomainId.New();
+        (await engine.JoinIfActiveAsync(node.NodeId, genuineError, cts.Token)).Should().BeFalse(
+            "no hold stands, so this is an ordinary error with its own retry to spend");
+        (await engine.CurrentHoldAsync(node.NodeId, cts.Token))!.LaunchHoldActive.Should().BeFalse(
+            "a genuine error is never itself a launch failure's cause");
+
+        Guid launchFailure = DomainId.New();
+        await engine.RaiseOrJoinAsync(node.NodeId, launchFailure, "Failed to authenticate", cts.Token);
+
+        (await engine.JoinIfActiveAsync(node.NodeId, genuineError, cts.Token)).Should().BeTrue();
+        NodeDetails? hold = await engine.CurrentHoldAsync(node.NodeId, cts.Token);
+        hold!.LaunchHoldRunIds.Should().BeEquivalentTo([launchFailure, genuineError]);
+        hold.LaunchHoldCauseText.Should().Be("Failed to authenticate", "joining never rewrites the episode's own cause");
+    }
+
     [Fact]
     public async Task The_oldest_held_run_is_the_one_the_probe_would_relaunch_next()
     {
@@ -206,6 +349,39 @@ public sealed class LaunchHoldEngineTests(PostgresFixture postgres) : IClassFixt
         RunDetails? oldest = await engine.OldestHeldRunAsync(node.NodeId, cts.Token);
         oldest.Should().NotBeNull();
         oldest!.Id.Should().Be(older, "the longest-waiting held run is probed first, so one persistently dead run never starves the others");
+    }
+
+    /// <summary>
+    /// A run left <see cref="RunState.LaunchHeld"/> under its own task's open review lap is one
+    /// <c>RunSupervisor.ResumeLaunchHeldRunAsync</c> always refuses to resume while the lap stays
+    /// open, so its <see cref="RunDetails.LaunchHeldAt"/> never advances (Copilot review, PR #317):
+    /// without this skip, that run would keep winning the plain oldest-first sort forever, starving
+    /// every genuinely dead run behind it of its own probe and never letting the hold clear even
+    /// once the real outage is gone.
+    /// </summary>
+    [Fact]
+    public async Task OldestHeldRunAsync_skips_a_run_whose_task_has_an_open_review_lap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        // A much older heldAt than the shared Now constant, exactly as
+        // A_sentinel_pr_review_runs_own_hold_is_found_by_the_probe does: this class's tests all
+        // share one reused node stream and never retire what they seed, so a sibling test's own
+        // "older"/"newer" pair at Now/Now.AddMinutes(5) would otherwise race this one for which
+        // run the plain LaunchHeldAt sort returns first.
+        DateTimeOffset blockedHeldAt = Now.AddYears(-2);
+        Guid blockedRun = DomainId.New();
+        Guid resumableRun = DomainId.New();
+        await SeedLaunchHeldRunUnderOpenReviewLapAsync(store, node, blockedRun, blockedHeldAt, cts.Token);
+        await SeedLaunchHeldRunAsync(store, node, resumableRun, blockedHeldAt.AddMinutes(5), cts.Token);
+
+        LaunchHoldEngine engine = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        RunDetails? oldest = await engine.OldestHeldRunAsync(node.NodeId, cts.Token);
+        oldest.Should().NotBeNull();
+        oldest!.Id.Should().Be(resumableRun,
+            "the older run cannot be resumed while its own review lap stays open, so the probe must skip past it to the run it can actually relaunch");
     }
 
     /// <summary>
@@ -390,6 +566,29 @@ public sealed class LaunchHoldEngineTests(PostgresFixture postgres) : IClassFixt
         status.DaemonStatusLine.Should().Contain("launch hold:").And.Contain("1 probe(s)").And.Contain("1 run(s) waiting");
     }
 
+    /// <summary>
+    /// This class's tests all share one reused node (<see cref="DisposeAsync"/>'s own doc), and
+    /// several seed LaunchHeld runs they never retire, since proving the held shape is their
+    /// point. A test asserting what happens when nothing is left held retires them first rather
+    /// than depending on which siblings xUnit happened to run before it.
+    /// </summary>
+    private static async Task RetireEveryHeldRunAsync(
+        DocumentStore store, LaunchHoldEngine engine, NodeContext node, CancellationToken cancellationToken)
+    {
+        foreach (RunDetails held in await engine.HeldRunsAsync(node.NodeId, cancellationToken))
+        {
+            await SupersedeAsync(store, held.Id, cancellationToken);
+        }
+    }
+
+    /// <summary>The claim-moved-on retirement <c>RunSupervisor.ResumeLaunchHeldRunAsync</c> applies to a held run whose task was abandoned or reclaimed.</summary>
+    private static async Task SupersedeAsync(DocumentStore store, Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new RunSuperseded(runId, SupersededByGeneration: 2, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
     private static async Task SeedLaunchHeldRunAsync(
         DocumentStore store, NodeContext node, Guid runId, DateTimeOffset heldAt, CancellationToken cancellationToken)
     {
@@ -398,6 +597,31 @@ public sealed class LaunchHoldEngineTests(PostgresFixture postgres) : IClassFixt
             runId, DomainId.New(), node.NodeId, node.OwnerId, 1, DomainId.New(),
             "/wt/held", "task/held", ExecutorMode.Subscription, heldAt));
         session.Events.Append(runId, new RunProcessStarted(runId, 4482, heldAt));
+        session.Events.Append(runId, new RunLaunchHeld(runId, "Failed to authenticate", heldAt));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>Like <see cref="SeedLaunchHeldRunAsync"/>, but the held run's own task carries a real, open <c>h9k pr review</c> lap riding on it, the shape <c>RunSupervisor.ResumeLaunchHeldRunAsync</c> refuses to resume.</summary>
+    private static async Task SeedLaunchHeldRunUnderOpenReviewLapAsync(
+        DocumentStore store, NodeContext node, Guid runId, DateTimeOffset heldAt, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, DomainId.New(), "Review pull request acme/web#11", ["the verdict is submitted"],
+                TaskType.PrReview, null, null,
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#11"), heldAt, node.OwnerId),
+            node.OwnerId, heldAt);
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, node.OwnerId, runId, heldAt, dependencyOverrideAcknowledged: false);
+        PullRequestReviewLapOpened lapOpened = new(
+            taskId, runId, "/wt/review-lap", "https://github.com/acme/web/pull/11", heldAt, node.OwnerId);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, lapOpened]);
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, node.NodeId, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+            "/wt/review-lap", "task/review-lap", ExecutorMode.Subscription, heldAt));
+        session.Events.Append(runId, new RunProcessStarted(runId, 4484, heldAt));
         session.Events.Append(runId, new RunLaunchHeld(runId, "Failed to authenticate", heldAt));
         await session.SaveChangesAsync(cancellationToken);
     }

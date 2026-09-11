@@ -1466,6 +1466,58 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The pr-review conformance lens's own launch-hold flag (independent pre-PR review, cycle 3,
+    /// conformance lens), mirroring <see cref="RunAggregate.PrReviewConformanceBudgetExhausted"/>:
+    /// set when the hold catches the lens mid-flight, so a resume redispatches it fresh instead of
+    /// reading the held session's leftover stream file as live; cleared by that fresh dispatch.
+    /// </summary>
+    [Fact]
+    public void Launch_held_pr_review_conformance_lens_is_flagged_until_a_fresh_one_dispatches()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "pr/42", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new PrReviewConformanceDispatched(id, DomainId.New(), 5501, Now, Now, AgentModel.Unknown));
+
+        run.Apply(new RunLaunchHeld(id, "Failed to authenticate", Now));
+
+        run.State.Should().Be(RunState.LaunchHeld);
+        run.PrReviewConformanceLaunchHeld.Should().BeTrue(
+            "the hold caught the conformance lens mid-flight, so a resume must redispatch it rather than wait on its dead session");
+
+        run.Apply(new PrReviewConformanceDispatched(id, DomainId.New(), 5601, Now, Now, AgentModel.Unknown));
+
+        run.PrReviewConformanceLaunchHeld.Should().BeFalse("the fresh conformance dispatch is what clears the flag");
+        run.State.Should().Be(RunState.UnderReview);
+    }
+
+    /// <summary>
+    /// The other half of the same flag: a hold that catches a pr-review run whose conformance lens
+    /// already completed (or never dispatched) did not catch that lens at all, so it must not
+    /// route the resume to a conformance redispatch.
+    /// </summary>
+    [Fact]
+    public void Launch_hold_after_the_conformance_lens_completed_does_not_flag_it()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        Guid sessionId = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "pr/42", ExecutorMode.Subscription, Now));
+        run.Apply(new PrReviewConformanceDispatched(id, sessionId, 5501, Now, Now, AgentModel.Unknown));
+        run.Apply(new PrReviewConformanceCompleted(id, sessionId, Now));
+
+        run.Apply(new RunLaunchHeld(id, "Failed to authenticate", Now));
+
+        run.PrReviewConformanceLaunchHeld.Should().BeFalse("the conformance lens had already finished when the hold landed");
+    }
+
+    /// <summary>
     /// The fix-session counterpart (backlog 40): the exhausted fix session cannot be resumed
     /// either, so the phase drops back to FixNeeded and the next pass through the loop
     /// redispatches a fresh fix session over the same cycle's findings.
