@@ -269,7 +269,7 @@ public sealed class DaemonOptions
     /// result, one turn, zero tokens. Two seconds is generous headroom above that observed
     /// ceiling — long enough that ordinary process-startup jitter never crosses it, short enough
     /// that a session which genuinely ran even one real tool call cannot. Checked together with
-    /// the zero-turn, zero-token shape (<c>LaunchFailureClassifier</c>), never alone: duration by
+    /// the one-turn, zero-token shape (<c>LaunchFailureClassifier</c>), never alone: duration by
     /// itself would also catch a session Claude Code itself rejected outright for a reason that
     /// is this run's own fault, not the node's.
     /// </summary>
