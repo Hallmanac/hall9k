@@ -410,6 +410,14 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         // aggregate re-enters at the gates there too rather than settling unreviewed — this
         // message now agrees, without needing run.ParkedIsInteractiveGate as a second condition.
         bool rebaseRecoveryDispute = run.ParkedFromReviewPhase == ReviewPhase.RebaseRecoveryDisputed;
+        // Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+        // repair lap inside the same run instead of failing it — a needs-fixes resolve on this park
+        // routes through RunAggregate.Apply(ReviewParkResolved)'s own dedicated branch to
+        // ReviewPhase.SettlingGateRepairNeeded, dispatching a Settling-gate repair session carrying
+        // this resolve's guidance, not an ordinary fix session — and, unlike an ordinary fix
+        // session's grant, it does not reset SettlingGateRepairRounds (independent pre-PR review,
+        // cycle 1, both lenses).
+        bool settlingGateRepairCapReached = run.ParkedFromReviewPhase == ReviewPhase.SettlingGateRepairCapReached;
         FormattableString outcome = (settings.MergeReady, run.ParkedFromState == RunState.Verifying) switch
         {
             (true, true) =>
@@ -420,6 +428,8 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
                 $"[dim]Run {runId} resolved needs-fixes — but this park's review-cycle cap or lifetime budget won't clear from a plain grant. The park itself already named the cap, its level, and the one lever that actually raises it: {parkedReasonBeforeResolve} Unless you raised it before running this command, the run re-parks behind this grant rather than settling — sometimes after one more fix session lands real work, sometimes before one ever dispatches.[/]",
             (false, _) when rebaseRecoveryDispute =>
                 $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fresh rebase-recovery session carrying your resolution.[/]",
+            (false, _) when settlingGateRepairCapReached =>
+                $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches one more Settling-gate repair session carrying your guidance; this bought round does not reset the repair-round cap.[/]",
             _ =>
                 $"[dim]Run {runId} resolved needs-fixes — the daemon dispatches a fix session with your reason as its findings.[/]",
         };

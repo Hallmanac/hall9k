@@ -313,10 +313,23 @@ internal static class TaskPhaseComposer
         // record's own doc). Named sessions only: a stream written before session naming existed
         // reads as an ordinary fix, the honest default this line already gave before this
         // distinction existed.
-        if (ActiveRole(run) == AgentRole.Fix && run.ActiveSessions is [{ Name: { } name }, ..]
-            && name.Contains(SessionRoleName.PreFinalPassRebasePrefix, StringComparison.Ordinal))
+        if (ActiveRole(run) == AgentRole.Fix && run.ActiveSessions is [{ Name: { } name }, ..])
         {
-            return new TaskPhase(cycle, session, "rebasing onto the base branch before the final pass");
+            // Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate
+            // gets a repair lap inside the same run instead of failing it — its own prefix, named
+            // apart from the rebase-recovery session just below and an ordinary review-fix
+            // session, even though all three share the Fix role (independent pre-PR review,
+            // cycle 1, both lenses: without this, h9k task show said "fix session running" while
+            // this session was in flight, indistinguishable from a review-fix lap).
+            if (name.Contains(SessionRoleName.SettlingGateRepairPrefix, StringComparison.Ordinal))
+            {
+                return new TaskPhase(cycle, session, "repairing what the rebase broke in the mandatory gate");
+            }
+
+            if (name.Contains(SessionRoleName.PreFinalPassRebasePrefix, StringComparison.Ordinal))
+            {
+                return new TaskPhase(cycle, session, "rebasing onto the base branch before the final pass");
+            }
         }
 
         return ActiveRole(run).Value switch
