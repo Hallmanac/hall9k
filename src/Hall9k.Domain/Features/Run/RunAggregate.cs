@@ -1940,6 +1940,15 @@ public sealed class RunAggregate
         // Settling entry runs again is the judge of whether this round actually fixed anything (see
         // this event's own doc).
         ReviewPhase = ReviewPhase.Settling;
+        // A repair session's own fix is exactly the same kind of unreviewed judgment call a
+        // rebase-recovery session's own conflict resolution is (independent pre-PR review, cycle 1,
+        // adversarial lens) — without this, a clean Settling gate pass right after this event lets
+        // MaySettleReason's NothingOwed clause settle the run straight through, and whatever the
+        // repair session wrote (rewritten call sites, a deleted or skipped test) reaches the pull
+        // request without a fresh-context reviewer ever reading it. Mirrors
+        // PreFinalPassRebaseAwaitingReview's own doc: cleared the moment the next review pass is
+        // actually dispatched, never by the gate passing on its own.
+        PreFinalPassRebaseAwaitingReview = true;
     }
 
     public void Apply(SettlingGateRepairCapReached @event) => ReviewPhase = ReviewPhase.SettlingGateRepairCapReached;
@@ -2066,21 +2075,13 @@ public sealed class RunAggregate
         }
         else if (@event.Leg == RunSessionLeg.RebaseRecovery)
         {
-            // Both the pre-final-pass rebase-recovery session and the Settling-gate repair
-            // session (task: a pre-final-pass rebase that applies cleanly but breaks the
-            // mandatory gate gets a repair lap inside the same run instead of failing it) share
-            // this leg — the task's own smallest-shape ruling — so ReviewPhase, not the leg alone,
-            // is what tells this retry which one was actually in flight.
-            if (ReviewPhase == ReviewPhase.AwaitingSettlingGateRepair)
-            {
-                ClearActiveSettlingGateRepairSession();
-                ReviewPhase = ReviewPhase.SettlingGateRepairNeeded;
-            }
-            else
-            {
-                ClearActiveRebaseRecoverySession();
-                ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
-            }
+            ClearActiveRebaseRecoverySession();
+            ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
+        }
+        else if (@event.Leg == RunSessionLeg.SettlingGateRepair)
+        {
+            ClearActiveSettlingGateRepairSession();
+            ReviewPhase = ReviewPhase.SettlingGateRepairNeeded;
         }
     }
 

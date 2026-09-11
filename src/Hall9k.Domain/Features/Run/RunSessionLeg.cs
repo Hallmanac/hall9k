@@ -43,6 +43,21 @@ public sealed record RunSessionLeg
     /// </summary>
     public static readonly RunSessionLeg RebaseRecovery = new("RebaseRecovery");
 
+    /// <summary>
+    /// The narrow repair session dispatched when the Settling phase's own mandatory gate fails on
+    /// a tree whose most recent recorded rebase was real (task: a pre-final-pass rebase that
+    /// applies cleanly but breaks the mandatory gate gets a repair lap inside the same run instead
+    /// of failing it). Its own leg for the one-retry-per-leg/cycle/lens error-result bookkeeping
+    /// (<see cref="RunAggregate.HasRetriedSessionError"/>), even though
+    /// <see cref="Events.SettlingGateRepairDispatched"/>'s own doc says this session shares
+    /// <see cref="RebaseRecovery"/>'s dispatch mechanics and worktree-recovery eligibility: reusing
+    /// that same leg for the error-retry key too let a rebase-recovery session's own error retry in
+    /// a review cycle spend the identical (leg, cycle) key a later Settling-gate repair session in
+    /// that same cycle needed for its own first retry (independent pre-PR review, cycle 1, both
+    /// lenses).
+    /// </summary>
+    public static readonly RunSessionLeg SettlingGateRepair = new("SettlingGateRepair");
+
     /// <summary>Not recognized. Serializes as an empty string.</summary>
     public static readonly RunSessionLeg Unknown = new("");
 
