@@ -124,7 +124,7 @@ moved onto the row's facts line, and the persisted `Abandoned` renders as `Archi
 board and the blocker rule agree on the word.
 
 **Phase** is the line under a live row, and it is where the run vocabulary lives: `Dispatched`,
-`Running`, `Verifying`, `UnderReview`, `ReviewParked`, `AwaitingReview`, `ChecksFailing`,
+`Running`, `Verifying`, `UnderReview`, `ReviewParked`, `LaunchHeld`, `AwaitingReview`, `ChecksFailing`,
 `ReviewPending`, `Conflicting`, `CloseoutParked`. It is derived, never stored, and it is composed from the run's
 records **plus an observation of the recorded process**. A phase never claims a session is doing
 something without seeing the process: a session on another node reads as "liveness not observed
@@ -134,6 +134,16 @@ The two parks in that list are the ones to keep straight, because they take diff
 `ReviewParked` is a run stopped before its pull request exists and `CloseoutParked` is one stopped
 after, so `h9k task list --state ReviewParked` reaches exactly the runs `h9k review resolve`
 answers, and `--state CloseoutParked` the ones `h9k pr resolve` does.
+
+`LaunchHeld` is different from either park: it means the *node*, not this run's own work, is
+what's waiting. A session that exits at once with no work done — one turn, zero tokens,
+sub-second, the shape of an expired credential or an unreachable API rather than a real failure —
+raises a node-wide hold that stops the dispatcher claiming and makes every in-place error retry on
+that node wait on the hold too, instead of failing a queue of tasks one by one. `h9k status` names
+the cause and the fix on a NEEDS YOU line while the hold stands; a probe on a doubling backoff
+relaunches the oldest held run to test whether the node works again, and once one relaunch
+actually records tokens, the hold clears and every run it held resumes in place with no human
+lever needed. See [PLAN.md §16](../PLAN.md), Decisions Log #174.
 
 **Attention** is needs-you or not, and it is a column. The cause and the command that clears it
 go on the line beneath, and every cause is quoted from a record rather than inferred.
