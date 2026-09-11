@@ -10,6 +10,7 @@ using Hall9k.Cli.Installation;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Cli.Prompts;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Microsoft.Win32;
@@ -496,7 +497,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         if (!Directory.Exists(fromRelease))
         {
             return $"No release payload at {Path.GetFullPath(fromRelease)} — --from-release names a directory "
-                + "already extracted from a release archive (h9k/h9kd binaries, a skills/ directory, a VERSION file).";
+                + "already extracted from a release archive (h9k/h9kd binaries, a skills/ directory, a "
+                + "templates/ directory, a VERSION file).";
         }
 
         List<string> missing = [];
@@ -506,6 +508,21 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             {
                 missing.Add(BinaryFileName(binary));
             }
+        }
+
+        // release.yml bundles templates/ beside skills/ in every payload it produces (task: agent
+        // prompt prose lives in shipped markdown templates rather than hard-coded C# strings), so
+        // its absence here means a broken or pre-migration payload, not a legitimate gap — this is
+        // the loud, before-anything-is-swapped failure PublishTemplates deliberately does not raise
+        // itself (its own doc comment explains why: an --repo checkout genuinely may not have moved
+        // its prose into templates yet, which is not an error). Checking the directory alone would
+        // pass an empty or unrelated templates/ tree too, leaving PublishTemplates with nothing to
+        // publish and ReviewLapPromptBuilder failing later when it tries to load its own package —
+        // so this checks for that package by name (independent pre-PR review, cycle 1).
+        string requiredTemplatePackage = Path.Combine(fromRelease, "templates", ReviewLapPromptBuilder.TemplateDirectory);
+        if (!Directory.Exists(requiredTemplatePackage) || !Directory.EnumerateFiles(requiredTemplatePackage, "*.md").Any())
+        {
+            missing.Add($"the templates/{ReviewLapPromptBuilder.TemplateDirectory} package");
         }
 
         return missing.Count == 0
@@ -550,9 +567,9 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     }
 
     /// <summary>Copies the platform's binaries (and every other published file — DLLs,
-    /// runtimeconfig, native host, satellite-resource subdirectories — but not the skills/
-    /// subdirectory, the VERSION marker, or a Development settings file, none of which belongs
-    /// in ~/.hall9k/bin) from an extracted release payload into staging. The Development check
+    /// runtimeconfig, native host, satellite-resource subdirectories — but not the skills/ or
+    /// templates/ subdirectories, the VERSION marker, or a Development settings file, none of
+    /// which belongs in ~/.hall9k/bin) from an extracted release payload into staging. The Development check
     /// here is belt-and-suspenders on top of the release workflow's own `find -iname` gate,
     /// which already refuses to ship a payload carrying one; <see cref="RemoveDevelopmentSettingsFiles"/>,
     /// run on staging itself by <see cref="FinishAsync"/> regardless of which branch fed it, is
@@ -578,7 +595,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         foreach (string sourceDirectory in Directory.EnumerateDirectories(fromRelease))
         {
-            if (Path.GetFileName(sourceDirectory) is "skills")
+            if (Path.GetFileName(sourceDirectory) is "skills" or "templates")
             {
                 continue;
             }

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Connectors.Prompts;
 using Spectre.Console;
 using Xunit;
 
@@ -322,8 +323,36 @@ public sealed class InstallCommandTests : IDisposable
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+        string templatePackage = Path.Combine(directory, "templates", ReviewLapPromptBuilder.TemplateDirectory);
+        Directory.CreateDirectory(templatePackage);
+        File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
 
         InstallCommand.ValidateReleasePayload(directory).Should().BeNull();
+    }
+
+    [Fact]
+    public void A_release_payload_missing_templates_is_named_in_the_refusal()
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+
+        string? problem = InstallCommand.ValidateReleasePayload(directory);
+
+        problem.Should().Contain("templates");
+    }
+
+    [Fact]
+    public void A_release_payload_with_an_empty_or_unrelated_templates_directory_is_refused()
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+        Directory.CreateDirectory(Path.Combine(directory, "templates", "some-unrelated-package"));
+
+        string? problem = InstallCommand.ValidateReleasePayload(directory);
+
+        problem.Should().Contain(ReviewLapPromptBuilder.TemplateDirectory);
     }
 
     [Fact]
@@ -335,14 +364,16 @@ public sealed class InstallCommandTests : IDisposable
     }
 
     [Fact]
-    public void Staging_from_a_release_payload_copies_binaries_but_not_skills_or_the_version_marker()
+    public void Staging_from_a_release_payload_copies_binaries_but_not_skills_templates_or_the_version_marker()
     {
         string fromRelease = Path.Combine(directory, "release");
         Directory.CreateDirectory(Path.Combine(fromRelease, "skills", "pr-summary"));
+        Directory.CreateDirectory(Path.Combine(fromRelease, "templates", "review-lap-prompt-builder"));
         File.WriteAllText(Path.Combine(fromRelease, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(fromRelease, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
         File.WriteAllText(Path.Combine(fromRelease, "VERSION"), "0.5.0\n");
         File.WriteAllText(Path.Combine(fromRelease, "skills", "pr-summary", "SKILL.md"), "# pr-summary\n");
+        File.WriteAllText(Path.Combine(fromRelease, "templates", "review-lap-prompt-builder", "objective.md"), "===heading===\n");
         string staging = Path.Combine(directory, "staging");
 
         InstallCommand.StageFromRelease(fromRelease, staging, CancellationToken.None);
@@ -351,6 +382,7 @@ public sealed class InstallCommandTests : IDisposable
         File.Exists(Path.Combine(staging, InstallCommand.BinaryFileName("h9kd"))).Should().BeTrue();
         File.Exists(Path.Combine(staging, "VERSION")).Should().BeFalse("the version marker is not a runtime file");
         Directory.Exists(Path.Combine(staging, "skills")).Should().BeFalse("skills are published separately, not staged into ~/.hall9k/bin");
+        Directory.Exists(Path.Combine(staging, "templates")).Should().BeFalse("templates are published separately, not staged into ~/.hall9k/bin");
     }
 
     [Fact]
@@ -408,21 +440,24 @@ public sealed class InstallCommandTests : IDisposable
     }
 
     [Fact]
-    public void Staging_from_a_release_payload_copies_subdirectories_other_than_skills()
+    public void Staging_from_a_release_payload_copies_subdirectories_other_than_skills_and_templates()
     {
         string fromRelease = Path.Combine(directory, "release");
         Directory.CreateDirectory(Path.Combine(fromRelease, "skills", "pr-summary"));
+        Directory.CreateDirectory(Path.Combine(fromRelease, "templates", "review-lap-prompt-builder"));
         Directory.CreateDirectory(Path.Combine(fromRelease, "de"));
         File.WriteAllText(Path.Combine(fromRelease, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(fromRelease, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
         File.WriteAllText(Path.Combine(fromRelease, "skills", "pr-summary", "SKILL.md"), "# pr-summary\n");
+        File.WriteAllText(Path.Combine(fromRelease, "templates", "review-lap-prompt-builder", "objective.md"), "===heading===\n");
         File.WriteAllText(Path.Combine(fromRelease, "de", "h9k.resources.dll"), "resources\n");
         string staging = Path.Combine(directory, "staging");
 
         InstallCommand.StageFromRelease(fromRelease, staging, CancellationToken.None);
 
         File.Exists(Path.Combine(staging, "de", "h9k.resources.dll")).Should().BeTrue(
-            "a satellite-resource subdirectory in the publish output is not the skills/ directory and belongs in ~/.hall9k/bin");
+            "a satellite-resource subdirectory in the publish output is not the skills/ or templates/ directory and belongs in ~/.hall9k/bin");
         Directory.Exists(Path.Combine(staging, "skills")).Should().BeFalse("skills are published separately, not staged into ~/.hall9k/bin");
+        Directory.Exists(Path.Combine(staging, "templates")).Should().BeFalse("templates are published separately, not staged into ~/.hall9k/bin");
     }
 }
