@@ -9,18 +9,23 @@ namespace Hall9k.Cli.Prompts;
 /// Fills the install's canonical prompt-template set (<see cref="TemplateLibraryPaths.CanonicalDirectory"/>)
 /// from this repository's own <c>.claude/templates</c> (for <c>h9k install --repo</c>) or a
 /// release payload's bundled <c>templates/</c> (for <c>--from-release</c>/<c>h9k update</c>) — the
-/// identical publish/retire/override-by-name discipline <see cref="SkillSeeder.PublishCanonical"/>
+/// same publish/retire/override-by-name discipline <see cref="SkillSeeder.PublishCanonical"/>
 /// already applies to the ordinary skill set, scoped to a different canonical home and a different
 /// unit: a template <em>package</em> (one subdirectory per prompt builder, e.g.
 /// <c>review-lap-prompt-builder/</c>) rather than a skill directory gated on carrying a
 /// <c>SKILL.md</c> — every subdirectory under the template source is a template package by
-/// construction, since nothing else is ever published there.
+/// construction, since nothing else is ever published there. One discipline this class adds on top
+/// that <see cref="SkillSeeder"/> does not need: <see cref="FillMissingFiles"/> still writes a new
+/// file or fragment into an operator's own override, since a template package a builder cannot find
+/// every path or fragment in fails outright, where a skill an operator overrode simply keeps
+/// whatever wording it already has.
 /// <para>
-/// Deliberately has no <c>Seed</c>/<c>SeedNode</c> counterpart: a template is read by the daemon
-/// and the CLI directly out of the canonical directory (<see cref="PromptTemplates"/>), and is
-/// never linked into a project home's <c>skills/</c> or <c>.claude/skills</c> adapter, and never
-/// carries a <c>SKILL.md</c> — publishing it into either would add its description to every
-/// session's first turn, which this task's own token-cost rule puts out of bounds.
+/// Deliberately has no <c>Seed</c>/<c>SeedNode</c> counterpart: a template is read directly out of
+/// the canonical directory (<see cref="PromptTemplates"/>) by whichever process assembles the
+/// prompt — the CLI today, for the one builder this task moved — and is never linked into a
+/// project home's <c>skills/</c> or <c>.claude/skills</c> adapter, and never carries a
+/// <c>SKILL.md</c> — publishing it into either would add its description to every session's first
+/// turn, which this task's own token-cost rule puts out of bounds.
 /// </para>
 /// </summary>
 public static class TemplatePublisher
@@ -304,8 +309,13 @@ public static class TemplatePublisher
         StringBuilder addition = new();
         foreach (string name in missing)
         {
+            // ExtractFragmentBlock already ends in its own trailing '\n' when the fragment is the
+            // source file's last one (the file's own final newline leaves an empty last line in
+            // the split it is built from) and does not otherwise — trimming before adding exactly
+            // one back keeps the file at a single trailing newline either way, rather than two
+            // when the fragment happened to be last (independent pre-PR review, cycle 2).
             addition.Append('\n');
-            addition.Append(PromptTemplates.ExtractFragmentBlock(sourceContent, name, sourceFile));
+            addition.Append(PromptTemplates.ExtractFragmentBlock(sourceContent, name, sourceFile).TrimEnd('\n'));
             addition.Append('\n');
         }
 

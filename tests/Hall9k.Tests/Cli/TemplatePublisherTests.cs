@@ -137,6 +137,14 @@ public sealed class TemplatePublisherTests : IDisposable
         content.Should().Contain("# edited by hand\n", "an operator's own edit is theirs, not install's to overwrite");
         PromptTemplates.FragmentNames(content).Should().Equal("first", "second");
         content.Should().Contain("===second===\n# Second\n", "a fragment the operator's own snapshot never had is not their edit to preserve as absent");
+        // Pins the file to a single trailing newline: appending the source's own LAST fragment
+        // (its own trailing newline already folded into the block ExtractFragmentBlock returns)
+        // must not leave the file with two, which would make PromptTemplates.Load(file, "second")
+        // return "# Second\n" here against "# Second" from an untouched canonical copy — a byte
+        // difference this test asserts on directly, since PromptTemplates.Load itself would
+        // resolve against this checkout's own real rules.md rather than the fake canonical
+        // directory this test publishes into (independent pre-PR review, cycle 2).
+        content.Should().Be("===first===\n# edited by hand\n\n===second===\n# Second\n");
     }
 
     /// <summary>
