@@ -2,6 +2,21 @@
 
 **Local-first agentic task orchestration.**
 
+Open your agent (Claude Code, today), point it at this repository's URL, and paste it this prompt:
+
+> Install Hall9k from https://github.com/Hallmanac/hall9k and set it up for my repository at
+> \<path-to-your-repo\>.
+
+Everything below is what your agent reads to carry that out, and what it will tell you about
+along the way. Registration itself wants a remote URL, not a path: resolve one with
+`git -C <path-to-your-repo> remote get-url origin` and hand that to `--repo-url`. A repository
+with no remote registers with `--repo <path-to-your-repo>` instead, but the pipeline cannot
+finish there: opening the pull request at closeout pushes to `origin`, and the auto-pr-review
+sweep that is on by default for every project cannot resolve a repository to watch either. Add
+a remote before registering, or register with `--repo` only to explore the CLI locally, not to
+run a task through (see [Register a
+project](#register-a-project-only-with-the-users-own-repository) below).
+
 You write a piece of work down, publish it, and assign it. A daemon on your own machine takes it
 from there:
 
@@ -19,20 +34,31 @@ The point is not that agents write code unattended. The point is that you stop b
 bus between ten terminals and get to engage on your own schedule.
 
 The name is the thesis. Hall (the owner) plus HAL 9000: HAL is the AI that escaped supervision,
-and Hall9k exists to keep the human in the loop. The platform never merges a pull request, never
-guesses when a decision is owed to a person, and never claims to have observed something it did
-not.
+and Hall9k exists to keep the human in the loop. The platform never merges a pull request by
+default; that stays the human's decision unless a task was published, or later set, pre-approved
+(see [Pre-approved merge](docs/scope.md#pre-approved-merge)). It never guesses when a decision is
+owed to a person, and never claims to have observed something it did not.
 
-Hall9k is built by Hall9k. Since the pipeline first ran end to end, every platform feature has
-been dispatched as a Hall9k task, which is why the documentation below is written from practice
-rather than from intent.
+I built Hall9k because I wanted to understand how a supervisory, orchestrated agentic system fits
+together, and because I wanted my own workflow with coding agents to stop depending on me as the
+message bus. It was not built to change the world, and there are systems that do parts of this
+better. It was built for me. Somewhere along the way it became more than that: the approach turned
+out to have more reach than I expected, and I am now actively working toward running it across a
+distributed team. Everything below reflects that use as it stands today, with roadmap items
+called out explicitly wherever one appears.
 
 **What it is not:**
 
-- **Not a work tracker.** Jira and GitHub already do that, and once work is published the
-  external item is the source of truth for its content.
-- **Not an agent runtime.** Claude Code already does that; Hall9k spawns it rather than
-  reimplementing it.
+- **Not a replacement for your work tracker.** Once work is published, Jira and GitHub stay the
+  source of truth for what it is. Hall9k adopts an item from there, tracks what happens to it, and
+  hands the result back as a pull request.
+- **Not an agent framework.** Claude Code is the agent. Hall9k is the supervisor that dispatches
+  it, gates it, reviews it, and decides what happens next.
+- **Not tied to one agent.** Today the executor is Claude Code, because that is how I work. On the
+  roadmap it is any coding agent that can be launched headless from a terminal and run a task to
+  completion without a person at the keyboard: the daemon hands a prompt and a worktree to
+  whatever agent a project, or a single task, is configured for. The lifecycle around it (gates,
+  review, pull request, closeout) does not change.
 - **Not a hosted service.** Local-first is the identity, not a stopgap on the way to SaaS.
 
 ---
@@ -65,7 +91,8 @@ deeper dives live in [docs/](docs/).
 6. **[Watch the pipeline](#watch-the-pipeline)** as the daemon claims the task, builds, gates,
    and reviews. `h9k status` tells you the one thing that needs you.
 7. **[Review the pull request](#review-the-pull-request)** is where the flow ends: the daemon
-   opens it, follow-up sessions tend it, and you merge it.
+   opens it, follow-up sessions tend it, and you merge it, unless the task is pre-approved, in
+   which case the daemon does.
 
 ### Register a project
 
@@ -217,8 +244,21 @@ one session, not two, when both are seen on the same sweep, and never held back 
 still reporting, because a broken CI may be exactly what the review found.
 When the budget runs out, the row lands in **needs you** with `h9k pr resolve` as the lever.
 
-You merge. The platform never does. The observed merge is true closeout: it is the moment the run
-completes, dependents unblock, and the worktree is removed.
+You merge, unless the task was published, or later set, pre-approved, in which case the daemon
+merges it the moment GitHub's own gates read satisfied. The observed merge is true closeout: it is
+the moment the run completes, dependents unblock, and the worktree is removed.
+
+### The second front door: a review requested of you
+
+A pull request is not always yours. When GitHub requests a review from the install's own login,
+Hall9k mints a `pr-review` task automatically and runs an independent review over it, parking a
+findings report for you to walk finding by finding rather than posting anything on its own.
+`h9k project set <name> --auto-pr-review off|normal|first|now` chooses the speed a project takes
+this at: `normal`, the default for every project, joins the ordinary dispatch queue.
+
+```bash
+h9k project set demo --auto-pr-review normal
+```
 
 ---
 
@@ -574,7 +614,8 @@ Below that sit the documents the new docs point into rather than replace:
 agent, verification gates, two-lens pre-PR review, pull request, closeout monitoring, merge
 observation); the task dependency graph with context routing along its edges; ideas and
 promotion; GitHub issue and Jira card adoption; per-project and per-owner settings; failed-task
-recovery; the attention pane.
+recovery; the attention pane; a pull request requesting the install's own GitHub login for review
+starting a `pr-review` task automatically.
 
 **Designed but not built:** the mid-run question loop (`h9k ask` / `h9k answer`, Slice 2: the
 events are on the stream and the commands are not, so an agent that needs a decision today makes
@@ -582,7 +623,7 @@ the most reasonable call and records the assumption); `h9k watch --notify`; a Li
 autostart unit; multi-node and peer-to-peer; formal triage and discovery flows.
 
 **Deliberately not doing:** hosted SaaS, a kanban UI, two-way content sync with Jira or GitHub,
-bulk backlog mirroring, and merging your pull requests.
+bulk backlog mirroring, and merging your pull requests by default.
 
 [docs/scope.md](docs/scope.md) has the full inventory with backlog pointers.
 
