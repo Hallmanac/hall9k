@@ -162,7 +162,7 @@ public static class PrSummaryParser
     /// not the other way round (AGENTS.md, reference graph). Its own block scanning already
     /// hard-codes the identical literal for the identical reason.
     /// </summary>
-    private const string ResolutionMarker = "RESOLUTION:";
+    internal const string ResolutionMarker = "RESOLUTION:";
 
     /// <summary>
     /// The lines inside a fenced code block, when the whole block is one; the lines exactly as
