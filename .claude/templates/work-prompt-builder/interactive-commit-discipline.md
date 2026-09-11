@@ -1,0 +1,6 @@
+===rule===
+- Commit as you go, new files included. `h9k task {{Deliver}}` refuses to push, naming the
+  files, while the worktree holds either a modified-but-uncommitted file or a new,
+  never-`git add`ed one under src/ or tests/ — an untracked file only warns without
+  blocking delivery outside those trees (a build byproduct can legitimately be one
+  there) — so `git add` it and commit rather than leaving it for a warning to catch.
