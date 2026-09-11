@@ -8,7 +8,15 @@ namespace Hall9k.Tests.Daemon;
 /// <summary>
 /// A fix cycle's test gate (task: a fix cycle's verification gate) — the same "never guess, fall
 /// back full" discipline applied to test selection.
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log PLACEHOLDER-f70cc244): this class's real
+/// <c>git</c> subprocess spawns ran concurrently with
+/// <see cref="Hall9k.Tests.Daemon.ProcessManagerParityTests"/> in xUnit's default parallel
+/// collections on windows-latest and starved its own nested process spawn/teardown; see that
+/// class's own doc comment for the evidence and the shared collection this joins.
+/// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
 public sealed class TestScopeResolverTests : IDisposable
 {
     private readonly string _root;
