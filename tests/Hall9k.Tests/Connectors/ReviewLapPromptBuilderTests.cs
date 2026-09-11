@@ -22,8 +22,32 @@ namespace Hall9k.Tests.Connectors;
 /// rules against.
 /// </para>
 /// </summary>
-public sealed class ReviewLapPromptBuilderTests
+// ReviewLapPromptBuilder.Build reads its prose through PromptTemplates, which falls back to
+// TemplateLibraryPaths.CanonicalDirectory (a HALL9K_HOME-derived path) whenever this checkout's own
+// .claude/templates does not carry a file it asks for — so this class shares the serialized
+// Hall9kHome collection with every other HALL9K_HOME-touching class, and points HALL9K_HOME at an
+// empty temp home itself so a fixture never accidentally reads whatever a real install already
+// published to this machine (independent pre-PR review, cycle 1).
+[Collection("Hall9kHome")]
+public sealed class ReviewLapPromptBuilderTests : IDisposable
 {
+    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-review-lap-prompt-builder-{Guid.NewGuid():N}");
+    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+
+    public ReviewLapPromptBuilderTests()
+    {
+        Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
+        if (Directory.Exists(_platformHome))
+        {
+            Directory.Delete(_platformHome, recursive: true);
+        }
+    }
+
     [Fact]
     public void The_briefing_names_the_authors_objective_and_criteria_when_this_node_can_read_them()
     {

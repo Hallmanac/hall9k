@@ -26,10 +26,33 @@ namespace Hall9k.Tests.Connectors;
 // Reads Environment.GetEnvironmentVariable("UPDATE_GOLDENS") to opt into fixture regeneration —
 // not a HALL9K_HOME-derived path, but HomeEnvironmentIsolationTests' own scan flags every use of
 // that method by name regardless of which variable, and errs toward requiring this attribute
-// rather than trying to tell the two apart from source text alone.
+// rather than trying to tell the two apart from source text alone. ReviewLapPromptBuilder.Build
+// is a second, independent reason this class needs the collection: it reads its prose through
+// PromptTemplates, which falls back to TemplateLibraryPaths.CanonicalDirectory (a HALL9K_HOME-
+// derived path) whenever this checkout's own .claude/templates does not carry a file it asks for
+// — so HALL9K_HOME is pointed at an empty temp home below, the same as PromptTemplatesTests and
+// ReviewLapPromptBuilderTests, rather than left to whatever a real install already published to
+// this machine (independent pre-PR review, cycle 1).
 [Collection("Hall9kHome")]
-public sealed class ReviewLapPromptBuilderGoldenTests
+public sealed class ReviewLapPromptBuilderGoldenTests : IDisposable
 {
+    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-review-lap-golden-{Guid.NewGuid():N}");
+    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+
+    public ReviewLapPromptBuilderGoldenTests()
+    {
+        Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
+        if (Directory.Exists(_platformHome))
+        {
+            Directory.Delete(_platformHome, recursive: true);
+        }
+    }
+
     // Fixed, not DomainId.New(): the golden fixtures must be byte-stable across a capture run
     // and every later comparison run, and this id is printed verbatim into the prompt (the
     // log-interaction and h9k pr approve/request-changes lines).
