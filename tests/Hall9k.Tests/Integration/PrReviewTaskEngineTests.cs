@@ -201,13 +201,15 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             new StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-                NullLogger<StackedParentWatch>.Instance));
+                NullLogger<StackedParentWatch>.Instance),
+            launchHold);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
@@ -217,7 +219,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         RunSupervisor supervisor = new(
             store, node, processes, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance), primarySessionResumer,
-            Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
+            launchHold, Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
         BlockerContextAssembler blockerContext = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())),
             processes, Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
@@ -1877,13 +1879,15 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             new Hall9k.Daemon.Closeout.StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-                NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance));
+                NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
+            launchHold);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
@@ -1892,7 +1896,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())));
         return new RunSupervisor(store, node, processes, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
-            primarySessionResumer, Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
+            primarySessionResumer, launchHold, Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);
     }
 
     // -------------------------------------------------------------------------------------

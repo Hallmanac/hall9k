@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -321,6 +322,7 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
         IDocumentStore store, NodeContext node, int maxConcurrentRuns,
         ILogger<DispatchEngine>? logger = null) => new(
         store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+        new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
         Options.Create(new DaemonOptions
         {
             MaxConcurrentTaskRuns = maxConcurrentRuns,

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
@@ -54,6 +55,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         // Five queued tasks, cap of three.
@@ -153,6 +155,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         Guid firstTaskId = DomainId.New();
@@ -215,6 +218,72 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         }
     }
 
+    /// <summary>
+    /// A node-wide launch hold gates claiming exactly the way the spend budget does (task: a
+    /// session that exits at once with no work done is treated as the node failing to launch
+    /// sessions) — nothing is set aside for a held queue, it simply stays Queued until the hold
+    /// clears, the same "everything the ceiling turns away stays Queued" contract
+    /// <see cref="Period_spend_gates_claims_and_ignores_a_prior_periods_recorded_spend"/> proves
+    /// for the budget.
+    /// </summary>
+    [Fact]
+    public async Task A_queued_task_is_never_claimed_while_a_node_wide_launch_hold_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DispatchEngine engine = new(
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            launchHold, Options.Create(options), NullLogger<DispatchEngine>.Instance);
+
+        Guid taskId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(
+                    taskId, DomainId.New(), "Held by the launch hold", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        try
+        {
+            await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+
+            (await engine.ClaimEligibleAsync(cts.Token)).Should().BeEmpty("the node cannot launch a working session right now");
+
+            await using (IQuerySession query = store.QuerySession())
+            {
+                TaskListItem held = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+                held.State.Value.Should().Be("Queued", "held by the hold, no throttled state — the same contract the spend budget and the ceiling already keep");
+            }
+
+            (await launchHold.ClearIfActiveAsync(node.NodeId, cts.Token)).Should().BeTrue();
+
+            (await engine.ClaimEligibleAsync(cts.Token)).Should().ContainSingle(work => work.TaskId == taskId,
+                "once the hold clears, the dispatcher claims exactly as it would have all along");
+        }
+        finally
+        {
+            // This class shares one node (and so one live-run count and one launch-hold doc)
+            // across every test method — the same reason An_expired_lease_on_a_review_parked_run_is_refreshed_and_never_requeued
+            // seeds its own lease under a dedicated node id rather than a claim this method
+            // actually makes through ClaimEligibleAsync. Cleared unconditionally, in a finally,
+            // so an assertion failure above never leaves the hold standing or the claimed
+            // TaskLease live for Cap_sweep_and_reclaim_walk_the_full_lease_lifecycle's own
+            // exact-count assertion to trip over.
+            await launchHold.ClearIfActiveAsync(node.NodeId, CancellationToken.None);
+            await using IDocumentSession cleanup = store.LightweightSession();
+            cleanup.Delete<TaskLease>(taskId);
+            await cleanup.SaveChangesAsync(CancellationToken.None);
+        }
+    }
+
     [Fact]
     public async Task An_expired_lease_on_a_review_parked_run_is_refreshed_and_never_requeued()
     {
@@ -226,6 +295,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         // Seeded directly (not through ClaimEligibleAsync) and under its own node id:
@@ -298,6 +368,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         // Seeded directly under its own node id, for the same reason the review-park sibling
@@ -372,6 +443,7 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
         DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
 
         Guid taskId = DomainId.New();

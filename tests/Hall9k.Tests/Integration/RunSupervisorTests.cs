@@ -8,6 +8,7 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -36,7 +37,7 @@ namespace Hall9k.Tests.Integration;
 // them so one test's home is never yanked out from under the other's tail loop.
 [Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
-public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
+public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
 
@@ -1024,6 +1025,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
         DispatchEngine engine = new(
             store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(options), NullLogger<DispatchEngine>.Instance);
         await engine.SweepExpiredLeasesAsync(cts.Token);
 
@@ -1205,6 +1207,170 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         task.State.Value.Should().Be("Claimed", "the work is intact; nothing here demands a human retry");
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().NotBeNull(
             "a budget park keeps the lease exactly the way a review park does");
+    }
+
+    /// <summary>
+    /// The zero-work shape (task: a session that exits at once with no work done is treated as
+    /// the node failing to launch sessions) — one turn, zero tokens, sub-second, exactly the
+    /// 2026-09-07 outage's own signature — holds the run and raises the node-wide launch hold,
+    /// rather than spending the ordinary in-place retry or failing outright.
+    /// </summary>
+    [Fact]
+    public async Task A_zero_work_error_result_holds_the_run_and_raises_the_node_wide_launch_hold()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        const string zeroWorkResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"duration_ms":150,"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0},"result":"Failed to authenticate: OAuth session expired and could not be refreshed"}""";
+        int processId = SpawnFakeAgent(runId,
+            FakeAgentScript.New().Emit(AssistantLine).Emit(zeroWorkResultLine));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "LaunchHeld", cts.Token);
+        details.ParkedReason.Should().Contain("waiting on the node");
+        details.FailureReason.Should().BeNull("this is a hold, not a failure");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Claimed", "the work is intact; the node, not this task, is what's waiting");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunLaunchHeld>().Should().ContainSingle();
+        events.OfType<RunFailed>().Should().BeEmpty("a launch failure never fails its run");
+        events.OfType<RunSessionErrorRetried>().Should().BeEmpty(
+            "a launch failure never spends the ordinary one-shot in-place retry budget either");
+
+        NodeDetails? nodeDetails = await query.LoadAsync<NodeDetails>(node.NodeId, cts.Token);
+        nodeDetails.Should().NotBeNull();
+        nodeDetails!.LaunchHoldActive.Should().BeTrue();
+        nodeDetails.LaunchHoldCauseText.Should().Be("Failed to authenticate: OAuth session expired and could not be refreshed");
+        nodeDetails.LaunchHoldRunCount.Should().Be(1);
+    }
+
+    /// <summary>
+    /// The "two shapes are told apart" proof at the caller level (task: a session that exits at
+    /// once with no work done is treated as the node failing to launch sessions): a result that
+    /// numerically matches the zero-work shape exactly — one turn, zero tokens, sub-second — but
+    /// carries the recognizable usage-limit text must still park for the budget, never raise the
+    /// node-wide hold, because <c>BudgetExhaustionParser</c> is checked first. Classification is
+    /// on the shape everywhere else, but this one text is still what routes to the existing
+    /// hourly-clock recovery rather than the node-wide one.
+    /// </summary>
+    [Fact]
+    public async Task A_result_shaped_like_a_launch_failure_but_carrying_the_usage_limit_text_still_parks_for_budget()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        const string budgetShapedLikeLaunchFailure =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"duration_ms":150,"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0},"result":"Claude AI usage limit reached|1762952400"}""";
+        int processId = SpawnFakeAgent(runId,
+            FakeAgentScript.New().Emit(AssistantLine).Emit(budgetShapedLikeLaunchFailure));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "BudgetParked", cts.Token);
+        details.ParkedReason.Should().Be("token budget exhausted - resumes when the subscription window resets");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunLaunchHeld>().Should().BeEmpty("the budget-exhausted text must win even though the shape also matches a launch failure");
+
+        NodeDetails? nodeDetails = await query.LoadAsync<NodeDetails>(node.NodeId, cts.Token);
+        (nodeDetails is null || !nodeDetails.LaunchHoldActive).Should().BeTrue(
+            "the node-wide launch hold must never be raised for a result the budget park already explains");
+    }
+
+    /// <summary>
+    /// The probe's own resume path (task: a session that exits at once with no work done is
+    /// treated as the node failing to launch sessions) — <c>RunSupervisor.ResumeLaunchHeldRunAsync</c>
+    /// is exactly the call <c>LaunchHoldMonitor</c> makes, whether it is relaunching the oldest
+    /// held run or resuming every other one once the hold clears. A relaunch that records real
+    /// tokens is what clears the node-wide hold, the same evidence a fresh, unrelated session
+    /// completing would give.
+    /// </summary>
+    [Fact]
+    public async Task A_launch_held_runs_relaunch_that_records_real_tokens_clears_the_node_wide_hold()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+
+        const string zeroWorkResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1,"duration_ms":150,"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0},"result":"Failed to authenticate"}""";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(zeroWorkResultLine));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        ScriptedResumeExecutor resumeExecutor = new(ResultLine);
+        RunSupervisor supervisor = NewSupervisor(store, node, executor: resumeExecutor);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails held = await WaitForStateAsync(store, runId, "LaunchHeld", cts.Token);
+
+        // The probe: relaunch the held run directly, the same call LaunchHoldMonitor makes.
+        (await supervisor.ResumeLaunchHeldRunAsync(held, cts.Token)).Should().BeTrue();
+
+        await WaitForEventCountAsync<AgentSessionCompleted>(store, runId, 2, cts.Token);
+        resumeExecutor.Spawns.Should().ContainSingle("exactly one relaunch spawn");
+
+        await using IQuerySession query = store.QuerySession();
+        NodeDetails? nodeDetails = await query.LoadAsync<NodeDetails>(node.NodeId, cts.Token);
+        nodeDetails!.LaunchHoldActive.Should().BeFalse(
+            "the relaunch recorded real tokens, which is what clears the node-wide hold");
+    }
+
+    /// <summary>
+    /// "a daemon restart resumes the hold rather than relaunching held sessions at startup"
+    /// (acceptance) — mirrors <c>ReviewParked</c>/<c>BudgetParked</c>'s own adoption branch
+    /// exactly: the lease is refreshed so the expiry sweep never requeues the task out from
+    /// under it, and nothing is spawned. <c>LaunchHoldMonitor</c>'s own probe, on its own
+    /// backoff, is what eventually resumes it — never adoption itself.
+    /// </summary>
+    [Fact]
+    public async Task A_daemon_restart_refreshes_a_launch_helds_lease_without_relaunching_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            session.Events.Append(runId, new RunLaunchHeld(runId, "Failed to authenticate", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // As stale as a real gap of daemon downtime would leave it.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskLease lease = (await session.LoadAsync<TaskLease>(taskId, cts.Token))!;
+            lease.HeartbeatAt = Now.AddHours(-1);
+            session.Store(lease);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedResumeExecutor resumeExecutor = new(ResultLine);
+        RunSupervisor restarted = NewSupervisor(store, node, executor: resumeExecutor);
+        OrphanAdoption adoption = await restarted.AdoptOrphansAsync(cts.Token);
+
+        resumeExecutor.Spawns.Should().BeEmpty(
+            "a daemon restart resumes the hold rather than relaunching held sessions at startup");
+        adoption.RunsAdopted.Should().BeGreaterThanOrEqualTo(1);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails details = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        details.State.Value.Should().Be("LaunchHeld", "adoption never touches a held run's own state");
+        TaskLease refreshed = (await query.LoadAsync<TaskLease>(taskId, cts.Token))!;
+        refreshed.HeartbeatAt.Should().BeAfter(
+            Now.AddHours(-1), "the lease is refreshed so the expiry sweep never requeues the task out from under it");
     }
 
     /// <summary>
@@ -2063,13 +2229,15 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         VerificationRunner verification = new(
             store, resolvedOptions, NullLogger<VerificationRunner>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), resolvedExecutor, processManager);
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager, verification,
             resolvedOptions, NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             new Hall9k.Daemon.Closeout.StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-                NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance));
+                NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
+            launchHold);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
@@ -2077,7 +2245,25 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         PrimarySessionResumer primarySessionResumer = new(resolvedExecutor);
         return new RunSupervisor(store, node, processManager, verification, review, prReview,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
-            primarySessionResumer, resolvedOptions, logger ?? NullLogger<RunSupervisor>.Instance);
+            primarySessionResumer, launchHold, resolvedOptions, logger ?? NullLogger<RunSupervisor>.Instance);
+    }
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    /// <summary>
+    /// This class's every test shares one reused node (<c>NodeBootstrapSeed.NewNodeAsync</c>'s
+    /// own doc: bootstrap finds the one existing node row for this machine name rather than
+    /// minting a fresh one), and the node-wide launch hold is genuinely node-scoped, durable
+    /// state with no per-test discriminator that isolates it — unlike a task or run's own fresh
+    /// id. A test that raises the hold and does not itself clear it (proving the raised shape is
+    /// the point of some of them) would otherwise leak into whichever sibling xUnit's own
+    /// test-case orderer schedules next. Runs after every test, pass or fail.
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(postgres.Store, CancellationToken.None);
+        await new LaunchHoldEngine(postgres.Store, NullLogger<LaunchHoldEngine>.Instance)
+            .ClearIfActiveAsync(node.NodeId, CancellationToken.None);
     }
 
     public void Dispose()

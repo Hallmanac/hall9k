@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
@@ -604,6 +605,7 @@ public sealed class ClaimAndLeaseArbitrationTests(PostgresFixture postgres) : IC
 
     private DispatchEngine NewEngine(DocumentStore store, NodeContext node, FakeProcessManager processes) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), processes,
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(new DaemonOptions { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) }),
             NullLogger<DispatchEngine>.Instance);
 

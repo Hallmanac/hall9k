@@ -99,7 +99,8 @@ public sealed class ReviewEngine(
     ILogger<ReviewEngine> logger,
     IWorktreeManager worktrees,
     ProcessRunner processRunner,
-    StackedParentWatch stackedParents)
+    StackedParentWatch stackedParents,
+    LaunchHoldEngine launchHold)
 {
     /// <summary>
     /// How long a single git call in the pre-final-pass rebase check gets (task: a run rebases
@@ -1261,6 +1262,7 @@ public sealed class ReviewEngine(
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, pass.ProcessId, pass.ProcessStartedAt,
             $"the {LensLabel(pass.Lens)} review pass (cycle {run.ReviewCycle})", cancellationToken);
+        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, same as the primary session (backlog 40): the
@@ -1283,6 +1285,20 @@ public sealed class ReviewEngine(
             // own equivalent already falls back the same way (RunSupervisor.cs's
             // "result.Summary ?? \"(no message)\"").
             string errorSummary = result.Summary ?? "(no message)";
+            if (LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration))
+            {
+                // The node never launched a working session for this lens — not this run's own
+                // fault (task: a session that exits at once with no work done is treated as the
+                // node failing to launch sessions). Mirrors the budget park immediately above:
+                // RunAggregate.Apply(RunLaunchHeld) clears every in-flight pass, sibling included,
+                // so the sibling is terminated here rather than left running with nothing left
+                // tracking it — DispatchMissingPassesAsync redispatches both fresh once this run
+                // resumes.
+                TerminateSiblingPasses(run, pass);
+                return await HoldForLaunchFailureAsync(
+                    context.Run.NodeId, context.RunId, errorSummary, result, pass.Model, cancellationToken);
+            }
+
             if (run.HasRetriedSessionError(RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens))
             {
                 // A second consecutive error on this exact lens/cycle: the run really is
@@ -1339,6 +1355,7 @@ public sealed class ReviewEngine(
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, processId, processStartedAt,
             $"the fix session (cycle {run.ReviewCycle})", cancellationToken);
+        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, same as the primary session (backlog 40): the
@@ -1357,6 +1374,14 @@ public sealed class ReviewEngine(
             // RecordFixResultAsync as though a fix had actually been applied (adversarial and
             // conformance pre-PR review, cycle 1) — recording an unobserved fact as observed.
             string fixErrorSummary = result.Summary ?? "(no message)";
+            if (LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration))
+            {
+                // Mirrors the review-pass leg's identical branch (task: a session that exits at
+                // once with no work done is treated as the node failing to launch sessions).
+                return await HoldForLaunchFailureAsync(
+                    context.Run.NodeId, context.RunId, fixErrorSummary, result, run.ActiveFixSessionModel, cancellationToken);
+            }
+
             if (run.HasRetriedSessionError(RunSessionLeg.Fix, run.ReviewCycle, lens: null))
             {
                 await FailAsync(context.RunId, context.TaskId,
@@ -3372,6 +3397,7 @@ public sealed class ReviewEngine(
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, processId, processStartedAt,
             "the pre-final-pass rebase-recovery session", cancellationToken);
+        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             await ParkForBudgetAsync(context.RunId, "the pre-final-pass rebase-recovery session", summary, cancellationToken);
@@ -3381,6 +3407,14 @@ public sealed class ReviewEngine(
         if (result is { IsError: true })
         {
             string errorSummary = result.Summary ?? "(no message)";
+            if (LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration))
+            {
+                // Mirrors the review-pass leg's identical branch (task: a session that exits at
+                // once with no work done is treated as the node failing to launch sessions).
+                return await HoldForLaunchFailureAsync(
+                    context.Run.NodeId, context.RunId, errorSummary, result, run.ActiveRebaseRecoveryModel, cancellationToken);
+            }
+
             if (run.HasRetriedSessionError(RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null))
             {
                 await FailAsync(context.RunId, context.TaskId,
@@ -5494,6 +5528,70 @@ public sealed class ReviewEngine(
         logger.LogWarning(
             "Run {RunId}: token budget exhausted — {Source} parked rather than failed; the daemon retries hourly. {Message}",
             runId, source, observedMessage);
+    }
+
+    /// <summary>
+    /// Evidence this node can still launch working sessions clears a standing launch hold (task:
+    /// a session that exits at once with no work done is treated as the node failing to launch
+    /// sessions) — called on every result the review loop observes except the zero-work shape
+    /// itself, whatever else that result turns out to be (a clean pass, an ordinary error, even a
+    /// budget park — all of them prove the node can launch working sessions). A null result — the
+    /// session died without writing one at all — proves nothing either way and is left alone.
+    /// Cheap when no hold stands, the overwhelming common case: a single doc read.
+    /// <para>
+    /// The budget-exhausted shape is excluded from the zero-work check here for the identical
+    /// reason <see cref="RunSupervisor.CompleteRunAsync"/>'s own classification is: a usage-limit
+    /// result can itself arrive with this exact numeric shape, and it is still evidence the node
+    /// can launch — it must clear a standing hold, not be skipped over as though it were one.
+    /// </para>
+    /// </summary>
+    private async Task ClearLaunchHoldIfEvidencedAsync(
+        Guid nodeId, AgentResult? result, CancellationToken cancellationToken)
+    {
+        if (result is null)
+        {
+            return;
+        }
+
+        bool isBudgetExhausted = result.IsError
+            && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary);
+        bool isLaunchFailure = !isBudgetExhausted && result.IsError
+            && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+        if (!isLaunchFailure)
+        {
+            await launchHold.ClearIfActiveAsync(nodeId, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The review loop's side of a launch-failure hold (task: a session that exits at once with
+    /// no work done is treated as the node failing to launch sessions) — mirrors
+    /// <see cref="ParkForBudgetAsync"/>'s shape one leg down: <see cref="RunAggregate.Apply(RunLaunchHeld)"/>
+    /// clears whichever leg was in flight the same way <see cref="RunBudgetExhausted"/>'s own
+    /// handling does, so the eventual retry is a fresh redispatch once the node-wide hold clears,
+    /// never a process resume. The triggering session's own (zero) tokens are still recorded, the
+    /// same discipline <see cref="RetrySessionErrorAsync"/> already gives an ordinary in-place
+    /// retry.
+    /// </summary>
+    private async Task<bool> HoldForLaunchFailureAsync(
+        Guid nodeId, Guid runId, string observedMessage, AgentResult erroredResult, AgentModel erroredModel,
+        CancellationToken cancellationToken)
+    {
+        // The node-wide hold is raised BEFORE the run-stream event, not after: a crash between
+        // the two must never leave RunDetails reading LaunchHeld while the node-wide hold itself
+        // is not yet standing, which would let the dispatcher keep claiming new work into the
+        // same broken node — RunSupervisor.CompleteRunAsync's own identical ordering states the
+        // same reasoning in full.
+        await launchHold.RaiseOrJoinAsync(nodeId, runId, observedMessage, cancellationToken);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, erroredResult.ToTokensRecorded(runId, DateTimeOffset.UtcNow, erroredModel));
+            session.Events.Append(runId, new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        return false;
     }
 
     /// <summary>

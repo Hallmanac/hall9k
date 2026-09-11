@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
@@ -539,6 +540,7 @@ public sealed class TaskDispatchGuardTests(PostgresFixture postgres) : IClassFix
 
     private DispatchEngine NewEngine(DocumentStore store, NodeContext node) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(new DaemonOptions { MaxConcurrentTaskRuns = 100, LeaseTimeout = TimeSpan.FromSeconds(60) }),
             NullLogger<DispatchEngine>.Instance);
 }

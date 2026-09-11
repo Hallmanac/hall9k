@@ -37,6 +37,7 @@ public sealed class DispatchEngine(
     NodeContext node,
     DaemonConnection connection,
     IProcessManager processManager,
+    LaunchHoldEngine launchHold,
     IOptions<DaemonOptions> options,
     ILogger<DispatchEngine> logger,
     TrackerClaimGate? trackerClaimGate = null)
@@ -203,13 +204,17 @@ public sealed class DispatchEngine(
 
             if (run is not null
                 && (run.State == RunState.ReviewParked || run.State == RunState.CloseoutParked
-                    || run.State == RunState.BudgetParked))
+                    || run.State == RunState.BudgetParked || run.State == RunState.LaunchHeld))
             {
                 // CloseoutParked normally holds a Done, lease-free task, but it is included so
                 // the guarantee is a property of "parked", not of one park flavor. BudgetParked
                 // is parked on the clock rather than a human, but the same guarantee applies —
                 // a lease that goes stale while the daemon catches up must not requeue (and so
-                // fail) work that is waiting to be retried automatically (backlog 40).
+                // fail) work that is waiting to be retried automatically (backlog 40). LaunchHeld
+                // needs it even more (task: a session that exits at once with no work done is
+                // treated as the node failing to launch sessions): a daemon restart mid-outage is
+                // exactly the gap this exclusion exists for, and the acceptance criterion is that
+                // a restart resumes the hold rather than requeuing the work it is holding.
                 lease.HeartbeatAt = now;
                 session.Store(lease);
                 logger.LogInformation(
@@ -458,6 +463,15 @@ public sealed class DispatchEngine(
         bool spendExhausted = queued.Count > 0 && load.Node.Capacity > 0 && anyProjectAdmits
             && await SpendBudgetExhaustedAsync(session, cancellationToken);
 
+        // A node-wide launch hold (task: a session that exits at once with no work done is
+        // treated as the node failing to launch sessions): this node could not launch a working
+        // session at all, so claiming anything new would only strand another task the same way.
+        // Same gating shape as the spend budget immediately above — a cheap check skipped
+        // entirely when nothing queued could be claimed anyway — but a single indexed doc read
+        // (LaunchHoldEngine.CurrentHoldAsync) rather than a full-period event resummation, so it
+        // needs no in-memory cache of its own the way SpendBudgetExhaustedAsync's does.
+        bool launchHoldGateNeeded = queued.Count > 0 && load.Node.Capacity > 0 && anyProjectAdmits;
+
         List<ClaimedWork> claimed = [];
         Dictionary<Guid, int> claimedByProject = [];
         List<QueuedCandidate> waiting = [.. queued];
@@ -466,12 +480,22 @@ public sealed class DispatchEngine(
         // #141). The rotation is asked again per slot rather than once per sweep because this
         // sweep's own claims move the answer: a project that just took a slot is no longer the
         // longest unserved, and one that just reached its cap is no longer eligible at all. The
-        // spend gate is checked once, in the loop's own condition, since it is a node-wide figure
-        // no claim of this sweep's can change.
+        // spend gate is checked once, in the loop's own condition, since nothing this loop does
+        // spends tokens itself. The launch hold is re-read on every slot instead (Copilot review,
+        // PR #317): a single read taken before this loop started can go stale mid-sweep — another
+        // run's own launch failure raising the hold while this loop still has several slots left
+        // to fill — and claiming those slots into an outage the very next read would have caught
+        // is exactly the strand this gate exists to prevent.
         while (!spendExhausted
             && claimed.Count < load.Node.Capacity
             && ProjectRotation.NextSlot(waiting, load, claimedByProject, _lastServedByProject) is { } slot)
         {
+            if (launchHoldGateNeeded
+                && await launchHold.CurrentHoldAsync(node.NodeId, cancellationToken) is { LaunchHoldActive: true })
+            {
+                break;
+            }
+
             // Removed whether or not the claim lands: a candidate that lost the claim race (or
             // whose previous generation is still alive here) is not this sweep's to place, and
             // leaving it in would spin the loop on the same task until the capacity ran out.

@@ -261,6 +261,35 @@ public sealed class DaemonOptions
     public TimeSpan SessionErrorRetryBackoff { get; set; } = TimeSpan.FromSeconds(90);
 
     /// <summary>
+    /// How fast a session's terminal result must have exited to be believed as this node never
+    /// actually launching a working session, rather than a genuine agent failure (task: a
+    /// session that exits at once with no work done is treated as the node failing to launch
+    /// sessions). Measured from the 2026-09-07 04:22-04:33 EDT outage: every session the daemon
+    /// launched into a dead credential or an unreachable API ran 85 to 208 ms before its error
+    /// result, one turn, zero tokens. Two seconds is generous headroom above that observed
+    /// ceiling — long enough that ordinary process-startup jitter never crosses it, short enough
+    /// that a session which genuinely ran even one real tool call cannot. Checked together with
+    /// the zero-turn, zero-token shape (<c>LaunchFailureClassifier</c>), never alone: duration by
+    /// itself would also catch a session Claude Code itself rejected outright for a reason that
+    /// is this run's own fault, not the node's.
+    /// </summary>
+    public TimeSpan LaunchFailureMaxDuration { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The ceiling a node-wide launch hold's own probe backoff may reach while relaunching the
+    /// oldest held run keeps producing the same zero-work shape (task: a session that exits at
+    /// once with no work done is treated as the node failing to launch sessions): the backoff
+    /// starts at <see cref="SessionErrorRetryBackoff"/> and doubles each unsuccessful probe up to
+    /// this bound, the same widening-with-a-floor shape
+    /// <see cref="PullRequestPollBackoffMaxInterval"/> already gives a different doorbell-less
+    /// recovery. Fifteen minutes: short enough that a credential fixed at 3am is noticed before
+    /// morning, long enough that an outage lasting hours does not spend a real agent process
+    /// every 90 seconds proving it is still down — the held work itself is the probe, so every
+    /// attempt costs a real session spawn, unlike a cheap HTTP poll.
+    /// </summary>
+    public TimeSpan LaunchHoldProbeBackoffMaxInterval { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
     /// The turn cap the one automatic uncommitted-work recovery session is spawned with (task:
     /// when a session ends with finished work uncommitted, the daemon recovers on its own),
     /// passed straight through as <c>claude -p --max-turns</c>. Bounded by construction rather
