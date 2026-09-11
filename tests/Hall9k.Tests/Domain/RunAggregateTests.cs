@@ -1625,6 +1625,49 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The launch-hold counterpart of <see cref="Budget_exhausted_settling_gate_repair_session_parks_and_reopens_settling_gate_repair_needed"/>
+    /// (independent pre-PR review, cycle 3, both lenses): <c>Apply(RunLaunchHeld)</c> was missing the
+    /// <see cref="ReviewPhase.AwaitingSettlingGateRepair"/> case entirely, so a repair session caught
+    /// by the node-wide hold left the run in <c>AwaitingSettlingGateRepair</c> with its dead session's
+    /// identity still recorded — a resume would re-await the same exited process's stream file forever
+    /// instead of redispatching a fresh one.
+    /// </summary>
+    [Fact]
+    public void Launch_held_settling_gate_repair_session_parks_and_reopens_settling_gate_repair_needed()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown, "Gate 'build' failed: CS0246", "settling-gate-repair"));
+        run.SettlingGateRepairRounds.Should().Be(1);
+
+        run.Apply(new RunLaunchHeld(id, "Failed to authenticate: OAuth session expired", Now));
+
+        run.State.Should().Be(RunState.LaunchHeld);
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.SettlingGateRepairNeeded, "the held repair session redispatches fresh, not resumes its dead process");
+        run.ActiveSettlingGateRepairSessionId.Should().BeNull();
+        run.ActiveSettlingGateRepairProcessId.Should().BeNull();
+        run.SettlingGateRepairRounds.Should().Be(
+            0, "the held attempt's own round is given back so the redispatch below does not double-spend it");
+        run.LastSettlingGateRepairOutput.Should().Be(
+            "Gate 'build' failed: CS0246", "the gate output survives the hold so the fresh dispatch can still carry it");
+
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 6002, Now, Now, AgentModel.Unknown, "Gate 'build' failed: CS0246", "settling-gate-repair"));
+        run.State.Should().Be(RunState.UnderReview, "redispatching the repair session is what clears the hold");
+        run.ReviewPhase.Should().Be(ReviewPhase.AwaitingSettlingGateRepair);
+        run.SettlingGateRepairRounds.Should().Be(
+            1, "the redispatch counts once, netting to the same single round the original attempt already spent");
+    }
+
+    /// <summary>
     /// The round cap's own park (task: a pre-final-pass rebase that applies cleanly but breaks the
     /// mandatory gate gets a repair lap inside the same run instead of failing it) records the
     /// park's own gate output over <see cref="RunAggregate.LastSettlingGateRepairOutput"/>, not
