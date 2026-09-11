@@ -60,6 +60,19 @@ jobs:
           mkdir -p "dist/${{ matrix.rid }}/skills"
           cp -R .claude/skills/. "dist/${{ matrix.rid }}/skills/"
 
+      # The canonical prompt-template set (task: agent prompt prose lives in shipped markdown
+      # templates rather than hard-coded C# strings), a sibling of skills/ rather than a member of
+      # it: ships inside the release payload so --from-release and h9k update can publish it to
+      # ~/.hall9k/templates without a repo checkout, the same reason skills/ ships above.
+      # InstallCommand.ValidateReleasePayload requires this directory in every payload it accepts,
+      # so its absence here fails the install loudly instead of silently leaving a prompt builder
+      # without its prose.
+      - name: Bundle prompt templates
+        shell: bash
+        run: |
+          mkdir -p "dist/${{ matrix.rid }}/templates"
+          cp -R .claude/templates/. "dist/${{ matrix.rid }}/templates/"
+
       # The same stripped VERSION the binaries were stamped with above (env.VERSION), not
       # the tag's own v-prefixed GITHUB_REF_NAME — h9k install --from-release and h9k
       # update print this back verbatim, and it has to match what `h9k --version` reports
