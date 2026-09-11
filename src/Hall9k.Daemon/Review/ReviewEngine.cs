@@ -1262,7 +1262,7 @@ public sealed class ReviewEngine(
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, pass.ProcessId, pass.ProcessStartedAt,
             $"the {LensLabel(pass.Lens)} review pass (cycle {run.ReviewCycle})", cancellationToken);
-        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, cancellationToken);
+        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, pass.ProcessStartedAt, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, same as the primary session (backlog 40): the
@@ -1355,7 +1355,7 @@ public sealed class ReviewEngine(
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, processId, processStartedAt,
             $"the fix session (cycle {run.ReviewCycle})", cancellationToken);
-        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, cancellationToken);
+        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, processStartedAt, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             // External and clock-recoverable, same as the primary session (backlog 40): the
@@ -3397,7 +3397,7 @@ public sealed class ReviewEngine(
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, processId, processStartedAt,
             "the pre-final-pass rebase-recovery session", cancellationToken);
-        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, cancellationToken);
+        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, processStartedAt, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             await ParkForBudgetAsync(context.RunId, "the pre-final-pass rebase-recovery session", summary, cancellationToken);
@@ -5544,9 +5544,16 @@ public sealed class ReviewEngine(
     /// result can itself arrive with this exact numeric shape, and it is still evidence the node
     /// can launch — it must clear a standing hold, not be skipped over as though it were one.
     /// </para>
+    /// <para>
+    /// <paramref name="sessionStartedAt"/> is when THIS session's own process started, carried
+    /// through to <see cref="LaunchHoldEngine.ClearIfEvidencedAsync"/>: a session already running
+    /// before the hold's own raise proves nothing about whether a fresh launch works right now,
+    /// only that something already in flight eventually finished for its own, unrelated reason
+    /// (independent pre-PR review, cycle 1, adversarial lens).
+    /// </para>
     /// </summary>
     private async Task ClearLaunchHoldIfEvidencedAsync(
-        Guid nodeId, AgentResult? result, CancellationToken cancellationToken)
+        Guid nodeId, AgentResult? result, DateTimeOffset sessionStartedAt, CancellationToken cancellationToken)
     {
         if (result is null)
         {
@@ -5559,7 +5566,7 @@ public sealed class ReviewEngine(
             && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
         if (!isLaunchFailure)
         {
-            await launchHold.ClearIfActiveAsync(nodeId, cancellationToken);
+            await launchHold.ClearIfEvidencedAsync(nodeId, sessionStartedAt, cancellationToken);
         }
     }
 

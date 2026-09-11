@@ -33,6 +33,14 @@ public sealed class NodeAggregate
     /// <summary>Relaunch attempts this episode has spent, for the same two readers.</summary>
     public int LaunchHoldProbeCount { get; private set; }
 
+    /// <summary>
+    /// Backs <see cref="LaunchHoldRunCount"/> — a run rejoining after a failed probe must not be
+    /// counted twice (independent pre-PR review, cycle 1, both lenses), the same
+    /// <c>HashSet&lt;Guid&gt;</c> discipline <see cref="NodeLaunchHoldEpisodes"/>'s own replay and
+    /// <see cref="NodeDetails.LaunchHoldRunIds"/> both use.
+    /// </summary>
+    private readonly HashSet<Guid> _launchHoldRunIds = [];
+
     public void Apply(NodeRegistered @event)
     {
         Id = @event.Id;
@@ -48,11 +56,16 @@ public sealed class NodeAggregate
         LaunchHoldCauseText = @event.CauseText;
         LaunchHoldRaisedAt = @event.RaisedAt;
         LaunchHoldLastEventAt = @event.RaisedAt;
+        _launchHoldRunIds.Clear();
         LaunchHoldRunCount = 0;
         LaunchHoldProbeCount = 0;
     }
 
-    public void Apply(NodeLaunchHoldRunHeld @event) => LaunchHoldRunCount++;
+    public void Apply(NodeLaunchHoldRunHeld @event)
+    {
+        _launchHoldRunIds.Add(@event.RunId);
+        LaunchHoldRunCount = _launchHoldRunIds.Count;
+    }
 
     public void Apply(NodeLaunchHoldProbed @event)
     {

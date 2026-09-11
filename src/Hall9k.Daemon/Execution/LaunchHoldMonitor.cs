@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Microsoft.Extensions.Options;
 
@@ -87,6 +88,11 @@ public sealed class LaunchHoldMonitor(
             return;
         }
 
+        if (await ClearIfLastProbeIsStillRunningAsync(nodeId, hold, cancellationToken))
+        {
+            return;
+        }
+
         TimeSpan backoff = BackoffForProbe(
             hold.LaunchHoldProbeCount, options.Value.SessionErrorRetryBackoff,
             options.Value.LaunchHoldProbeBackoffMaxInterval);
@@ -106,6 +112,40 @@ public sealed class LaunchHoldMonitor(
         await engine.RecordProbeAsync(nodeId, oldest.Id, cancellationToken);
         logger.LogInformation("Launch hold: probing the oldest held run {RunId}", oldest.Id);
         await supervisor.ResumeLaunchHeldRunAsync(oldest, cancellationToken);
+    }
+
+    /// <summary>
+    /// A relaunch that spawned fine and has stayed alive well past the zero-work window is
+    /// already real evidence the node can launch, even though it has not finished — without this,
+    /// a probe that resumes a long build session keeps the whole node blocked from new claims,
+    /// and the NEEDS YOU banner up, for that session's entire length, which can run for an hour or
+    /// more (independent pre-PR review, cycle 1, both lenses, low). <see cref="NodeDetails.LaunchHoldLastProbedRunId"/>
+    /// is set by the very probe this sweep just recorded (or an earlier tick's), so a run that
+    /// left <see cref="RunState.LaunchHeld"/> for <see cref="RunState.Running"/> and is still
+    /// there once <see cref="DaemonOptions.LaunchFailureMaxDuration"/> has passed since that probe
+    /// counts — the same duration the zero-work shape itself is measured against, so a session
+    /// that has outlived it is definitionally not that shape. A run this probe's resume never
+    /// actually reached (still <see cref="RunState.LaunchHeld"/>, or retired away as stale) is
+    /// left alone; only a genuinely running resume clears anything here. Returns whether it
+    /// cleared the hold, so the caller skips the ordinary backoff-gated probe on the same tick.
+    /// </summary>
+    private async Task<bool> ClearIfLastProbeIsStillRunningAsync(
+        Guid nodeId, NodeDetails hold, CancellationToken cancellationToken)
+    {
+        if (hold.LaunchHoldLastProbedRunId is not { } probedRunId
+            || DateTimeOffset.UtcNow - hold.LaunchHoldLastEventAt <= options.Value.LaunchFailureMaxDuration)
+        {
+            return false;
+        }
+
+        RunDetails? probed = await engine.LoadRunAsync(probedRunId, cancellationToken);
+        if (probed is not { State: var state } || state != RunState.Running)
+        {
+            return false;
+        }
+
+        return await engine.ClearIfEvidencedAsync(
+            nodeId, probed.ProcessStartedAt ?? hold.LaunchHoldLastEventAt, cancellationToken);
     }
 
     /// <summary>
