@@ -1,0 +1,7 @@
+  Never generate host load to reproduce or prove a flaky or timing-dependent test: no
+  parallel copies of a suite or test, no stress or spin loops, no deliberate memory
+  pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove
+  it gone. This host also runs the daemon, Postgres, and other sessions, and loading it
+  to chase one test starves all of them.
+  That holds even though this session runs nothing itself: never reach for load like
+  this, even informally, to settle a question about a flaky or timing-dependent test.

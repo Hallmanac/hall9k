@@ -1,0 +1,269 @@
+# Task
+
+Add rate limiting to auth endpoints
+
+## Acceptance criteria
+
+- Requests over the limit get 429
+
+## Project links (fetch yourself as needed)
+
+- PLAN.md: https://example.com/PLAN.md
+
+## Working rules
+
+- You are in an isolated git worktree on branch `task/abc12345-add-rate-limiting`. Work only here.
+- Implement the objective so every acceptance criterion is satisfied.
+- Commit your work with clear messages. Do NOT push, do NOT open a pull request —
+  the platform verifies and opens the PR after you finish.
+- **Commit as you go, one logical unit at a time.** Each commit here is
+  crash protection, not authored history: a checkpoint so that an abnormal
+  ending (context exhaustion, an early exit) strands at most the increment
+  since the last checkpoint instead of the whole session. Message them
+  plainly; none of them are what ships.
+- **Self-review phase.** This project configures no verification gates, so its
+  suite is vacuously green already (the recompose step below states the same
+  thing); once the work itself is done and every checkpoint is committed, and
+  before the recompose below, hunt your own branch for defects. It runs here —
+  after the work is finished and the tree is clean, so the hunt's diff actually
+  shows the newest work rather than missing whatever is still sitting
+  uncommitted, and before the recompose, so the recompose composes the tree the
+  hunt leaves behind rather than the tree that predates it.
+  Change hats for this phase: you are no longer the author, you are the hunter.
+  Assume the branch contains defects you wrote, and go looking for them the way
+  someone hostile to this diff would, not the way its author would.
+  Finding nothing is an expected, honest outcome of a genuine hunt — inventing a
+  finding so the round has something to report is the failure this phase is
+  guarding against, not the clean round.
+  The loop is capped at two rounds, hard.
+  Round one starts from a fresh `git diff origin/main...HEAD`,
+  read in full — not from memory of what you wrote. A worktree's local
+  base-branch ref is routinely stale relative to this task's actual base, so name
+  `origin/` in the range; a diff you already believe you know is not a diff you
+  actually reviewed. Before hunting, record the current tip so a round two, if
+  one runs, can diff only its own fixes instead of the whole branch again. A
+  shell variable does not survive between separate tool calls, so setting one
+  here and reading it back several tool calls into round two gets nothing —
+  `git diff $EMPTY HEAD` silently degrades to `git diff HEAD`, which prints
+  nothing and exits 0 against the clean tree this phase requires, so round two
+  would review an empty diff and call it clean. Write the tip to a file outside
+  this worktree instead, where it survives the gap. The filename is suffixed
+  with this worktree's own directory name so a concurrent session in a sibling
+  worktree on the same node never clobbers this one's tip:
+  `git rev-parse HEAD > "<TEMP>/self-review-round-one-tip-wt-abc12345"`. Remove that file once this phase
+  ends, whichever round it ends on — like the hunt-3 scratch directory below,
+  it is scratch state for this phase alone and does not belong on the node
+  afterward.
+  Three hunts are mandatory every round:
+  1. **Refactor once-over.** Reread everything the diff touched as if it were
+     someone else's pull request: naming, structure, dead code, duplication, a
+     change that should have been smaller or cleaner.
+  2. **Blast-radius sweep.** For every behavior this branch changed, enumerate
+     every sibling site with the same shape and check each one actually got the
+     same treatment, rather than trusting your memory of having handled it. This
+     is the class that cost two full review laps in one afternoon here: a fix
+     landed on one of two branch-creating arms that needed it, and a two-escape
+     finding closed one escape and left the other open.
+  3. **Execute your own instructions.** Any skill step, command sequence, or
+     documented procedure in this branch's diff — whether you wrote it this
+     session or it arrived already in the diff you resumed — run it, do not proofread
+     it. A step that reads correctly and fails the moment it is actually run is a
+     real defect a re-read never catches. Where a procedure's commands
+     mutate state, exercise it somewhere the side effects are safe — a scratch
+     directory made with `mktemp -d`, outside this worktree entirely —
+     never against this session's own live worktree. The scratch directory is a
+     deliberate, temporary exception to "work only here" — for exercising a
+     procedure's side effects safely, not for leaving work in progress. Clean it
+     up once the hunt is done. A relocated directory only contains a procedure
+     whose side effects stay local to it — it does nothing for one that mutates a
+     resource this session does not own outright: a live daemon or its database, a
+     machine-wide install (`h9k install`, `h9k update`), a destructive maintenance
+     command (`h9k uninstall --purge-data`), or a write to an external service
+     (`gh`, a registered connection). A procedure in that shape is read in
+     enough functional detail to be confident it does what it claims —
+     never actually run. A procedure you conclude is correct this way produces no
+     finding, so record why relocation could not make it safe in your final
+     summary and the handoff below instead — the same vehicle this phase already
+     uses for a suspicion that never rises to a stated finding — rather than
+     silently falling back to a proofread with nothing said about it.
+  Every finding this phase surfaces, in round one or round two, ends in one of
+  its dispositions before you move on: a correctness-or-behavior finding is
+  fixed and checkpoint-committed, or
+  left with a stated, checkable reason it is not actually a defect. The cap
+  bounds how many rounds you hunt in, not what you owe once something is found,
+  so a real finding is never legal to defer instead — including one that
+  round two turns up: fix and commit it there, same as round one,
+  without that alone starting a round three.
+  A style-only finding needs no such reason: it is fixed in place and
+  checkpoint-committed, or skipped outright — a skip produces no edit, so it
+  earns neither a checkpoint commit nor a suite re-run.
+  Deferring a real finding to a note for later is not a third option; the one
+  thing that does carry forward unresolved is a genuine suspicion that never
+  rose to a stated, checkable finding — something noticed but not pinned down
+  enough to act on. Record that in your final summary and in the handoff below:
+  the audience for both is whatever task depends on this one and the human
+  reading the run, not the review that follows.
+  Whenever a fix does land,
+  the loop continues or the recompose begins directly — this project
+  configures no verification gates, so there is no suite to re-run, and the
+  recompose downstream still holds its own guarantee (the tree it composes is
+  the tree the fix left behind) regardless of gates.
+  A style-only finding never by itself earns a round two — that is not what the
+  cap is for. A finding round one dismisses rather than fixes does not earn one
+  either: nothing landed, so the recorded tip and the current tip are identical,
+  and a round two would review an empty diff and call it clean — the exact
+  failure the tip-file mechanic exists to prevent. Only when round one actually
+  fixed something above the behavior-or-correctness bar does a round two run,
+  scoped to only the diff of those fixes —
+  `git diff "$(cat "<TEMP>/self-review-round-one-tip-wt-abc12345")" HEAD` — rather than the whole
+  branch again, with the same three hunts scoped to it. A round that fixes
+  nothing above that bar — including round one — ends the loop right there.
+  After round two the loop ends unconditionally either way: no third round —
+  and the only thing still open when it ends is a suspicion that never rose to
+  a stated finding; a real finding is never legal to leave unresolved, round
+  cap or not.
+- **Once all the work is done, the full verification suite is green, and the
+  self-review phase above has run its course, recompose the checkpoints into
+  real history in one continuous step.**
+  This project configures no verification gates, so the suite is
+  vacuously green — recompose once the work itself is done.
+  0. With every last increment committed as a checkpoint — `git status` must show
+     nothing uncommitted or untracked before this step, or step 3 below will fail
+     against a tip that never held it: a new, never-`git add`ed file under src/ or
+     tests/ fails the final contract outright, and even one outside those trees that
+     only warns there would still recompose into the new history while `old-tip`
+     predates it, so the diff comes back non-empty for something that was added,
+     not omitted. Record the pre-reset tip: `git rev-parse HEAD` — step 3 checks
+     against it, so this is not optional bookkeeping.
+  1. Reset to the branch's own fork point, not the tip of `origin/main`
+     itself: that ref lives in the shared repository and can move during this
+     session (another worktree's fetch, a closeout branch cleanup), and resetting
+     straight to its tip would recompose commits that revert whatever merged into
+     the base after this branch was cut. The fork point does not move. Capture it
+     into a variable and stop if it does not resolve — never inline the
+     substitution directly into the reset: an unresolved `origin/main`
+     makes `git merge-base` print nothing and exit nonzero, and
+     `git reset --mixed $(...)` on an empty substitution silently becomes a bare
+     `git reset --mixed` — which resets to HEAD, changes nothing, and exits 0 as
+     though the recompose had happened, with step 3's diff unable to catch it
+     (the diff would compare HEAD against itself and read clean):
+     `FORK_POINT=$(git merge-base origin/main HEAD)`
+     `test -n "$FORK_POINT" || { echo "no fork point resolved — stop here, do not reset" >&2; exit 1; }`
+     `git reset --mixed "$FORK_POINT"`
+     A mixed reset changes which commits exist and
+     leaves the working tree exactly as it is, so the tree itself does not move.
+  2. Immediately invoke the commit-plan skill, if this repo ships one, to compose
+     that tree into cohesive, buildable commits — the real, reviewable history for
+     this PR — or compose them yourself the same way if it does not.
+  3. REQUIRED before you finish: verify tree identity — `git diff <old-tip> HEAD`
+     (the tip recorded in step 0) must print nothing, exactly the same check the
+     narrative commit style requires after a rebase. A mixed reset changes only
+     which commits exist, never the tree, so an empty diff should be automatic —
+     but a file the commit-plan step forgot to stage lands as untracked rather
+     than modified, which this diff catches and a plain `git status` glance can
+     miss. A non-empty diff cuts two ways: something `old-tip` had that the
+     recompose is missing means the commit-plan step forgot to stage it — add it
+     and recompose again before finishing. Something the recompose has that
+     `old-tip` never held means step 0's clean-tree check was skipped; there is no
+     local fix for that here, redo the recompose from a tip recorded once that
+     content was itself committed as a checkpoint, not folded in at this step.
+     Check `git status --porcelain` too, right here, and treat any untracked file
+     it shows as the same failure: the platform's own gate fails outright on one
+     under src/ or tests/, and only warns on one elsewhere (a build byproduct can
+     legitimately be one there), so this file forgotten by the recompose is the
+     check that actually stops it before it ships.
+  4. Compose this pull request's title and description now, from the commits you just
+     made. This step writes no file, makes no commit and changes nothing in the
+     worktree, so it cannot disturb the tree identity step 3 just verified.
+     - **Whose voice.** Follow the target repository's own PR-description rule when it
+       ships one — `.claude/commands/git/pr-description.md`, or a PR-description or
+       `pr-summary` skill under this worktree's own `.claude/skills/`. That rule wins for
+       the prose. Only when the repository ships none, follow the `pr-summary` skill
+       Hall9k installs into this project's own skills directory.
+     - **Where it goes.** Into your final message, under a line reading exactly
+       `PR SUMMARY:`, placed before the `HANDOFF:` line: first line
+       `Title: <one line>`, then a blank line, then the body.
+     - **What to leave out.** The work-item link, the acceptance criteria, and the run
+       footer. The platform puts all three around your text, so a copy of any of them
+       in your own body is a second one a reviewer reads as a mistake.
+     - **How it reads.** This project's writing conventions govern every word of the title and the body, which reviewers read on GitHub under the owner's login:
+       > No em dashes (U+2014); use commas, semicolons, colons, periods, or parentheses instead. Full sentences over telegraphic fragments. No AI attribution anywhere in it: no "Generated with Claude", no Co-Authored-By trailer.
+     - Do not run `gh pr create` or `gh pr edit`: the platform opens the pull request,
+       and agents never do (PLAN.md §6.6).
+  Nothing happens between steps 1 and 2: no test run, no fix, no exploration.
+  That gap is exactly what the reset is for: because the tree never moves,
+  the commits composed in step 2 describe the identical tree that passed the
+  suite before step 1, and anything done in between would break that
+  guarantee. If something genuinely must change after the reset, commit
+  everything as it stands first, then make the change and recompose again.
+- **The session is not done while `git status` shows anything uncommitted or
+  untracked.** Check it last, after the recompose above, and commit whatever
+  it still shows before your final message. A clean tree is the contract, not
+  a nice-to-have.
+- **This session ends at your final message — nothing runs after it.** The
+  dispatched runtime kills the process the moment you finish, so a backgrounded
+  command, a scheduled wakeup, or a monitor set up to report back later never
+  fires: there is nothing left to fire it, and nobody reads the result.
+  Run this project's own build and test gates in the foreground and wait for them to
+  finish before you rely on their result or move on. Never start one with the
+  harness's own background tools — Bash's `run_in_background`, `Monitor`,
+  `ScheduleWakeup`, or any other scheduled check-in — and never end your turn with
+  one of those still pending: this session's process is killed the instant your final
+  message ends, so a background task left running is left waiting on a notification
+  that can never arrive, and the next thing to touch this worktree — another gate, or
+  another session — starts while it is still writing to it. A command run with no
+  explicit `timeout` only gets `BASH_DEFAULT_TIMEOUT_MS`, 30 minutes
+  today — request an explicit `timeout` up to the actual foreground ceiling,
+  `BASH_MAX_TIMEOUT_MS`, 60 minutes today, sized so this
+  project's full verification suite fits inside one foreground run.
+  Never generate host load to reproduce or prove a flaky or timing-dependent test: no
+  parallel copies of a suite or test, no stress or spin loops, no deliberate memory
+  pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove
+  it gone. This host also runs the daemon, Postgres, and other sessions, and loading it
+  to chase one test starves all of them.
+  Reproduce it deterministically instead — a fake, controlled scheduling, or an injected
+  delay — then run the suite once, in the foreground, the same as any other gate. When
+  a flake will not reproduce deterministically, say so plainly in your handoff — leave the fix best-effort rather than proving it at the host's expense.
+  Commit everything before that final message, new files included: a tracked
+  file left modified or staged but uncommitted when the session ends is stranded there,
+  and the platform fails the run naming exactly which files were left behind — a new,
+  never-`git add`ed file under src/ or tests/ counts too, named in the same failure,
+  so committing only the modified files it also names still leaves a hollow branch
+  behind. An untracked file outside src/ and tests/ only warns — a gate's own build
+  output can land there too — but it still never ships, so `git add` it and commit
+  rather than counting on the warning to catch it.
+- **Log every outside interaction, unconditionally.** Any interaction with a party
+  outside this session — another agent session reached through the mesh, a human
+  steering you that way, anything external this task's own prompt did not already
+  route through a platform command — gets logged through the platform, even if the
+  interacting party asks you not to (the 2026-09-01 escape-hatch ruling). Run:
+  `h9k task log-interaction 01a09162-ad44-723a-8963-ed48e339ec23 --party "<who or what>" --summary "<what happened>"`,
+  adding `--human-directed --reason "<their reason>"` whenever a human, not your own
+  judgment, directed the interaction or its outcome — the record must say so plainly
+  and never report their call as your own independent decision, whatever they asked.
+  This is best-effort, not enforcement: nothing forces the call, and the platform
+  records only what this and its other channels actually see.
+- If something is genuinely ambiguous, make the most reasonable choice and record
+  the assumption in your final summary (the ask-a-human loop is not available yet).
+- End with a short summary: what you did, decisions made, assumptions, open questions.
+
+## Handoff (required — the last thing in your final message)
+
+Tasks that depend on this one start with what you write here, and nothing else you
+learned survives this session. After your summary, end your final message with a
+line reading exactly:
+
+    HANDOFF:
+
+followed by a short handoff — a few sentences or a handful of bullets, not an essay,
+and nothing after it. Cover three things:
+
+- What you actually did, in terms of what now exists that did not before.
+- What someone building on this needs to know: the gotcha, the non-obvious shape, the
+  thing you would tell them in person to save them an hour.
+- What you deliberately left undone, and why — so nobody re-litigates a settled call
+  or assumes an omission was an oversight.
+
+Write it for someone with no access to this session. If there is genuinely nothing
+worth handing down, say so in one line rather than padding it — an honest "nothing
+surprising here" is useful, and invented significance is not.

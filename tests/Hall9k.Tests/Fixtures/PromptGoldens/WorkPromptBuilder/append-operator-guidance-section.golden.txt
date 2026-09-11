@@ -1,0 +1,7 @@
+## Operator guidance
+
+A human gave this instruction when retrying this task (`h9k task retry --reason`).
+Treat it as what to prioritize for this run:
+
+rebase onto origin/main first — main's own gate went red under PR #239
+
