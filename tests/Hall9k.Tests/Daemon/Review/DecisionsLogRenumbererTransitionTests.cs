@@ -17,7 +17,16 @@ namespace Hall9k.Tests.Daemon.Review;
 /// exactly once, mechanically; every other duplicate shape is left alone for
 /// <c>DecisionsLogNumberingGuardTests</c> to fail, on purpose — a hand-numbering mistake is never
 /// papered over.
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log PLACEHOLDER-f70cc244): this class's real
+/// <c>git</c> subprocess spawns (many per test, through <c>RunRebasedOntoBase</c>) were running
+/// for the whole of PR #311's own <c>ProcessManagerParityTests</c> failure window on
+/// windows-latest — confirmed from that job's own log, not assumed — while carrying no
+/// <c>[Collection]</c> of its own; see <see cref="Hall9k.Tests.Daemon.ProcessManagerParityTests"/>'s
+/// own doc comment for the evidence and the shared collection this joins.
+/// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
 public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
 {
     private readonly string _repoPath = Path.Combine(Path.GetTempPath(), $"hall9k-dlrt-{Guid.NewGuid():N}");

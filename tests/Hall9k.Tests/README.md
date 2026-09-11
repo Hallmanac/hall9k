@@ -44,6 +44,20 @@ attributes. A budget miss under load is thrown as `PublishBudgetExceededExceptio
 elapsed publish time and the dotnet-family process count it saw and classifies as an
 infrastructure-class timeout rather than a product assertion (`GateInfrastructureFailureClassifier`).
 
+## `[Collection("RealProcessSpawn")]`
+
+Carried by every class whose tests shell out to real `git` or `dotnet` subprocesses heavily enough
+to contend with `ProcessManagerParityTests`' own nested process spawn and teardown for the host
+runner's process-creation throughput (PLAN.md §16 PLACEHOLDER-f70cc244; three windows-latest
+failures on 2026-09-10, none touching `ProcessManagement`, traced to exactly this contention). The
+same idea as `[Collection("PublishesBinary")]` above, not the same mechanism: `PublishesBinary`
+membership is guarded mechanically by `PublishLaneGuardTests` because every caller goes through one
+named helper, `PublishTestSupport.RunPublishAsync`. There is no equivalent single call site for
+"spawns real processes heavily enough to matter" — `GitDescribedVersionTests` spawns `git` once and
+stays out; `GitWorktreeManagerTests` and `Hall9k.Tests.Cli.RepoMaterialiserTests` spawn it dozens of
+times per test and join — so membership here is a judgment call recorded in the Decisions Log entry
+above, not a mechanically-enforced one, and there is no guard test for it.
+
 ## `Hall9k.Tests.LockHolder`
 
 Not a third tier: a standalone executable `CrossProcessContainerGateTests` launches and kills to
