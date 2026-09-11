@@ -170,6 +170,13 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
 
     public void Apply(IEvent<RunBudgetExhausted> @event, RunListItem view) => view.State = RunState.BudgetParked;
 
+    // Mirrors RunDetails/RunAggregate (task: a session that exits at once with no work done is
+    // treated as the node failing to launch sessions): without this, this lean row stays stuck at
+    // whatever live state preceded the hold, and NodeLoad.LiveSlots keeps counting a held run as
+    // occupying a slot it is not actually using — the identical gap RunBudgetExhausted's own
+    // transition just above exists to close.
+    public void Apply(IEvent<RunLaunchHeld> @event, RunListItem view) => view.State = RunState.LaunchHeld;
+
     // Mirrors RunDetails/RunAggregate: a pre-final-pass rebase-recovery session is a live agent
     // process the same way ReviewFixDispatched's is, so this lean row needs the identical
     // transition off whatever state preceded it (including BudgetParked, on a retried recovery) —
