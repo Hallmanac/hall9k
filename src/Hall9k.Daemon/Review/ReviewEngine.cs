@@ -1286,8 +1286,15 @@ public sealed class ReviewEngine(
             // "result.Summary ?? \"(no message)\"").
             string errorSummary = result.Summary ?? "(no message)";
             bool isLaunchFailure = LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+            // Computed before the join below (independent pre-PR review, cycle 1, conformance
+            // lens, criterion 5, "the ordinary failure path stays unchanged"): a lens that has
+            // already spent its one retry must still fail outright on a standing hold, exactly as
+            // it would with none standing — joining would park it for a resume this lens was never
+            // going to get.
+            bool alreadyRetried = run.HasRetriedSessionError(RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens);
             if (isLaunchFailure
-                || await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken))
+                || (!alreadyRetried
+                    && await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken)))
             {
                 // The node never launched a working session for this lens — not this run's own
                 // fault (task: a session that exits at once with no work done is treated as the
@@ -1306,7 +1313,7 @@ public sealed class ReviewEngine(
                     cancellationToken);
             }
 
-            if (run.HasRetriedSessionError(RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens))
+            if (alreadyRetried)
             {
                 // A second consecutive error on this exact lens/cycle: the run really is
                 // failing now, so the sibling goes down with it exactly as a
@@ -1323,11 +1330,22 @@ public sealed class ReviewEngine(
             // The sibling pass, if any, is left running untouched (never terminated on this
             // account): the aggregate drops only THIS lens's own in-flight entry, so the next
             // iteration's DispatchMissingPassesAsync tops it up fresh through the identical
-            // crash-recovery top-up path a lost track already uses.
-            return await RetrySessionErrorAsync(
-                context.RunId, RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens,
+            // crash-recovery top-up path a lost track already uses. Unless the backoff itself
+            // finds a different run's hold standing once it wakes up — that turns this into the
+            // same "the run goes down, sibling included" shape as every other park/hold/fail
+            // branch above, so the sibling is terminated here too rather than left running with
+            // nothing left tracking it.
+            SessionErrorRetryOutcome retryOutcome = await RetrySessionErrorAsync(
+                context.Run.NodeId, context.RunId, RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens,
                 $"the {LensLabel(pass.Lens)} session (cycle {run.ReviewCycle})", errorSummary, result, pass.Model,
                 cancellationToken);
+            if (retryOutcome == SessionErrorRetryOutcome.Held)
+            {
+                TerminateSiblingPasses(run, pass);
+                return false;
+            }
+
+            return true;
         }
 
         if (result is null)
@@ -1407,9 +1425,9 @@ public sealed class ReviewEngine(
             // session over the same cycle's findings, the identical redispatch
             // RunBudgetExhausted's own AwaitingFix clearing already relies on.
             return await RetrySessionErrorAsync(
-                context.RunId, RunSessionLeg.Fix, run.ReviewCycle, lens: null,
+                context.Run.NodeId, context.RunId, RunSessionLeg.Fix, run.ReviewCycle, lens: null,
                 $"the fix session (cycle {run.ReviewCycle})", fixErrorSummary, result, run.ActiveFixSessionModel,
-                cancellationToken);
+                cancellationToken) == SessionErrorRetryOutcome.WillRetry;
         }
 
         if (result is null)
@@ -1424,6 +1442,20 @@ public sealed class ReviewEngine(
             run.ActiveFixSessionModel, cancellationToken);
         return true;
     }
+
+    /// <summary>
+    /// What <see cref="RetrySessionErrorAsync"/>'s own backoff wait found once it woke up: either
+    /// nothing standing, so the next <see cref="DriveAsync"/> iteration's crash-recovery top-up
+    /// redispatches this leg fresh, or a different run's own launch failure raised the node-wide
+    /// hold in the meantime, so this leg joined it instead (task: a session that exits at once
+    /// with no work done is treated as the node failing to launch sessions, criterion 2). Distinct
+    /// from a plain <c>bool</c> so the review-pass leg's own caller can tell "held" apart from
+    /// every other reason its own call might stop the loop, and terminate the sibling pass only
+    /// on that one — <see cref="RunAggregate.Apply(RunLaunchHeld)"/> clears the aggregate's own
+    /// in-flight bookkeeping, but the sibling's own OS process is this method's caller's to tear
+    /// down, exactly as every other park/hold/fail branch in this leg already does.
+    /// </summary>
+    private enum SessionErrorRetryOutcome { WillRetry, Held }
 
     /// <summary>
     /// The review-loop half of error-result retry (task: a session that reports an error result
@@ -1447,9 +1479,9 @@ public sealed class ReviewEngine(
     /// it now spends a second session as well).
     /// </para>
     /// </summary>
-    private async Task<bool> RetrySessionErrorAsync(
-        Guid runId, RunSessionLeg leg, int? cycle, ReviewLens? lens, string sourceLabel, string observedMessage,
-        AgentResult erroredResult, AgentModel erroredModel, CancellationToken cancellationToken)
+    private async Task<SessionErrorRetryOutcome> RetrySessionErrorAsync(
+        Guid nodeId, Guid runId, RunSessionLeg leg, int? cycle, ReviewLens? lens, string sourceLabel,
+        string observedMessage, AgentResult erroredResult, AgentModel erroredModel, CancellationToken cancellationToken)
     {
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -1464,7 +1496,28 @@ public sealed class ReviewEngine(
             runId, sourceLabel, observedMessage);
 
         await Task.Delay(_options.SessionErrorRetryBackoff, cancellationToken);
-        return true;
+
+        // The same hold check the build leg's own RetryBuildSessionAsync applies after its
+        // backoff (task: a session that exits at once with no work done is treated as the node
+        // failing to launch sessions, criterion 2) — a DIFFERENT run's launch failure can raise
+        // the node-wide hold at any point during this wait, and redispatching into it anyway
+        // would spend this leg's one retry on a session that cannot work yet. Tokens for this
+        // errored attempt were already recorded above, so only RunLaunchHeld is appended here.
+        if (await launchHold.JoinIfActiveAsync(nodeId, runId, cancellationToken))
+        {
+            await using (IDocumentSession holdSession = store.LightweightSession())
+            {
+                holdSession.Events.Append(runId, new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
+                await holdSession.SaveChangesAsync(cancellationToken);
+            }
+
+            logger.LogInformation(
+                "Run {RunId}: {Source}'s error retry found the node-wide launch hold standing after its backoff — held instead of retried",
+                runId, sourceLabel);
+            return SessionErrorRetryOutcome.Held;
+        }
+
+        return SessionErrorRetryOutcome.WillRetry;
     }
 
     /// <summary>
@@ -3442,9 +3495,9 @@ public sealed class ReviewEngine(
             }
 
             return await RetrySessionErrorAsync(
-                context.RunId, RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null,
+                context.Run.NodeId, context.RunId, RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null,
                 "the pre-final-pass rebase-recovery session", errorSummary, result, run.ActiveRebaseRecoveryModel,
-                cancellationToken);
+                cancellationToken) == SessionErrorRetryOutcome.WillRetry;
         }
 
         if (result is null)

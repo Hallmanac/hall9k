@@ -8309,6 +8309,98 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// Criterion 2 ("every in-place error retry waits on the hold instead of its own
+    /// SessionErrorRetryBackoff timer"), the review-pass leg's own side: unlike the test above,
+    /// where the hold is already standing before this lens's own error is even observed, here it
+    /// is a DIFFERENT run's launch failure that raises the hold WHILE this lens's own backoff is
+    /// still counting down — relaunching into it once the backoff wakes up would spend the one
+    /// retry on a resume that cannot work yet (independent pre-PR review, cycle 1, conformance
+    /// lens). The sibling pass is terminated too, the same "the run goes down, sibling included"
+    /// shape every other park/hold/fail branch in this leg already gives it.
+    /// </summary>
+    [Fact]
+    public async Task A_hold_raised_during_a_review_sessions_retry_backoff_holds_it_instead_of_retrying()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Hit a transient snag.",
+            "Nothing of my own.\n\nVERDICT: merge-ready")
+        {
+            ErrorAtSpawnIndex = { 0 },
+        };
+        DaemonOptions options = new() { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(300) };
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        Task<bool> reviewTask = NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+        await WaitForEventAsync<RunSessionErrorRetried>(store, runId, cts.Token);
+        await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+        bool mergeReady = await reviewTask;
+
+        mergeReady.Should().BeFalse("the backoff found a different run's hold standing once it woke up");
+        executor.Spawns.Should().HaveCount(2, "the retry never relaunches into the now-held node");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.LaunchHeld);
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunSessionErrorRetried>().Should().ContainSingle(
+            "the retry was durably recorded before the backoff wait even started");
+        events.OfType<RunLaunchHeld>().Should().ContainSingle(
+            "the backoff woke up to find the hold standing and joined it instead of resuming");
+    }
+
+    /// <summary>
+    /// Criterion 5 ("the ordinary failure path stays unchanged"): a lens that has already spent
+    /// its one retry must still fail outright on a second consecutive error, hold or no hold —
+    /// joining would give this lens a resume it was never going to get and misattribute its own
+    /// genuine error to the node (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public async Task A_second_consecutive_review_session_error_fails_even_while_a_hold_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        // This lens's one retry is already spent, exactly as it would be after a first error's
+        // own retry ran — seeded directly rather than waiting out a real retry cycle.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunSessionErrorRetried(
+                runId, RunSessionLeg.ReviewPass, Cycle: 1, ReviewLens.Conformance, "Internal server error", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Hit a transient snag.",
+            "Nothing of my own.\n\nVERDICT: merge-ready")
+        {
+            ErrorAtSpawnIndex = { 0 },
+        };
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a second consecutive error fails the run");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.Failed,
+            "this lens's retry is already spent, so a standing hold must not turn a genuine second error into a launch hold");
+        run.FailureReason.Should().Contain(
+            "reported an error result", "the ordinary failure path stays unchanged by an unrelated standing hold");
+
+        NodeDetails? hold = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+        hold!.LaunchHoldRunIds.Should().NotContain(runId, "a lens with no retry left to protect never joins the hold");
+    }
+
+    /// <summary>
     /// The shape that used to fall through entirely (independent pre-PR review, cycle 1, both
     /// lenses): an error result whose "result" field is missing (or non-string) parses to a
     /// null Summary, which the old "IsError: true, Summary: { }" pattern match did not treat as
@@ -8637,6 +8729,34 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     private static StackedParentWatch NewStackedParentWatch() => new(
         new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
         NullLogger<StackedParentWatch>.Instance);
+
+    /// <summary>
+    /// Polls the run's own stream for the first event of type <typeparamref name="T"/>, rather
+    /// than sleeping a fixed duration and assuming it has landed by then — a fixed sleep races
+    /// the append it is meant to wait out, and loses on a slow enough pass (a 300ms
+    /// SessionErrorRetryBackoff window is not a promise about how fast Postgres commits).
+    /// Polls every 5ms so a caller racing that same short backoff window still has room to act
+    /// inside it once this returns.
+    /// </summary>
+    private static async Task WaitForEventAsync<T>(
+        DocumentStore store, Guid runId, CancellationToken cancellationToken)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await using IQuerySession query = store.QuerySession();
+            bool found = (await query.Events.FetchStreamAsync(runId, token: cancellationToken))
+                .Any(e => e.Data is T);
+            if (found)
+            {
+                return;
+            }
+
+            await Task.Delay(5, cancellationToken);
+        }
+
+        throw new TimeoutException($"Run {runId} never recorded a {typeof(T).Name} event.");
+    }
 
     /// <summary>Writes a terminal result for a session this test seeded rather than spawned.</summary>
     private static async Task WriteScriptedResultAsync(

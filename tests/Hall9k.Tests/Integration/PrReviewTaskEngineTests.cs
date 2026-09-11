@@ -1473,15 +1473,16 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
-    /// The conformance lens's own half of the join-instead-of-failing rule
-    /// (Copilot review, PR #317, "suppressed comments": <c>AwaitConformanceAsync</c> used to send
-    /// any ordinary error straight to <c>FailAsync</c>, unlike <c>ReviewEngine</c>'s identical
-    /// branch for the review pass). An error that is not itself the zero-work shape, landing while
-    /// a DIFFERENT run's launch failure already holds this node, must hold this run too instead of
-    /// failing it — resuming here would almost certainly hit the same outage.
+    /// Unlike <c>ReviewEngine</c>'s own review-pass, fix, and rebase-recovery legs, the conformance
+    /// lens has no in-place retry to protect (independent pre-PR review, cycle 1, conformance
+    /// lens, criterion 5, "the ordinary failure path stays unchanged"): an earlier fix on this
+    /// branch (Copilot review, PR #317, "suppressed comments") mirrored those legs' own
+    /// join-instead-of-failing rule here too, but that gives this leg a resume it never had and was
+    /// never meant to get — every ordinary error already fails it outright, hold or no hold, so an
+    /// unrelated standing hold must not change that.
     /// </summary>
     [Fact]
-    public async Task A_conformance_session_error_while_a_different_runs_hold_stands_joins_it_instead_of_failing()
+    public async Task A_conformance_session_error_while_a_different_runs_hold_stands_still_fails_it()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -1509,19 +1510,17 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             await using IQuerySession query = store.QuerySession();
             RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
             run!.State.Should().Be(
-                RunState.LaunchHeld, "the conformance lens's own ordinary error joins the standing hold rather than failing the run");
+                RunState.Failed, "the conformance lens has no retry to protect, so its own ordinary error still fails the run");
 
             List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-            events.OfType<RunFailed>().Should().BeEmpty("joining the hold must never fail the run");
-            events.OfType<RunLaunchHeld>().Should().ContainSingle();
+            events.OfType<RunFailed>().Should().ContainSingle();
+            events.OfType<RunLaunchHeld>().Should().BeEmpty("an unrelated standing hold must not give this leg a resume it never had");
 
             TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
-            task.State.Value.Should().Be("Claimed", "the work is intact; the node, not this task, is what's waiting");
+            task.State.Value.Should().Be("Failed");
 
             NodeDetails? hold = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
-            hold!.LaunchHoldRunIds.Should().Contain(runId);
-            hold.LaunchHoldCauseText.Should().Be(
-                "Failed to authenticate", "a genuine error joins the episode; it never becomes its own cause");
+            hold!.LaunchHoldRunIds.Should().NotContain(runId, "this run's own genuine error is not the standing hold's cause");
         }
         finally
         {

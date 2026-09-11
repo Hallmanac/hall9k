@@ -62,6 +62,28 @@ public sealed class RunSupervisor(
 
     private readonly ConcurrentDictionary<Guid, Task> _monitors = new();
 
+    /// <summary>
+    /// How many consecutive times <see cref="ResumeLaunchHeldRunAsync"/>'s own resumed spawn has
+    /// failed for a given run, in-memory only (task: a session that exits at once with no work
+    /// done is treated as the node failing to launch sessions) — a run left <c>LaunchHeld</c> with
+    /// its own <c>LaunchHeldAt</c> untouched keeps winning <see cref="LaunchHoldEngine.OldestHeldRunAsync"/>'s
+    /// oldest-first sort forever (that method's own doc names the identical shape for an open
+    /// review lap and skips it; a spawn failure has no such skip), so nothing else this node holds
+    /// is ever probed again and the dispatcher's claim gate stays shut for good (independent
+    /// pre-PR review, cycle 1, adversarial lens). Reset on a restart deliberately — a fresh daemon
+    /// gives a run's own environment (a since-fixed worktree, for one) a clean slate rather than
+    /// carrying a stale count across a restart that may have already fixed the underlying cause.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, int> _launchHeldSpawnFailures = new();
+
+    /// <summary>
+    /// A handful of consecutive spawn failures is enough to tell "this run's own environment is
+    /// broken" (a removed worktree, for one) apart from ordinary transient contention, without
+    /// waiting so long that the wedge <see cref="_launchHeldSpawnFailures"/> exists to close sits
+    /// open for hours first.
+    /// </summary>
+    private const int MaxLaunchHeldSpawnFailures = 5;
+
     public int ActiveCount => _monitors.Count;
 
     /// <summary>
@@ -191,17 +213,41 @@ public sealed class RunSupervisor(
         switch (outcome)
         {
             case BuildSessionRetryOutcome.Resumed:
+                _launchHeldSpawnFailures.TryRemove(run.Id, out _);
                 StartMonitoring(run.Id, run.RunDirectory, run.TaskId, processId, processStartedAt, cancellationToken);
                 logger.LogInformation("Run {RunId}: launch hold resumed (pid {ProcessId})", run.Id, processId);
                 return true;
             case BuildSessionRetryOutcome.ClaimMovedOn:
+                _launchHeldSpawnFailures.TryRemove(run.Id, out _);
                 return false;
             case BuildSessionRetryOutcome.SpawnFailed:
             default:
-                // Left held rather than failed, unlike an ordinary session-error retry's own
-                // SpawnFailed handling: the whole point of this feature is that launch trouble
-                // never fails a run, and the next probe tries again.
-                logger.LogInformation("Run {RunId}: launch-hold resume spawn failed — left held; the next probe retries", run.Id);
+                // Left held rather than failed on an ordinary attempt, unlike an ordinary
+                // session-error retry's own SpawnFailed handling: the whole point of this feature
+                // is that launch trouble never fails a run, and the next probe tries again. But a
+                // spawn that keeps failing the same way run after run is this run's own problem,
+                // not the node's — its own LaunchHeldAt never moves, so left held forever it would
+                // keep winning OldestHeldRunAsync's oldest-first sort and starve every other held
+                // run's own probe (independent pre-PR review, cycle 1, adversarial lens). Failed
+                // outright once a handful of consecutive attempts have all failed the same way,
+                // exactly as the ordinary retry path already does for its own SpawnFailed.
+                int failures = _launchHeldSpawnFailures.AddOrUpdate(run.Id, 1, (_, count) => count + 1);
+                if (failures >= MaxLaunchHeldSpawnFailures)
+                {
+                    _launchHeldSpawnFailures.TryRemove(run.Id, out _);
+                    await FailRunAsync(
+                        run.Id, run.TaskId,
+                        $"Launch-hold resume spawn failed {failures} times in a row; failing rather than wedging every other held run behind it.",
+                        cancellationToken);
+                    logger.LogWarning(
+                        "Run {RunId}: launch-hold resume spawn failed {Count} times in a row — failed rather than left held forever",
+                        run.Id, failures);
+                    return false;
+                }
+
+                logger.LogInformation(
+                    "Run {RunId}: launch-hold resume spawn failed ({Count}/{Max}) — left held; the next probe retries",
+                    run.Id, failures, MaxLaunchHeldSpawnFailures);
                 return false;
         }
     }
@@ -263,6 +309,23 @@ public sealed class RunSupervisor(
                 logger.LogInformation(
                     "Adopting run {RunId}: a build-session error-result retry was recorded but never resumed — spawning it now",
                     run.Id);
+
+                // The same hold check RetryBuildSessionAsync's own backoff wait applies (task: a
+                // session that exits at once with no work done is treated as the node failing to
+                // launch sessions, criterion 2) — a different run's own launch failure could have
+                // raised the node-wide hold while the daemon was down, and resuming this one
+                // anyway would spend its one retry on a resume that cannot work yet (independent
+                // pre-PR review, cycle 1, conformance lens).
+                if (await JoinLaunchHoldIfActiveAsync(run.Id, cancellationToken))
+                {
+                    logger.LogInformation(
+                        "Run {RunId}: startup adoption found the node-wide launch hold standing — held instead of resuming the error retry",
+                        run.Id);
+                    await RefreshAdoptedLeaseAsync(run, cancellationToken);
+                    adopted++;
+                    continue;
+                }
+
                 (BuildSessionRetryOutcome Outcome, int ProcessId, DateTimeOffset ProcessStartedAt) retried =
                     await ResumeBuildSessionErrorRetryAsync(run.Id, run.TaskId, cancellationToken);
                 switch (retried.Outcome)
@@ -719,6 +782,17 @@ public sealed class RunSupervisor(
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
 
+        // Loaded here, ahead of the launch-hold decisions below, rather than inside the
+        // document session further down where it used to live (independent pre-PR review, cycle
+        // 1, conformance lens): whether this leg has already spent its one retry has to be known
+        // BEFORE deciding whether to join a standing hold (see holdAlreadyStanding below), and
+        // nothing writes to this run's own stream between this read and that decision.
+        RunAggregate? run;
+        await using (IQuerySession earlyQuery = store.QuerySession())
+        {
+            run = await earlyQuery.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
+        }
+
         // Budget-exhaustion is checked FIRST and excluded here, even though this classifies on
         // the zero-work SHAPE and never on message text otherwise (the 2026-09-07 outage's own
         // two causes, an expired credential and a GitHub fetch timeout, were already two
@@ -766,7 +840,15 @@ public sealed class RunSupervisor(
         // decision counts. JoinIfActiveAsync checks and joins in one save, never raising, so a
         // clear landing in between leaves this an ordinary error rather than turning a genuine
         // error into a fresh hold's cause.
-        bool holdAlreadyStanding = !isBudgetExhausted && !isLaunchFailure && result.IsError
+        //
+        // Also excluded: a leg that has already spent its one retry (independent pre-PR review,
+        // cycle 1, conformance lens, criterion 5, "the ordinary failure path stays unchanged") —
+        // without this, a second consecutive error that would otherwise fail the run outright
+        // joins a standing hold instead, parks rather than fails, and is later resumed with a
+        // third attempt this leg was never supposed to get, misattributing its own genuine error
+        // to the node.
+        bool alreadyRetriedBuildLeg = run?.HasRetriedSessionError(RunSessionLeg.Build, cycle: null, lens: null) ?? false;
+        bool holdAlreadyStanding = !isBudgetExhausted && !isLaunchFailure && result.IsError && !alreadyRetriedBuildLeg
             && await launchHold.JoinIfActiveAsync(node.NodeId, runId, cancellationToken);
 
         bool willRetryBuildSession;
@@ -776,7 +858,6 @@ public sealed class RunSupervisor(
             // from the stream itself rather than re-resolved, since a re-resolution could
             // disagree with what this session actually ran on if the node's model configuration
             // changed mid-run.
-            RunAggregate? run = await session.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
             AgentModel model = run?.Model ?? AgentModel.Unknown;
 
             session.Events.Append(runId, new AgentSessionCompleted(runId, now));
@@ -803,9 +884,7 @@ public sealed class RunSupervisor(
                 // would only strand this run's one retry on a resume that cannot work yet.
                 session.Events.Append(runId, new RunLaunchHeld(runId, result.Summary ?? "(no message)", now));
             }
-            else if (result.IsError
-                && run is not null
-                && !run.HasRetriedSessionError(RunSessionLeg.Build, cycle: null, lens: null))
+            else if (result.IsError && run is not null && !alreadyRetriedBuildLeg)
             {
                 // The first error for the build session (task: a session that reports an error
                 // result is retried once in place — measured 2026-09-05: bursty across only 18
@@ -865,6 +944,15 @@ public sealed class RunSupervisor(
                     return (retried.ProcessId, retried.ProcessStartedAt);
                 case BuildSessionRetryOutcome.ClaimMovedOn:
                     // Already retired with RunSuperseded inside ResumeBuildSessionErrorRetryAsync.
+                    return null;
+                case BuildSessionRetryOutcome.Held:
+                    // Already appended RunLaunchHeld inside JoinLaunchHoldIfActiveAsync — a
+                    // different run's own launch failure raised the hold during this backoff, so
+                    // this run joined it instead of spending its one retry on a resume that could
+                    // not work yet.
+                    logger.LogInformation(
+                        "Run {RunId}: the primary session's error retry found the node-wide launch hold standing after its backoff — held instead of resumed",
+                        runId);
                     return null;
                 case BuildSessionRetryOutcome.SpawnFailed:
                 default:
@@ -1370,6 +1458,13 @@ public sealed class RunSupervisor(
         ClaimMovedOn,
         /// <summary>The spawn itself could not happen (missing docs, or the resume threw) — the caller fails the run exactly as before.</summary>
         SpawnFailed,
+        /// <summary>
+        /// A different run's launch failure raised the node-wide hold while this leg's own backoff
+        /// was still waiting (task: a session that exits at once with no work done is treated as
+        /// the node failing to launch sessions, criterion 2) — this run joined the hold instead of
+        /// spending its one retry on a resume that could not work yet.
+        /// </summary>
+        Held,
     }
 
     /// <summary>
@@ -1383,7 +1478,45 @@ public sealed class RunSupervisor(
         Guid runId, Guid taskId, CancellationToken cancellationToken)
     {
         await Task.Delay(_options.SessionErrorRetryBackoff, cancellationToken);
+        if (await JoinLaunchHoldIfActiveAsync(runId, cancellationToken))
+        {
+            return (BuildSessionRetryOutcome.Held, 0, default);
+        }
+
         return await ResumeBuildSessionErrorRetryAsync(runId, taskId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Checked immediately after an in-place error retry's own backoff wait, before the resumed
+    /// spawn (task: a session that exits at once with no work done is treated as the node failing
+    /// to launch sessions, criterion 2: "every in-place error retry waits on the hold instead of
+    /// its own SessionErrorRetryBackoff timer") — a DIFFERENT run's launch failure can raise the
+    /// node-wide hold at any point during this run's own wait, and relaunching into it anyway
+    /// would spend this run's one retry on a resume that cannot work yet (independent pre-PR
+    /// review, cycle 1, conformance lens). Deliberately never called from inside
+    /// <see cref="ResumeBuildSessionErrorRetryAsync"/> itself: that method is also
+    /// <see cref="ResumeLaunchHeldRunAsync"/>'s own resume path, which must be allowed to spawn
+    /// precisely because the hold IS standing — a blanket check there would refuse its own probe.
+    /// Tokens were already recorded before the backoff wait started (this same leg's own
+    /// <see cref="RunSessionErrorRetried"/> append), so only <see cref="RunLaunchHeld"/> is
+    /// appended here, never a second <see cref="TokensRecorded"/> for a session that spent none.
+    /// </summary>
+    private async Task<bool> JoinLaunchHoldIfActiveAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        if (!await launchHold.JoinIfActiveAsync(node.NodeId, runId, cancellationToken))
+        {
+            return false;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(
+            runId,
+            new RunLaunchHeld(
+                runId,
+                "a different run's own launch failure raised the node-wide launch hold during this run's error-retry backoff",
+                DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     /// <summary>
