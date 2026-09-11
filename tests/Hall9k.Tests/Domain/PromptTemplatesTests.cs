@@ -46,6 +46,27 @@ public sealed class PromptTemplatesTests : IDisposable
         text.Should().Be("Hello, Ada. Today is Tuesday.");
     }
 
+    /// <summary>
+    /// Parameters substitute in a single pass rather than one <c>Replace</c> call per key run back
+    /// to back — the one-at-a-time shape let an earlier substitution's own value collide with a
+    /// later key's placeholder syntax and get rewritten a second time, e.g. a git branch named
+    /// literally <c>{{Day}}</c> substituted into a value ahead of the <c>Day</c> parameter itself
+    /// (independent pre-PR review, cycle 2).
+    /// </summary>
+    [Fact]
+    public void Load_substitutes_every_key_exactly_once_even_when_an_earlier_value_spells_a_later_placeholder()
+    {
+        string directory = Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "sample");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "greeting.md"), "Hello, {{Name}}. Today is {{Day}}.");
+
+        string text = PromptTemplates.Load(
+            "sample/greeting.md",
+            parameters: new Dictionary<string, string> { ["Name"] = "{{Day}}", ["Day"] = "Tuesday" });
+
+        text.Should().Be("Hello, {{Day}}. Today is Tuesday.");
+    }
+
     [Fact]
     public void A_missing_template_reports_both_locations_it_checked()
     {
@@ -54,6 +75,30 @@ public sealed class PromptTemplatesTests : IDisposable
         act.Should().Throw<FileNotFoundException>()
             .Which.Message.Should().Contain(TemplateLibraryPaths.CanonicalDirectory)
             .And.Contain(".claude/templates");
+    }
+
+    /// <summary>
+    /// Bridges an install whose first <c>h9k update</c> onto this feature ran under the OLD
+    /// binary: that binary's own <c>FinishAsync</c> never published the canonical copy, and its
+    /// own <c>StageFromRelease</c> had no "templates" entry in its skip list, so the payload's
+    /// templates landed beside the freshly staged binaries instead — exactly where
+    /// <c>AppContext.BaseDirectory</c> points once the NEW binary this same update just placed
+    /// there starts running (independent pre-PR review, cycle 1, high).
+    /// </summary>
+    [Fact]
+    public void Load_falls_back_to_a_templates_directory_beside_the_running_binary()
+    {
+        string besideBinary = Path.Combine(AppContext.BaseDirectory, "templates", "bridge-sample");
+        Directory.CreateDirectory(besideBinary);
+        File.WriteAllText(Path.Combine(besideBinary, "greeting.md"), "Hello from beside the binary.");
+        try
+        {
+            PromptTemplates.Load("bridge-sample/greeting.md").Should().Be("Hello from beside the binary.");
+        }
+        finally
+        {
+            Directory.Delete(Path.Combine(AppContext.BaseDirectory, "templates"), recursive: true);
+        }
     }
 
     [Fact]
