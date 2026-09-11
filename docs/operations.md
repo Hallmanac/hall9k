@@ -284,6 +284,7 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ├── h9kd.log                    the daemon log; h9k daemon status tails it
 ├── h9kd.pid, h9kd.lock         the local liveness probe
 ├── skills/                     the canonical skill set, published by h9k install
+├── templates/                  the canonical prompt-template set, published by h9k install (PLAN.md §16 #175)
 ├── recipes/                    the node orchestrator window's own recipe ([README's Orchestrator windows](../README.md#orchestrator-windows))
 │   ├── launch-anchor.md        platform-owned, overwritten outright on every install/update
 │   ├── settings.json           platform-owned the same way — rides the launch line as --settings
