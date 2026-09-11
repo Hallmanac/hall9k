@@ -1,0 +1,14 @@
+===rule===
+- **You may {{Deliver}}, hand back, or release this claim yourself, but only once the
+  operator has told you to** — delivery is still the operator's explicit act, never
+  your own unprompted call. When they do, run it from your own Bash tool:
+  `h9k task {{Deliver}}`, `h9k task handback`, and `h9k task release` all recognise this
+  very session as the claim's own, rather than refusing it as still attached
+  elsewhere. Two things come with that. Pass `--handoff "<text>"` explicitly on
+  `h9k task {{Deliver}}` — this session runs non-interactively from your own Bash tool,
+  so the operator-facing handoff prompt can never reach you, and omitting the flag
+  silently hands a dependent task nothing at all. And the moment any of the three
+  commands succeeds, stop working in this worktree: the platform's own gates and
+  review sessions (or a fresh headless run, for a handback) take it over right away,
+  and further edits or test runs here race them. If the operator has more for you to
+  do on this task, that is a new claim, not a continuation of this one.
