@@ -17,14 +17,35 @@ namespace Hall9k.Tests.Daemon;
 /// <para>
 /// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log PLACEHOLDER-f70cc244): three windows-latest failures on
 /// 2026-09-10 (PR #311, #312, #313 — none touching <c>ProcessManagement</c>) were traced to this
-/// repo's own <see cref="GitWorktreeManagerTests"/> and <c>Hall9k.Tests.Cli.RepoMaterialiserTests</c>
-/// (real, uncollected <c>git</c> subprocess spawners) running in xUnit's default parallel
-/// collections at the exact moment this class needed to spawn or tear down its own nested process
-/// tree — evidenced from the three jobs' own logs, not assumed. Sharing a collection with them (and
-/// <c>Hall9k.Tests.Daemon.TestScopeResolverTests</c>, a third real-git spawner) serializes the
-/// runner's own process-creation throughput the same way <c>[Collection("PublishesBinary")]</c>
-/// already serializes concurrent <c>dotnet publish</c> callers (Decisions Log #158) — removing the
-/// contention this suite itself was causing, rather than widening a deadline to hide it.
+/// repo's own real, uncollected <c>git</c>/<c>dotnet</c> subprocess spawners running in xUnit's
+/// default parallel collections at the exact moment this class needed to spawn or tear down its
+/// own nested process tree — evidenced from the three jobs' own logs, not assumed, including which
+/// class overlapped which failure: PR #311's alone overlapped
+/// <see cref="Hall9k.Tests.Daemon.Review.DecisionsLogRenumbererTransitionTests"/> and
+/// <see cref="Hall9k.Tests.Daemon.Review.DecisionsLogRenumbererFixtureTests"/> for its whole
+/// window, not <see cref="GitWorktreeManagerTests"/> or
+/// <c>Hall9k.Tests.Cli.RepoMaterialiserTests</c> (the latter only started after PR #311's failure
+/// was already logged); PR #312 and #313 overlapped <see cref="GitWorktreeManagerTests"/> and
+/// <c>RepoMaterialiserTests</c> as well as <c>Hall9k.Tests.Domain.CrossProcessContainerGateTests</c>'
+/// own real <c>dotnet</c> child (PR #312). Sharing a collection with all five (and
+/// <c>Hall9k.Tests.Daemon.TestScopeResolverTests</c>, a sixth real-git spawner) serializes the
+/// runner's own process-creation throughput — the shared resource is the runner's process-creation
+/// throughput itself, not a directory, so this is the same idea <c>[Collection("PublishesBinary")]</c>
+/// applies to concurrent <c>dotnet publish</c> callers (Decisions Log #158), but not the same
+/// mechanism: <c>PublishesBinary</c> membership is guarded mechanically
+/// (<c>PublishLaneGuardTests</c>) because every caller goes through one named helper,
+/// <c>PublishTestSupport.RunPublishAsync</c>; there is no single call site a scan could key off for
+/// "spawns real processes heavily enough to contend," so this collection's membership is a judgment
+/// call recorded here rather than a mechanically-enforced one, and is deliberately not guarded to
+/// avoid asserting a precision the source can't actually verify. <c>Hall9k.Tests.Integration.VerificationRunnerTests</c>
+/// and its other <c>[Collection("Hall9kHome")]</c> siblings that spawn real processes are left out
+/// on the same judgment: xUnit allows one collection per class, <c>Hall9kHome</c> already serializes
+/// them for install-directory isolation unrelated to this contention, none of them overlapped any
+/// of the three failing windows, and windows-latest CI itself never schedules them next to this
+/// class at all (<c>ci.yml</c> filters <c>Category=RequiresDocker</c> off that leg) — only the
+/// Windows node's own unfiltered full suite still can, a narrower, named residual left for the
+/// Decisions Log entry below rather than folded in on suspicion. Removes the contention this
+/// suite itself was causing, rather than widening a deadline to hide it.
 /// </para>
 /// </summary>
 [Collection("RealProcessSpawn")]

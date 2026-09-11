@@ -21,7 +21,16 @@ namespace Hall9k.Tests.Domain;
 /// only a real second process, killed hard enough that the OS itself tears down its open-file
 /// table, proves that.
 /// </para>
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log PLACEHOLDER-f70cc244): the real
+/// <c>dotnet</c> child this class spawns for the second claim above overlapped PR #312's own
+/// <c>ProcessManagerParityTests</c> failure window on windows-latest — confirmed from that job's
+/// own log, not assumed — while carrying no <c>[Collection]</c> of its own; see
+/// <see cref="Hall9k.Tests.Daemon.ProcessManagerParityTests"/>'s own doc comment for the evidence
+/// and the shared collection this joins.
+/// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
 public sealed class CrossProcessContainerGateTests
 {
     [Fact]

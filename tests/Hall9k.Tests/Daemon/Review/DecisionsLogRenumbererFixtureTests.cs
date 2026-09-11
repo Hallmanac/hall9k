@@ -23,6 +23,13 @@ namespace Hall9k.Tests.Daemon.Review;
 /// citation-site files (docs/scope.md carrying two, the rest one each, for the ten sites) mirror
 /// the real ones the Windows window recorded stale on 2026-09-07, so the citation rewrite runs
 /// against realistic prose and code-comment shapes rather than a single synthetic pattern.
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log PLACEHOLDER-f70cc244): this class's real
+/// <c>git</c> subprocess spawns overlapped PR #311's own <c>ProcessManagerParityTests</c> failure
+/// window on windows-latest — confirmed from that job's own log, not assumed — while carrying no
+/// <c>[Collection]</c> of its own; see <see cref="Hall9k.Tests.Daemon.ProcessManagerParityTests"/>'s
+/// own doc comment for the evidence and the shared collection this joins.
+/// </para>
 /// </summary>
 public sealed class DecisionsLogRenumbererFixtureTests : IDisposable
 {
