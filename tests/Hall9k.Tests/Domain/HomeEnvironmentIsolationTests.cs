@@ -165,6 +165,15 @@ public sealed class HomeEnvironmentIsolationTests
         "TemplateLibraryPaths.PublishedManifest",
         "TemplatePublisher.PublishCanonical(",
         "TemplatePublisher.RemovePublished(",
+        // PromptTemplates.ResolvePath falls back to TemplateLibraryPaths.CanonicalDirectory
+        // whenever a checkout's own .claude/templates does not carry the file asked for, so a test
+        // calling either of these races HALL9K_HOME exactly as directly calling
+        // TemplateLibraryPaths.CanonicalDirectory would — and ReviewLapPromptBuilder.Build calls
+        // PromptTemplates.Load internally on every one of its own branches, so it carries the same
+        // risk one layer up (independent pre-PR review, cycle 1).
+        "PromptTemplates.Load(",
+        "PromptTemplates.AppendTemplate(",
+        "ReviewLapPromptBuilder.Build(",
     ];
 
     private static readonly Regex ClassDeclaration = new(
