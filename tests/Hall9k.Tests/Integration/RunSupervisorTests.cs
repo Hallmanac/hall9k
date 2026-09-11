@@ -1738,6 +1738,62 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The active-hold probe branch's own side of the ceiling check above (independent pre-PR
+    /// review, cycle 1, adversarial lens, low): the hold blocks the dispatcher's claim gate while
+    /// it stands, but a run that was already live before this hold was ever raised still occupies
+    /// a slot, so probing the oldest held run on top of it must wait for that slot to free rather
+    /// than putting more live session trees on this node than it is configured to carry.
+    /// </summary>
+    [Fact]
+    public async Task A_hold_probe_stops_at_the_nodes_own_concurrency_ceiling()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid _, Guid heldRunId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+        (NodeContext _, Guid _, Guid liveRunId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await RetireLeftoverLaunchHeldRunsAsync(store, launchHold, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // heldRunId is the hold's own single held run; liveRunId stays Dispatched — a run
+            // already occupying a slot before this hold was ever raised, exactly the shape that
+            // must not be joined by a probe on top of it.
+            session.Events.Append(heldRunId, new AgentSessionCompleted(heldRunId, Now));
+            session.Events.Append(heldRunId, new RunLaunchHeld(heldRunId, "Failed to authenticate", Now));
+            session.Events.Append(node.NodeId, new NodeLaunchHoldRaised(node.NodeId, "Failed to authenticate", Now));
+            session.Events.Append(node.NodeId, new NodeLaunchHoldRunHeld(node.NodeId, heldRunId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        int liveBeforeThisTest = await CountLiveRunsAsync(store, node.NodeId, cts.Token);
+
+        ScriptedResumeExecutor resumeExecutor = new(ResultLine);
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = liveBeforeThisTest };
+        RunSupervisor supervisor = NewSupervisor(store, node, executor: resumeExecutor, options: options);
+        LaunchHoldMonitor monitor = new(
+            launchHold, supervisor, node, store, Options.Create(options), NullLogger<LaunchHoldMonitor>.Instance);
+
+        // Now (2026-08-16) is real wall-clock weeks in the past, so the probe's own doubling
+        // backoff has long since elapsed without any test-visible sleep.
+        await monitor.SweepOnceAsync(cts.Token);
+
+        resumeExecutor.Spawns.Should().BeEmpty(
+            "the ceiling is already met by the run that was live before the hold was raised, so the probe must wait for a slot");
+
+        NodeDetails? hold = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+        hold!.LaunchHoldProbeCount.Should().Be(0, "a probe blocked by the ceiling is not recorded as spent");
+
+        RunDetails heldRun = (await store.QuerySession().LoadAsync<RunDetails>(heldRunId, cts.Token))!;
+        heldRun.State.Should().Be(RunState.LaunchHeld, "the probe never ran, so the held run stays held for a later tick");
+
+        // liveRunId's own state is untouched by this sweep; it only exists to occupy the slot the
+        // ceiling check reads.
+        RunDetails liveRun = (await store.QuerySession().LoadAsync<RunDetails>(liveRunId, cts.Token))!;
+        liveRun.State.Should().Be(RunState.Dispatched);
+    }
+
+    /// <summary>
     /// Two cycle-3 fixes on one completion (independent pre-PR review, cycle 3): a zero-token
     /// error that misses the narrow zero-work shape (here, a slow credential refresh) is not
     /// evidence the node can launch, so it must leave a standing hold alone, and since a

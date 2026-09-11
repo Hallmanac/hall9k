@@ -151,6 +151,18 @@ public sealed class LaunchHoldMonitor(
             return;
         }
 
+        // The same ceiling the resume branch above already enforces (independent pre-PR review,
+        // cycle 1, adversarial lens, low): the hold blocks the dispatcher's claim gate while it
+        // stands, but a run that was already live before this hold was ever raised still occupies
+        // a slot, and probing the oldest held run on top of it can put more live session trees on
+        // this node than it is configured to carry. Left LaunchHeld for a later tick once a slot
+        // frees — the probe itself is on the same doubling backoff either way, so a tick skipped
+        // here costs nothing the backoff was not already going to spend.
+        if (await AtOrOverCeilingAsync(nodeId, cancellationToken))
+        {
+            return;
+        }
+
         await engine.RecordProbeAsync(nodeId, oldest.Id, cancellationToken);
         logger.LogInformation("Launch hold: probing the oldest held run {RunId}", oldest.Id);
         await supervisor.ResumeLaunchHeldRunAsync(oldest, cancellationToken);
