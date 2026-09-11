@@ -110,6 +110,36 @@ public sealed class TemplatePublisherTests : IDisposable
     }
 
     /// <summary>
+    /// The other half of the same gap: an operator's override keeps a file the canonical source
+    /// still ships, but a later revision adds a new named fragment inside it. Filling in only the
+    /// missing fragment, leaving the operator's own edit and existing fragments untouched, closes
+    /// the case cycle 1's fix left open — a builder's PromptTemplates.Load(file, "new-fragment")
+    /// would otherwise throw FileNotFoundException against the operator's stale copy (independent
+    /// pre-PR review, cycle 2).
+    /// </summary>
+    [Fact]
+    public void An_overridden_files_new_fragment_is_appended_without_touching_the_edit_or_other_fragments()
+    {
+        WriteSourcePackage("review-lap-prompt-builder", "rules.md", "===first===\n# First\n");
+        TemplatePublisher.PublishCanonical(_source);
+        File.WriteAllText(
+            Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "review-lap-prompt-builder", "rules.md"),
+            "===first===\n# edited by hand\n");
+        File.WriteAllText(
+            Path.Combine(_source, "review-lap-prompt-builder", "rules.md"),
+            "===first===\n# First\n===second===\n# Second\n");
+
+        SkillPublication publication = TemplatePublisher.PublishCanonical(_source);
+
+        publication.LeftAlone.Should().ContainSingle().Which.Should().Be("review-lap-prompt-builder");
+        string content = File.ReadAllText(
+            Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "review-lap-prompt-builder", "rules.md"));
+        content.Should().Contain("# edited by hand\n", "an operator's own edit is theirs, not install's to overwrite");
+        PromptTemplates.FragmentNames(content).Should().Equal("first", "second");
+        content.Should().Contain("===second===\n# Second\n", "a fragment the operator's own snapshot never had is not their edit to preserve as absent");
+    }
+
+    /// <summary>
     /// A file browser can drop OS metadata (Finder's .DS_Store, say) into the canonical directory
     /// just by somebody opening it — included in the content hash, that would flip an untouched
     /// package into "edited" and stop it receiving further publishes for no reason an operator ever

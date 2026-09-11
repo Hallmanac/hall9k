@@ -247,6 +247,14 @@ public static class TemplatePublisher
     /// artifact (see <see cref="IsIgnorableArtifact"/>) is skipped on both sides, the same as
     /// <see cref="ComputeContentHash"/> ignores it, so a stray <c>.DS_Store</c> a file browser left
     /// in the operator's own directory is never copied in as though it were template content.
+    /// <para>
+    /// A file present on both sides is still checked for a missing named fragment (see
+    /// <see cref="AppendMissingFragments"/>): a builder's own later revision can add a new
+    /// <c>===name===</c> fragment to a file the operator already overrode, and that gap must close
+    /// the same way a whole missing file's does, or <see cref="PromptTemplates.Load"/> throws
+    /// looking for a fragment the operator's stale copy never received (independent pre-PR review,
+    /// cycle 2).
+    /// </para>
     /// </summary>
     private static void FillMissingFiles(string source, string destination)
     {
@@ -259,14 +267,49 @@ public static class TemplatePublisher
             }
 
             string destinationFile = Path.Combine(destination, relative);
-            if (File.Exists(destinationFile))
+            if (!File.Exists(destinationFile))
             {
+                Directory.CreateDirectory(Path.GetDirectoryName(destinationFile) ?? destination);
+                File.Copy(sourceFile, destinationFile);
                 continue;
             }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(destinationFile) ?? destination);
-            File.Copy(sourceFile, destinationFile);
+            AppendMissingFragments(sourceFile, destinationFile);
         }
+    }
+
+    /// <summary>
+    /// Appends the verbatim marker-and-body block of every named fragment <paramref name="sourceFile"/>
+    /// carries that <paramref name="destinationFile"/> does not — an operator's override keeps every
+    /// fragment it already has untouched, exactly as <see cref="FillMissingFiles"/> never overwrites
+    /// a whole file the operator already has, and only receives what a later canonical revision
+    /// added since the operator's own snapshot.
+    /// </summary>
+    private static void AppendMissingFragments(string sourceFile, string destinationFile)
+    {
+        string sourceContent = File.ReadAllText(sourceFile);
+        IReadOnlyList<string> sourceFragments = PromptTemplates.FragmentNames(sourceContent);
+        if (sourceFragments.Count == 0)
+        {
+            return;
+        }
+
+        HashSet<string> destinationFragments = [.. PromptTemplates.FragmentNames(File.ReadAllText(destinationFile))];
+        List<string> missing = [.. sourceFragments.Where(name => !destinationFragments.Contains(name))];
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        StringBuilder addition = new();
+        foreach (string name in missing)
+        {
+            addition.Append('\n');
+            addition.Append(PromptTemplates.ExtractFragmentBlock(sourceContent, name, sourceFile));
+            addition.Append('\n');
+        }
+
+        File.AppendAllText(destinationFile, addition.ToString());
     }
 
     /// <summary>
