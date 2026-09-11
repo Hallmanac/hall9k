@@ -44,6 +44,13 @@ internal static class PrReviewSentinelClaim
             _ when runState == RunState.BudgetParked =>
                 ("its headless review has parked on an exhausted token budget",
                     $"h9k task abandon {taskId} if it should not continue"),
+            // Reachable the same way BudgetParked is: RunSupervisor.AdoptableRunStates lists it
+            // (task: a session that exits at once with no work done is treated as the node
+            // failing to launch sessions), and falling through to the generic case below would
+            // be exactly the drift this type's own doc comment already names as its history.
+            _ when runState == RunState.LaunchHeld =>
+                ("its headless review is waiting on a node-wide launch hold",
+                    $"h9k task abandon {taskId} if it should not continue"),
             // Never guessed at as one of the states above: a run record carrying no state at all
             // is an unread fact, said out loud, rather than a plausible-looking one filled in.
             _ when runState == RunState.Unknown =>

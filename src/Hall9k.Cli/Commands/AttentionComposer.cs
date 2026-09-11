@@ -328,6 +328,16 @@ internal static class AttentionComposer
             return new TaskAttention(AttentionLevel.WaitingHandled, BudgetHoldCause(run, budgetParkedRuns));
         }
 
+        // Held on the node, not on a person (task: a session that exits at once with no work
+        // done is treated as the node failing to launch sessions): the same waiting-but-handled
+        // shape as the budget park immediately above, one node-wide condition rather than N
+        // unrelated-looking failures. h9k status carries the one unmissable banner for the
+        // episode itself; this per-row line only ever needs to say what this row is waiting on.
+        if (run?.State == RunState.LaunchHeld)
+        {
+            return new TaskAttention(AttentionLevel.WaitingHandled, LaunchHoldCause(run));
+        }
+
         if (state == LifecycleState.Delivered)
         {
             return Delivered(task, run, id, now);
@@ -1051,6 +1061,16 @@ internal static class AttentionComposer
             run.ParkedReason, "token budget exhausted - resumes when the subscription window resets");
         return budgetParkedRuns > 1 ? $"{recorded} ({budgetParkedRuns} runs waiting)" : recorded;
     }
+
+    /// <summary>
+    /// One launch-held row's own reason (task: a session that exits at once with no work done is
+    /// treated as the node failing to launch sessions). Unlike <see cref="BudgetHoldCause"/> this
+    /// carries no board-wide count of its own: every held run is already caught by the ONE
+    /// node-wide banner <c>h9k status</c> prints for the standing episode, so a per-row count here
+    /// would only repeat what that banner already says.
+    /// </summary>
+    private static string LaunchHoldCause(RunDetails run) =>
+        Reason(run.ParkedReason, "waiting on the node to relaunch sessions");
 
     /// <summary>
     /// The review-parked row's lever, honest about the parks where one of the two verdicts

@@ -561,7 +561,14 @@ internal static class TaskStatusComposer
         // that hit the limit has exited and nothing writes to the stream until the retry sweep
         // resumes it, so measuring it against the stall threshold would rename an automatic wait
         // as a machine failure an hour later.
-        && run.State != RunState.BudgetParked;
+        && run.State != RunState.BudgetParked
+        // A node-wide launch hold is quiet by design for the identical reason (task: a session
+        // that exits at once with no work done is treated as the node failing to launch
+        // sessions), and can stand far longer than the stall threshold during a real outage —
+        // without this, every held row would eventually misreport as Stalled (a machine
+        // failure) ahead of AttentionComposer's own WaitingHandled branch for it, which checks
+        // stalled first and would never be reached.
+        && run.State != RunState.LaunchHeld;
 
     /// <summary>
     /// The coarse bucket the rollups count and h9k status groups by. Single assignment on

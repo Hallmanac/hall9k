@@ -113,12 +113,15 @@ internal static class TaskStateFilter
     /// it is a run state like the two parks beside it, so "show me everything waiting on
     /// the budget window" is answered by the same family that answers "show me everything under
     /// review", and no new group is added to a board whose groups are the lifecycle's.
+    /// <c>LaunchHeld</c> joins it for the identical reason (task: a session that exits at once
+    /// with no work done is treated as the node failing to launch sessions).
     /// </para>
     /// </summary>
     internal static readonly string[] RunStates =
     [
         RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
         RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.BudgetParked.Value,
+        RunState.LaunchHeld.Value,
         RunState.AwaitingReview.Value, RunState.ChecksFailing.Value, RunState.ReviewPending.Value,
         RunState.Conflicting.Value,
         RunState.CloseoutParked.Value, RunState.Completed.Value, RunFailedSpelling,
