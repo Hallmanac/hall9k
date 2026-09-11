@@ -80,6 +80,19 @@ public static class SessionRoleName
     /// <summary>One dispatch of the pre-final-pass rebase-recovery session, distinguished by session id since it can redispatch more than once (an error retry, or a human's needs-fixes guidance).</summary>
     public static string PreFinalPassRebase(string sessionIdShort) => $"{PreFinalPassRebasePrefix}-{sessionIdShort}";
 
+    /// <summary>
+    /// A narrow repair session dispatched when the Settling phase's own mandatory gate fails over
+    /// a tree whose most recent recorded rebase was real (task: a pre-final-pass rebase that
+    /// applies cleanly but breaks the mandatory gate gets a repair lap inside the same run instead
+    /// of failing it) — its own prefix, distinct from <see cref="PreFinalPassRebasePrefix"/>, even
+    /// though both share the rebase-recovery leg and dispatch path: this session fixes what the
+    /// gate reports broken, never a git conflict.
+    /// </summary>
+    public const string SettlingGateRepairPrefix = "settling-gate-repair";
+
+    /// <summary>One dispatch of the Settling-gate repair session, distinguished by session id since it can redispatch more than once (an error retry, or a human's needs-fixes guidance).</summary>
+    public static string SettlingGateRepair(string sessionIdShort) => $"{SettlingGateRepairPrefix}-{sessionIdShort}";
+
     /// <summary>A fix session applying a cycle's review findings.</summary>
     public static string Fix(int cycle) => $"fix-{cycle}";
 

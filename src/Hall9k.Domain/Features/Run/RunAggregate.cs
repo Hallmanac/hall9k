@@ -210,6 +210,44 @@ public sealed class RunAggregate
     /// </summary>
     public int RebaseRecoveryRounds { get; private set; }
 
+    /// <summary>The in-flight Settling-gate repair session, cleared when its outcome is recorded. Identity for adoption.</summary>
+    public Guid? ActiveSettlingGateRepairSessionId { get; private set; }
+    public int? ActiveSettlingGateRepairProcessId { get; private set; }
+    public DateTimeOffset? ActiveSettlingGateRepairProcessStartedAt { get; private set; }
+    /// <summary>The model the in-flight Settling-gate repair session was spawned on.</summary>
+    public AgentModel ActiveSettlingGateRepairModel { get; private set; } = AgentModel.Unknown;
+
+    /// <summary>
+    /// How many Settling-gate repair sessions this run has dispatched in a row without the
+    /// mandatory gate ever passing since (task: a pre-final-pass rebase that applies cleanly but
+    /// breaks the mandatory gate gets a repair lap inside the same run instead of failing it) —
+    /// the independent bound <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s dispatch checks
+    /// against <see cref="Hall9k.Daemon.DaemonOptions.MaxSettlingGateRepairRounds"/> before
+    /// spawning another one, the sibling of <see cref="RebaseRecoveryRounds"/> for this feature's
+    /// own cap. A fresh human grant (<see cref="Apply(Events.ReviewParkResolved)"/>'s MergeReady
+    /// branch) resets it — but that method's own needs-fixes branch for THIS park deliberately
+    /// does not: the task's own criteria say a needs-fixes resolve buys exactly one more round
+    /// without resetting the counter, unlike every other capped loop in this file.
+    /// </summary>
+    public int SettlingGateRepairRounds { get; private set; }
+
+    /// <summary>
+    /// The gate output the most recently dispatched (or in-flight) Settling-gate repair session
+    /// carried, or was told to carry — read back by a human-resolve redispatch
+    /// (<see cref="ReviewPhase.SettlingGateRepairNeeded"/>) so it can build a fresh session's
+    /// prompt without paying for another gate run first, mirroring how a rebase-recovery retry
+    /// redoes its own cheap git read instead (that mechanism's check is cheap; this one is a full
+    /// build/test pass, so re-running it just to redispatch would be the opposite of narrow).
+    /// </summary>
+    public string? LastSettlingGateRepairOutput { get; private set; }
+
+    /// <summary>
+    /// A human's guidance on a spent Settling-gate repair cap (h9k review resolve --needs-fixes),
+    /// carried into the one bought repair round <see cref="ReviewPhase.SettlingGateRepairNeeded"/>
+    /// dispatches. Mirrors <see cref="PendingRebaseRecoveryGuidance"/>.
+    /// </summary>
+    public string? PendingSettlingGateRepairGuidance { get; private set; }
+
     /// <summary>When a human last granted this run's task a fresh closeout budget (h9k pr resolve, Decisions Log #80, backlog 45); null until one lands.</summary>
     public DateTimeOffset? HumanGrantedAt { get; private set; }
 
@@ -876,6 +914,16 @@ public sealed class RunAggregate
         if (@event.RanFullScope)
         {
             PreFinalPassRebaseAwaitingGate = false;
+            // The Settling-gate repair cap's own confirmed-fixed signal (task: a pre-final-pass
+            // rebase that applies cleanly but breaks the mandatory gate gets a repair lap inside
+            // the same run instead of failing it): a full-scope pass only ever lands here when the
+            // mandatory gate itself passed (a failure appends VerificationFailed, never this
+            // event), so this is the identical "confirmed gone, not just claimed" reset
+            // RebaseRecoveryRounds already gets from a confirmed no-op — without it, a round spent
+            // fixing an earlier rebase's gate failure would still count against a later, unrelated
+            // one later in this same run's lifecycle (another base move, another break) instead of
+            // that failure earning its own fair cap.
+            SettlingGateRepairRounds = 0;
         }
     }
 
@@ -1262,6 +1310,29 @@ public sealed class RunAggregate
             return;
         }
 
+        // The Settling-gate repair cap's own resolve (task: a pre-final-pass rebase that applies
+        // cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
+        // failing it) — a needs-fixes verdict buys exactly one more repair round, carrying the
+        // human's text, and deliberately does NOT reset SettlingGateRepairRounds: the task's own
+        // criteria define this park's resolve behavior rather than inheriting the rebase-recovery
+        // cap's ordinary-fix-session-with-a-fresh-grant shape. A merge-ready verdict is not
+        // special-cased here — it falls through to the ordinary MergeReady branch below, the same
+        // exit a rebase-recovery cap park offers (unlike the disputed-rebase branch above, which
+        // refuses merge-ready outright because nothing has been rebased yet; here the branch is
+        // fully built, just failing its own gate).
+        if (ParkedFromReviewPhase == ReviewPhase.SettlingGateRepairCapReached
+            && @event.Verdict != ReviewVerdict.MergeReady)
+        {
+            ReviewPhase = ReviewPhase.SettlingGateRepairNeeded;
+            PendingSettlingGateRepairGuidance = @event.Reason;
+            ParkedNeedsFixesOffersNoProgress = false;
+            ParkedDisagreements = [];
+            ParkedOnReviewDisagreement = false;
+            InteractiveGateCleared = true;
+            State = RunState.UnderReview;
+            return;
+        }
+
         if (@event.Verdict == ReviewVerdict.MergeReady && ParkedFromState == RunState.Verifying)
         {
             // A thread-dispute park caught this run before the gates (log #62), and interactive
@@ -1312,6 +1383,11 @@ public sealed class RunAggregate
             // that cap re-parks on the very next check regardless of how many fresh grants the
             // human gives.
             RebaseRecoveryRounds = 0;
+            // The identical fresh-grant reset for the Settling-gate repair cap (task: a
+            // pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+            // repair lap inside the same run instead of failing it) — harmless when this park
+            // was not that one, since the count is already 0.
+            SettlingGateRepairRounds = 0;
         }
         else
         {
@@ -1334,6 +1410,10 @@ public sealed class RunAggregate
             // Same fresh-grant reset for the pre-final-pass rebase-recovery bound — see the
             // MergeReady branch above.
             RebaseRecoveryRounds = 0;
+            // Same fresh-grant reset for the Settling-gate repair cap — see the MergeReady branch
+            // above. Only ever meaningful here for a park this branch's own dedicated check above
+            // did not already intercept (any park other than SettlingGateRepairCapReached).
+            SettlingGateRepairRounds = 0;
         }
 
         ParkedNeedsFixesOffersNoProgress = false;
@@ -1610,6 +1690,14 @@ public sealed class RunAggregate
         ActiveRebaseRecoveryFromCommit = null;
     }
 
+    private void ClearActiveSettlingGateRepairSession()
+    {
+        ActiveSettlingGateRepairSessionId = null;
+        ActiveSettlingGateRepairProcessId = null;
+        ActiveSettlingGateRepairProcessStartedAt = null;
+        ActiveSettlingGateRepairModel = AgentModel.Unknown;
+    }
+
     // No-op: a logged interaction never changes RunState or any field the write path fences on
     // — it exists here only so this stream replays every event without a gap, the same convention
     // every other Run event upholds (RunDetails.ExternalInteractions is the read model anything
@@ -1831,6 +1919,31 @@ public sealed class RunAggregate
             : ReviewPhase.Settling;
     }
 
+    public void Apply(SettlingGateRepairDispatched @event)
+    {
+        ActiveSettlingGateRepairSessionId = @event.SessionId;
+        ActiveSettlingGateRepairProcessId = @event.ProcessId;
+        ActiveSettlingGateRepairProcessStartedAt = @event.ProcessStartedAt;
+        ActiveSettlingGateRepairModel = @event.Model ?? AgentModel.Unknown;
+        LastSettlingGateRepairOutput = @event.GateOutput;
+        ReviewPhase = ReviewPhase.AwaitingSettlingGateRepair;
+        State = RunState.UnderReview;
+        SettlingGateRepairRounds++;
+    }
+
+    public void Apply(SettlingGateRepairCompleted @event)
+    {
+        ClearActiveSettlingGateRepairSession();
+        PendingSettlingGateRepairGuidance = null;
+        // Always back to Settling, whatever the session claimed: unlike a rebase conflict, there is
+        // no session-declared outcome to trust or dispute here — only the mandatory gate the next
+        // Settling entry runs again is the judge of whether this round actually fixed anything (see
+        // this event's own doc).
+        ReviewPhase = ReviewPhase.Settling;
+    }
+
+    public void Apply(SettlingGateRepairCapReached @event) => ReviewPhase = ReviewPhase.SettlingGateRepairCapReached;
+
     public void Apply(ReviewRerequested @event)
     {
         ReviewRerequestCount++;
@@ -1906,6 +2019,17 @@ public sealed class RunAggregate
                 ClearActiveRebaseRecoverySession();
                 ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
                 break;
+            case ReviewPhase.AwaitingSettlingGateRepair:
+                // Mirrors the AwaitingRebaseRecovery case above (task: a pre-final-pass rebase
+                // that applies cleanly but breaks the mandatory gate gets a repair lap inside the
+                // same run instead of failing it) — the exhausted session's process is gone, so
+                // SettlingGateRepairNeeded re-enters the dispatch fresh, carrying whatever gate
+                // output and human guidance this exhaustion's own attempt already had (both left
+                // untouched here for the identical reason PendingRebaseRecoveryGuidance's own case
+                // just above leaves its own guidance untouched).
+                ClearActiveSettlingGateRepairSession();
+                ReviewPhase = ReviewPhase.SettlingGateRepairNeeded;
+                break;
         }
 
         if (PrReviewConformanceSessionId is not null && !PrReviewConformanceCompleted)
@@ -1942,8 +2066,21 @@ public sealed class RunAggregate
         }
         else if (@event.Leg == RunSessionLeg.RebaseRecovery)
         {
-            ClearActiveRebaseRecoverySession();
-            ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
+            // Both the pre-final-pass rebase-recovery session and the Settling-gate repair
+            // session (task: a pre-final-pass rebase that applies cleanly but breaks the
+            // mandatory gate gets a repair lap inside the same run instead of failing it) share
+            // this leg — the task's own smallest-shape ruling — so ReviewPhase, not the leg alone,
+            // is what tells this retry which one was actually in flight.
+            if (ReviewPhase == ReviewPhase.AwaitingSettlingGateRepair)
+            {
+                ClearActiveSettlingGateRepairSession();
+                ReviewPhase = ReviewPhase.SettlingGateRepairNeeded;
+            }
+            else
+            {
+                ClearActiveRebaseRecoverySession();
+                ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
+            }
         }
     }
 

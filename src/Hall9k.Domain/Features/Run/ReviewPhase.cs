@@ -55,4 +55,31 @@ public enum ReviewPhase
     /// next.
     /// </summary>
     RebaseRecoveryNeeded,
+
+    /// <summary>
+    /// The Settling phase's own mandatory gate failed on a tree whose most recent recorded
+    /// <see cref="Events.RunRebasedOntoBase"/> was a real rebase (task: a pre-final-pass rebase
+    /// that applies cleanly but breaks the mandatory gate gets a repair lap inside the same run
+    /// instead of failing it), and a narrow repair session — dispatched inside this same run,
+    /// carrying the gate's own output — is (or was) in flight. Its outcome has not been recorded.
+    /// </summary>
+    AwaitingSettlingGateRepair,
+
+    /// <summary>
+    /// The Settling-gate repair round cap is spent: the gate has failed this many times in a row
+    /// since the rebase, and a repair session could never make it pass. Kept distinct from
+    /// <see cref="RebaseRecoveryDisputed"/> and its own cap-park (neither applies here — nothing
+    /// about this park is a git conflict) so a human's resolve routes through this feature's own
+    /// rules rather than either of those.
+    /// </summary>
+    SettlingGateRepairCapReached,
+
+    /// <summary>
+    /// A human's needs-fixes resolve on a spent Settling-gate repair cap bought exactly one more
+    /// repair round, carrying their guidance; a fresh repair session is next. Unlike
+    /// <see cref="RebaseRecoveryNeeded"/>'s own resolve, reaching this phase deliberately does not
+    /// reset the round counter — the bought round is exempted from the cap check itself instead
+    /// (task's own criteria, not the rebase-recovery cap's inherited behavior).
+    /// </summary>
+    SettlingGateRepairNeeded,
 }

@@ -1407,6 +1407,24 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ParkedOnRebaseRecoveryDispute = @event.Data.Outcome == ReviewFixOutcome.Disputed;
     }
 
+    /// <summary>
+    /// The Settling-gate repair session's own mirror of <see cref="Apply(IEvent{PreFinalPassRebaseRecoveryDispatched}, RunDetails)"/>
+    /// (task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+    /// repair lap inside the same run instead of failing it) — without this, <c>h9k task show</c>
+    /// would read no session as running at all while this one is in flight, the same
+    /// "nothing observed" gap a stream written before session recording existed already reads as.
+    /// </summary>
+    public void Apply(IEvent<SettlingGateRepairDispatched> @event, RunDetails view)
+    {
+        StartSession(
+            view, AgentRole.Fix, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            name: @event.Data.SessionName);
+        view.State = RunState.UnderReview;
+    }
+
+    /// <summary>The repair session ended — see Apply(IEvent&lt;PreFinalPassRebaseRecoveryCompleted&gt;) above for the identical shape.</summary>
+    public void Apply(IEvent<SettlingGateRepairCompleted> @event, RunDetails view) => EndSessions(view);
+
     public void Apply(IEvent<ReviewRerequested> @event, RunDetails view)
     {
         view.ReviewRerequestCount++;

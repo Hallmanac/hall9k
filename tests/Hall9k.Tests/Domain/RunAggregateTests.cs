@@ -1468,6 +1468,44 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The Settling-gate repair session's own mirror of the rebase-recovery test just above (task:
+    /// a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair lap
+    /// inside the same run instead of failing it) — same shape, same historical bug class this
+    /// guards against: an exhausted leg left with its active identity and awaiting phase untouched
+    /// would have <c>TokenBudgetRetryEngine</c>'s own resume re-await a process that already exited,
+    /// forever.
+    /// </summary>
+    [Fact]
+    public void Budget_exhausted_settling_gate_repair_session_parks_and_reopens_settling_gate_repair_needed()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown, "Gate 'build' failed: CS0246", "settling-gate-repair"));
+
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now));
+
+        run.State.Should().Be(RunState.BudgetParked);
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.SettlingGateRepairNeeded, "the exhausted repair session redispatches fresh, not resumes");
+        run.ActiveSettlingGateRepairSessionId.Should().BeNull();
+        run.ActiveSettlingGateRepairProcessId.Should().BeNull();
+        run.LastSettlingGateRepairOutput.Should().Be(
+            "Gate 'build' failed: CS0246", "the gate output survives the exhaustion so the fresh dispatch can still carry it");
+
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 6002, Now, Now, AgentModel.Unknown, "Gate 'build' failed: CS0246", "settling-gate-repair"));
+        run.State.Should().Be(RunState.UnderReview, "redispatching the repair session is what clears the park");
+        run.ReviewPhase.Should().Be(ReviewPhase.AwaitingSettlingGateRepair);
+    }
+
+    /// <summary>
     /// The aggregate's own mirror of RunDetailsProjection's trailing-no-op guard (independent
     /// pre-PR review, cycle 1, adversarial lens): before this fix, the aggregate's own
     /// <see cref="RunAggregate.LastPreFinalPassRebaseRecovered"/> flipped back to false the
