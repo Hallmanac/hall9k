@@ -53,9 +53,9 @@ failures on 2026-09-10, none touching `ProcessManagement`, traced to exactly thi
 same idea as `[Collection("PublishesBinary")]` above, not the same mechanism: `PublishesBinary`
 membership is guarded mechanically by `PublishLaneGuardTests` because every caller goes through one
 named helper, `PublishTestSupport.RunPublishAsync`. There is no equivalent single call site for
-"spawns real processes heavily enough to matter" — `GitDescribedVersionTests` spawns `git` once and
+"spawns real processes heavily enough to matter": `GitDescribedVersionTests` spawns `git` once and
 stays out; `GitWorktreeManagerTests` and `Hall9k.Tests.Cli.RepoMaterialiserTests` spawn it dozens of
-times per test and join — so membership here is a judgment call recorded in the Decisions Log entry
+times per test and join, so membership here is a judgment call recorded in the Decisions Log entry
 above, not a mechanically-enforced one, and there is no guard test for it.
 
 ## `Hall9k.Tests.LockHolder`
