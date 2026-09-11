@@ -84,6 +84,54 @@ public sealed class TemplatePublisherTests : IDisposable
             .Should().Be("# edited by hand\n", "an operator's own edit is theirs, not install's to overwrite");
     }
 
+    /// <summary>
+    /// An operator's override must not strand a builder: a package they overrode before the source
+    /// shipped a new file must still end up with that file once it is published, closing the gap a
+    /// builder's own PromptTemplates.Load would otherwise throw FileNotFoundException on
+    /// (independent pre-PR review, cycle 1).
+    /// </summary>
+    [Fact]
+    public void An_overridden_package_missing_a_new_source_file_is_filled_in_without_touching_the_edit()
+    {
+        WriteSourcePackage("review-lap-prompt-builder", "objective.md", "# Stated objective\n");
+        TemplatePublisher.PublishCanonical(_source);
+        File.WriteAllText(
+            Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "review-lap-prompt-builder", "objective.md"),
+            "# edited by hand\n");
+        File.WriteAllText(Path.Combine(_source, "review-lap-prompt-builder", "closing.md"), "# Closing\n");
+
+        SkillPublication publication = TemplatePublisher.PublishCanonical(_source);
+
+        publication.LeftAlone.Should().ContainSingle().Which.Should().Be("review-lap-prompt-builder");
+        File.ReadAllText(Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "review-lap-prompt-builder", "objective.md"))
+            .Should().Be("# edited by hand\n", "an operator's own edit is theirs, not install's to overwrite");
+        File.ReadAllText(Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "review-lap-prompt-builder", "closing.md"))
+            .Should().Be("# Closing\n", "a file the operator's own snapshot never had is not their edit to preserve as absent");
+    }
+
+    /// <summary>
+    /// A file browser can drop OS metadata (Finder's .DS_Store, say) into the canonical directory
+    /// just by somebody opening it — included in the content hash, that would flip an untouched
+    /// package into "edited" and stop it receiving further publishes for no reason an operator ever
+    /// intended.
+    /// </summary>
+    [Fact]
+    public void A_stray_DS_Store_in_the_published_directory_does_not_shadow_the_package()
+    {
+        WriteSourcePackage("review-lap-prompt-builder", "objective.md", "# Stated objective\n");
+        TemplatePublisher.PublishCanonical(_source);
+        File.WriteAllText(
+            Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "review-lap-prompt-builder", ".DS_Store"), "junk");
+        WriteSourcePackage("review-lap-prompt-builder", "objective.md", "# Updated objective\n");
+
+        SkillPublication publication = TemplatePublisher.PublishCanonical(_source);
+
+        publication.Published.Should().ContainSingle().Which.Should().Be("review-lap-prompt-builder");
+        publication.LeftAlone.Should().BeEmpty();
+        File.ReadAllText(Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "review-lap-prompt-builder", "objective.md"))
+            .Should().Be("# Updated objective\n");
+    }
+
     [Fact]
     public void A_package_the_source_no_longer_ships_is_retired()
     {
