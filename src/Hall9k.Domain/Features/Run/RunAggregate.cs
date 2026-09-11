@@ -2142,6 +2142,14 @@ public sealed class RunAggregate
                 ClearActiveRebaseRecoverySession();
                 ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
                 break;
+            case ReviewPhase.AwaitingSettlingGateRepair:
+                // Mirrors Apply(RunBudgetExhausted)'s identical case: the give-back matters here
+                // too, since Apply(SettlingGateRepairDispatched) already counted the held attempt
+                // as a round and the redispatch below counts it again.
+                SettlingGateRepairRounds--;
+                ClearActiveSettlingGateRepairSession();
+                ReviewPhase = ReviewPhase.SettlingGateRepairNeeded;
+                break;
         }
 
         // Mirrors Apply(RunBudgetExhausted)'s identical flag for the pr-review task type's own
