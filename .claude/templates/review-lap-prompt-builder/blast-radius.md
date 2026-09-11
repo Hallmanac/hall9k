@@ -1,7 +1,9 @@
 ===heading===
 ## Surfaces touched
-===no-file-list===
-gh reported no file list for this pull request, so the blast radius below could not be computed. GitHub's own totals for it are {{Counted}}. Read the diff directly (`git diff` in the worktree, if you have one) rather than treating this absence as a small change.
+===no-file-list-with-count===
+gh reported no file list for this pull request, so the blast radius below could not be computed. GitHub's own totals for it are {{ChangedFiles}} file(s), +{{Additions}}/-{{Deletions}}. Read the diff directly (`git diff` in the worktree, if you have one) rather than treating this absence as a small change.
+===no-file-list-no-count===
+gh reported no file list for this pull request, so the blast radius below could not be computed. GitHub's own totals for it are +{{Additions}}/-{{Deletions}}, with no file count reported either. Read the diff directly (`git diff` in the worktree, if you have one) rather than treating this absence as a small change.
 ===summary===
 {{FileCount}} {{FileWord}}, +{{Additions}}/-{{Deletions}} overall, across {{Surfaces}}:
 ===truncated===
