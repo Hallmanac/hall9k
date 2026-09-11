@@ -6,6 +6,7 @@ using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
+using Hall9k.Cli.Prompts;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Storage;
 using Microsoft.Win32;
@@ -153,6 +154,11 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         RecipeSkillPublisher.RemoveNodeAdapter(stillPresent);
         List<string> allSkillsRemoved = [.. skillsRemoved, .. recipeSkillRemoved];
         bool allSkillManifestsConfirmed = skillManifestConfirmed && recipeSkillManifestConfirmed;
+        // The canonical prompt-template set (this task: agent prompt prose lives in shipped
+        // markdown templates rather than hard-coded C# strings) — a sibling of the skill set with
+        // its own manifest, held to the identical name-and-content-hash removal discipline.
+        (IReadOnlyList<string> templatesRemoved, bool templatesManifestConfirmed) =
+            TemplatePublisher.RemovePublished(stillPresent);
         stillPresent.AddRange(RemoveInstallOwnedEntries(InstallOwnedEntries(home, stillPresent)));
         // Swept only now, never earlier: RecipeSkillPublisher.RemovePublished/RemoveNodeAdapter
         // only ever remove the orchestrator-recipe-generator skill and its adapter symlink, so
@@ -169,7 +175,9 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
         TryRemoveIfEmpty(home, stillPresent);
         bool homeFullyRemoved = stillPresent.Count == 0 && pathLinkRemoved;
 
-        ReportHomeRemoval(home, homeExistedBeforeRemoval, stillPresent, allSkillsRemoved, allSkillManifestsConfirmed);
+        ReportHomeRemoval(
+            home, homeExistedBeforeRemoval, stillPresent, allSkillsRemoved, allSkillManifestsConfirmed,
+            templatesRemoved, templatesManifestConfirmed);
         PrintSummary(settings.PurgeData, dataTierOutcome, daemonStopped: true, homeRemovalOutcome: homeFullyRemoved);
 
         return dataTierOk && homeFullyRemoved ? ExitCodes.Ok : ExitCodes.Error;
@@ -1105,7 +1113,8 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
     /// </summary>
     private static void ReportHomeRemoval(
         string home, bool homeExistedBeforeRemoval, IReadOnlyList<string> stillPresent,
-        IReadOnlyList<string> skillsRemoved, bool skillManifestConfirmed)
+        IReadOnlyList<string> skillsRemoved, bool skillManifestConfirmed,
+        IReadOnlyList<string> templatesRemoved, bool templatesManifestConfirmed)
     {
         if (stillPresent.Count > 0)
         {
@@ -1121,11 +1130,17 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 path => string.Equals(path, SkillLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase));
             bool includesSkillsDirectory = stillPresent.Any(
                 path => string.Equals(path, SkillLibraryPaths.CanonicalDirectory, StringComparison.OrdinalIgnoreCase));
+            bool includesTemplatesManifest = stillPresent.Any(
+                path => string.Equals(path, TemplateLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase));
+            bool includesTemplatesDirectory = stillPresent.Any(
+                path => string.Equals(path, TemplateLibraryPaths.CanonicalDirectory, StringComparison.OrdinalIgnoreCase));
 
             if (stillPresent.Any(path =>
                 !string.Equals(path, home, StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(path, SkillLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(path, SkillLibraryPaths.CanonicalDirectory, StringComparison.OrdinalIgnoreCase)))
+                && !string.Equals(path, SkillLibraryPaths.CanonicalDirectory, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(path, TemplateLibraryPaths.PublishedManifest, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(path, TemplateLibraryPaths.CanonicalDirectory, StringComparison.OrdinalIgnoreCase)))
             {
                 AnsiConsole.MarkupLine(
                     "[dim]Still in use — most likely this very h9k, if you are running the installed binary. "
@@ -1167,6 +1182,25 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                     + "apart from one of your own, and would misclassify the whole published set as your "
                     + "overrides. Retry once whatever is holding it lets go.");
             }
+
+            if (includesTemplatesDirectory)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{TemplateLibraryPaths.CanonicalDirectory.EscapeMarkup()} could not be confirmed "
+                    + "empty[/] — an operator can and does write templates of their own straight into that same "
+                    + "directory, beside the published set, so its contents could not be told apart from those "
+                    + "this pass. Do not delete it by hand: fix whatever is blocking the read and run h9k "
+                    + "uninstall again.");
+            }
+
+            if (includesTemplatesManifest)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]{TemplateLibraryPaths.PublishedManifest.EscapeMarkup()} could not be read this pass[/] "
+                    + "— do not delete it by hand: without it, a later h9k install cannot tell a published template "
+                    + "apart from one of your own, and would misclassify the whole published set as your "
+                    + "overrides. Retry once whatever is holding it lets go.");
+            }
         }
 
         string skillsClause = !skillManifestConfirmed
@@ -1176,6 +1210,15 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
                 ? $"the skill set ({string.Join(", ", skillsRemoved).EscapeMarkup()})"
                 : "the skill set (nothing to remove there — none was ever published, or what is there was edited "
                     + "since and left alone)";
+
+        string templatesClause = !templatesManifestConfirmed
+            ? "the prompt-template set (left untouched — its manifest could not be read this pass, so a "
+                + "published template cannot be told apart from an operator's own file; retry once whatever is "
+                + "holding it lets go)"
+            : templatesRemoved.Count > 0
+                ? $"the prompt-template set ({string.Join(", ", templatesRemoved).EscapeMarkup()})"
+                : "the prompt-template set (nothing to remove there — none was ever published, or what is there "
+                    + "was edited since and left alone)";
 
         if (!Directory.Exists(home))
         {
@@ -1188,14 +1231,14 @@ public sealed class UninstallCommand : Hall9kAsyncCommand<UninstallCommand.Setti
 
         AnsiConsole.MarkupLine(stillPresent.Count > 0
             ? $"[yellow]Could not fully remove[/] the install's own files from {home.EscapeMarkup()} — see what's "
-                + $"still there above. What did come off (of bin/, {skillsClause}, the Postgres compose file, "
-                + "and the daemon's log/pid/lock files) is whatever is not listed above. What remains besides "
-                + "that — a project home, config.json, credentials, anything else you, install itself, or "
-                + "another tool put there — is not install's to remove, and was left alone."
+                + $"still there above. What did come off (of bin/, {skillsClause}, {templatesClause}, the "
+                + "Postgres compose file, and the daemon's log/pid/lock files) is whatever is not listed above. "
+                + "What remains besides that — a project home, config.json, credentials, anything else you, "
+                + "install itself, or another tool put there — is not install's to remove, and was left alone."
             : $"[green]Removed[/] the install's own files from {home.EscapeMarkup()}: bin/, {skillsClause}, "
-                + "the Postgres compose file, and the daemon's log/pid/lock files. What remains there — a "
-                + "project home, config.json, credentials, anything else you, install itself, or another "
-                + "tool put there — is not install's to remove, and was left alone.");
+                + $"{templatesClause}, the Postgres compose file, and the daemon's log/pid/lock files. What "
+                + "remains there — a project home, config.json, credentials, anything else you, install itself, "
+                + "or another tool put there — is not install's to remove, and was left alone.");
     }
 
     /// <summary>
