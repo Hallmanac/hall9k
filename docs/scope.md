@@ -55,7 +55,7 @@ the run outright: one narrow repair session dispatched inside the same run, carr
 output, bounded by its own round cap distinct from the rebase-recovery session's — and a repair
 round that lands still earns a fresh-context review before the run may settle, the same guarantee a
 recovered rebase already gets. Only a repair round that cannot make the gate pass parks for a human
-(PLAN.md §16, Decisions Log #PLACEHOLDER-01a0766f).
+(PLAN.md §16, Decisions Log #PLACEHOLDER-8a6bc1c1).
 
 Two things about that loop have been hardened by incident rather than by design review: leases
 survive a laptop lid closing without spawning duplicate agents, and daemon catch-up after a

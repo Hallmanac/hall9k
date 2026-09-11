@@ -383,8 +383,9 @@ task is `Failed` and waiting on one of the three human exits. One mandatory gate
 the full-scope gate that runs immediately before the pull request settles gets one narrow repair
 lap inside the same run — no task reopen — when the run's branch was rebased onto its base
 immediately beforehand and the gate fails on that real rebase; only a repair round that cannot
-make the gate pass falls back to the ordinary fail-hard contract described here (PLAN.md §16,
-Decisions Log #PLACEHOLDER-01a0766f).
+make the gate pass parks the run for a human, rather than failing it the way the ordinary
+fail-hard contract described here otherwise would (PLAN.md §16, Decisions Log
+#PLACEHOLDER-8a6bc1c1).
 
 Every headless session runs these gates in the foreground and never with a background tool
 (`run_in_background`, `Monitor`, `ScheduleWakeup`) still pending when its turn ends — the session's
