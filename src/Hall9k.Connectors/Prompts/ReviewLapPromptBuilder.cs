@@ -286,10 +286,14 @@ public static class ReviewLapPromptBuilder
             // own length, which is zero here, and "0 file(s)" in the branch whose whole point is
             // admitting a gap reads as "this pull request changes nothing" — the opposite of what
             // is known (self-review, round two).
-            string counted = pullRequest.ChangedFiles > 0
-                ? $"{pullRequest.ChangedFiles} file(s), +{pullRequest.Additions}/-{pullRequest.Deletions}"
-                : $"+{pullRequest.Additions}/-{pullRequest.Deletions}, with no file count reported either";
-            prompt.AppendLine(Fragment(templateFile, "no-file-list", ("Counted", counted)));
+            prompt.AppendLine(pullRequest.ChangedFiles > 0
+                ? Fragment(templateFile, "no-file-list-with-count",
+                    ("ChangedFiles", pullRequest.ChangedFiles.ToString(CultureInfo.InvariantCulture)),
+                    ("Additions", pullRequest.Additions.ToString(CultureInfo.InvariantCulture)),
+                    ("Deletions", pullRequest.Deletions.ToString(CultureInfo.InvariantCulture)))
+                : Fragment(templateFile, "no-file-list-no-count",
+                    ("Additions", pullRequest.Additions.ToString(CultureInfo.InvariantCulture)),
+                    ("Deletions", pullRequest.Deletions.ToString(CultureInfo.InvariantCulture))));
             prompt.AppendLine();
             return;
         }
