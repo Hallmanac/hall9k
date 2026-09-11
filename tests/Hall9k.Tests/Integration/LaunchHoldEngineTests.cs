@@ -5,7 +5,11 @@ using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Marten;
 using Microsoft.Extensions.Logging;
@@ -157,6 +161,35 @@ public sealed class LaunchHoldEngineTests(PostgresFixture postgres) : IClassFixt
         second.LaunchHoldProbeCount.Should().Be(0);
     }
 
+    /// <summary>
+    /// <see cref="LaunchHoldEngine.ClearIfEvidencedAsync"/> must ignore a completion whose own
+    /// session started before the hold's own raise (independent pre-PR review, cycle 1,
+    /// adversarial lens): that session was already running when the outage began, so its eventual
+    /// completion — whatever it reports — proves nothing about whether a fresh launch works right
+    /// now. Only a session started at or after the raise counts as fresh evidence.
+    /// </summary>
+    [Fact]
+    public async Task ClearIfEvidencedAsync_ignores_a_session_that_predates_the_holds_own_raise()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine engine = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        Guid runId = DomainId.New();
+        await engine.RaiseOrJoinAsync(node.NodeId, runId, "Failed to authenticate", cts.Token);
+        NodeDetails? hold = await engine.CurrentHoldAsync(node.NodeId, cts.Token);
+        DateTimeOffset raisedAt = hold!.LaunchHoldRaisedAt!.Value;
+
+        (await engine.ClearIfEvidencedAsync(node.NodeId, raisedAt.AddSeconds(-30), cts.Token)).Should().BeFalse(
+            "a session that started before the hold's own raise is not fresh evidence");
+        (await engine.CurrentHoldAsync(node.NodeId, cts.Token))!.LaunchHoldActive.Should().BeTrue();
+
+        (await engine.ClearIfEvidencedAsync(node.NodeId, raisedAt.AddSeconds(1), cts.Token)).Should().BeTrue(
+            "a session started after the hold's own raise is fresh evidence and clears it");
+        (await engine.CurrentHoldAsync(node.NodeId, cts.Token))!.LaunchHoldActive.Should().BeFalse();
+    }
+
     [Fact]
     public async Task The_oldest_held_run_is_the_one_the_probe_would_relaunch_next()
     {
@@ -173,6 +206,98 @@ public sealed class LaunchHoldEngineTests(PostgresFixture postgres) : IClassFixt
         RunDetails? oldest = await engine.OldestHeldRunAsync(node.NodeId, cts.Token);
         oldest.Should().NotBeNull();
         oldest!.Id.Should().Be(older, "the longest-waiting held run is probed first, so one persistently dead run never starves the others");
+    }
+
+    /// <summary>
+    /// A Now-speed auto-pr-review run carries the ceiling-exempt <see cref="Guid.Empty"/> on
+    /// <see cref="RunDetails.NodeId"/>, so the plain <c>NodeId == nodeId</c> filter alone would
+    /// never find it once it is held — <see cref="LaunchHoldEngine.HeldRunsAsync"/> must widen for
+    /// it exactly as <c>RunSupervisor.SentinelPrReviewCandidatesAsync</c> and
+    /// <c>TokenBudgetRetryEngine.SentinelPrReviewCandidatesAsync</c> already do for adoption and
+    /// the budget retry sweep (independent pre-PR review, cycle 1, both lenses): without the
+    /// widening, such a run is held but the probe never finds it again, and if it is the only run
+    /// held, the hold never clears and the dispatcher never claims again.
+    /// </summary>
+    [Fact]
+    public async Task A_sentinel_pr_review_runs_own_hold_is_found_by_the_probe()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        // This class's tests all share one reused node stream (NodeBootstrapSeed's own doc), and
+        // a sibling test's own seeded LaunchHeld run is never retired afterward, so a much older
+        // heldAt is what makes this run unambiguously the oldest rather than racing whatever a
+        // sibling test happened to seed at the shared `Now` constant.
+        Guid runId = await SeedSentinelLaunchHeldPrReviewRunAsync(store, node, Now.AddYears(-1), cts.Token);
+
+        LaunchHoldEngine engine = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        IReadOnlyList<RunDetails> held = await engine.HeldRunsAsync(node.NodeId, cts.Token);
+        held.Should().Contain(run => run.Id == runId, "a sentinel pr-review run's own hold must still be found by the probe");
+
+        RunDetails? oldest = await engine.OldestHeldRunAsync(node.NodeId, cts.Token);
+        oldest.Should().NotBeNull();
+        oldest!.Id.Should().Be(runId, "the sentinel run is the oldest held run, so the probe must find it, not skip past it");
+    }
+
+    /// <summary>
+    /// Seeds a PrReview task claimed deliberately (the shape <c>AutoPrReviewEngine</c>'s own
+    /// "now" speed produces) with its run dispatched under the ceiling-exempt
+    /// <see cref="Guid.Empty"/> <c>NodeId</c> sentinel and this node's own <c>DispatchingNodeId</c>,
+    /// then held exactly like <see cref="SeedLaunchHeldRunAsync"/> does for an ordinary run.
+    /// </summary>
+    private static async Task<Guid> SeedSentinelLaunchHeldPrReviewRunAsync(
+        DocumentStore store, NodeContext node, DateTimeOffset heldAt, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, DomainId.New(), "Review pull request acme/web#9", ["the verdict is submitted"],
+                TaskType.PrReview, null, null,
+                new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/web#9"), heldAt, node.OwnerId),
+            node.OwnerId, heldAt);
+        TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+            task, node.OwnerId, runId, heldAt, dependencyOverrideAcknowledged: false);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, Guid.Empty, node.OwnerId, claimed.LeaseGeneration, DomainId.New(),
+            "/wt/sentinel-held", "pr/9", ExecutorMode.Subscription, heldAt,
+            RunDirectory: "/tmp/sentinel-held-run-dir", DispatchingNodeId: node.NodeId));
+        session.Events.Append(runId, new RunProcessStarted(runId, 4483, heldAt));
+        session.Events.Append(runId, new RunLaunchHeld(runId, "Failed to authenticate", heldAt));
+        await session.SaveChangesAsync(cancellationToken);
+        return runId;
+    }
+
+    /// <summary>
+    /// A run rejoining the same standing episode after a failed probe must not inflate
+    /// <see cref="NodeDetails.LaunchHoldRunCount"/> past the number of distinct runs actually
+    /// waiting (independent pre-PR review, cycle 1, both lenses): the count is documented as
+    /// "distinct runs" and printed as "N run(s) waiting" by both CLI surfaces, and
+    /// <see cref="NodeLaunchHoldEpisodes"/>'s own replay already tracks it with a
+    /// <c>HashSet&lt;Guid&gt;</c> for exactly this reason.
+    /// </summary>
+    [Fact]
+    public async Task A_run_rejoining_after_a_failed_probe_is_not_counted_twice()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine engine = new(store, NullLogger<LaunchHoldEngine>.Instance);
+
+        Guid firstRun = DomainId.New();
+        Guid secondRun = DomainId.New();
+        await engine.RaiseOrJoinAsync(node.NodeId, firstRun, "Failed to authenticate", cts.Token);
+        await engine.RecordProbeAsync(node.NodeId, firstRun, cts.Token);
+        // The probe relaunched firstRun and it failed the same way again — the same run
+        // rejoining the still-standing episode, not a second distinct run.
+        await engine.RaiseOrJoinAsync(node.NodeId, firstRun, "Failed to authenticate", cts.Token);
+        await engine.RaiseOrJoinAsync(node.NodeId, secondRun, "Failed to authenticate", cts.Token);
+
+        NodeDetails? details = await engine.CurrentHoldAsync(node.NodeId, cts.Token);
+        details!.LaunchHoldRunCount.Should().Be(
+            2, "firstRun rejoined once after a failed probe; only two distinct runs are actually waiting");
     }
 
     /// <summary>

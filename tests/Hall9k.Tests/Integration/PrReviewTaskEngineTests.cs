@@ -467,7 +467,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             ]}}}}}
             """;
         AutoPrReviewEngine engine = new(
-            store, node, NewLauncher(store, node), ScriptedGh("brian", removalJson), NullLogger<AutoPrReviewEngine>.Instance);
+            store, node, NewLauncher(store, node), ScriptedGh("brian", removalJson), new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
         try
         {
@@ -517,7 +517,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             ]}}}}}
             """;
         AutoPrReviewEngine engine = new(
-            store, node, NewLauncher(store, node), ScriptedGh("brian", requestOnlyJson), NullLogger<AutoPrReviewEngine>.Instance);
+            store, node, NewLauncher(store, node), ScriptedGh("brian", requestOnlyJson), new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
         try
         {
@@ -560,7 +560,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             ]}}}}}
             """;
         AutoPrReviewEngine engine = new(
-            store, node, NewLauncher(store, node), ScriptedGh("brian", removalJson), NullLogger<AutoPrReviewEngine>.Instance);
+            store, node, NewLauncher(store, node), ScriptedGh("brian", removalJson), new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
         try
         {
@@ -688,7 +688,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             return Task.FromResult(new ProcessResult(0, RequestedAtNowTimelineJson, string.Empty));
         };
 
-        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
         try
         {
@@ -727,6 +727,113 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             // loop sweeps every opted-in project regardless of which test created it — left
             // opted-in, this project's still-Published/Claimed tasks would be swept, and
             // mis-recalled, by whichever sibling test happens to run next.
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// A Now-speed candidate must take the ordinary queue-first slot, never the ceiling-exempt
+    /// immediate launch, while a node-wide launch hold stands on this node (task: a session that
+    /// exits at once with no work done is treated as the node failing to launch sessions;
+    /// independent pre-PR review, cycle 1, conformance lens): this sweep dispatches straight
+    /// through <c>RunLauncher</c>, never through <c>DispatchEngine</c>'s own claim gate, which is
+    /// what already refuses to claim into a held node for every other kind of task — without this
+    /// check, each new pull request this sweep sees during the outage would strand one more task
+    /// exactly the way the hold exists to prevent.
+    /// </summary>
+    [Fact]
+    public async Task Now_speed_defers_to_queue_first_while_a_node_wide_launch_hold_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        await SeedDefaultAdoptionAsync(store, node, cts.Token);
+        const string repository = "acme/mint-hold-test";
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), "auto-pr-review-now-hold", "/tmp/auto-pr-review-now-hold-repo",
+                new Uri($"https://github.com/{repository}"), "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            ProjectSettingsChanged optedIn = ProjectDecider.ChangeSettings(
+                project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+                Optional<IReadOnlyList<ContextLink>>.None, Now, node.OwnerId,
+                autoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Now));
+            session.Events.Append(projectId, optedIn);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string listJson = """
+            [
+              {"number":9201,"url":"https://github.com/acme/mint-hold-test/pull/9201","title":"Held","body":"no links here"}
+            ]
+            """;
+
+        ProcessRunner gh = (fileName, arguments, _, _) =>
+        {
+            if (IsRepositoryHostRead(arguments))
+            {
+                return Task.FromResult(new ProcessResult(1, string.Empty, "no repository this test knows"));
+            }
+
+            if (arguments.Contains("user"))
+            {
+                return Task.FromResult(new ProcessResult(0, "brian\n", string.Empty));
+            }
+
+            if (arguments.Contains("list"))
+            {
+                return Task.FromResult(new ProcessResult(
+                    0, AsksAbout(arguments, repository) ? listJson : "[]", string.Empty));
+            }
+
+            if (arguments.Contains("view"))
+            {
+                int number = arguments
+                    .Select(argument => int.TryParse(argument, out int parsed) ? parsed : (int?)null)
+                    .First(parsed => parsed.HasValue)!.Value;
+                int repoIndex = arguments.ToList().IndexOf("--repo");
+                string requestRepository = repoIndex >= 0 && repoIndex + 1 < arguments.Count
+                    ? arguments[repoIndex + 1]
+                    : repository;
+                string json = $$"""
+                    {"number":{{number}},"title":"Pull request #{{number}}","body":"no links here",
+                     "state":"OPEN","url":"https://github.com/{{requestRepository}}/pull/{{number}}","baseRefName":"main"}
+                    """;
+                return Task.FromResult(new ProcessResult(0, json, string.Empty));
+            }
+
+            return Task.FromResult(new ProcessResult(0, RequestedAtNowTimelineJson, string.Empty));
+        };
+
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, launchHold, NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            TaskListItem minted = (await query.Query<TaskListItem>()
+                .Where(task => task.ProjectId == projectId)
+                .ToListAsync(cts.Token)).Single();
+
+            IReadOnlyList<JasperFx.Events.IEvent> stream = await query.Events.FetchStreamAsync(minted.Id, token: cts.Token);
+            stream.Select(recorded => recorded.Data).OfType<TaskClaimed>().Should().BeEmpty(
+                "a node-wide launch hold stands, so this sweep never claims or launches directly into it");
+            stream.Select(recorded => recorded.Data).OfType<TaskRevised>().Should().ContainSingle(
+                revised => revised.QueuePriority.HasValue && revised.QueuePriority.Value,
+                "a Now candidate deferred by the hold still takes the queue-first marker rather than waiting a full poll interval");
+        }
+        finally
+        {
+            await launchHold.ClearIfActiveAsync(node.NodeId, CancellationToken.None);
             await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
         }
     }
@@ -840,7 +947,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             return Task.FromResult(new ProcessResult(0, RequestedAtNowTimelineJson, string.Empty));
         };
 
-        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
         try
         {
@@ -944,7 +1051,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             return Task.FromResult(new ProcessResult(0, "{}", string.Empty));
         };
 
-        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
         try
         {
@@ -1086,7 +1193,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             return Task.FromResult(new ProcessResult(0, timelineJson, string.Empty));
         };
 
-        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, NullLogger<AutoPrReviewEngine>.Instance);
+        AutoPrReviewEngine engine = new(store, node, NewLauncher(store, node), gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
 
         try
         {
@@ -2017,6 +2124,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         ListLogger<AutoPrReviewEngine> logger = new();
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddMinutes(5)),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             logger);
 
         try
@@ -2084,6 +2192,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddMinutes(5)),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             NullLogger<AutoPrReviewEngine>.Instance);
 
         await engine.PollOnceAsync(cts.Token);
@@ -2133,6 +2242,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddDays(-14)),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             NullLogger<AutoPrReviewEngine>.Instance);
 
         try
@@ -2196,7 +2306,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         ListLogger<AutoPrReviewEngine> logger = new();
         AutoPrReviewEngine engine = new(
-            store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"), logger);
+            store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"), new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), logger);
 
         try
         {
@@ -2274,7 +2384,9 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         ListLogger<AutoPrReviewMonitor> monitorLogger = new();
         ListLogger<AutoPrReviewEngine> engineLogger = new();
         AutoPrReviewMonitor monitor = new(
-            new AutoPrReviewEngine(store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"), engineLogger),
+            new AutoPrReviewEngine(
+                store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"),
+                new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), engineLogger),
             node,
             Options.Create(new DaemonOptions()),
             monitorLogger);
@@ -2346,6 +2458,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             NullLogger<AutoPrReviewEngine>.Instance);
 
         try
@@ -2409,6 +2522,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             NullLogger<AutoPrReviewEngine>.Instance);
 
         try
@@ -2475,6 +2589,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         ListLogger<AutoPrReviewEngine> logger = new();
         AutoPrReviewEngine engine = new(
             store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddMinutes(5)),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             logger);
 
         try
