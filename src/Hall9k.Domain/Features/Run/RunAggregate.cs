@@ -325,6 +325,18 @@ public sealed class RunAggregate
     /// </summary>
     public bool PrReviewConformanceBudgetExhausted { get; private set; }
 
+    /// <summary>
+    /// Set when a node-wide launch hold (task: a session that exits at once with no work done
+    /// is treated as the node failing to launch sessions) catches the conformance lens mid-flight
+    /// — the exact same role <see cref="PrReviewConformanceBudgetExhausted"/> already plays for a
+    /// budget park: tells <see cref="RunSupervisor.ResumeLaunchHeldRunAsync"/> to re-enter the
+    /// pr-review loop instead of "--resume"-ing the primary session's own (unrelated) process, and
+    /// tells <see cref="PrReviewEngine"/>'s own redispatch check to treat the held session's
+    /// leftover stream file as stale rather than a resumable result. Cleared the moment a fresh
+    /// conformance session dispatches.
+    /// </summary>
+    public bool PrReviewConformanceLaunchHeld { get; private set; }
+
     /// <summary>The owner's h9k review resolve --merge-ready verdict on a pr-review park: walk done, close the task.</summary>
     public bool PrReviewDelivered { get; private set; }
 
@@ -1251,6 +1263,7 @@ public sealed class RunAggregate
         PrReviewConformanceProcessStartedAt = @event.ProcessStartedAt;
         PrReviewConformanceCompleted = false;
         PrReviewConformanceBudgetExhausted = false;
+        PrReviewConformanceLaunchHeld = false;
         PrReviewConformanceModel = @event.Model;
         State = RunState.UnderReview;
     }
@@ -2129,6 +2142,15 @@ public sealed class RunAggregate
                 ClearActiveRebaseRecoverySession();
                 ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
                 break;
+        }
+
+        // Mirrors Apply(RunBudgetExhausted)'s identical flag for the pr-review task type's own
+        // conformance lens, which touches none of the ReviewPhase cases above (PrReviewEngine's
+        // class doc comment explains why): without this, a resumed run would read the held
+        // session's own leftover stream file as still live and never redispatch a fresh one.
+        if (PrReviewConformanceSessionId is not null && !PrReviewConformanceCompleted)
+        {
+            PrReviewConformanceLaunchHeld = true;
         }
     }
 
