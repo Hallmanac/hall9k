@@ -280,6 +280,13 @@ internal static class TaskPhaseComposer
             // names the wait itself: the retry sweep is what ends it, not a human.
             "BudgetParked" => new TaskPhase("waiting on the budget window", SessionLiveness.NotApplicable,
                 "the daemon retries hourly; nothing is running"),
+            // Held on the node rather than on a person or the clock (task: a session that exits
+            // at once with no work done is treated as the node failing to launch sessions). The
+            // session that hit the shape has already exited, so the line says nothing about
+            // liveness and names the wait itself: the node-wide hold's own probe is what ends
+            // it, not a human.
+            "LaunchHeld" => new TaskPhase("waiting on the node", SessionLiveness.NotApplicable,
+                "a node-wide launch hold covers it; the daemon relaunches automatically"),
             // The run ended and the task's own transition has not committed yet: the closing
             // half of the dispatch handoff, and a lane nothing is working in.
             "Completed" or "Failed" or "Killed" or "Superseded" => new TaskPhase(
@@ -470,6 +477,8 @@ internal static class TaskPhaseComposer
                 SessionLiveness.NotApplicable, "the worktree is yours until you resolve it"),
             "BudgetParked" => new TaskPhase($"{pullRequest} open — waiting on the budget window",
                 SessionLiveness.NotApplicable, "the daemon retries hourly; nothing is running"),
+            "LaunchHeld" => new TaskPhase($"{pullRequest} open — waiting on the node",
+                SessionLiveness.NotApplicable, "a node-wide launch hold covers it; the daemon relaunches automatically"),
             _ => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable),
         };
     }

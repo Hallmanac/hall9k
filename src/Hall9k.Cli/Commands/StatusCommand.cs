@@ -120,6 +120,23 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             AnsiConsole.MarkupLine(line);
         }
 
+        // One unmissable line while a node-wide launch hold stands (task: a session that exits
+        // at once with no work done is treated as the node failing to launch sessions) — every
+        // held task's own row still reads waiting-but-handled (AttentionComposer), so this is the
+        // one place the episode itself, and the fix, is said out loud.
+        try
+        {
+            LaunchHoldStatus? launchHold = await LaunchHoldStatus.ReadAsync(session, cancellationToken);
+            if (launchHold is { Active: true })
+            {
+                AnsiConsole.MarkupLine(launchHold.NeedsYouLine);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]launch hold: unavailable ({exception.Message})[/]");
+        }
+
         await WriteAutoPrReviewAsync(session, rows, now, cancellationToken);
 
         int listed = 0;

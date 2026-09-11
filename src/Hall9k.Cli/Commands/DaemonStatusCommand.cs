@@ -2,6 +2,7 @@ using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
+using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -45,6 +46,24 @@ public sealed class DaemonStatusCommand : Hall9kAsyncCommand<DaemonStatusCommand
             { IsEnabled: true } => $"[dim]autostart: enabled ({autostart.MechanismDescription} — starts at login; disable with h9k daemon autostart disable)[/]",
             _ => "[dim]autostart: disabled (opt in with h9k daemon autostart enable)[/]",
         });
+
+        // The hold's own start time and probe count (task: a session that exits at once with no
+        // work done is treated as the node failing to launch sessions) — h9k status carries the
+        // fix; this is the operator's "how long has this actually been going" glance.
+        try
+        {
+            using var store = CliStore.Open();
+            await using IQuerySession session = store.QuerySession();
+            LaunchHoldStatus? launchHold = await LaunchHoldStatus.ReadAsync(session, cancellationToken);
+            if (launchHold is { Active: true })
+            {
+                AnsiConsole.MarkupLine(launchHold.DaemonStatusLine);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]launch hold: unavailable ({exception.Message})[/]");
+        }
 
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
         foreach (string line in OperatingSettingsRendering.ProblemLines(report))
