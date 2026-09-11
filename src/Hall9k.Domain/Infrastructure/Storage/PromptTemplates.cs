@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Hall9k.Domain.Infrastructure.Storage;
 
@@ -12,11 +13,13 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// by walking up from the running assembly to the checkout root, when a checkout is present at all
 /// (a dev loop, a <c>--repo</c> install, or the test suite reading its own checkout's prose); the
 /// install's own canonical copy (<see cref="TemplateLibraryPaths.CanonicalDirectory"/>, what
-/// <c>h9k install</c> publishes) only when running from an install with no checkout to read
-/// instead, or when the checkout does not carry the template being asked for. The two are never
-/// blended for a single template: resolution stops at the first directory that actually has the
-/// file, so the test suite always reads the checkout's own prose rather than whatever a prior
-/// install happened to publish to this machine.
+/// <c>h9k install</c> publishes) next, when running from an install with no checkout to read
+/// instead, or when the checkout does not carry the template being asked for; then a
+/// <c>templates</c> directory beside the running binary itself, a one-time bridge for an install
+/// whose first <c>h9k update</c> onto this feature ran under the OLD binary and so never published
+/// the canonical copy at all. None of the three are ever blended for a single template: resolution
+/// stops at the first directory that actually has the file, so the test suite always reads the
+/// checkout's own prose rather than whatever a prior install happened to publish to this machine.
 /// </para>
 /// <para>
 /// A builder never hands a session a path into either copy — see this task's own turn-one-cost
@@ -38,18 +41,23 @@ public static class PromptTemplates
     {
         string raw = File.ReadAllText(ResolvePath(relativePath));
         string text = fragment is null ? raw : ExtractFragment(raw, fragment, relativePath);
-        if (parameters is null)
-        {
-            return text;
-        }
-
-        foreach ((string key, string value) in parameters)
-        {
-            text = text.Replace("{{" + key + "}}", value, StringComparison.Ordinal);
-        }
-
-        return text;
+        return parameters is null ? text : SubstitutePlaceholders(text, parameters);
     }
+
+    /// <summary>
+    /// Every <c>{{Key}}</c> placeholder replaced in a single pass over <paramref name="text"/>,
+    /// rather than one <c>Replace</c> call per parameter run back to back — the one-at-a-time
+    /// shape let an earlier substitution's own VALUE (relayed, externally authored text a caller
+    /// never controls, such as a pull request's head branch name) accidentally match a LATER
+    /// key's placeholder syntax and get rewritten a second time. A placeholder naming a key not in
+    /// <paramref name="parameters"/> is left exactly as written, the same as the old code left it
+    /// untouched (independent pre-PR review, cycle 2).
+    /// </summary>
+    private static string SubstitutePlaceholders(string text, IReadOnlyDictionary<string, string> parameters) =>
+        Regex.Replace(
+            text,
+            "{{(?<key>[A-Za-z0-9_]+)}}",
+            match => parameters.TryGetValue(match.Groups["key"].Value, out string? value) ? value : match.Value);
 
     /// <summary>
     /// Loads a template (or, with <paramref name="fragment"/>, one of its named fragments — see
@@ -173,10 +181,28 @@ public static class PromptTemplates
             return canonical;
         }
 
+        // Bridges the one-time transition an install still carrying a pre-templates binary hits:
+        // that old h9k runs h9k update itself, so it is the OLD FinishAsync — with no
+        // PublishTemplates call — that finishes the swap, and the old StageFromRelease has no
+        // "templates" entry in its own skip list, so the payload's templates/ lands beside the
+        // fresh binaries at ~/.hall9k/bin/templates instead of at the canonical directory above.
+        // The new h9k that just got swapped into place runs from that same bin directory, so
+        // checking beside itself finds exactly what that old update run left there, without
+        // requiring the operator to know to run install or update a second time (independent
+        // pre-PR review, cycle 1, high).
+        string besideBinary = Path.Combine(AppContext.BaseDirectory, "templates", relativePath);
+        if (File.Exists(besideBinary))
+        {
+            return besideBinary;
+        }
+
         throw new FileNotFoundException(
             $"No prompt template found for '{relativePath}' — checked this checkout's .claude/templates "
-            + "(the source copy, preferred when a checkout is present) and " + canonical + " (the install's "
-            + "own canonical copy, checked when running from an install with no checkout to read instead).",
+            + "(the source copy, preferred when a checkout is present), " + canonical + " (the install's "
+            + "own canonical copy, checked when running from an install with no checkout to read instead), "
+            + "and " + besideBinary + " (a same-directory fallback for a pre-templates install's first "
+            + "h9k update). Run h9k update (or h9k install --repo/--from-release) again to publish the "
+            + "canonical copy.",
             relativePath);
     }
 
