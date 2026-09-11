@@ -74,8 +74,10 @@ failing to launch a working session rather than the task's own failure. The daem
 node-wide launch hold instead of failing the run, stops the dispatcher's own claim gate while the
 hold stands, and routes every in-place session-error retry on that node into the hold too rather
 than letting each one spend its own retry on a resume that cannot work yet — so an outage fails
-one node, never a queue of tasks one by one. `h9k status`/`h9k daemon status` show a NEEDS YOU line
-naming the cause and the likely fix while the hold stands. Nothing needs a human lever to clear it:
+one node, never a queue of tasks one by one. `h9k status` shows a NEEDS YOU line naming the cause
+and the likely fix while the hold stands; `h9k daemon status` shows the same cause alongside the
+hold's start time and probe count, without the fix, since `h9k status` already carries it. Nothing
+needs a human lever to clear it:
 `LaunchHoldMonitor`'s own probe relaunches the single oldest held run on a doubling backoff, and
 the first relaunch that actually records tokens — not merely one that survives, since a process can
 stay alive while doing nothing — clears the hold and resumes every run it held in place, worktree
