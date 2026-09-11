@@ -14,7 +14,20 @@ namespace Hall9k.Tests.Daemon;
 /// identical assertions passing against both real implementations, each proven on its own CI leg
 /// rather than asserted from a fake. Commands are the one thing that cannot be written once, since
 /// there is no shell both platforms share; each helper below picks the native equivalent.
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log PLACEHOLDER-f70cc244): three windows-latest failures on
+/// 2026-09-10 (PR #311, #312, #313 — none touching <c>ProcessManagement</c>) were traced to this
+/// repo's own <see cref="GitWorktreeManagerTests"/> and <c>Hall9k.Tests.Cli.RepoMaterialiserTests</c>
+/// (real, uncollected <c>git</c> subprocess spawners) running in xUnit's default parallel
+/// collections at the exact moment this class needed to spawn or tear down its own nested process
+/// tree — evidenced from the three jobs' own logs, not assumed. Sharing a collection with them (and
+/// <c>Hall9k.Tests.Daemon.TestScopeResolverTests</c>, a third real-git spawner) serializes the
+/// runner's own process-creation throughput the same way <c>[Collection("PublishesBinary")]</c>
+/// already serializes concurrent <c>dotnet publish</c> callers (Decisions Log #158) — removing the
+/// contention this suite itself was causing, rather than widening a deadline to hide it.
+/// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
 public sealed class ProcessManagerParityTests : IDisposable
 {
     private readonly string _directory = Directory.CreateTempSubdirectory("hall9k-process-manager-parity-").FullName;

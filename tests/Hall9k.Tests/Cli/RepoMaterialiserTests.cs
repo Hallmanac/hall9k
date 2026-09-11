@@ -18,7 +18,15 @@ namespace Hall9k.Tests.Cli;
 /// The remote is a bare repository in a temp directory, which is a perfectly ordinary git
 /// remote — the recipe never assumes a network, and neither does this.
 /// </para>
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log PLACEHOLDER-f70cc244): this class's real
+/// <c>git</c> subprocess spawns ran concurrently with
+/// <see cref="Hall9k.Tests.Daemon.ProcessManagerParityTests"/> in xUnit's default parallel
+/// collections on windows-latest and starved its own nested process spawn/teardown; see that
+/// class's own doc comment for the evidence and the shared collection this joins.
+/// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
 public sealed class RepoMaterialiserTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-mat-{Guid.NewGuid():N}");

@@ -8,6 +8,14 @@ using Xunit;
 
 namespace Hall9k.Tests.Daemon;
 
+/// <summary>
+/// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log PLACEHOLDER-f70cc244): this class's real
+/// <c>git</c> subprocess spawns (worktree create, clone, fetch — dozens per test) ran concurrently
+/// with <see cref="Hall9k.Tests.Daemon.ProcessManagerParityTests"/> in xUnit's default parallel
+/// collections on windows-latest and starved its own nested process spawn/teardown; see that
+/// class's own doc comment for the evidence and the shared collection this joins.
+/// </summary>
+[Collection("RealProcessSpawn")]
 public sealed class GitWorktreeManagerTests : IDisposable
 {
     private readonly string _root;
