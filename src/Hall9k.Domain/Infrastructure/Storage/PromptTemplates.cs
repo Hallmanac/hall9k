@@ -8,13 +8,15 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// prose, so where a template lives is never a second thing to keep in sync with the builder that
 /// reads it.
 /// <para>
-/// Resolution order: the install's own canonical copy (<see cref="TemplateLibraryPaths.CanonicalDirectory"/>,
-/// what <c>h9k install</c> publishes) first; when a template is not there — a dev loop running
-/// straight out of a checkout, or the test suite, neither of which has ever run <c>h9k install</c>
-/// — this repository's own source copy under <c>.claude/templates</c>, found by walking up from
-/// the running assembly to the checkout root. The two are never blended for a single template:
-/// resolution stops at the first directory that actually has the file, exactly as a caller reading
-/// only the canonical copy would see once an install has published it.
+/// Resolution order: this repository's own source copy under <c>.claude/templates</c> first, found
+/// by walking up from the running assembly to the checkout root, when a checkout is present at all
+/// (a dev loop, a <c>--repo</c> install, or the test suite reading its own checkout's prose); the
+/// install's own canonical copy (<see cref="TemplateLibraryPaths.CanonicalDirectory"/>, what
+/// <c>h9k install</c> publishes) only when running from an install with no checkout to read
+/// instead, or when the checkout does not carry the template being asked for. The two are never
+/// blended for a single template: resolution stops at the first directory that actually has the
+/// file, so the test suite always reads the checkout's own prose rather than whatever a prior
+/// install happened to publish to this machine.
 /// </para>
 /// <para>
 /// A builder never hands a session a path into either copy — see this task's own turn-one-cost
@@ -86,7 +88,7 @@ public static class PromptTemplates
         int end = lines.Length;
         for (int index = start + 1; index < lines.Length; index++)
         {
-            if (lines[index].StartsWith("===", StringComparison.Ordinal) && lines[index].EndsWith("===", StringComparison.Ordinal))
+            if (IsFragmentMarker(lines[index]))
             {
                 end = index;
                 break;
@@ -102,14 +104,29 @@ public static class PromptTemplates
         return string.Join('\n', body);
     }
 
-    private static string ResolvePath(string relativePath)
+    /// <summary>
+    /// A fragment terminator line: <c>===</c>, a non-empty name that is not itself all <c>=</c>
+    /// characters, then <c>===</c>. The plain <c>StartsWith("===") &amp;&amp; EndsWith("===")</c>
+    /// this replaced also matched a bare Markdown setext heading underline (<c>===</c> on its own
+    /// line, or any longer run of just <c>=</c>) — content a fragment's own body is free to carry —
+    /// which would have cut the fragment short at that line instead of treating it as prose
+    /// (independent pre-PR review, cycle 1).
+    /// </summary>
+    private static bool IsFragmentMarker(string line)
     {
-        string canonical = Path.Combine(TemplateLibraryPaths.CanonicalDirectory, relativePath);
-        if (File.Exists(canonical))
+        if (line.Length < 7
+            || !line.StartsWith("===", StringComparison.Ordinal)
+            || !line.EndsWith("===", StringComparison.Ordinal))
         {
-            return canonical;
+            return false;
         }
 
+        string middle = line[3..^3];
+        return middle.Any(character => character != '=');
+    }
+
+    private static string ResolvePath(string relativePath)
+    {
         if (FindRepositoryRoot(AppContext.BaseDirectory) is { } repoRoot)
         {
             string source = Path.Combine(repoRoot, ".claude", "templates", relativePath);
@@ -119,10 +136,16 @@ public static class PromptTemplates
             }
         }
 
+        string canonical = Path.Combine(TemplateLibraryPaths.CanonicalDirectory, relativePath);
+        if (File.Exists(canonical))
+        {
+            return canonical;
+        }
+
         throw new FileNotFoundException(
-            $"No prompt template found for '{relativePath}' — checked {canonical} (the install's own "
-            + "canonical copy) and this checkout's .claude/templates (the source copy neither a dev loop "
-            + "nor the test suite has ever published).",
+            $"No prompt template found for '{relativePath}' — checked this checkout's .claude/templates "
+            + "(the source copy, preferred when a checkout is present) and " + canonical + " (the install's "
+            + "own canonical copy, checked when running from an install with no checkout to read instead).",
             relativePath);
     }
 

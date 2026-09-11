@@ -7,9 +7,10 @@ namespace Hall9k.Tests.Domain;
 /// <summary>
 /// <see cref="PromptTemplates"/>'s own contract: substitution, exact line reconstruction from a
 /// template file's own newlines (never <see cref="Environment.NewLine"/> read raw off disk), and
-/// resolving the install's canonical copy ahead of this checkout's own source copy.
+/// resolving the install's canonical copy — the only place these fixtures ever write a template —
+/// once a checkout's own <c>.claude/templates</c> does not carry the relative path being asked for.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (the canonical directory PromptTemplates checks first),
+// Redirects the process-wide HALL9K_HOME (the canonical directory PromptTemplates falls back to),
 // so it shares the collection with every other test that does.
 [Collection("Hall9kHome")]
 public sealed class PromptTemplatesTests : IDisposable
@@ -70,6 +71,27 @@ public sealed class PromptTemplatesTests : IDisposable
             parameters: new Dictionary<string, string> { ["Count"] = "3 threads" })
             .Should().Be(" — all 3 threads unchanged.");
         PromptTemplates.Load("sample/bundle.md", fragment: "none").Should().Be(" — they opened none.");
+    }
+
+    /// <summary>
+    /// A bare Markdown setext heading underline (just <c>===</c>, or any longer run of only
+    /// <c>=</c>) is content a fragment's own body is free to carry, and must not be mistaken for
+    /// the next fragment's own <c>===name===</c> marker — the two used to collide because the
+    /// terminator search only checked that a line started and ended with <c>===</c>, which a bare
+    /// underline satisfies trivially (independent pre-PR review, cycle 1).
+    /// </summary>
+    [Fact]
+    public void A_bare_markdown_underline_inside_a_fragment_does_not_end_it_early()
+    {
+        string directory = Path.Combine(TemplateLibraryPaths.CanonicalDirectory, "sample");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(
+            Path.Combine(directory, "underline.md"),
+            "===opening===\nHeading\n===\nMore prose under the underline.\n===closing===\nDone.\n");
+
+        PromptTemplates.Load("sample/underline.md", fragment: "opening")
+            .Should().Be("Heading\n===\nMore prose under the underline.");
+        PromptTemplates.Load("sample/underline.md", fragment: "closing").Should().Be("Done.");
     }
 
     [Fact]
