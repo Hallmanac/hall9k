@@ -123,6 +123,21 @@ public sealed class RunSupervisor(
     /// </summary>
     public async Task<bool> ResumeLaunchHeldRunAsync(RunDetails run, CancellationToken cancellationToken)
     {
+        if (_monitors.ContainsKey(run.Id))
+        {
+            // Already being resumed: LaunchHoldMonitor's own inactive-branch sweep re-reads every
+            // held run each PollInterval, and a run stays LaunchHeld in RunDetails until the
+            // pipeline THIS resume already started appends the event that finally moves it off —
+            // which, for a mid-review or mid-pr-review-conformance resume, can easily outlast one
+            // poll tick (a repository-lock-gated git fetch, for one). Without this guard, the next
+            // tick calls back in and starts a second, untracked pipeline over the same run and
+            // worktree before the first one's own ResumePipeline even records itself in _monitors
+            // (independent pre-PR review, cycle 3, adversarial lens) — ResumeStrandedPipelinesAsync
+            // and the crash-recovery top-up already de-duplicate the identical way before calling
+            // into ResumePipeline/StartMonitoring; this is that same de-duplication, applied here.
+            return false;
+        }
+
         await using IQuerySession query = store.QuerySession();
         TaskDetails? task = await query.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
         if (task is null || task.State != TaskState.Claimed || task.CurrentRunId != run.Id)
@@ -157,8 +172,15 @@ public sealed class RunSupervisor(
             return false;
         }
 
-        if (aggregate.ReviewPhase != ReviewPhase.None)
+        if (aggregate.ReviewPhase != ReviewPhase.None
+            || (task.Type == TaskType.PrReview && aggregate.PrReviewConformanceLaunchHeld))
         {
+            // The pr-review task's own loop never touches ReviewPhase (PrReviewEngine's class doc
+            // comment explains why), so the second clause is its equivalent of the first: the hold
+            // caught the conformance lens, not the primary adversarial session, and there is no
+            // process left to "--resume" — PrReviewEngine.ReviewAsync redispatches it fresh, the
+            // same routing TokenBudgetRetryEngine.RetryOneAsync already gives its own identical
+            // budget-exhaustion case.
             ResumeReviewLoop(run, cancellationToken);
             logger.LogInformation("Run {RunId}: launch hold resumed mid-review — resuming the review loop", run.Id);
             return true;
@@ -723,10 +745,29 @@ public sealed class RunSupervisor(
         {
             await launchHold.RaiseOrJoinAsync(node.NodeId, runId, result.Summary ?? "(no message)", cancellationToken);
         }
-        else
+        else if (LaunchFailureClassifier.RecordedTokens(result))
         {
+            // Evidence is "this launch spent tokens", not merely "this launch did not match the
+            // narrow zero-work shape" (independent pre-PR review, cycle 3, conformance lens,
+            // criterion 3): a zero-token result that missed IsLaunchFailure for some other reason
+            // — a slow credential refresh past LaunchFailureMaxDuration, or DurationMs recorded as
+            // null — is not proof this node can launch a working session, and must leave a
+            // standing hold alone rather than clear it on nothing.
             await launchHold.ClearIfEvidencedAsync(node.NodeId, processStartedAt, cancellationToken);
         }
+
+        // A genuine error that is not itself the zero-work shape must still not spend this run's
+        // one in-place retry resuming into a node a DIFFERENT run's own launch failure already
+        // holds (independent pre-PR review, cycle 3, both lenses) — the resume would almost
+        // certainly fail the identical way, and by the time it does, the one retry this run gets
+        // is already gone, leaving its next genuine error nothing left to retry with. Decided
+        // AFTER the raise/clear decision above so a clear this exact result just earned
+        // (RecordedTokens) is reflected here too: only a hold that is STILL standing after that
+        // decision counts. JoinIfActiveAsync checks and joins in one save, never raising, so a
+        // clear landing in between leaves this an ordinary error rather than turning a genuine
+        // error into a fresh hold's cause.
+        bool holdAlreadyStanding = !isBudgetExhausted && !isLaunchFailure && result.IsError
+            && await launchHold.JoinIfActiveAsync(node.NodeId, runId, cancellationToken);
 
         bool willRetryBuildSession;
         await using (IDocumentSession session = store.LightweightSession())
@@ -752,11 +793,14 @@ public sealed class RunSupervisor(
                     "Run {RunId}: token budget exhausted — parked rather than failed; the daemon retries hourly. {Message}",
                     runId, summary);
             }
-            else if (isLaunchFailure)
+            else if (isLaunchFailure || holdAlreadyStanding)
             {
                 // The node never actually launched a working session — not this run's own fault,
                 // so it holds rather than failing or spending its one in-place retry. A node-wide
-                // launch hold's own probe is what clears this, never a per-run timer.
+                // launch hold's own probe is what clears this, never a per-run timer. Reached
+                // either because THIS session itself was the zero-work shape, or because a
+                // DIFFERENT run's own launch failure already holds this node and resuming here
+                // would only strand this run's one retry on a resume that cannot work yet.
                 session.Events.Append(runId, new RunLaunchHeld(runId, result.Summary ?? "(no message)", now));
             }
             else if (result.IsError

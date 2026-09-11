@@ -1285,18 +1285,25 @@ public sealed class ReviewEngine(
             // own equivalent already falls back the same way (RunSupervisor.cs's
             // "result.Summary ?? \"(no message)\"").
             string errorSummary = result.Summary ?? "(no message)";
-            if (LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration))
+            bool isLaunchFailure = LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+            if (isLaunchFailure
+                || await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken))
             {
                 // The node never launched a working session for this lens — not this run's own
                 // fault (task: a session that exits at once with no work done is treated as the
-                // node failing to launch sessions). Mirrors the budget park immediately above:
+                // node failing to launch sessions) — either because THIS session itself was the
+                // zero-work shape, or because a DIFFERENT run's own launch failure already holds
+                // this node (independent pre-PR review, cycle 3, both lenses): resuming here would
+                // almost certainly fail the identical way, and by the time it does, the one retry
+                // this run gets below is already gone. Mirrors the budget park immediately above:
                 // RunAggregate.Apply(RunLaunchHeld) clears every in-flight pass, sibling included,
                 // so the sibling is terminated here rather than left running with nothing left
                 // tracking it — DispatchMissingPassesAsync redispatches both fresh once this run
                 // resumes.
                 TerminateSiblingPasses(run, pass);
                 return await HoldForLaunchFailureAsync(
-                    context.Run.NodeId, context.RunId, errorSummary, result, pass.Model, cancellationToken);
+                    context.Run.NodeId, context.RunId, alreadyJoined: !isLaunchFailure, errorSummary, result, pass.Model,
+                    cancellationToken);
             }
 
             if (run.HasRetriedSessionError(RunSessionLeg.ReviewPass, run.ReviewCycle, pass.Lens))
@@ -1374,12 +1381,18 @@ public sealed class ReviewEngine(
             // RecordFixResultAsync as though a fix had actually been applied (adversarial and
             // conformance pre-PR review, cycle 1) — recording an unobserved fact as observed.
             string fixErrorSummary = result.Summary ?? "(no message)";
-            if (LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration))
+            bool isLaunchFailure = LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+            if (isLaunchFailure
+                || await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken))
             {
                 // Mirrors the review-pass leg's identical branch (task: a session that exits at
-                // once with no work done is treated as the node failing to launch sessions).
+                // once with no work done is treated as the node failing to launch sessions) —
+                // either this session itself was the zero-work shape, or a DIFFERENT run's own
+                // launch failure already holds this node (independent pre-PR review, cycle 3,
+                // both lenses).
                 return await HoldForLaunchFailureAsync(
-                    context.Run.NodeId, context.RunId, fixErrorSummary, result, run.ActiveFixSessionModel, cancellationToken);
+                    context.Run.NodeId, context.RunId, alreadyJoined: !isLaunchFailure, fixErrorSummary, result,
+                    run.ActiveFixSessionModel, cancellationToken);
             }
 
             if (run.HasRetriedSessionError(RunSessionLeg.Fix, run.ReviewCycle, lens: null))
@@ -3407,12 +3420,18 @@ public sealed class ReviewEngine(
         if (result is { IsError: true })
         {
             string errorSummary = result.Summary ?? "(no message)";
-            if (LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration))
+            bool isLaunchFailure = LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+            if (isLaunchFailure
+                || await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken))
             {
                 // Mirrors the review-pass leg's identical branch (task: a session that exits at
-                // once with no work done is treated as the node failing to launch sessions).
+                // once with no work done is treated as the node failing to launch sessions) —
+                // either this session itself was the zero-work shape, or a DIFFERENT run's own
+                // launch failure already holds this node (independent pre-PR review, cycle 3,
+                // both lenses).
                 return await HoldForLaunchFailureAsync(
-                    context.Run.NodeId, context.RunId, errorSummary, result, run.ActiveRebaseRecoveryModel, cancellationToken);
+                    context.Run.NodeId, context.RunId, alreadyJoined: !isLaunchFailure, errorSummary, result,
+                    run.ActiveRebaseRecoveryModel, cancellationToken);
             }
 
             if (run.HasRetriedSessionError(RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null))
@@ -5560,11 +5579,14 @@ public sealed class ReviewEngine(
             return;
         }
 
-        bool isBudgetExhausted = result.IsError
-            && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary);
-        bool isLaunchFailure = !isBudgetExhausted && result.IsError
-            && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
-        if (!isLaunchFailure)
+        // Evidence is "this launch spent tokens", not merely "this launch did not match the
+        // narrow zero-work shape" (independent pre-PR review, cycle 3, conformance lens,
+        // criterion 3: "the first launch that records tokens clears the hold") — a zero-token
+        // result that missed IsLaunchFailure for some other reason (a slow credential refresh
+        // past LaunchFailureMaxDuration, or DurationMs recorded as null) is not proof this node
+        // can launch a working session, and must leave a standing hold alone rather than clear
+        // it on nothing. RunSupervisor.CompleteRunAsync applies the identical narrowing.
+        if (LaunchFailureClassifier.RecordedTokens(result))
         {
             await launchHold.ClearIfEvidencedAsync(nodeId, sessionStartedAt, cancellationToken);
         }
@@ -5578,18 +5600,23 @@ public sealed class ReviewEngine(
     /// handling does, so the eventual retry is a fresh redispatch once the node-wide hold clears,
     /// never a process resume. The triggering session's own (zero) tokens are still recorded, the
     /// same discipline <see cref="RetrySessionErrorAsync"/> already gives an ordinary in-place
-    /// retry.
+    /// retry. <paramref name="alreadyJoined"/> is true when the caller's own
+    /// <see cref="LaunchHoldEngine.JoinIfActiveAsync"/> already joined a hold a different run
+    /// raised: this session's genuine error is no launch failure, so it must never raise one.
     /// </summary>
     private async Task<bool> HoldForLaunchFailureAsync(
-        Guid nodeId, Guid runId, string observedMessage, AgentResult erroredResult, AgentModel erroredModel,
-        CancellationToken cancellationToken)
+        Guid nodeId, Guid runId, bool alreadyJoined, string observedMessage, AgentResult erroredResult,
+        AgentModel erroredModel, CancellationToken cancellationToken)
     {
         // The node-wide hold is raised BEFORE the run-stream event, not after: a crash between
         // the two must never leave RunDetails reading LaunchHeld while the node-wide hold itself
         // is not yet standing, which would let the dispatcher keep claiming new work into the
         // same broken node — RunSupervisor.CompleteRunAsync's own identical ordering states the
         // same reasoning in full.
-        await launchHold.RaiseOrJoinAsync(nodeId, runId, observedMessage, cancellationToken);
+        if (!alreadyJoined)
+        {
+            await launchHold.RaiseOrJoinAsync(nodeId, runId, observedMessage, cancellationToken);
+        }
 
         await using (IDocumentSession session = store.LightweightSession())
         {

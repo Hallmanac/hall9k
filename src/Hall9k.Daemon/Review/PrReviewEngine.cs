@@ -51,6 +51,7 @@ public sealed class PrReviewEngine(
     IExecutor executor,
     IProcessManager processManager,
     IWorktreeManager worktrees,
+    LaunchHoldEngine launchHold,
     IOptions<DaemonOptions> options,
     ILogger<PrReviewEngine> logger)
 {
@@ -227,6 +228,7 @@ public sealed class PrReviewEngine(
 
         if (aggregate.PrReviewConformanceSessionId is null
             || aggregate.PrReviewConformanceBudgetExhausted
+            || aggregate.PrReviewConformanceLaunchHeld
             || !SessionStillLive(aggregate, runDirectory))
         {
             if (!await DispatchConformanceAsync(runId, taskId, runDirectory, run, task, project, cancellationToken))
@@ -243,7 +245,8 @@ public sealed class PrReviewEngine(
 
         if (!aggregate.PrReviewConformanceCompleted)
         {
-            if (!await AwaitConformanceAsync(runId, taskId, runDirectory, aggregate, task, cancellationToken))
+            if (!await AwaitConformanceAsync(
+                runId, taskId, runDirectory, aggregate, LaunchHoldNodeOf(run), task, cancellationToken))
             {
                 return;
             }
@@ -370,7 +373,8 @@ public sealed class PrReviewEngine(
     }
 
     private async Task<bool> AwaitConformanceAsync(
-        Guid runId, Guid taskId, string runDirectory, RunAggregate run, TaskDetails task, CancellationToken cancellationToken)
+        Guid runId, Guid taskId, string runDirectory, RunAggregate run, Guid launchHoldNodeId, TaskDetails task,
+        CancellationToken cancellationToken)
     {
         if (run.PrReviewConformanceSessionId is not { } sessionId
             || run.PrReviewConformanceProcessId is not { } processId
@@ -385,6 +389,7 @@ public sealed class PrReviewEngine(
             streamFile, processId, processStartedAt, processManager,
             token => TouchActivityAsync(runId, token), cancellationToken);
         AgentResult? result = wait.Result;
+        await ClearLaunchHoldIfEvidencedAsync(launchHoldNodeId, result, processStartedAt, cancellationToken);
 
         if (wait.EndedAfterResultGrace)
         {
@@ -408,6 +413,42 @@ public sealed class PrReviewEngine(
             logger.LogWarning(
                 "Run {RunId}: pr-review conformance session exhausted its token budget — parked; the daemon retries hourly. {Message}",
                 runId, summary);
+            return false;
+        }
+
+        if (result is { IsError: true } errorResult
+            && LaunchFailureClassifier.IsLaunchFailure(errorResult, _options.LaunchFailureMaxDuration))
+        {
+            // The node never actually launched a working conformance session — not this run's
+            // own fault (task: a session that exits at once with no work done is treated as the
+            // node failing to launch sessions). Mirrors ReviewEngine.HoldForLaunchFailureAsync's
+            // identical branch for its own four legs; the conformance lens was the one
+            // completion site this task's own launch-hold check never reached (independent
+            // pre-PR review, cycle 3, conformance lens).
+            string observedMessage = errorResult.Summary ?? "(no message)";
+            await launchHold.RaiseOrJoinAsync(launchHoldNodeId, runId, observedMessage, cancellationToken);
+
+            await using IDocumentSession holdSession = store.LightweightSession();
+            holdSession.Events.Append(
+                runId, errorResult.ToTokensRecorded(runId, DateTimeOffset.UtcNow, run.PrReviewConformanceModel));
+            holdSession.Events.Append(runId, new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
+            await holdSession.SaveChangesAsync(cancellationToken);
+            return false;
+        }
+
+        if (result is { IsError: true } ordinaryError
+            && await launchHold.JoinIfActiveAsync(launchHoldNodeId, runId, cancellationToken))
+        {
+            // Mirrors ReviewEngine's identical ordinary-error branch (ReviewEngine.cs, the review
+            // pass's own AwaitReviewPassAsync): a DIFFERENT run's own launch failure already holds
+            // this node, so this session's ordinary error is not this run's own fault either — it
+            // holds rather than failing outright (Copilot review, PR #317, "suppressed comments").
+            string observedMessage = ordinaryError.Summary ?? "(no message)";
+            await using IDocumentSession holdSession = store.LightweightSession();
+            holdSession.Events.Append(
+                runId, ordinaryError.ToTokensRecorded(runId, DateTimeOffset.UtcNow, run.PrReviewConformanceModel));
+            holdSession.Events.Append(runId, new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
+            await holdSession.SaveChangesAsync(cancellationToken);
             return false;
         }
 
@@ -654,6 +695,41 @@ public sealed class PrReviewEngine(
     /// </summary>
     private static string? ReviewedHeadShaOf(TaskDetails task) =>
         task.ReviewerVerdictHeadSha.IsNotBlank() ? task.ReviewerVerdictHeadSha : null;
+
+    /// <summary>
+    /// The pr-review conformance lens's own equivalent of <c>ReviewEngine.ClearLaunchHoldIfEvidencedAsync</c>
+    /// (task: a session that exits at once with no work done is treated as the node failing to
+    /// launch sessions): a completion that recorded tokens is evidence this node can still launch
+    /// working sessions, whether or not a hold happens to be standing — evidence is "this launch
+    /// spent tokens", never merely "this launch did not match the narrow zero-work shape"
+    /// (independent pre-PR review, cycle 3, conformance lens, criterion 3).
+    /// </summary>
+    private async Task ClearLaunchHoldIfEvidencedAsync(
+        Guid nodeId, AgentResult? result, DateTimeOffset sessionStartedAt, CancellationToken cancellationToken)
+    {
+        if (result is not null && LaunchFailureClassifier.RecordedTokens(result))
+        {
+            await launchHold.ClearIfEvidencedAsync(nodeId, sessionStartedAt, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The node whose launch hold this run's conformance lens raises, joins, or clears: the run's
+    /// own <see cref="RunDetails.NodeId"/>, except for a Now-speed auto-pr-review run, which
+    /// carries the ceiling-exempt <see cref="Guid.Empty"/> there and names the daemon that
+    /// actually launched it only on <see cref="RunDetails.DispatchingNodeId"/>. Reading
+    /// <c>NodeId</c> alone raised that run's hold on a phantom <see cref="Guid.Empty"/> node
+    /// stream no probe ever reads, while the real node's own hold stayed inactive, so
+    /// <c>LaunchHoldMonitor</c>'s inactive-branch sweep (which does find the run, through
+    /// <c>LaunchHoldEngine.HeldRunsAsync</c>'s own sentinel widening) resumed it into the same
+    /// broken node on every poll tick (independent pre-PR review, cycle 4, found by the fix
+    /// session). A build run never needs this: delivery rewrites its <c>NodeId</c> to the
+    /// delivering node (<c>AgentSessionCompleted.DeliveredByNodeId</c>) before any review leg runs.
+    /// </summary>
+    private static Guid LaunchHoldNodeOf(RunDetails run) =>
+        run.NodeId == Guid.Empty
+            ? run.DispatchingNodeId
+            : run.NodeId;
 
     private async Task FailAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
     {

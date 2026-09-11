@@ -26,4 +26,18 @@ public static class LaunchFailureClassifier
         && result.OutputTokens == 0
         && result.DurationMs is { } durationMs
         && durationMs < maxDuration.TotalMilliseconds;
+
+    /// <summary>
+    /// The node-wide launch hold's own evidence a launch actually worked (task: a session that
+    /// exits at once with no work done is treated as the node failing to launch sessions,
+    /// criterion 3: "the first launch that records tokens clears the hold") — deliberately NOT
+    /// simply "not <see cref="IsLaunchFailure"/>", which a zero-token result can still satisfy
+    /// whenever it misses that classifier's own narrow shape for an unrelated reason: a slow
+    /// credential refresh pushing <c>DurationMs</c> past <paramref name="result"/>'s own
+    /// <see cref="AgentResult.DurationMs"/> reported as null (the parser's honest "unobserved"),
+    /// either of which would otherwise clear a standing hold on a launch that spent nothing
+    /// (independent pre-PR review, cycle 3, conformance lens).
+    /// </summary>
+    public static bool RecordedTokens(AgentResult result) =>
+        result.TotalInputTokens > 0 || result.OutputTokens > 0;
 }

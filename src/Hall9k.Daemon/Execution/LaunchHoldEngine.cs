@@ -81,6 +81,37 @@ public sealed class LaunchHoldEngine(IDocumentStore store, ILogger<LaunchHoldEng
     }
 
     /// <summary>
+    /// Joins the hold only if one is standing at the moment this saves, and never raises one:
+    /// for a session whose genuine error is NOT the zero-work shape, which must wait on a
+    /// different run's standing hold rather than spend its one in-place retry, but is no evidence
+    /// of a launch failure itself (independent pre-PR review, cycle 3, both lenses). Deciding
+    /// from a separate <see cref="CurrentHoldAsync"/> read and then calling
+    /// <see cref="RaiseOrJoinAsync"/> raced an evidence clear landing in between: the join became
+    /// a raise, shutting the claim gate on a node that had just proved it launches, with a
+    /// genuine error standing in as the launch failure's cause (independent pre-PR review, cycle
+    /// 4, found by the fix session while sweeping the force-clear's own stale-read shape). The
+    /// check and the join share one version-pinned save instead, so a clear that commits first
+    /// makes this lose the race and its replay return false. Returns whether it joined.
+    /// </summary>
+    public Task<bool> JoinIfActiveAsync(Guid nodeId, Guid runId, CancellationToken cancellationToken) =>
+        AppendWithConcurrencyRetryAsync(async () =>
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            StreamState? streamState = await session.Events.FetchStreamStateAsync(nodeId, cancellationToken);
+            NodeDetails? details = await session.LoadAsync<NodeDetails>(nodeId, cancellationToken);
+            if (details is not { LaunchHoldActive: true })
+            {
+                return false;
+            }
+
+            session.Events.Append(
+                nodeId, expectedVersion: (streamState?.Version ?? 0) + 1,
+                new NodeLaunchHoldRunHeld(nodeId, runId, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+            return true;
+        }, cancellationToken);
+
+    /// <summary>
     /// Clears the hold unconditionally when one stands, whether or not the evidence for it is
     /// fresh — the general-purpose clear, kept for a caller that has already decided the hold
     /// should end (test teardown, an operator-facing force-clear) rather than one weighing
@@ -205,6 +236,12 @@ public sealed class LaunchHoldEngine(IDocumentStore store, ILogger<LaunchHoldEng
         await AppendWithConcurrencyRetryAsync(async () =>
         {
             await using IDocumentSession session = store.LightweightSession();
+            // Pinned with expectedVersion below, matching RaiseOrJoinAsync and
+            // ClearIfNothingLeftHeldAsync (Copilot review, PR #317): an unversioned append never
+            // throws EventStreamUnexpectedMaxEventIdException, so a concurrent join or probe that
+            // commits after the NodeDetails read below used to save clean here anyway, silently
+            // clearing state the concurrent writer had just re-established.
+            StreamState? streamState = await session.Events.FetchStreamStateAsync(nodeId, cancellationToken);
             NodeDetails? details = await session.LoadAsync<NodeDetails>(nodeId, cancellationToken);
             if (details is not { LaunchHoldActive: true })
             {
@@ -217,7 +254,9 @@ public sealed class LaunchHoldEngine(IDocumentStore store, ILogger<LaunchHoldEng
                 return false;
             }
 
-            session.Events.Append(nodeId, new NodeLaunchHoldCleared(nodeId, DateTimeOffset.UtcNow));
+            session.Events.Append(
+                nodeId, expectedVersion: (streamState?.Version ?? 0) + 1,
+                new NodeLaunchHoldCleared(nodeId, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
             LogCleared(details, reason);
             return true;
@@ -234,7 +273,13 @@ public sealed class LaunchHoldEngine(IDocumentStore store, ILogger<LaunchHoldEng
         AppendWithConcurrencyRetryAsync(async () =>
         {
             await using IDocumentSession session = store.LightweightSession();
-            session.Events.Append(nodeId, new NodeLaunchHoldProbed(nodeId, runId, DateTimeOffset.UtcNow));
+            // Pinned with expectedVersion, matching every other node-hold write (Copilot review,
+            // PR #317): otherwise this append escapes the concurrency-retry wrapper's whole
+            // purpose, since an unversioned append can never throw the conflict it retries on.
+            StreamState? streamState = await session.Events.FetchStreamStateAsync(nodeId, cancellationToken);
+            session.Events.Append(
+                nodeId, expectedVersion: (streamState?.Version ?? 0) + 1,
+                new NodeLaunchHoldProbed(nodeId, runId, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
             return true;
         }, cancellationToken);
@@ -348,7 +393,40 @@ public sealed class LaunchHoldEngine(IDocumentStore store, ILogger<LaunchHoldEng
         return prReview;
     }
 
-    /// <summary>The run the probe relaunches next — the one that has waited longest, so one persistently dead run never starves the others behind it.</summary>
-    public async Task<RunDetails?> OldestHeldRunAsync(Guid nodeId, CancellationToken cancellationToken) =>
-        (await HeldRunsAsync(nodeId, cancellationToken)).OrderBy(run => run.LaunchHeldAt).FirstOrDefault();
+    /// <summary>
+    /// The run the probe relaunches next — the one that has waited longest among those actually
+    /// resumable right now, so one persistently dead run never starves the others behind it. A run
+    /// <see cref="RunSupervisor.ResumeLaunchHeldRunAsync"/> refuses because a human reviewer's own
+    /// open review lap is reading its worktree is skipped rather than picked (Copilot review, PR
+    /// #317): its <see cref="RunDetails.LaunchHeldAt"/> never moves, so without this it would keep
+    /// winning this sort forever, and every probe would record an attempt against it that never
+    /// actually relaunches anything — never giving a genuinely dead run behind it its own turn, and
+    /// never supplying the token evidence that would let the hold clear even after the real outage
+    /// is gone. The same wedge-open shape <c>RunSupervisor.RetireStaleAdoptionCandidateAsync</c>
+    /// already exists to close for a stale claim, but a review lap is not stale — the run stays
+    /// held, it is only this pick that skips it.
+    /// </summary>
+    public async Task<RunDetails?> OldestHeldRunAsync(Guid nodeId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RunDetails> held = [.. (await HeldRunsAsync(nodeId, cancellationToken))
+            .OrderBy(run => run.LaunchHeldAt)];
+        if (held.Count == 0)
+        {
+            return null;
+        }
+
+        await using IQuerySession session = store.QuerySession();
+        foreach (RunDetails run in held)
+        {
+            TaskDetails? task = await session.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
+            if (task is { ReviewLapOpen: true } && task.ReviewLapRunId == run.Id)
+            {
+                continue;
+            }
+
+            return run;
+        }
+
+        return null;
+    }
 }

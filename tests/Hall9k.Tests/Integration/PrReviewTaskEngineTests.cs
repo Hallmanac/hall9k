@@ -212,7 +212,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             launchHold);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         PrimarySessionResumer primarySessionResumer = new(
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())));
@@ -1703,7 +1703,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
     private static PrReviewEngine NewPrReviewEngine(
         DocumentStore store, IExecutor executor, FakeProcessManager processes, IWorktreeManager worktrees) =>
-        new(store, executor, processes, worktrees,
+        new(store, executor, processes, worktrees, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
 
     /// <summary>
@@ -1997,7 +1997,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             launchHold);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         PrimarySessionResumer primarySessionResumer = new(
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())));
