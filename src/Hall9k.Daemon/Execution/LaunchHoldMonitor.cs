@@ -82,6 +82,17 @@ public sealed class LaunchHoldMonitor(
         {
             foreach (RunDetails run in await engine.HeldRunsAsync(nodeId, cancellationToken))
             {
+                // Re-read before every resume rather than trusting the one read above for the
+                // whole loop (independent pre-PR review, cycle 4, adversarial lens: the same
+                // stale-read shape as the force-clear below): a resume can take a while, and a
+                // run this loop just resumed can fail the zero-work way and raise a fresh hold
+                // before the next one starts. Every run still held then belongs to that hold's
+                // own probe and backoff, not to this loop.
+                if (await engine.CurrentHoldAsync(nodeId, cancellationToken) is { LaunchHoldActive: true })
+                {
+                    return;
+                }
+
                 await supervisor.ResumeLaunchHeldRunAsync(run, cancellationToken);
             }
 
@@ -104,8 +115,23 @@ public sealed class LaunchHoldMonitor(
         RunDetails? oldest = await engine.OldestHeldRunAsync(nodeId, cancellationToken);
         if (oldest is null)
         {
-            // The doc says active but nothing is left held — a race between a clear and this
-            // read, or every held run's claim moved on since. Nothing to probe this tick.
+            // The doc says active but nothing is left held — every held run's own claim moved on
+            // since (independent pre-PR review, cycle 3, both lenses), the shape a run reaches
+            // when h9k task abandon or a lease-expiry requeue-and-reclaim retires it with
+            // RunSuperseded while it sat LaunchHeld, taking it out of every held-run query without
+            // ever completing a session for ClearIfEvidencedAsync to read. Left alone, this hold
+            // would never clear again — no held run remains for the next sweep to find, either —
+            // so the dispatcher's claim gate would stay shut for good. Force-clear it instead; a
+            // genuinely broken node raises a fresh hold the moment its very next launch fails the
+            // same way. This read is only the trigger, never the proof: the engine re-checks under
+            // a pinned stream version before it clears, so a run that joins in between keeps the
+            // hold standing (independent pre-PR review, cycle 4, adversarial lens).
+            if (await engine.ClearIfNothingLeftHeldAsync(nodeId, cancellationToken))
+            {
+                logger.LogInformation(
+                    "Launch hold: cleared with nothing left held — every held run's own claim moved on before a relaunch ever ran");
+            }
+
             return;
         }
 
@@ -115,6 +141,22 @@ public sealed class LaunchHoldMonitor(
     }
 
     /// <summary>
+    /// How much longer than <see cref="DaemonOptions.LaunchFailureMaxDuration"/> this sweep waits
+    /// before trusting "still <see cref="RunState.Running"/>" as proof of a genuine relaunch,
+    /// rather than a launch failure whose own detection simply has not landed yet (independent
+    /// pre-PR review, cycle 3, both lenses): the elapsed time this check measures is wall-clock
+    /// since the probe was recorded, not the resumed session's own reported duration, and the two
+    /// can diverge by as much as <see cref="SessionResultWaiter.PostResultGrace"/> (the root
+    /// process lingering after writing its terminal result) plus one tail poll — both paid before
+    /// <c>RunSupervisor</c> ever records the zero-work result that would otherwise flip this run
+    /// out of <see cref="RunState.Running"/>. Without this margin, a probe that genuinely failed
+    /// zero-work-shape in under <see cref="DaemonOptions.LaunchFailureMaxDuration"/> of its own
+    /// time can still read <c>Running</c> long enough to be mistaken for a working relaunch,
+    /// clearing the hold and resuming every other held run into the same still-broken node.
+    /// </summary>
+    private static readonly TimeSpan RecordingLatencyGrace = SessionResultWaiter.PostResultGrace + TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// A relaunch that spawned fine and has stayed alive well past the zero-work window is
     /// already real evidence the node can launch, even though it has not finished — without this,
     /// a probe that resumes a long build session keeps the whole node blocked from new claims,
@@ -122,18 +164,20 @@ public sealed class LaunchHoldMonitor(
     /// more (independent pre-PR review, cycle 1, both lenses, low). <see cref="NodeDetails.LaunchHoldLastProbedRunId"/>
     /// is set by the very probe this sweep just recorded (or an earlier tick's), so a run that
     /// left <see cref="RunState.LaunchHeld"/> for <see cref="RunState.Running"/> and is still
-    /// there once <see cref="DaemonOptions.LaunchFailureMaxDuration"/> has passed since that probe
-    /// counts — the same duration the zero-work shape itself is measured against, so a session
-    /// that has outlived it is definitionally not that shape. A run this probe's resume never
-    /// actually reached (still <see cref="RunState.LaunchHeld"/>, or retired away as stale) is
-    /// left alone; only a genuinely running resume clears anything here. Returns whether it
-    /// cleared the hold, so the caller skips the ordinary backoff-gated probe on the same tick.
+    /// there once <see cref="DaemonOptions.LaunchFailureMaxDuration"/> plus
+    /// <see cref="RecordingLatencyGrace"/> has passed since that probe counts — the same duration
+    /// the zero-work shape itself is measured against, so a session that has outlived it is
+    /// definitionally not that shape. A run this probe's resume never actually reached (still
+    /// <see cref="RunState.LaunchHeld"/>, or retired away as stale) is left alone; only a
+    /// genuinely running resume clears anything here. Returns whether it cleared the hold, so the
+    /// caller skips the ordinary backoff-gated probe on the same tick.
     /// </summary>
     private async Task<bool> ClearIfLastProbeIsStillRunningAsync(
         Guid nodeId, NodeDetails hold, CancellationToken cancellationToken)
     {
         if (hold.LaunchHoldLastProbedRunId is not { } probedRunId
-            || DateTimeOffset.UtcNow - hold.LaunchHoldLastEventAt <= options.Value.LaunchFailureMaxDuration)
+            || DateTimeOffset.UtcNow - hold.LaunchHoldLastEventAt
+                <= options.Value.LaunchFailureMaxDuration + RecordingLatencyGrace)
         {
             return false;
         }
