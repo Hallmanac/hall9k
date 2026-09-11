@@ -1400,8 +1400,15 @@ public sealed class ReviewEngine(
             // conformance pre-PR review, cycle 1) — recording an unobserved fact as observed.
             string fixErrorSummary = result.Summary ?? "(no message)";
             bool isLaunchFailure = LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+            // Computed before the join below, same as the review-pass leg's identical guard
+            // (independent pre-PR review, cycle 1, criterion 5): a leg that has already spent
+            // its one retry must still fail outright on a standing hold, exactly as it would
+            // with none standing — joining would park it for a resume this leg was never going
+            // to get.
+            bool alreadyRetried = run.HasRetriedSessionError(RunSessionLeg.Fix, run.ReviewCycle, lens: null);
             if (isLaunchFailure
-                || await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken))
+                || (!alreadyRetried
+                    && await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken)))
             {
                 // Mirrors the review-pass leg's identical branch (task: a session that exits at
                 // once with no work done is treated as the node failing to launch sessions) —
@@ -1413,7 +1420,7 @@ public sealed class ReviewEngine(
                     run.ActiveFixSessionModel, cancellationToken);
             }
 
-            if (run.HasRetriedSessionError(RunSessionLeg.Fix, run.ReviewCycle, lens: null))
+            if (alreadyRetried)
             {
                 await FailAsync(context.RunId, context.TaskId,
                     $"The fix session (cycle {run.ReviewCycle}) reported an error result.", cancellationToken);
@@ -3474,8 +3481,15 @@ public sealed class ReviewEngine(
         {
             string errorSummary = result.Summary ?? "(no message)";
             bool isLaunchFailure = LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+            // Computed before the join below, same as the review-pass leg's identical guard
+            // (independent pre-PR review, cycle 1, criterion 5): a leg that has already spent
+            // its one retry must still fail outright on a standing hold, exactly as it would
+            // with none standing — joining would park it for a resume this leg was never going
+            // to get.
+            bool alreadyRetried = run.HasRetriedSessionError(RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null);
             if (isLaunchFailure
-                || await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken))
+                || (!alreadyRetried
+                    && await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken)))
             {
                 // Mirrors the review-pass leg's identical branch (task: a session that exits at
                 // once with no work done is treated as the node failing to launch sessions) —
@@ -3487,7 +3501,7 @@ public sealed class ReviewEngine(
                     run.ActiveRebaseRecoveryModel, cancellationToken);
             }
 
-            if (run.HasRetriedSessionError(RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null))
+            if (alreadyRetried)
             {
                 await FailAsync(context.RunId, context.TaskId,
                     "The pre-final-pass rebase-recovery session reported an error result.", cancellationToken);
@@ -3797,6 +3811,7 @@ public sealed class ReviewEngine(
         AgentResult? result = await WaitForSessionResultAsync(
             context.RunId, streamFile, processId, processStartedAt,
             "the Settling-gate repair session", cancellationToken);
+        await ClearLaunchHoldIfEvidencedAsync(context.Run.NodeId, result, processStartedAt, cancellationToken);
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             await ParkForBudgetAsync(context.RunId, "the Settling-gate repair session", summary, cancellationToken);
@@ -3806,7 +3821,28 @@ public sealed class ReviewEngine(
         if (result is { IsError: true })
         {
             string errorSummary = result.Summary ?? "(no message)";
-            if (run.HasRetriedSessionError(RunSessionLeg.SettlingGateRepair, run.ReviewCycle, lens: null))
+            bool isLaunchFailure = LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+            // Computed before the join below, same as the review-pass leg's identical guard
+            // (independent pre-PR review, cycle 1, criterion 5): a leg that has already spent
+            // its one retry must still fail outright on a standing hold, exactly as it would
+            // with none standing — joining would park it for a resume this leg was never going
+            // to get.
+            bool alreadyRetried = run.HasRetriedSessionError(RunSessionLeg.SettlingGateRepair, run.ReviewCycle, lens: null);
+            if (isLaunchFailure
+                || (!alreadyRetried
+                    && await launchHold.JoinIfActiveAsync(context.Run.NodeId, context.RunId, cancellationToken)))
+            {
+                // Mirrors the review-pass leg's identical branch (task: a session that exits at
+                // once with no work done is treated as the node failing to launch sessions) —
+                // either this session itself was the zero-work shape, or a DIFFERENT run's own
+                // launch failure already holds this node (independent pre-PR review, cycle 3,
+                // both lenses).
+                return await HoldForLaunchFailureAsync(
+                    context.Run.NodeId, context.RunId, alreadyJoined: !isLaunchFailure, errorSummary, result,
+                    run.ActiveSettlingGateRepairModel, cancellationToken);
+            }
+
+            if (alreadyRetried)
             {
                 await FailAsync(context.RunId, context.TaskId,
                     "The Settling-gate repair session reported an error result.", cancellationToken);
@@ -3814,9 +3850,9 @@ public sealed class ReviewEngine(
             }
 
             return await RetrySessionErrorAsync(
-                context.RunId, RunSessionLeg.SettlingGateRepair, run.ReviewCycle, lens: null,
+                context.Run.NodeId, context.RunId, RunSessionLeg.SettlingGateRepair, run.ReviewCycle, lens: null,
                 "the Settling-gate repair session", errorSummary, result, run.ActiveSettlingGateRepairModel,
-                cancellationToken);
+                cancellationToken) == SessionErrorRetryOutcome.WillRetry;
         }
 
         if (result is null)

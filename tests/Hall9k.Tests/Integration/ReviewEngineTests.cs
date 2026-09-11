@@ -3145,6 +3145,60 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// Criterion 5 ("the ordinary failure path stays unchanged"), the pre-final-pass
+    /// rebase-recovery leg's own side of
+    /// <see cref="A_second_consecutive_review_session_error_fails_even_while_a_hold_stands"/>: a
+    /// recovery session that has already spent its one retry must still fail outright on a second
+    /// consecutive error, hold or no hold — joining would give this leg a resume it was never
+    /// going to get and misattribute its own genuine error to the node (independent pre-PR
+    /// review, cycle 1, conformance and adversarial lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_second_consecutive_rebase_recovery_session_error_fails_even_while_a_hold_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        // A first recovery session's own dispatch and its retry, stood in for directly rather
+        // than driving a real git conflict through two full recovery attempts: Apply(RunSessionErrorRetried)
+        // for the RebaseRecovery leg resets ReviewPhase to RebaseRecoveryNeeded on its own, the
+        // same transition a real first error's retry leaves behind, so the driving loop below
+        // dispatches this leg's second (and, per this test, final) attempt exactly as it would
+        // after a genuine first one. ReviewCycle stays 0 throughout — nothing here ever appends a
+        // ReviewDispatched — matching a pre-final-pass rebase check that fires before any review
+        // cycle has run, so the retry's own Cycle matches what AwaitRebaseRecoverySessionAsync
+        // reads from the aggregate.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId,
+                new PreFinalPassRebaseRecoveryDispatched(
+                    runId, DomainId.New(), 5_300, Now, Now, AgentModel.Sonnet, "abc1234", "def5678", "rebase-recovery-1"),
+                new RunSessionErrorRetried(runId, RunSessionLeg.RebaseRecovery, Cycle: 0, Lens: null, "Internal server error", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+
+        ScriptedExecutor executor = new("Hit a transient snag applying the recovery.") { ErrorAtSpawnIndex = { 0 } };
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a second consecutive error fails the run");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.Failed,
+            "this leg's retry is already spent, so a standing hold must not turn a genuine second error into a launch hold");
+        run.FailureReason.Should().Contain(
+            "reported an error result", "the ordinary failure path stays unchanged by an unrelated standing hold");
+
+        NodeDetails? hold = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+        hold!.LaunchHoldRunIds.Should().NotContain(runId, "a leg with no retry left to protect never joins the hold");
+    }
+
+    /// <summary>
     /// Task: a run rebases its branch onto the current base branch. A human's needs-fixes
     /// resolution on a disputed pre-final-pass rebase conflict redispatches the recovery session
     /// with their guidance folded into its prompt, and a clean resolution this time lets the run
@@ -8515,6 +8569,66 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         retry.Leg.Should().Be(RunSessionLeg.Fix);
         retry.Cycle.Should().Be(1);
         events.OfType<ReviewFixDispatched>().Should().HaveCount(2, "the errored attempt plus its retry");
+    }
+
+    /// <summary>
+    /// Criterion 5 ("the ordinary failure path stays unchanged"), the fix-session leg's own side
+    /// of <see cref="A_second_consecutive_review_session_error_fails_even_while_a_hold_stands"/>:
+    /// a fix session that has already spent its one retry must still fail outright on a second
+    /// consecutive error, hold or no hold — joining would give this leg a resume it was never
+    /// going to get and misattribute its own genuine error to the node (independent pre-PR
+    /// review, cycle 1, conformance and adversarial lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_second_consecutive_fix_session_error_fails_even_while_a_hold_stands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        // A real cycle-1 findings document, matching what RecordReviewPassAsync's own merge
+        // would have written for a needs-fixes cycle 1 — DispatchFixSessionAsync reads this file
+        // straight off disk, never off the stream.
+        string runDirectory = RunPaths.GlobalDirectory(runId);
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(
+            RunPaths.ReviewFindingsFile(runDirectory, 1), "1. `Auth.cs:42` — the limiter never resets.", cts.Token);
+
+        // Cycle 1's own findings/verdict pass is stood in for directly (ReviewDispatched bumps
+        // RunAggregate.ReviewCycle to 1, the same way a real conformance dispatch would), and this
+        // leg's one retry is already spent, exactly as it would be after a first fix-session
+        // error's own retry ran — seeded directly rather than waiting out a real retry cycle. A
+        // pre-seeded RunSessionErrorRetried(Fix, ...) cannot land on a totally fresh run the way
+        // the review-pass leg's own equivalent test does: unlike ReviewPass, Apply(RunSessionErrorRetried)
+        // for the Fix leg forces ReviewPhase straight to FixNeeded, which on a fresh run (cycle 0,
+        // no findings file yet) sends DispatchFixSessionAsync looking for a findings document that
+        // was never written.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId,
+                new ReviewDispatched(runId, DomainId.New(), 1, 5_200, Now, Now, AgentModel.Sonnet, ReviewLens.Conformance),
+                new RunSessionErrorRetried(runId, RunSessionLeg.Fix, Cycle: 1, Lens: null, "Internal server error", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+
+        ScriptedExecutor executor = new("Hit a transient snag applying the fix.") { ErrorAtSpawnIndex = { 0 } };
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a second consecutive error fails the run");
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.Failed,
+            "this leg's retry is already spent, so a standing hold must not turn a genuine second error into a launch hold");
+        run.FailureReason.Should().Contain(
+            "reported an error result", "the ordinary failure path stays unchanged by an unrelated standing hold");
+
+        NodeDetails? hold = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+        hold!.LaunchHoldRunIds.Should().NotContain(runId, "a leg with no retry left to protect never joins the hold");
     }
 
     /// <summary>
