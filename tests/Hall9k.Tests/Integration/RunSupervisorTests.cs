@@ -1374,6 +1374,131 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The claim-moved-on guard in <c>ResumeLaunchHeldRunAsync</c> must retire the run rather than
+    /// leave it <c>LaunchHeld</c> forever (independent pre-PR review, cycle 1, both lenses): an
+    /// operator abandoning the oldest held task during an outage — the exact way out
+    /// <c>PrReviewSentinelClaim</c>'s own text points to — leaves <c>TaskAbandoned.CurrentRunId</c>
+    /// untouched, so without retiring here this run would keep winning
+    /// <c>LaunchHoldEngine.OldestHeldRunAsync</c>'s own sort (it sorts by <c>LaunchHeldAt</c>,
+    /// which nothing else here ever touches) and starve every other held run's own probe, wedging
+    /// the node-wide hold open for good.
+    /// </summary>
+    [Fact]
+    public async Task A_launch_held_runs_abandoned_task_is_retired_instead_of_left_wedged()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            session.Events.Append(runId, new RunLaunchHeld(runId, "Failed to authenticate", Now));
+
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Abandon(task, "not needed any more", Now, node.OwnerId));
+            session.Delete<TaskLease>(taskId);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunDetails held = (await store.QuerySession().LoadAsync<RunDetails>(runId, cts.Token))!;
+        held.State.Should().Be(RunState.LaunchHeld);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        (await supervisor.ResumeLaunchHeldRunAsync(held, cts.Token)).Should().BeFalse(
+            "the task's claim moved on (abandoned) while this run sat held — nothing here left to resume");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails retired = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        retired.State.Should().Be(
+            RunState.Superseded,
+            "a run whose claim moved on while launch-held must be retired, not left LaunchHeld forever wedging the oldest-held sort");
+    }
+
+    /// <summary>
+    /// A session that was already running before the node-wide hold was ever raised proves
+    /// nothing about whether a fresh launch works right now — only that something already in
+    /// flight eventually finished for its own, unrelated reason (independent pre-PR review, cycle
+    /// 1, adversarial lens: the 2026-09-07 outage's own shape, where several sessions were mid-run
+    /// when the credential expired, and each one's own next API call later failed for real).
+    /// <see cref="RunSupervisor.CompleteRunAsync"/> must not treat that completion as fresh
+    /// evidence.
+    /// </summary>
+    [Fact]
+    public async Task A_normal_completion_from_a_session_that_predates_the_hold_does_not_clear_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(ResultLine));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        // A real gap, well past LaunchHoldEngine's own clock-skew grace for an OS-reported
+        // process start time (ProcessManagerBase.StartTimeTolerance's identical 2-second
+        // tolerance) — otherwise this process's own start time and the raise below could land
+        // within that grace window and this test would stop proving what it claims to.
+        await Task.Delay(TimeSpan.FromSeconds(3), cts.Token);
+
+        // Raised only after this session's own process already started — an unrelated launch
+        // failure the same outage caught elsewhere on this node.
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+        await WaitForStateAsync(store, runId, "Verifying", cts.Token);
+
+        NodeDetails? nodeDetails = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+        nodeDetails!.LaunchHoldActive.Should().BeTrue(
+            "this session's own process started before the hold was raised, so its completion is not fresh evidence a launch works now");
+    }
+
+    /// <summary>
+    /// A probe's own relaunch that spawned fine and has survived well past the zero-work window
+    /// is already real evidence the node can launch, even before it finishes (independent pre-PR
+    /// review, cycle 1, both lenses, low) — without this, a probe that resumes a long build
+    /// session keeps the whole node blocked from new claims, and the NEEDS YOU banner up, for
+    /// that session's entire length, which can run for an hour or more.
+    /// </summary>
+    [Fact]
+    public async Task A_still_running_probe_past_the_zero_work_window_clears_the_hold_before_it_finishes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // The probe's own resumed spawn: the run leaves LaunchHeld for Running, exactly as
+            // RunResumed/RunProcessStarted already does, without needing a real live process
+            // (ClearIfLastProbeIsStillRunningAsync reads RunDetails.State, never process
+            // liveness).
+            session.Events.Append(runId, new RunProcessStarted(runId, 4484, Now));
+            session.Events.Append(node.NodeId, new NodeLaunchHoldRaised(node.NodeId, "Failed to authenticate", Now));
+            session.Events.Append(node.NodeId, new NodeLaunchHoldRunHeld(node.NodeId, runId, Now));
+            session.Events.Append(node.NodeId, new NodeLaunchHoldProbed(node.NodeId, runId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunDetails running = (await store.QuerySession().LoadAsync<RunDetails>(runId, cts.Token))!;
+        running.State.Should().Be(RunState.Running, "the probe's own resume already spawned; the run is no longer LaunchHeld");
+
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        LaunchHoldMonitor monitor = new(
+            launchHold, supervisor, node, Options.Create(new DaemonOptions()), NullLogger<LaunchHoldMonitor>.Instance);
+
+        // Now (2026-08-16) is real wall-clock weeks in the past, so LaunchFailureMaxDuration's
+        // default 2-second window has long since elapsed without any test-visible sleep.
+        await monitor.SweepOnceAsync(cts.Token);
+
+        NodeDetails? nodeDetails = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+        nodeDetails!.LaunchHoldActive.Should().BeFalse(
+            "the last-probed run left LaunchHeld for Running and has survived well past the zero-work window");
+    }
+
+    /// <summary>
     /// The primary-session half of error-result retry (task: a session that reports an error
     /// result is retried once in place, measured 2026-09-05: bursty across only 18 distinct
     /// hours, the shape of a provider-side burst rather than a code defect): a generic error —
@@ -2077,7 +2202,12 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             Spawns.Add(request);
             Directory.CreateDirectory(request.RunDirectory);
             await File.WriteAllTextAsync(RunPaths.StreamFile(request.RunDirectory), resultLine + "\n", cancellationToken);
-            return new SpawnedAgent(_nextProcessId++, Now);
+            // The real wall clock, not the fixed historical Now: this spawn genuinely happens
+            // during test execution, and LaunchHoldEngine.ClearIfEvidencedAsync's own
+            // session-predates-the-raise check (independent pre-PR review, cycle 1, adversarial
+            // lens) reads this timestamp against a hold raised with the real DateTimeOffset.UtcNow
+            // — Now (weeks in the test's own fixed past) would always read as stale evidence.
+            return new SpawnedAgent(_nextProcessId++, DateTimeOffset.UtcNow);
         }
     }
 
