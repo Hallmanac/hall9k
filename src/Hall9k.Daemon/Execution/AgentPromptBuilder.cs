@@ -1126,6 +1126,132 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// A narrow repair session dispatched when the Settling phase's own mandatory gate fails on a
+    /// tree whose most recent recorded rebase was real (task: a pre-final-pass rebase that applies
+    /// cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
+    /// failing it) — the same dispatch shape and leg <see cref="BuildPreFinalPassRebase"/> already
+    /// uses, over the gate's own output instead of a git conflict. No attempt is made here to claim
+    /// the rebase caused the failure rather than a coincident commit or a verify-command change
+    /// (the task's own criteria): the prompt names what actually happened — a rebase landed, then
+    /// the mandatory gate failed — and lets the session's own investigation find the real cause.
+    /// </summary>
+    /// <param name="pullRequestUrl">
+    /// Read from <c>TaskDetails.PullRequestUrl</c> rather than assumed, mirroring
+    /// <see cref="BuildPreFinalPassRebase"/>'s own parameter: this session can be reached before a
+    /// pull request ever opens (a fresh build's own first Settling entry) or after one already has
+    /// (a follow-up run dispatched onto an already-open PR).
+    /// </param>
+    /// <param name="rebaseWasRecovered">
+    /// True when the rebase that preceded this gate failure needed the recovery session's own
+    /// judgment rather than applying cleanly on its own — named in the prompt so the session knows
+    /// a conflict was resolved by hand here, not just replayed mechanically, which is one more
+    /// place a subtle regression could hide.
+    /// </param>
+    /// <param name="humanGuidance">
+    /// Set only on the one repair round a human's own <c>h9k review resolve --needs-fixes</c> buys
+    /// after the round cap is spent (<see cref="ReviewEngine"/>'s dispatch from
+    /// <see cref="ReviewPhase.SettlingGateRepairNeeded"/>): their guidance, inserted so the agent
+    /// applies it rather than repeating whatever the earlier round(s) already tried.
+    /// </param>
+    public static string BuildSettlingGateRepair(
+        TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
+        string? pullRequestUrl, string baseBranch, string rebasedFromCommit, string rebasedOntoCommit,
+        bool rebaseWasRecovered, string gateOutput, string? humanGuidance = null, TimeSpan? commandTimeout = null)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine("# Fix the mandatory gate failure this branch's rebase left behind");
+        prompt.AppendLine();
+        if (pullRequestUrl.IsNotBlank())
+        {
+            prompt.AppendLine($"Pull request: {pullRequestUrl}");
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine(
+            $"This branch was rebased onto its base (from {ShortCommit(rebasedFromCommit)} to " +
+            $"{ShortCommit(rebasedOntoCommit)}){(rebaseWasRecovered
+                ? ", which needed a narrow recovery session's own judgment to resolve a real conflict,"
+                : ", which git applied cleanly with no conflict,")} immediately before the platform's own");
+        prompt.AppendLine("mandatory final gate — and that gate then failed. Your job is to make it pass again.");
+        prompt.AppendLine("Nobody has separated whether the rebase itself is what broke it, from a coincident");
+        prompt.AppendLine("commit, from a changed verify command: read the failure yourself and fix what is");
+        prompt.AppendLine("actually broken, not to redo the original work.");
+        prompt.AppendLine();
+
+        if (humanGuidance.IsNotBlank())
+        {
+            prompt.AppendLine("## A human's guidance on this repair");
+            prompt.AppendLine();
+            prompt.AppendLine("An earlier repair round could not make the gate pass, and a human weighed in");
+            prompt.AppendLine("before this round was dispatched. Apply their guidance below.");
+            prompt.AppendLine();
+            prompt.AppendLine(humanGuidance);
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine("## The gate's own failure output");
+        prompt.AppendLine();
+        prompt.AppendLine("```");
+        prompt.AppendLine(gateOutput);
+        prompt.AppendLine("```");
+        prompt.AppendLine();
+
+        prompt.AppendLine("## Original objective (context, already implemented)");
+        prompt.AppendLine();
+        prompt.AppendLine(task.Objective);
+        prompt.AppendLine();
+
+        if (project.ContextLinks.Count > 0)
+        {
+            prompt.AppendLine("## Project links (fetch yourself as needed)");
+            prompt.AppendLine();
+            foreach (var link in project.ContextLinks)
+            {
+                prompt.AppendLine($"- {link.Name}: {link.Url}");
+            }
+
+            prompt.AppendLine();
+        }
+
+        AppendProjectHome(prompt, project);
+
+        prompt.AppendLine("## Working rules");
+        prompt.AppendLine();
+        prompt.AppendLine("- You are in this run's own git worktree, checked out on its own in-progress");
+        prompt.AppendLine(pullRequestUrl.IsNotBlank()
+            ? $"  branch `{branch}` — already pushed and open as the pull request above. Work only here."
+            : $"  branch `{branch}` — not yet pushed anywhere. Work only here.");
+        prompt.AppendLine("- Reproduce the gate's own failure locally, find the real cause, and fix it. Fold the");
+        prompt.AppendLine("  fix into the branch's own history per the commit style below rather than leaving it");
+        prompt.AppendLine("  as a separate \"fix\" commit.");
+        AppendCommitStyleRules(prompt, commitStyle, baseBranch);
+        prompt.AppendLine("- You do not need to run the gate yourself before finishing — the platform runs it");
+        prompt.AppendLine("  again, in full, immediately after this session ends, and judges the repair by");
+        prompt.AppendLine("  whether that run passes, not by anything you write here. Still worth confirming");
+        prompt.AppendLine("  your own fix locally before you stop, so you are not guessing.");
+        if (pullRequestUrl.IsNotBlank())
+        {
+            prompt.AppendLine("- Do NOT push (the platform pushes after re-verifying), and do NOT open a new");
+            prompt.AppendLine("  pull request — the existing PR updates in place.");
+        }
+        else
+        {
+            prompt.AppendLine("- Do NOT push, and do NOT open a pull request — the platform's own mandatory");
+            prompt.AppendLine("  gate and review pass run over the tree you leave behind, and the daemon pushes");
+            prompt.AppendLine("  and opens the pull request itself once everything is green.");
+        }
+
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
+        AppendExternalInteractionLoggingRule(prompt, task.Id);
+        prompt.AppendLine("- End with a short summary: what was actually broken, why, and what you changed.");
+        AppendHandoffRules(prompt);
+
+        return prompt.ToString();
+    }
+
+    private static string ShortCommit(string commit) => commit.Length > 10 ? commit[..10] : commit;
+
+    /// <summary>
     /// The stacked-replay variant (task: a stacked pull-request edge exists as an explicit opt-in
     /// dependency): the child's parent branch moved — it merged and this pull request has already
     /// been retargeted onto <paramref name="baseBranch"/>, or it was force-pushed — and this

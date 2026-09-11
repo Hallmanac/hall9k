@@ -545,7 +545,15 @@ public sealed class ReviewEngine(
                             // composition may guarantee never happens (the Reverify branch's own
                             // mirror of this same gate found the identical shape independently:
                             // independent pre-PR review, cycle 1, adversarial lens).
-                            if (!await verification.VerifyAsync(
+                            //
+                            // A failure here is repair-eligible whenever the most recent recorded
+                            // rebase was real (task: a pre-final-pass rebase that applies cleanly
+                            // but breaks the mandatory gate gets a repair lap inside the same run
+                            // instead of failing it) — checked once, off the aggregate alone, no git
+                            // or gate output involved, so it reads the same fact whether this is the
+                            // very first failure or a later one after an earlier repair round.
+                            bool eligibleForSettlingGateRepair = EligibleForSettlingGateRepair(run);
+                            VerificationRunner.SettlingVerificationResult gateResult = await verification.VerifyForSettlingAsync(
                                 context.RunId, context.TaskId, scopeSinceSha: null,
                                 run.ReviewStageComposition.WaivesFinalFullPassGuarantee
                                     ? "composition skip-final-pass waives the mandatory final full pass: gating at full scope as the run's terminal check"
@@ -553,9 +561,27 @@ public sealed class ReviewEngine(
                                 run.PreFinalPassRebaseAwaitingGate || run.PreFinalPassRebaseAwaitingReview
                                     ? RunSessionLeg.RebaseRecovery
                                     : CurrentFixLeg(run),
-                                cancellationToken))
+                                eligibleForSettlingGateRepair,
+                                cancellationToken);
+                            if (!gateResult.Passed)
                             {
-                                return false;
+                                if (!eligibleForSettlingGateRepair)
+                                {
+                                    // Today's unchanged fail-hard contract: VerifyForSettlingAsync
+                                    // already recorded RunFailed/TaskFailed itself, exactly as
+                                    // VerifyAsync always has, since allowRepairInsteadOfFail was
+                                    // false above.
+                                    return false;
+                                }
+
+                                if (!await DispatchSettlingGateRepairSessionAsync(
+                                    context, run, gateResult.FailureOutput ?? "(gate output unavailable)",
+                                    humanGuidance: null, enforceCap: true, cancellationToken))
+                                {
+                                    return false;
+                                }
+
+                                break;
                             }
 
                             // The gate above can itself run for real wall-clock minutes to hours
@@ -822,6 +848,24 @@ public sealed class ReviewEngine(
                 case ReviewPhase.RebaseRecoveryNeeded:
                     if (!await DispatchRebaseRecoverySessionAsync(
                         context, run, run.PendingRebaseRecoveryGuidance, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    break;
+
+                case ReviewPhase.AwaitingSettlingGateRepair:
+                    if (!await AwaitSettlingGateRepairSessionAsync(context, run, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    break;
+
+                case ReviewPhase.SettlingGateRepairNeeded:
+                    if (!await DispatchSettlingGateRepairSessionAsync(
+                        context, run, run.LastSettlingGateRepairOutput ?? "(gate output unavailable)",
+                        run.PendingSettlingGateRepairGuidance, enforceCap: false, cancellationToken))
                     {
                         return false;
                     }
@@ -3343,6 +3387,204 @@ public sealed class ReviewEngine(
 
     private static string RebaseRecoveryArtifactName(Guid sessionId) => SessionRoleName.PreFinalPassRebase(Short(sessionId));
 
+    /// <summary>
+    /// Whether the Settling phase's own mandatory gate is repair-eligible on the current tip (task:
+    /// a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair lap
+    /// inside the same run instead of failing it): the most recently recorded
+    /// <see cref="RunRebasedOntoBase"/> was a real rebase — clean or through the recovery session,
+    /// never a no-op — or none has ever been recorded at all, in which case this is false and
+    /// today's fail-hard contract is unchanged. A pure read of the aggregate's own already-folded
+    /// facts, the same "no git or gate output involved" shape
+    /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op check already reads off
+    /// <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/> — deliberately never asking whether
+    /// THIS gate failure was actually caused by the rebase, a coincident commit, or a changed verify
+    /// command (the task's own criteria: no such separation is attempted).
+    /// </summary>
+    private static bool EligibleForSettlingGateRepair(RunAggregate run) =>
+        run.LastPreFinalPassRebaseAt is not null && run.LastPreFinalPassRebaseWasNoOp == false;
+
+    /// <summary>
+    /// Spawns the narrow Settling-gate repair session (task: a pre-final-pass rebase that applies
+    /// cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
+    /// failing it) — the same dispatch mechanics <see cref="DispatchRebaseRecoverySessionAsync"/>
+    /// already built (identical <see cref="RunSessionLeg.RebaseRecovery"/> leg, identical spawn and
+    /// event shape), over the gate's own output rather than a git conflict.
+    /// <para>
+    /// <paramref name="enforceCap"/> is false for exactly one caller — the redispatch from
+    /// <see cref="ReviewPhase.SettlingGateRepairNeeded"/> after a human's own needs-fixes resolve on
+    /// a spent cap — which is what "buys exactly one more repair round" actually means: this one
+    /// dispatch is unconditional, but it still increments <see cref="RunAggregate.SettlingGateRepairRounds"/>
+    /// (<see cref="RunAggregate.Apply(Events.SettlingGateRepairDispatched)"/>) exactly like every
+    /// other dispatch, so a gate that fails again after it re-enters the ordinary, cap-enforced path
+    /// and parks again rather than granting a second free round.
+    /// </para>
+    /// </summary>
+    private async Task<bool> DispatchSettlingGateRepairSessionAsync(
+        ReviewContext context, RunAggregate run, string gateOutput, string? humanGuidance, bool enforceCap,
+        CancellationToken cancellationToken)
+    {
+        if (enforceCap && run.SettlingGateRepairRounds >= _options.MaxSettlingGateRepairRounds)
+        {
+            await ParkOnSettlingGateRepairCapAsync(context, run, gateOutput, cancellationToken);
+            return false;
+        }
+
+        string worktreePath = context.Run.WorktreePath;
+
+        // Reachable with no prior worktree check when a human's own `h9k review resolve
+        // --needs-fixes` redispatches straight into ReviewPhase.SettlingGateRepairNeeded, the same
+        // gap DispatchRebaseRecoverySessionAsync's own identical guard documents.
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            await FailAsync(
+                context.RunId, context.TaskId,
+                "The Settling-gate repair session cannot dispatch: the run's retained worktree is missing.",
+                cancellationToken);
+            return false;
+        }
+
+        if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+        {
+            return false;
+        }
+
+        Guid sessionId = DomainId.New();
+        CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
+        string prompt = AgentPromptBuilder.BuildSettlingGateRepair(
+            context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
+            context.BaseBranch,
+            run.LastPreFinalPassRebaseFromCommit ?? RunRebasedOntoBase.UnreadableCommit,
+            run.LastPreFinalPassRebaseOntoCommit ?? RunRebasedOntoBase.UnreadableCommit,
+            run.LastPreFinalPassRebaseRecovered, gateOutput, humanGuidance,
+            commandTimeout: _options.VerifyGateTimeout);
+        ExecutorMode mode = context.Run.ExecutorMode;
+        AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
+        string artifactName = SettlingGateRepairArtifactName(sessionId);
+        string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), artifactName);
+        SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
+            context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
+            context.Project.SkipPermissions, artifactName)
+        {
+            SessionName = sessionName,
+        }, cancellationToken);
+
+        DateTimeOffset dispatchedAt = DateTimeOffset.UtcNow;
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(context.RunId, new SettlingGateRepairDispatched(
+            context.RunId, sessionId, agent.ProcessId, agent.StartedAt, dispatchedAt, model, gateOutput, sessionName));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: Settling phase's mandatory gate failed on a real rebase — narrow repair session dispatched (session {SessionId}, pid {ProcessId}, model {Model})",
+            context.RunId, sessionId, agent.ProcessId, model.Value);
+        return true;
+    }
+
+    private async Task<bool> AwaitSettlingGateRepairSessionAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        if (run.ActiveSettlingGateRepairSessionId is not { } sessionId
+            || run.ActiveSettlingGateRepairProcessId is not { } processId
+            || run.ActiveSettlingGateRepairProcessStartedAt is not { } processStartedAt)
+        {
+            await FailAsync(context.RunId, context.TaskId,
+                "Run stream records an in-flight Settling-gate repair session without its identity.",
+                cancellationToken);
+            return false;
+        }
+
+        string streamFile = RunPaths.SessionStreamFile(CurrentRunDirectory(run), SettlingGateRepairArtifactName(sessionId));
+        AgentResult? result = await WaitForSessionResultAsync(
+            context.RunId, streamFile, processId, processStartedAt,
+            "the Settling-gate repair session", cancellationToken);
+        if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
+        {
+            await ParkForBudgetAsync(context.RunId, "the Settling-gate repair session", summary, cancellationToken);
+            return false;
+        }
+
+        if (result is { IsError: true })
+        {
+            string errorSummary = result.Summary ?? "(no message)";
+            if (run.HasRetriedSessionError(RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null))
+            {
+                await FailAsync(context.RunId, context.TaskId,
+                    "The Settling-gate repair session reported an error result.", cancellationToken);
+                return false;
+            }
+
+            return await RetrySessionErrorAsync(
+                context.RunId, RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null,
+                "the Settling-gate repair session", errorSummary, result, run.ActiveSettlingGateRepairModel,
+                cancellationToken);
+        }
+
+        if (result is null)
+        {
+            await FailAsync(context.RunId, context.TaskId,
+                "The Settling-gate repair session died without a result.", cancellationToken);
+            return false;
+        }
+
+        await RecordSettlingGateRepairResultAsync(context.RunId, result, run.ActiveSettlingGateRepairModel, cancellationToken);
+        return true;
+    }
+
+    private async Task RecordSettlingGateRepairResultAsync(
+        Guid runId, AgentResult result, AgentModel model, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
+        session.Events.Append(runId, new SettlingGateRepairCompleted(runId, now));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: Settling-gate repair session completed ({Input}in/{Output}out tokens) — the mandatory gate re-runs on the next Settling entry",
+            runId, result.TotalInputTokens, result.OutputTokens);
+    }
+
+    /// <summary>
+    /// Parks on a spent Settling-gate repair cap (task: a pre-final-pass rebase that applies
+    /// cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
+    /// failing it) — <see cref="SettlingGateRepairCapReached"/> lands immediately ahead of
+    /// <see cref="ReviewParked"/>, in the one transaction <see cref="ParkAsync"/>'s own
+    /// <paramref name="precedingEvents"/>-shaped call carries, so
+    /// <see cref="RunAggregate.ParkedFromReviewPhase"/> reads that phase by the time the park is
+    /// applied — what lets a human's resolve route through this feature's own rules rather than the
+    /// rebase-recovery cap's inherited ones.
+    /// </summary>
+    private async Task ParkOnSettlingGateRepairCapAsync(
+        ReviewContext context, RunAggregate run, string gateOutput, CancellationToken cancellationToken) =>
+        await ParkAsync(
+            context.RunId, context.TaskId, SettlingGateRepairCapParkReason(run, gateOutput),
+            precedingEvents: [new SettlingGateRepairCapReached(context.RunId, DateTimeOffset.UtcNow)],
+            cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// The park message when <see cref="DaemonOptions.MaxSettlingGateRepairRounds"/> is reached
+    /// (task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+    /// repair lap inside the same run instead of failing it) — names both commits the triggering
+    /// rebase ran between and the gate's own output, and offers the same two exits
+    /// <see cref="RebaseRecoveryCapParkReason"/> offers its own cap: a needs-fixes resolve
+    /// (routed by this feature's own dedicated <see cref="RunAggregate.Apply(Events.ReviewParkResolved)"/>
+    /// branch — one more bought round, the counter left untouched, not the rebase-recovery cap's
+    /// inherited ordinary-fix-session behavior) or a merge-ready resolve once the human has fixed it
+    /// by hand.
+    /// </summary>
+    private static string SettlingGateRepairCapParkReason(RunAggregate run, string gateOutput) =>
+        $"The mandatory final pass's own gate has failed {run.SettlingGateRepairRounds} time(s) in a " +
+        "row since this branch was rebased onto its base, and a narrow repair session could not make " +
+        $"it pass — worth a human's look rather than another automatic round. Rebased from " +
+        $"{ShortSha(run.LastPreFinalPassRebaseFromCommit ?? RunRebasedOntoBase.UnreadableCommit)} to " +
+        $"{ShortSha(run.LastPreFinalPassRebaseOntoCommit ?? RunRebasedOntoBase.UnreadableCommit)}" +
+        (run.LastPreFinalPassRebaseRecovered ? " (itself resolved by a recovery session)." : ".") +
+        $" The gate's own output: {gateOutput} Check the worktree yourself (`git status`, `git log`), " +
+        "then resolve with h9k review resolve --needs-fixes \"<guidance>\" to dispatch one more repair " +
+        "session carrying your guidance, or fix it yourself in the worktree and resolve with " +
+        "--merge-ready.";
+
+    private static string SettlingGateRepairArtifactName(Guid sessionId) =>
+        SessionRoleName.SettlingGateRepair(Short(sessionId));
+
     private static string ShortSha(string sha) => sha.Length > 10 ? sha[..10] : sha;
 
     private static string FirstLine(string text) =>
@@ -4908,6 +5150,19 @@ public sealed class ReviewEngine(
                     "Run {RunId}: terminated the in-flight pre-final-pass rebase-recovery session (pid {ProcessId}) after the loop crashed",
                     runId, rebaseRecoveryProcessId);
             }
+
+            // The Settling-gate repair session (task: a pre-final-pass rebase that applies cleanly
+            // but breaks the mandatory gate gets a repair lap inside the same run instead of
+            // failing it) owes this crash-cleanup the identical guarantee as its sibling leg just
+            // above — a fourth leg, not covered by any of the other three checks in this method.
+            if (run.ActiveSettlingGateRepairProcessId is { } settlingGateRepairProcessId
+                && run.ActiveSettlingGateRepairProcessStartedAt is { } settlingGateRepairProcessStartedAt)
+            {
+                processManager.Terminate(settlingGateRepairProcessId, settlingGateRepairProcessStartedAt);
+                logger.LogWarning(
+                    "Run {RunId}: terminated the in-flight Settling-gate repair session (pid {ProcessId}) after the loop crashed",
+                    runId, settlingGateRepairProcessId);
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -4926,7 +5181,8 @@ public sealed class ReviewEngine(
     /// </summary>
     internal async Task ParkAsync(
         Guid runId, Guid taskId, string reason, bool needsFixesOffersNoProgress = false,
-        bool isInteractiveGate = false, CancellationToken cancellationToken = default)
+        bool isInteractiveGate = false, IReadOnlyList<object>? precedingEvents = null,
+        CancellationToken cancellationToken = default)
     {
         await using IDocumentSession session = store.LightweightSession();
         RunAggregate run = await LoadRunAsync(runId, cancellationToken);
@@ -4955,6 +5211,19 @@ public sealed class ReviewEngine(
 
         // The task stays Claimed and the lease is retained: the worktree is the human's
         // workspace for resolving the park (the CloseoutParked pattern, pre-PR).
+        //
+        // precedingEvents lands ahead of ReviewParked, in the same transaction — the same
+        // ordering ReviewDisagreementParked already uses ahead of its own ReviewParked — so a
+        // fact this specific park needs RunAggregate.ParkedFromReviewPhase (or another field) to
+        // read is already on the stream by the time the park event's own Apply captures it
+        // (task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+        // repair lap inside the same run instead of failing it — SettlingGateRepairCapReached is
+        // the first user of this parameter).
+        if (precedingEvents is { Count: > 0 })
+        {
+            session.Events.Append(runId, [.. precedingEvents]);
+        }
+
         session.Events.Append(
             runId,
             new ReviewParked(runId, reason, DateTimeOffset.UtcNow, needsFixesOffersNoProgress, isInteractiveGate));
