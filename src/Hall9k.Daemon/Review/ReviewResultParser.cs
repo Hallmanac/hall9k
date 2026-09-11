@@ -36,7 +36,7 @@ public static class ReviewResultParser
     /// </summary>
     public const string ExampleLocationPlaceholder = "src/Some/File.cs:123";
 
-    private const string VerdictMarker = "VERDICT:";
+    internal const string VerdictMarker = "VERDICT:";
 
     /// <summary>
     /// The structured findings in a review pass's output, in the order they were written. A
@@ -425,7 +425,7 @@ public static class ReviewResultParser
     };
 
     public static ReviewVerdict ParseVerdict(string? summary) =>
-        LastMarkerValue(summary, "VERDICT:") switch
+        LastMarkerValue(summary, VerdictMarker) switch
         {
             { } value when value.Contains("merge-ready", StringComparison.OrdinalIgnoreCase) => ReviewVerdict.MergeReady,
             { } value when value.Contains("needs-fixes", StringComparison.OrdinalIgnoreCase) => ReviewVerdict.NeedsFixes,
