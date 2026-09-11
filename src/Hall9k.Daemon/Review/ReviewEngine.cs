@@ -565,19 +565,23 @@ public sealed class ReviewEngine(
                                 cancellationToken);
                             if (!gateResult.Passed)
                             {
-                                // gateResult.FailedGateName is null both for a genuine gate failure
-                                // recorded fail-hard (eligibleForSettlingGateRepair false above) AND
-                                // for the two pre-gate checks VerifyForSettlingAsync always runs
+                                // gateResult.FailedGateName is populated for a genuine gate failure
+                                // regardless of allowRepairInsteadOfFail (SettlingVerificationResult's
+                                // own doc) — that flag only decides whether the ordinary
+                                // RunFailed/TaskFailed append also runs. FailedGateName stays null
+                                // only for the two pre-gate checks VerifyForSettlingAsync always runs
                                 // first — stranded work, and a missing run or task — which return
                                 // (false, null, null) and, for the stranded-work case, already
                                 // appended RunFailed/TaskFailed themselves regardless of
                                 // allowRepairInsteadOfFail (independent pre-PR review, cycle 1,
                                 // adversarial lens: an agent's own uncommitted work is not something
-                                // a rebase caused, so it stays fail-hard unconditionally). Only a
-                                // populated FailedGateName means RecordGateFailureWithoutFailingRunAsync
-                                // ran instead — a genuine gate failure that skipped the ordinary
-                                // RunFailed/TaskFailed append and is actually safe to dispatch a
-                                // repair session over.
+                                // a rebase caused, so it stays fail-hard unconditionally). So a
+                                // populated FailedGateName alone does not mean repair is safe here:
+                                // eligibleForSettlingGateRepair still has to gate it, since a genuine
+                                // failure recorded fail-hard (eligibleForSettlingGateRepair false,
+                                // which is what allowRepairInsteadOfFail was passed above) still
+                                // returns its own FailedGateName even though no repair session may
+                                // follow.
                                 if (!eligibleForSettlingGateRepair || gateResult.FailedGateName is null)
                                 {
                                     // Today's unchanged fail-hard contract: VerifyForSettlingAsync
@@ -925,6 +929,17 @@ public sealed class ReviewEngine(
                         {
                             break;
                         }
+
+                        // Reloaded here for the identical reason the Settling branch's own
+                        // reload above it does (independent pre-PR review, cycle 3, adversarial
+                        // lens): the rebase call above appends its own RunRebasedOntoBase through
+                        // a separate session, so the in-memory `run` this iteration started with
+                        // does not yet reflect it. Without this, EligibleForSettlingGateRepair and
+                        // the leg-selection ternary just below both read the pre-rebase snapshot —
+                        // PreFinalPassRebaseAwaitingGate still false — so a gate failure right
+                        // after a clean rebase on this path fails the run instead of dispatching a
+                        // repair session.
+                        run = await LoadRunAsync(context.RunId, cancellationToken);
                     }
 
                     // Only a fix whose next stop is an ordinary Verify cycle scopes its own gate
@@ -3446,34 +3461,39 @@ public sealed class ReviewEngine(
     /// today's fail-hard contract is unchanged. A pure read of the aggregate's own already-folded
     /// facts, the same "no git or gate output involved" shape
     /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op check already reads off
-    /// <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/> — deliberately never asking whether
-    /// THIS gate failure was actually caused by the rebase, a coincident commit, or a changed verify
-    /// command (the task's own criteria: no such separation is attempted).
+    /// deliberately never asking whether THIS gate failure was actually caused by the rebase, a
+    /// coincident commit, or a changed verify command (the task's own criteria: no such separation
+    /// is attempted).
     /// <para>
-    /// Also requires <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> (independent pre-PR
-    /// review, cycle 1, conformance lens): <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/>
-    /// alone never goes back to true once a real rebase has landed anywhere in the run's lifetime —
-    /// the trailing-no-op guard in <see cref="RunAggregate.Apply(RunRebasedOntoBase)"/> deliberately
-    /// ignores a later no-op re-check's own claim, so a later, unrelated gate failure (a fix that
-    /// broke a test after that earlier rebase's own gate already passed) would otherwise stay
-    /// repair-eligible forever. <c>PreFinalPassRebaseAwaitingGate</c> does not share that gap: it is
-    /// cleared the moment a full-scope gate actually passes over the rebased tip, and only a
-    /// genuinely new real rebase (never a no-op) sets it again — so it tracks exactly "is there a
-    /// rebase on this tip that has never yet been gated", which is the question this method exists
-    /// to answer.
+    /// Reads <see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>, not
+    /// <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/> (independent pre-PR review, cycle 3,
+    /// conformance lens): <c>LastPreFinalPassRebaseWasNoOp</c> is a display field whose own trailing-
+    /// no-op guard deliberately leaves it pointing at an earlier real rebase across a later no-op
+    /// re-check, so a no-op re-check that only committed a Decisions Log renumbering — which does
+    /// raise <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/>, since the renumbering commit
+    /// moved this branch's tip too — would otherwise read as "the last rebase was real" and wrongly
+    /// earn repair eligibility for a gate break that has nothing to do with an actual rebase.
+    /// <c>PreFinalPassRebaseAwaitingGateFromRealRebase</c> is set directly off the triggering
+    /// event's own <c>WasNoOp</c> every time <c>PreFinalPassRebaseAwaitingGate</c> is (re)raised, so
+    /// it always reflects whichever event most recently left this tip ungated, real rebase or
+    /// renumbering-only no-op, with no trailing-guard staleness to account for.
     /// </para>
     /// </summary>
     private static bool EligibleForSettlingGateRepair(RunAggregate run) =>
         run.LastPreFinalPassRebaseAt is not null
-        && run.LastPreFinalPassRebaseWasNoOp == false
-        && run.PreFinalPassRebaseAwaitingGate;
+        && run.PreFinalPassRebaseAwaitingGate
+        && run.PreFinalPassRebaseAwaitingGateFromRealRebase;
 
     /// <summary>
     /// Spawns the narrow Settling-gate repair session (task: a pre-final-pass rebase that applies
     /// cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
     /// failing it) — the same dispatch mechanics <see cref="DispatchRebaseRecoverySessionAsync"/>
-    /// already built (identical <see cref="RunSessionLeg.RebaseRecovery"/> leg, identical spawn and
-    /// event shape), over the gate's own output rather than a git conflict.
+    /// already built (identical spawn and event shape), over the gate's own output rather than a
+    /// git conflict. Its own error-retry bookkeeping is recorded on the separate
+    /// <see cref="RunSessionLeg.SettlingGateRepair"/> leg, not <see cref="RunSessionLeg.RebaseRecovery"/>
+    /// (independent pre-PR review, cycle 3, adversarial lens) — sharing the rebase-recovery leg
+    /// would collide a repair session's own retry count with an unrelated rebase-recovery round on
+    /// the same run.
     /// <para>
     /// <paramref name="enforceCap"/> is false for exactly one caller — the redispatch from
     /// <see cref="ReviewPhase.SettlingGateRepairNeeded"/> after a human's own needs-fixes resolve on

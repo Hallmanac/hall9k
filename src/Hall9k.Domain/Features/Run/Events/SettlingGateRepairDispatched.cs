@@ -8,9 +8,11 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair lap
 /// inside the same run instead of failing it. A narrow session is dispatched, inside this same run
 /// exactly like <see cref="PreFinalPassRebaseRecoveryDispatched"/> — no task reopen — carrying the
-/// gate's own output rather than a git conflict, over the SAME <see cref="RunSessionLeg.RebaseRecovery"/>
-/// leg and dispatch path that mechanism already built (the task's own smallest-shape ruling): only
-/// the prompt and the cap/park reason are this feature's own.
+/// gate's own output rather than a git conflict, over the same dispatch path that mechanism already
+/// built (the task's own smallest-shape ruling): only the prompt and the cap/park reason are this
+/// feature's own. Its error-retry bookkeeping runs on its own <see cref="RunSessionLeg.SettlingGateRepair"/>
+/// leg, not <see cref="RunSessionLeg.RebaseRecovery"/>, so a repair session's retry count never
+/// collides with an unrelated rebase-recovery round on the same run.
 /// </summary>
 public sealed record SettlingGateRepairDispatched(
     Guid Id,

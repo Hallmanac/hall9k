@@ -147,6 +147,23 @@ public sealed class RunAggregate
     public bool PreFinalPassRebaseAwaitingGate { get; private set; }
 
     /// <summary>
+    /// Whether the current <see cref="PreFinalPassRebaseAwaitingGate"/> grant was earned by a
+    /// genuine, non-no-op rebase rather than a no-op re-check that only committed a Decisions Log
+    /// renumbering (independent pre-PR review, cycle 3, conformance lens): the two share the same
+    /// flag above because both leave this branch's tip ungated, but
+    /// <see cref="Hall9k.Daemon.Review.ReviewEngine.EligibleForSettlingGateRepair"/> means only the
+    /// former by "a pre-final-pass rebase that applies cleanly but breaks the mandatory gate" — a
+    /// renumbering-only no-op never moved this branch relative to its base, so a gate failure right
+    /// after one is not a rebase-caused break and keeps today's fail-hard contract.
+    /// <see cref="LastPreFinalPassRebaseWasNoOp"/> cannot answer this itself: the trailing-no-op
+    /// display guard in <see cref="Apply(Events.RunRebasedOntoBase)"/> deliberately leaves it
+    /// pointing at an earlier real rebase across a later no-op re-check, which would otherwise make
+    /// a renumbering-only no-op that lands after that earlier rebase's own gate already passed
+    /// look, wrongly, like the same real rebase is still ungated.
+    /// </summary>
+    public bool PreFinalPassRebaseAwaitingGateFromRealRebase { get; private set; }
+
+    /// <summary>
     /// Whether a pre-final-pass rebase that needed the recovery session's own judgment has landed
     /// since the last fresh-context review pass read this branch (independent pre-PR review, cycle
     /// 1, conformance lens) — the mirror of <see cref="PreFinalPassRebaseAwaitingGate"/> for the
@@ -158,7 +175,12 @@ public sealed class RunAggregate
     /// ordinary "nothing owed" settle (a clean Discovery-cycle-1 convergence with no fix dispatched)
     /// let a recovery session's own conflict resolution reach the pull request having never been
     /// read by any fresh-context reviewer, even though <see cref="PreFinalPassRebaseAwaitingGate"/>
-    /// forced a build/test gate over it. Cleared the moment any review pass is dispatched
+    /// forced a build/test gate over it. <see cref="Apply(Events.SettlingGateRepairCompleted)"/> sets
+    /// it too (independent pre-PR review, cycle 3, conformance lens): a Settling-gate repair
+    /// session's own fix is the identical unreviewed judgment call a recovery session's conflict
+    /// resolution is, clean git apply or not, so a repair round earns the same fresh-context review
+    /// this flag otherwise reserves for a rebase the recovery session had to resolve by hand. Cleared
+    /// the moment any review pass is dispatched
     /// (<see cref="Apply(Events.ReviewDispatched)"/>): for every composition that promises a review
     /// at all, a pre-final-pass rebase can only land while <see cref="ReviewPhase"/> is
     /// <see cref="Domain.Features.Run.ReviewPhase.Settling"/> or a
@@ -914,6 +936,7 @@ public sealed class RunAggregate
         if (@event.RanFullScope)
         {
             PreFinalPassRebaseAwaitingGate = false;
+            PreFinalPassRebaseAwaitingGateFromRealRebase = false;
             // The Settling-gate repair cap's own confirmed-fixed signal (task: a pre-final-pass
             // rebase that applies cleanly but breaks the mandatory gate gets a repair lap inside
             // the same run instead of failing it): a full-scope pass only ever lands here when the
@@ -1881,6 +1904,7 @@ public sealed class RunAggregate
         if (!@event.WasNoOp || @event.DecisionsLogRenumbered)
         {
             PreFinalPassRebaseAwaitingGate = true;
+            PreFinalPassRebaseAwaitingGateFromRealRebase = !@event.WasNoOp;
         }
 
         // Only a recovery session's own judgment call earns this (see PreFinalPassRebaseAwaitingReview's
