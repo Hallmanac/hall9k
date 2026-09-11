@@ -3,6 +3,7 @@ using System.Text;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Infrastructure.Storage;
 
 namespace Hall9k.Connectors.Prompts;
 
@@ -161,17 +162,25 @@ public sealed record ReviewLapBriefing(
 /// </summary>
 public static class ReviewLapPromptBuilder
 {
+    private const string TemplateDirectory = "review-lap-prompt-builder";
+
     public static string Build(ReviewLapBriefing briefing)
     {
         StringBuilder prompt = new();
         PullRequestSurface pullRequest = briefing.PullRequest;
+        const string file = $"{TemplateDirectory}/build.md";
 
-        prompt.AppendLine("# Review lap");
+        prompt.AppendLine(PromptTemplates.Load(file, "title"));
         prompt.AppendLine();
-        prompt.AppendLine(
-            $"You are helping a human reviewer review pull request {pullRequest.Repository}#{pullRequest.Number}"
-            + (pullRequest.AuthorLogin.IsNotBlank() ? $", opened by {OneLine(pullRequest.AuthorLogin)}" : string.Empty)
-            + $": {OneLine(pullRequest.Title)}");
+        string repoAndNumber = $"{pullRequest.Repository}#{pullRequest.Number}";
+        prompt.AppendLine(pullRequest.AuthorLogin.IsNotBlank()
+            ? Fragment(file, "intro-with-author",
+                ("RepoAndNumber", repoAndNumber),
+                ("AuthorLogin", OneLine(pullRequest.AuthorLogin)),
+                ("Title", OneLine(pullRequest.Title)))
+            : Fragment(file, "intro-without-author",
+                ("RepoAndNumber", repoAndNumber),
+                ("Title", OneLine(pullRequest.Title))));
         if (pullRequest.Url is not null)
         {
             prompt.AppendLine();
@@ -179,9 +188,10 @@ public static class ReviewLapPromptBuilder
         }
 
         prompt.AppendLine();
-        prompt.AppendLine(
-            $"It targets `{pullRequest.BaseRefName}` from `{pullRequest.HeadRefName}`, and its head right now is "
-            + $"`{ShortSha(pullRequest.HeadSha)}`. It is not yours: nothing you do in this lap writes to it.");
+        prompt.AppendLine(Fragment(file, "range",
+            ("BaseRef", pullRequest.BaseRefName),
+            ("HeadRef", pullRequest.HeadRefName),
+            ("HeadSha", ShortSha(pullRequest.HeadSha))));
         prompt.AppendLine();
 
         if (briefing.SinceMyReview is { } scoped)
@@ -216,20 +226,19 @@ public static class ReviewLapPromptBuilder
     /// </summary>
     private static void AppendObjectiveSection(StringBuilder prompt, ReviewLapBriefing briefing)
     {
-        prompt.AppendLine("## Stated objective");
+        const string file = $"{TemplateDirectory}/objective.md";
+        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
         if (briefing.StatedObjective.IsNotBlank())
         {
-            prompt.AppendLine(
-                "From the author's own task on this node"
-                + (briefing.AuthorTaskShortId.IsNotBlank() ? $" ({briefing.AuthorTaskShortId})" : string.Empty)
-                + ", not from the pull request's description:");
+            prompt.AppendLine(Fragment(file, "with-task-intro",
+                ("IdParenthetical", briefing.AuthorTaskShortId.IsNotBlank() ? $" ({briefing.AuthorTaskShortId})" : string.Empty)));
             prompt.AppendLine();
             prompt.AppendLine(Block(briefing.StatedObjective));
             if (briefing.AcceptanceCriteria.Count > 0)
             {
                 prompt.AppendLine();
-                prompt.AppendLine("Acceptance criteria, as the author's task records them:");
+                prompt.AppendLine(PromptTemplates.Load(file, "acceptance-criteria-heading"));
                 prompt.AppendLine();
                 foreach (string criterion in briefing.AcceptanceCriteria)
                 {
@@ -239,22 +248,16 @@ public static class ReviewLapPromptBuilder
             else
             {
                 prompt.AppendLine();
-                prompt.AppendLine(
-                    "The author's task records no acceptance criteria, so there is no contract here to check "
-                    + "the diff against — only the objective above.");
+                prompt.AppendLine(PromptTemplates.Load(file, "no-acceptance-criteria"));
             }
         }
         else
         {
-            prompt.AppendLine(
-                "This node cannot read an authoring task for this pull request, so there is no stated "
-                + "objective or acceptance-criteria contract to check the diff against — only what the pull "
-                + "request itself says about itself, which is the author's description of the change rather "
-                + "than the intent behind it:");
+            prompt.AppendLine(PromptTemplates.Load(file, "without-task"));
             prompt.AppendLine();
             prompt.AppendLine(briefing.PullRequest.Body.IsNotBlank()
                 ? Block(briefing.PullRequest.Body)
-                : "(the pull request has no description)");
+                : PromptTemplates.Load(file, "no-description"));
         }
 
         prompt.AppendLine();
@@ -269,7 +272,8 @@ public static class ReviewLapPromptBuilder
     /// </summary>
     private static void AppendBlastRadiusSection(StringBuilder prompt, PullRequestSurface pullRequest)
     {
-        prompt.AppendLine("## Surfaces touched");
+        const string templateFile = $"{TemplateDirectory}/blast-radius.md";
+        prompt.AppendLine(PromptTemplates.Load(templateFile, "heading"));
         prompt.AppendLine();
         if (pullRequest.Files.Count == 0)
         {
@@ -280,19 +284,18 @@ public static class ReviewLapPromptBuilder
             string counted = pullRequest.ChangedFiles > 0
                 ? $"{pullRequest.ChangedFiles} file(s), +{pullRequest.Additions}/-{pullRequest.Deletions}"
                 : $"+{pullRequest.Additions}/-{pullRequest.Deletions}, with no file count reported either";
-            prompt.AppendLine(
-                "gh reported no file list for this pull request, so the blast radius below could not be "
-                + $"computed. GitHub's own totals for it are {counted}. Read the diff directly "
-                + "(`git diff` in the worktree, if you have one) rather than treating this absence as a "
-                + "small change.");
+            prompt.AppendLine(Fragment(templateFile, "no-file-list", ("Counted", counted)));
             prompt.AppendLine();
             return;
         }
 
         string fileWord = pullRequest.ChangedFiles == 1 ? "file" : "files";
-        prompt.AppendLine(
-            $"{pullRequest.ChangedFiles} {fileWord}, +{pullRequest.Additions}/-{pullRequest.Deletions} overall, "
-            + $"across {DescribeSurfaces(pullRequest.Files)}:");
+        prompt.AppendLine(Fragment(templateFile, "summary",
+            ("FileCount", pullRequest.ChangedFiles.ToString(CultureInfo.InvariantCulture)),
+            ("FileWord", fileWord),
+            ("Additions", pullRequest.Additions.ToString(CultureInfo.InvariantCulture)),
+            ("Deletions", pullRequest.Deletions.ToString(CultureInfo.InvariantCulture)),
+            ("Surfaces", DescribeSurfaces(pullRequest.Files))));
         // GitHub paginates the files list, so a very large pull request comes back with an honest
         // count and a short list. Said out loud rather than left to be inferred from a grouping
         // that silently covers part of the change (AGENTS.md, never guess at unobserved facts):
@@ -301,10 +304,9 @@ public static class ReviewLapPromptBuilder
         if (pullRequest.ChangedFiles > pullRequest.Files.Count)
         {
             prompt.AppendLine();
-            prompt.AppendLine(
-                $"GitHub served only {pullRequest.Files.Count} of those {pullRequest.ChangedFiles} files, so "
-                + "the grouping below covers part of the change rather than all of it. The totals above are "
-                + "the pull request's own and are complete; read the diff directly for the rest.");
+            prompt.AppendLine(Fragment(templateFile, "truncated",
+                ("ServedCount", pullRequest.Files.Count.ToString(CultureInfo.InvariantCulture)),
+                ("TotalCount", pullRequest.ChangedFiles.ToString(CultureInfo.InvariantCulture))));
         }
 
         prompt.AppendLine();
@@ -331,20 +333,19 @@ public static class ReviewLapPromptBuilder
     /// </summary>
     private static void AppendChecksSection(StringBuilder prompt, PullRequestSurface pullRequest)
     {
-        prompt.AppendLine("## What CI ran");
+        const string file = $"{TemplateDirectory}/checks.md";
+        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
         if (!pullRequest.ChecksObserved)
         {
-            prompt.AppendLine(
-                "GitHub reported no status rollup for this head at all — which is not the same as "
-                + "\"the checks passed\" and not the same as \"there are none\". Nothing about CI is known here.");
+            prompt.AppendLine(PromptTemplates.Load(file, "not-observed"));
             prompt.AppendLine();
             return;
         }
 
         if (pullRequest.Checks.Count == 0)
         {
-            prompt.AppendLine("GitHub reported a status rollup with no checks in it: nothing ran against this head.");
+            prompt.AppendLine(PromptTemplates.Load(file, "empty"));
             prompt.AppendLine();
             return;
         }
@@ -380,24 +381,17 @@ public static class ReviewLapPromptBuilder
     private static void AppendSinceMyReviewSection(
         StringBuilder prompt, ReviewLapBriefing briefing, ScopedReviewPacket scoped)
     {
-        prompt.AppendLine("## What has changed since your review");
+        const string file = $"{TemplateDirectory}/since-my-review.md";
+        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
-        prompt.AppendLine(
-            $"This is a **scoped lap**. The reviewer ({OneLine(scoped.ReviewerLogin)}) has already reviewed "
-            + "this pull request once, and this briefing is only what has arrived since: replies on the "
-            + "threads they opened, and the commits pushed after their review. The objective, the blast "
-            + "radius, the CI results and the platform's own earlier findings report are deliberately NOT "
-            + "here — they were read in the first lap and re-reading them is what this flag exists to avoid. "
-            + "Do not reason as though the packet below were the whole pull request; when something in it "
-            + "needs wider context, go and read that context in the checkout rather than assuming it away.");
+        prompt.AppendLine(Fragment(file, "scope-intro", ("ReviewerLogin", OneLine(scoped.ReviewerLogin))));
         prompt.AppendLine();
         prompt.AppendLine(
             scoped.ReviewedHeadSha.IsNotBlank()
-                ? $"Their review was posted against `{ShortSha(scoped.ReviewedHeadSha)}`; the head is now "
-                  + $"`{ShortSha(scoped.CurrentHeadSha ?? string.Empty)}`."
-                : "The platform has no record of which commit their review was posted against, so the code "
-                  + "half of this packet is the commits it could observe rather than a range pinned to their "
-                  + "review. Say so if it matters to a finding.");
+                ? Fragment(file, "head-known",
+                    ("ReviewedShort", ShortSha(scoped.ReviewedHeadSha)),
+                    ("CurrentShort", ShortSha(scoped.CurrentHeadSha ?? string.Empty)))
+                : PromptTemplates.Load(file, "head-unknown"));
         prompt.AppendLine();
 
         // Stated up here rather than left to be inferred from an empty packet, because it is the
@@ -407,14 +401,11 @@ public static class ReviewLapPromptBuilder
         // (independent pre-PR review, cycle 1, adversarial lens).
         if (scoped.ReReviewRequested)
         {
-            prompt.AppendLine(
-                "**The author has re-requested this review**, which is an explicit ask to look again "
-                + "whatever the packet below turns out to hold — a re-request with no reply and no push is "
-                + "still an ask.");
+            prompt.AppendLine(PromptTemplates.Load(file, "re-request-notice"));
             prompt.AppendLine();
         }
 
-        prompt.AppendLine("### Thread replies");
+        prompt.AppendLine(PromptTemplates.Load(file, "thread-replies-heading"));
         prompt.AppendLine();
         if (scoped.ThreadPageTruncated)
         {
@@ -422,44 +413,39 @@ public static class ReviewLapPromptBuilder
             // believed: this pull request carries more review threads than one provider page holds,
             // so every number below is a floor and threads of the reviewer's own may be missing
             // from this packet outright.
-            prompt.AppendLine(
-                "**This pull request carries more review threads than the provider's own page cap can "
-                + "return (100), so the thread half of this packet is incomplete.** Every count below is a "
-                + "floor, and threads the reviewer opened may be missing from it entirely — an absent thread "
-                + "here does NOT mean it went quiet. Read them on GitHub before treating any silence below "
-                + $"as an answer: `gh pr view {OneLine(briefing.PullRequest.Repository)}#"
-                + $"{briefing.PullRequest.Number.ToString(CultureInfo.InvariantCulture)} --comments`.");
+            prompt.AppendLine(Fragment(file, "page-truncated",
+                ("RepoAndNumber",
+                    $"{OneLine(briefing.PullRequest.Repository)}#{briefing.PullRequest.Number.ToString(CultureInfo.InvariantCulture)}")));
             prompt.AppendLine();
         }
 
         if (scoped.Threads.Count == 0)
         {
             prompt.AppendLine(
-                "None of the reviewer's own threads have moved since their review"
+                PromptTemplates.Load(file, "none-moved-opening")
                 + (scoped.UnchangedThreadCount, scoped.ThreadPageTruncated) switch
                 {
-                    ( > 0, true) => $" — all {Count(scoped.UnchangedThreadCount)} of theirs that could be read are unchanged.",
-                    ( > 0, false) => $" (all {Count(scoped.UnchangedThreadCount)} of them are unchanged).",
-                    (_, true) => " — none of theirs were inside the page that could be read.",
-                    (_, false) => " — they opened none.",
+                    ( > 0, true) => Fragment(file, "none-moved-unchanged-truncated", ("Count", Count(scoped.UnchangedThreadCount))),
+                    ( > 0, false) => Fragment(file, "none-moved-unchanged-not-truncated", ("Count", Count(scoped.UnchangedThreadCount))),
+                    (_, true) => PromptTemplates.Load(file, "none-moved-none-truncated"),
+                    (_, false) => PromptTemplates.Load(file, "none-moved-none-not-truncated"),
                 }
                 // Never asserted as a fact when a re-request is what summoned the lap: the code
                 // half can be empty too, and telling a session to go and find the cause there
                 // would send it hunting something that does not exist.
-                + (scoped.ReReviewRequested
-                    ? " What prompted this lap may be nothing more than the re-request above; say so plainly"
-                      + " if the code half below is empty as well."
-                    : " Whatever prompted this lap is in the code half below."));
+                + PromptTemplates.Load(file, scoped.ReReviewRequested
+                    ? "none-moved-rerequest-tail"
+                    : "none-moved-no-rerequest-tail"));
             prompt.AppendLine();
         }
         else
         {
             prompt.AppendLine(
-                $"{Count(scoped.Threads.Count)} of the reviewer's threads moved"
+                Fragment(file, "moved-summary-opening", ("MovedCount", Count(scoped.Threads.Count)))
                 + (scoped.UnchangedThreadCount > 0
-                    ? $"; {Count(scoped.UnchangedThreadCount)} more are unchanged and are not shown."
-                    : ".")
-                + " Every reply is verbatim.");
+                    ? Fragment(file, "moved-summary-with-unchanged", ("UnchangedCount", Count(scoped.UnchangedThreadCount)))
+                    : PromptTemplates.Load(file, "moved-summary-no-unchanged"))
+                + PromptTemplates.Load(file, "moved-summary-tail"));
             prompt.AppendLine();
             foreach (ScopedReviewThreadDelta thread in scoped.Threads)
             {
@@ -468,7 +454,7 @@ public static class ReviewLapPromptBuilder
                 prompt.AppendLine();
                 if (thread.NewComments.Count == 0 && thread.UnreadCommentCount == 0)
                 {
-                    prompt.AppendLine("(No new comment; the thread's own state is what changed.)");
+                    prompt.AppendLine(PromptTemplates.Load(file, "no-new-comment"));
                     prompt.AppendLine();
                     continue;
                 }
@@ -485,21 +471,18 @@ public static class ReviewLapPromptBuilder
                     // the thread's opener, which is what makes it the reviewer's, is never the one
                     // dropped. On a scoped lap that is the worst possible loss to leave silent: the
                     // latest word in the thread is the thing the reviewer came back for.
-                    prompt.AppendLine(
-                        $"(**{thread.UnreadCommentCount.ToString(CultureInfo.InvariantCulture)} further "
-                        + $"comment(s) on this thread are past the provider's own page cap and are NOT shown "
-                        + "here** — and they are the most recent ones, so the last word in this thread is not "
-                        + "above. Read the thread on GitHub before drawing a conclusion from it.)");
+                    prompt.AppendLine(Fragment(file, "unread-comment-notice",
+                        ("UnreadCount", thread.UnreadCommentCount.ToString(CultureInfo.InvariantCulture))));
                     prompt.AppendLine();
                 }
             }
         }
 
-        prompt.AppendLine("### Commits pushed since your review");
+        prompt.AppendLine(PromptTemplates.Load(file, "commits-heading"));
         prompt.AppendLine();
         if (scoped.NewCommits.Count == 0)
         {
-            prompt.AppendLine("None were observed.");
+            prompt.AppendLine(PromptTemplates.Load(file, "commits-none"));
         }
         else
         {
@@ -522,15 +505,9 @@ public static class ReviewLapPromptBuilder
             prompt.AppendLine();
         }
 
-        prompt.AppendLine("### What to produce");
+        prompt.AppendLine(PromptTemplates.Load(file, "what-to-produce-heading"));
         prompt.AppendLine();
-        prompt.AppendLine(
-            "Read the packet above and report findings in the same shape the first lap's report used: one "
-            + "heading per finding, each naming the file and line it is about, what is wrong, and how "
-            + "confident you are. A reply that answers the original finding correctly is itself a finding "
-            + "worth stating — \"this one is addressed\" is what lets the reviewer resolve the thread. Nothing "
-            + "you write is posted anywhere; the reviewer directs each finding themselves, exactly as they "
-            + "did the first time.");
+        prompt.AppendLine(PromptTemplates.Load(file, "what-to-produce-body"));
         prompt.AppendLine();
     }
 
@@ -540,24 +517,17 @@ public static class ReviewLapPromptBuilder
 
     private static void AppendFindingsReportSection(StringBuilder prompt, ReviewLapBriefing briefing)
     {
-        prompt.AppendLine("## The platform's own findings report");
+        const string file = $"{TemplateDirectory}/findings-report.md";
+        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
         if (briefing.FindingsReport.IsBlank())
         {
-            prompt.AppendLine(
-                "The automated review of this pull request has not produced a findings report yet, so there "
-                + "is none to show. The reviewer got here before the machines did, which is a normal way to "
-                + $"run a lap — `h9k task show {briefing.TaskId}` says where the automated run stands.");
+            prompt.AppendLine(Fragment(file, "not-yet", ("TaskId", briefing.TaskId.ToString())));
             prompt.AppendLine();
             return;
         }
 
-        prompt.AppendLine(
-            "Two automated lenses have already read this pull request — one adversarial, hunting for defects "
-            + "with no knowledge of the intent, one conformance, checking the diff against the stated "
-            + "objective. Their merged report is below, verbatim. Nothing in it has been posted to the pull "
-            + "request, and nothing in it is a verdict: it is what two machines found, for the reviewer to "
-            + "weigh alongside their own reading.");
+        prompt.AppendLine(PromptTemplates.Load(file, "intro"));
         prompt.AppendLine();
         prompt.AppendLine(Block(briefing.FindingsReport));
         prompt.AppendLine();
@@ -570,23 +540,19 @@ public static class ReviewLapPromptBuilder
             return;
         }
 
-        prompt.AppendLine("## What the author's own run already settled");
+        const string file = $"{TemplateDirectory}/author-run.md";
+        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
-        prompt.AppendLine(
-            "This node can read the run that produced this pull request, so the platform's own account of it "
-            + "is available. It is an account of what the pipeline did, not a vouching for the diff.");
+        prompt.AppendLine(PromptTemplates.Load(file, "intro"));
         prompt.AppendLine();
-        prompt.AppendLine(
-            $"- Review loop ended: {OneLine(authorRun.Settlement)} "
-            + $"({authorRun.ResidualsFixed} residual(s) fixed, {authorRun.ResidualsRouted} routed elsewhere)");
+        prompt.AppendLine(Fragment(file, "settlement-line",
+            ("Settlement", OneLine(authorRun.Settlement)),
+            ("Fixed", authorRun.ResidualsFixed.ToString(CultureInfo.InvariantCulture)),
+            ("Routed", authorRun.ResidualsRouted.ToString(CultureInfo.InvariantCulture))));
         if (authorRun.UnclaimedResiduals.Count > 0)
         {
-            prompt.AppendLine(
-                $"- Unclaimed residuals ({authorRun.UnclaimedResiduals.Count}) — findings the platform's own "
-                + "review raised and then did not fix on this branch, either because it ran out of cycles or "
-                + "because it graded them below the bar of the cycle that found them. These came from a hunt "
-                + "with no knowledge of the author's intent and nobody has vouched for them since, which is "
-                + "why they are named here rather than left in the run history:");
+            prompt.AppendLine(Fragment(file, "unclaimed-intro",
+                ("Count", authorRun.UnclaimedResiduals.Count.ToString(CultureInfo.InvariantCulture))));
             foreach (string residual in authorRun.UnclaimedResiduals)
             {
                 prompt.AppendLine($"  - {OneLine(residual)}");
@@ -594,15 +560,13 @@ public static class ReviewLapPromptBuilder
         }
         else
         {
-            prompt.AppendLine("- Unclaimed residuals: none recorded");
+            prompt.AppendLine(PromptTemplates.Load(file, "unclaimed-none"));
         }
 
         if (authorRun.Rulings.Count > 0)
         {
-            prompt.AppendLine(
-                $"- Disputes and rulings ({authorRun.Rulings.Count}) — where a human already settled a "
-                + "question on this diff. A ruling is a record of a decision, not a reason a reviewer cannot "
-                + "reach a different one:");
+            prompt.AppendLine(Fragment(file, "rulings-intro",
+                ("Count", authorRun.Rulings.Count.ToString(CultureInfo.InvariantCulture))));
             foreach (string ruling in authorRun.Rulings)
             {
                 prompt.AppendLine($"  - {OneLine(ruling)}");
@@ -610,7 +574,7 @@ public static class ReviewLapPromptBuilder
         }
         else
         {
-            prompt.AppendLine("- Disputes and rulings: none recorded");
+            prompt.AppendLine(PromptTemplates.Load(file, "rulings-none"));
         }
 
         prompt.AppendLine();
@@ -618,91 +582,46 @@ public static class ReviewLapPromptBuilder
 
     private static void AppendWorkingArrangementSection(StringBuilder prompt, ReviewLapBriefing briefing)
     {
-        prompt.AppendLine("## Where you are");
+        const string file = $"{TemplateDirectory}/working-arrangement.md";
+        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
-        if (briefing.WorktreePath.IsNotBlank())
-        {
-            prompt.AppendLine(
-                $"A read-only checkout of this pull request's head is at `{briefing.WorktreePath}` — a detached "
-                + "worktree of project "
-                + $"{OneLine(briefing.ProjectName)}'s clone at `{briefing.RepositoryPath}`, with no local branch, "
-                + "so there is nothing here that could be pushed by accident. The base branch is available as "
-                + $"`origin/{briefing.PullRequest.BaseRefName}`, so "
-                + $"`git diff origin/{briefing.PullRequest.BaseRefName}...HEAD` is the pull request's own range.");
-        }
-        else
-        {
-            prompt.AppendLine(
-                "No checkout was made for this lap (`--no-worktree`): the reviewer is testing against a "
-                + "deployed environment rather than reading the code locally. If they later want the code in "
-                + "front of them, say so — the lap can be re-run without that flag.");
-        }
+        prompt.AppendLine(briefing.WorktreePath.IsNotBlank()
+            ? Fragment(file, "with-worktree",
+                ("WorktreePath", briefing.WorktreePath),
+                ("ProjectName", OneLine(briefing.ProjectName)),
+                ("RepositoryPath", briefing.RepositoryPath),
+                ("BaseRef", briefing.PullRequest.BaseRefName))
+            : PromptTemplates.Load(file, "without-worktree"));
 
         prompt.AppendLine();
     }
 
     private static void AppendRulesSection(StringBuilder prompt, ReviewLapBriefing briefing)
     {
-        prompt.AppendLine("## Working rules");
+        const string file = $"{TemplateDirectory}/rules.md";
+        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
-        prompt.AppendLine(
-            "- **The briefing above is the whole of what you volunteer.** Do not open with test scenarios, "
-            + "areas of concern, a suggested review order, or a summary of what you think of the diff. The "
-            + "reviewer forms their own view; a briefing that hands them one replaces their judgment with the "
-            + "platform's while looking like help. Once they ask — for scenarios, for a second read of a "
-            + "function, for an opinion — give it fully and directly.");
-        prompt.AppendLine(
-            "- **Help with whatever they ask for.** Getting the project running locally, running its suites, "
-            + "reading a subsystem out loud, writing an end-to-end test that exercises the change — all of it "
-            + "is yours to do on request.");
-        prompt.AppendLine(
-            "- **Never commit to or push this pull request's branch.** It is somebody else's work. The "
-            + "checkout you are in is detached with no local branch precisely so there is nothing to push, and "
-            + "`git push` is denied outright for this session. If you believe something must change on that "
-            + "branch, that belongs in the review, not in a commit.");
-        prompt.AppendLine(
-            "- **Tests the reviewer writes go on a branch of their own.** Never onto this pull request's "
-            + "branch. Offer to stack that branch on this pull request — `h9k task add --stacked-on` against "
-            + "the authoring task, so its own pull request targets this one and gets retargeted "
-            + "automatically when this one merges — and let them decide. Do not create the task without "
-            + "being told to.");
-        prompt.AppendLine(
-            "- **You never post to GitHub.** Not a comment, not a review, not a reaction. The reviewer's "
-            + "verdict is the one thing that reaches the pull request, and it goes through the two commands "
-            + "below under their own login — run by them, in their own terminal, never by you. Every `gh pr` "
-            + "verb that writes (`create`, `review`, `comment`, `edit`, `merge`, `close`, `reopen`, `ready`, "
-            + "`lock`, `unlock`, `revert`, `update-branch`), every `gh issue` verb that writes (`create`, "
-            + "`comment`, `edit`, `close`, `reopen`, `lock`, `unlock`, `delete`, `transfer`, `pin`, `unpin`, "
-            + "`develop` — issues and pull requests share one number space and one resource, so "
-            + "`gh issue comment <this pull request's number>` would comment on *it*), `gh api`, and those "
-            + "two commands themselves (`h9k pr approve`, `h9k pr request-changes`) are all denied for this "
-            + "session, so there is nothing to try: if the reviewer asks you to post something, to bring the "
-            + "branch current, or to wrap the lap up, the answer is the command they run themselves, not "
-            + "another route to the same endpoint. The reads (`gh pr view`, `gh pr diff`, `gh pr checks`, "
-            + "`gh issue view`) are all yours.");
+        prompt.AppendLine(PromptTemplates.Load(file, "volunteer"));
+        prompt.AppendLine(PromptTemplates.Load(file, "help"));
+        prompt.AppendLine(PromptTemplates.Load(file, "never-push"));
+        prompt.AppendLine(PromptTemplates.Load(file, "own-branch"));
+        prompt.AppendLine(PromptTemplates.Load(file, "never-post-github"));
         prompt.AppendLine();
         WorkPromptBuilder.AppendExternalInteractionLoggingRule(prompt, briefing.TaskId);
     }
 
     private static void AppendClosingSection(StringBuilder prompt, ReviewLapBriefing briefing)
     {
-        prompt.AppendLine("## How this lap ends");
+        const string file = $"{TemplateDirectory}/closing.md";
+        string taskId = briefing.TaskId.ToString();
+        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
         prompt.AppendLine();
-        prompt.AppendLine(
-            "It ends when the reviewer says so, and never on its own — there is no point at which you "
-            + "declare the review finished. Two commands end it, both of them theirs to run:");
+        prompt.AppendLine(PromptTemplates.Load(file, "intro"));
         prompt.AppendLine();
-        prompt.AppendLine($"- `h9k pr approve {briefing.TaskId} --note \"<what they want the approval to say>\"`");
-        prompt.AppendLine(
-            $"- `h9k pr request-changes {briefing.TaskId} --note \"<the summary>\" "
-            + "--finding \"path:line: <what is wrong>\"` (repeat `--finding` per line comment)");
+        prompt.AppendLine(Fragment(file, "approve-command", ("TaskId", taskId)));
+        prompt.AppendLine(Fragment(file, "request-changes-command", ("TaskId", taskId)));
         prompt.AppendLine();
-        prompt.AppendLine(
-            "Either one posts the GitHub review on the pull request's head under the reviewer's own login, "
-            + "records the verdict on this task, releases the checkout, and closes the task out. Both are "
-            + "denied for this session, deliberately: they are printed here so you can hand the reviewer the "
-            + "exact line to run, not so you can run it. If they ask you to draft the note or the findings, "
-            + "draft them and hand them over — running the command is theirs.");
+        prompt.AppendLine(PromptTemplates.Load(file, "after-commands"));
         prompt.AppendLine();
         // The note and each finding are posted verbatim under the reviewer's own login, so a draft
         // that ignores the house style either goes out in the reviewer's name reading nothing like
@@ -710,8 +629,7 @@ public static class ReviewLapPromptBuilder
         // rules immediately before posting; this is what keeps a draft from needing that rescue.
         WorkPromptBuilder.AppendWritingConventions(
             prompt, string.Empty, briefing.WritingConventions ?? WritingConventions.Default,
-            "**How a draft you hand them reads.** The note and each finding are posted verbatim under "
-            + "the reviewer's own login, so this project's writing conventions govern every word:");
+            PromptTemplates.Load(file, "writing-conventions-lead-in"));
         prompt.AppendLine();
     }
 
@@ -750,6 +668,11 @@ public static class ReviewLapPromptBuilder
     }
 
     private static string ShortSha(string sha) => sha.Length > 12 ? sha[..12] : sha.IsNotBlank() ? sha : "(unknown)";
+
+    /// <summary>A named fragment out of a template file, substituted. The <c>params</c> tuple
+    /// array is this call site's whole parameter dictionary, spelled without one to build.</summary>
+    private static string Fragment(string file, string name, params (string Key, string Value)[] values) =>
+        PromptTemplates.Load(file, name, values.ToDictionary(value => value.Key, value => value.Value));
 
     /// <summary>
     /// Relayed text on one line. Everything this briefing quotes — a pull request title, a check
