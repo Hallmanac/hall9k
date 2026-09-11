@@ -31,6 +31,7 @@ namespace Hall9k.Tests.Daemon.Review;
 /// own doc comment for the evidence and the shared collection this joins.
 /// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
 public sealed class DecisionsLogRenumbererFixtureTests : IDisposable
 {
     private readonly string _repoPath = Path.Combine(Path.GetTempPath(), $"hall9k-dlr-{Guid.NewGuid():N}");
