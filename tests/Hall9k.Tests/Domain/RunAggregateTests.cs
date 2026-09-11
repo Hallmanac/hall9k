@@ -1506,6 +1506,76 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// PR #316 review: <see cref="ReviewPhase.SettlingGateRepairNeeded"/> is reached from
+    /// <see cref="RunBudgetExhausted"/> and <see cref="RunSessionErrorRetried"/> as well as a
+    /// human's own needs-fixes resolve on a spent cap, but only the human resolve is meant to buy
+    /// a round outright — a budget-exhausted redispatch is finishing a round its own original
+    /// dispatch already counted, not spending a fresh one. Before this fix,
+    /// <see cref="RunAggregate.SettlingGateRepairRounds"/> incremented again on the redispatch with
+    /// nothing ever giving the exhausted attempt's own count back, so a purely session-level
+    /// exhaustion — nothing to do with whether the repair actually fixed the gate — silently spent
+    /// a round the task's own acceptance criteria never charged it for.
+    /// </summary>
+    [Fact]
+    public void Budget_exhausted_settling_gate_repair_session_gives_back_its_own_round_before_redispatching()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown, "Gate 'build' failed: CS0246", "settling-gate-repair"));
+        run.SettlingGateRepairRounds.Should().Be(1);
+
+        run.Apply(new RunBudgetExhausted(id, "Claude AI usage limit reached|1762952400", Now));
+        run.SettlingGateRepairRounds.Should().Be(
+            0, "the exhausted attempt's own round is given back so the redispatch below does not double-spend it");
+
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 6002, Now, Now, AgentModel.Unknown, "Gate 'build' failed: CS0246", "settling-gate-repair"));
+        run.SettlingGateRepairRounds.Should().Be(
+            1, "the redispatch counts once, netting to the same single round the original attempt already spent");
+    }
+
+    /// <summary>
+    /// The error-retry counterpart of the budget-exhaustion test just above: an error result is a
+    /// short in-place backoff rather than a park, but the same give-back applies for the identical
+    /// reason — the round was already counted at the errored attempt's own dispatch.
+    /// </summary>
+    [Fact]
+    public void Session_error_retried_settling_gate_repair_session_gives_back_its_own_round_before_redispatching()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown, "Gate 'build' failed: CS0246", "settling-gate-repair"));
+        run.SettlingGateRepairRounds.Should().Be(1);
+
+        run.Apply(new RunSessionErrorRetried(id, RunSessionLeg.SettlingGateRepair, Cycle: 0, Lens: null, "boom", Now));
+
+        run.State.Should().Be(RunState.UnderReview, "a short in-place retry never parks the run");
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.SettlingGateRepairNeeded, "the errored repair session redispatches fresh, not resumes");
+        run.SettlingGateRepairRounds.Should().Be(
+            0, "the errored attempt's own round is given back so the redispatch below does not double-spend it");
+
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 6002, Now, Now, AgentModel.Unknown, "Gate 'build' failed: CS0246", "settling-gate-repair"));
+        run.SettlingGateRepairRounds.Should().Be(
+            1, "the redispatch counts once, netting to the same single round the original attempt already spent");
+    }
+
+    /// <summary>
     /// The aggregate's own mirror of RunDetailsProjection's trailing-no-op guard (independent
     /// pre-PR review, cycle 1, adversarial lens): before this fix, the aggregate's own
     /// <see cref="RunAggregate.LastPreFinalPassRebaseRecovered"/> flipped back to false the
@@ -1539,15 +1609,16 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
-    /// Independent pre-PR review, cycle 5, adversarial lens: the post-recovery re-entry can also
-    /// carry a Decisions Log renumbering commit (<see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>)
-    /// on top of the trailing no-op. Before this fix, the only way to still raise
-    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> for that renumbering commit was to
-    /// mark the event <c>WasNoOp: false</c>, which defeated the trailing-no-op guard above and
-    /// permanently overwrote the recorded recovery, and left <see cref="RunAggregate.RebaseRecoveryRounds"/>
-    /// unreset even though the very check that landed this event had just confirmed origin's base
-    /// was genuinely behind this branch. <see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>
-    /// lets <c>WasNoOp</c> stay true (an honest fact) while still earning the gate.
+    /// Independent pre-PR review, cycle 5, adversarial and conformance lenses: the post-recovery
+    /// re-entry can also carry a Decisions Log renumbering commit
+    /// (<see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>) on top of the trailing no-op,
+    /// while the real rebase it followed is still sitting ungated — no gate has run between the
+    /// recovered rebase landing and this renumbering-only re-check. Before this fix,
+    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/> was set directly off
+    /// this event's own <c>WasNoOp</c> (true here), which wrongly cleared the grant a still-ungated
+    /// real rebase had just earned and made a recovered rebase permanently ineligible for the
+    /// Settling-gate repair lap. It now carries the earlier real rebase's own still-ungated grant
+    /// forward across this renumbering-only no-op instead of resetting it.
     /// </summary>
     [Fact]
     public void A_renumbering_commit_on_the_trailing_no_op_still_gates_without_clobbering_the_recovery_record()
@@ -1565,6 +1636,8 @@ public sealed class RunAggregateTests
             id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: true,
             "Resolved by a narrow recovery session (rebase-onto-main skill), from abc1234567 to def7654321.", Now));
         run.LastPreFinalPassRebaseRecovered.Should().BeTrue();
+        run.PreFinalPassRebaseAwaitingGateFromRealRebase.Should().BeTrue(
+            "the recovered rebase is real and no gate has run over it yet");
 
         run.Apply(new RunRebasedOntoBase(
             id, "def7654321", "def7654321", WasNoOp: true, RecoveredByAgentSession: false,
@@ -1578,10 +1651,10 @@ public sealed class RunAggregateTests
             "the observed no-op resets the round count the same as any other confirmed no-op");
         run.PreFinalPassRebaseAwaitingGate.Should().BeTrue(
             "the renumbering commit itself moved this branch's tip past whatever was last gated");
-        run.PreFinalPassRebaseAwaitingGateFromRealRebase.Should().BeFalse(
-            "the event that most recently (re-)raised PreFinalPassRebaseAwaitingGate here was the renumbering-only " +
-            "no-op, not a real rebase — EligibleForSettlingGateRepair must not treat a gate break at this tip as " +
-            "rebase-caused");
+        run.PreFinalPassRebaseAwaitingGateFromRealRebase.Should().BeTrue(
+            "the recovered real rebase behind this tip was never gated — the renumbering-only no-op that " +
+            "followed it must not erase that still-open grant, or a gate break here would wrongly fall back " +
+            "to the fail-hard contract instead of a repair session");
     }
 
     /// <summary>
@@ -1594,9 +1667,11 @@ public sealed class RunAggregateTests
     /// guard in <see cref="RunAggregate.Apply(RunRebasedOntoBase)"/> deliberately leaves pointing at
     /// the earlier real rebase across this later no-op — so a gate failure right after the
     /// renumbering-only no-op would have wrongly looked repair-eligible.
-    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/> is set directly off
-    /// each triggering event's own <c>WasNoOp</c> instead, with no trailing-guard staleness to
-    /// account for.
+    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/> instead carries
+    /// forward only while an earlier real rebase is still ungated (<see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/>
+    /// still true at the time this event lands); once that earlier rebase has already gated clean,
+    /// as here, the carry-forward term is false and this later no-op resolves to its own
+    /// <c>WasNoOp</c> alone, with no trailing-guard staleness to account for.
     /// </summary>
     [Fact]
     public void A_renumbering_only_no_op_after_an_earlier_real_rebase_already_gated_is_not_from_a_real_rebase()
