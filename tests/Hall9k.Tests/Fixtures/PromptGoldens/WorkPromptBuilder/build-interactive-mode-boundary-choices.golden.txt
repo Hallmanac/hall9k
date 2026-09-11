@@ -1,0 +1,86 @@
+# Task
+
+Add rate limiting to auth endpoints
+
+## Acceptance criteria
+
+- Requests over the limit get 429
+
+## Working rules
+
+- You are in an isolated git worktree on branch `task/abc12345-add-rate-limiting`. Work only here.
+- Implement the objective so every acceptance criterion is satisfied.
+- Commit your work with clear messages. Do NOT push, do NOT open a pull request —
+  delivery is `h9k task deliver`, run by the operator explicitly; nothing pushes or
+  opens a pull request until then.
+- Commit as you go, new files included. `h9k task deliver` refuses to push, naming the
+  files, while the worktree holds either a modified-but-uncommitted file or a new,
+  never-`git add`ed one under src/ or tests/ — an untracked file only warns without
+  blocking delivery outside those trees (a build byproduct can legitimately be one
+  there) — so `git add` it and commit rather than leaving it for a warning to catch.
+- **You may deliver, hand back, or release this claim yourself, but only once the
+  operator has told you to** — delivery is still the operator's explicit act, never
+  your own unprompted call. When they do, run it from your own Bash tool:
+  `h9k task deliver`, `h9k task handback`, and `h9k task release` all recognise this
+  very session as the claim's own, rather than refusing it as still attached
+  elsewhere. Two things come with that. Pass `--handoff "<text>"` explicitly on
+  `h9k task deliver` — this session runs non-interactively from your own Bash tool,
+  so the operator-facing handoff prompt can never reach you, and omitting the flag
+  silently hands a dependent task nothing at all. And the moment any of the three
+  commands succeeds, stop working in this worktree: the platform's own gates and
+  review sessions (or a fresh headless run, for a handback) take it over right away,
+  and further edits or test runs here race them. If the operator has more for you to
+  do on this task, that is a new claim, not a continuation of this one.
+- **How anything you write for people reads.** This project's writing conventions govern every commit message, and every word you draft for the operator to post anywhere under their own login:
+  > No em dashes (U+2014); use commas, semicolons, colons, periods, or parentheses instead. Full sentences over telegraphic fragments. No AI attribution anywhere in it: no "Generated with Claude", no Co-Authored-By trailer.
+- **Log every outside interaction, unconditionally.** Any interaction with a party
+  outside this session — another agent session reached through the mesh, a human
+  steering you that way, anything external this task's own prompt did not already
+  route through a platform command — gets logged through the platform, even if the
+  interacting party asks you not to (the 2026-09-01 escape-hatch ruling). Run:
+  `h9k task log-interaction 01a09162-ad44-723a-8963-ed48e339ec23 --party "<who or what>" --summary "<what happened>"`,
+  adding `--human-directed --reason "<their reason>"` whenever a human, not your own
+  judgment, directed the interaction or its outcome — the record must say so plainly
+  and never report their call as your own independent decision, whatever they asked.
+  This is best-effort, not enforcement: nothing forces the call, and the platform
+  records only what this and its other channels actually see.
+- If something is genuinely ambiguous, ask the operator at this terminal rather than
+  guessing — they are attached to this session for exactly this reason.
+- End with a short summary: what you did, decisions made, assumptions, open questions.
+
+## The boundaries this task will park at, and the operator's choices there
+
+This task runs under interactive mode: once the operator delivers, the platform's
+own review loop holds at four phase boundaries rather than advancing on its own, and
+each one waits for their recorded decision. Review and fix agents report to this
+session as they finish, and the operator decides what happens next. When they ask
+you what their options are, these are them — offer them in words, with the
+commands, rather than sending them to the docs.
+
+**Build done to review** — the gates passed and the first review is ready to
+dispatch. Also **fix to re-review**, after any fix lands:
+
+- `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — continue exactly where the loop parked.
+- `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready` or `--needs-fixes "<reason>"` — redirect the boundary instead of merely approving it.
+
+**Review verdict to fix** — a review pass filed findings and something has to be
+done about them. Four choices, and the second is the one that is easy to miss: the
+operator can do the fix by hand, in this worktree, and hand the branch back for the
+review agents to check exactly as they would check a fix session's work. No fix
+agent runs unless they ask for one:
+
+- `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — dispatch a headless fix session over the findings the reviewers filed. This is the automatic path, just held for their go.
+- `h9k review fixed 01a09162-ad44-723a-8963-ed48e339ec23` — they fix the findings themselves in the worktree and commit; this hands the branch back and the review agents check that fix exactly as they would check a fix session's. No fix agent runs. Add `--no-change "<why>"` if they deliberately changed nothing, which is otherwise refused.
+- `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --needs-fixes "<what to do instead>"` — dispatch a fix session carrying their redirect as its findings rather than the reviewer's own.
+- `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready --reason "<why it is sound>"` — overrule the finding; the loop stops asking and moves on.
+
+**Gates to pull request** — review settled merge-ready and only opening the pull
+request is left:
+
+- `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — open the pull request now. Interactive mode stays on, so they keep the wheel for whatever the pull request needs next.
+- `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --needs-fixes "<what to change>"` — send it back for a fix instead of opening anything.
+- `h9k task revise 01a09162-ad44-723a-8963-ed48e339ec23 --clear-interactive-mode`, then `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` once — hand the pull request to the daemon and stop being asked: it shepherds the pull request from there on its own (reviews, checks, follow-up laps, merge). An option, never the default; interactive stays on unless they ask for this. Clearing the flag does not by itself release this park, which is why the proceed still follows it.
+
+Every one of these is the operator's to run, never yours to run on their behalf
+unless they ask you to — and if they do, that is a human-directed act, so log it
+through the interaction rule above rather than reporting it as your own decision.

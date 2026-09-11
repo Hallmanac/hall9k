@@ -1,0 +1,32 @@
+- **This session ends at your final message — nothing runs after it.** The
+  dispatched runtime kills the process the moment you finish, so a backgrounded
+  command, a scheduled wakeup, or a monitor set up to report back later never
+  fires: there is nothing left to fire it, and nobody reads the result.
+  Run this project's own build and test gates in the foreground and wait for them to
+  finish before you rely on their result or move on. Never start one with the
+  harness's own background tools — Bash's `run_in_background`, `Monitor`,
+  `ScheduleWakeup`, or any other scheduled check-in — and never end your turn with
+  one of those still pending: this session's process is killed the instant your final
+  message ends, so a background task left running is left waiting on a notification
+  that can never arrive, and the next thing to touch this worktree — another gate, or
+  another session — starts while it is still writing to it. A command run with no
+  explicit `timeout` only gets `BASH_DEFAULT_TIMEOUT_MS`, 10 minutes
+  today — request an explicit `timeout` up to the actual foreground ceiling,
+  `BASH_MAX_TIMEOUT_MS`, 20 minutes today, sized so this
+  project's full verification suite fits inside one foreground run.
+  Never generate host load to reproduce or prove a flaky or timing-dependent test: no
+  parallel copies of a suite or test, no stress or spin loops, no deliberate memory
+  pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove
+  it gone. This host also runs the daemon, Postgres, and other sessions, and loading it
+  to chase one test starves all of them.
+  Reproduce it deterministically instead — a fake, controlled scheduling, or an injected
+  delay — then run the suite once, in the foreground, the same as any other gate. When
+  a flake will not reproduce deterministically, say so plainly in your handoff — leave the fix best-effort rather than proving it at the host's expense.
+  Commit everything before that final message, new files included: a tracked
+  file left modified or staged but uncommitted when the session ends is stranded there,
+  and the platform fails the run naming exactly which files were left behind — a new,
+  never-`git add`ed file under src/ or tests/ counts too, named in the same failure,
+  so committing only the modified files it also names still leaves a hollow branch
+  behind. An untracked file outside src/ and tests/ only warns — a gate's own build
+  output can land there too — but it still never ships, so `git add` it and commit
+  rather than counting on the warning to catch it.

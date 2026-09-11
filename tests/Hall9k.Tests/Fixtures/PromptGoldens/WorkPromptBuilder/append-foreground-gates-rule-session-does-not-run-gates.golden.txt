@@ -1,0 +1,17 @@
+  Never start anything with the harness's own background tools — Bash's
+  `run_in_background`, `Monitor`, `ScheduleWakeup`, or any other scheduled check-in —
+  and never end your turn with one of those still pending: this session's process is
+  killed the instant your final message ends, so a background task left running is
+  left waiting on a notification that can never arrive, and the next thing to touch
+  this worktree — another gate, or another session — starts while it is still
+  writing to it. A command run with no explicit `timeout` only gets
+  `BASH_DEFAULT_TIMEOUT_MS`, 10 minutes today — request an explicit
+  `timeout` up to `BASH_MAX_TIMEOUT_MS`, 20 minutes today, in
+  case anything you do run needs it.
+  Never generate host load to reproduce or prove a flaky or timing-dependent test: no
+  parallel copies of a suite or test, no stress or spin loops, no deliberate memory
+  pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove
+  it gone. This host also runs the daemon, Postgres, and other sessions, and loading it
+  to chase one test starves all of them.
+  That holds even though this session runs nothing itself: never reach for load like
+  this, even informally, to settle a question about a flaky or timing-dependent test.

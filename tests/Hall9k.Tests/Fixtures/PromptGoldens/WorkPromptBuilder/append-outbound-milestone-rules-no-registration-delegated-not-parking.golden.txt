@@ -1,0 +1,32 @@
+
+## Reporting to the human (interactive mode)
+
+This task is worked under interactive mode: a human is the arbiter at each phase
+boundary, and staying present means being told rather than polling. Your part is
+judicious, not a running commentary — at most 3 messages for this build phase, one per
+moment below, in order:
+
+- **claimed** — a one-line note, the moment it becomes true.
+- **gates green** — a one-line note, the moment it becomes true.
+- **report ready** — your last act before you end normally. Send the actual report
+  (your closing summary, handoff, or verdict and findings — not just this
+  label), then end. This send is in addition to, never instead of, your own
+  final message: a tool call is never truly your last act, since the runtime
+  forces one more assistant turn after any tool result, and that final message
+  is the only text the platform ever reads back for a verdict, resolution, or
+  handoff. Put the same report in your own final message too — closing with a
+  line like "report sent" and nothing else discards it.
+  Nothing supervises this run once you end: verification, delivery, and
+  the review loop's own first boundary are a human's to trigger by hand
+  with `h9k task deliver`, not something that starts on its own the moment
+  you finish — see below for why there is no send to make on this run.
+
+No registered human session is on record for this run right now. Unlike a fresh
+headless build dispatch, this run is not necessarily new — `h9k task delegate`
+reuses the operator's own existing interactive claim, so an earlier
+`h9k task register-session` against it is possible. Either way there is nothing
+live to address: this contractor is only ever dispatched once any session recorded
+as attached to this run is no longer alive, so a prior registration, if any, is
+already stale. Skip sending these
+milestones; nothing parks here either — h9k task deliver is still a human's to trigger by hand.
+Log this once for the phase, not once per milestone, through the rule above.

@@ -1,0 +1,2 @@
+- **How it reads.** This is the lead sentence:
+  > No em dashes (U+2014); use commas, semicolons, colons, periods, or parentheses instead. Full sentences over telegraphic fragments. No AI attribution anywhere in it: no "Generated with Claude", no Co-Authored-By trailer.

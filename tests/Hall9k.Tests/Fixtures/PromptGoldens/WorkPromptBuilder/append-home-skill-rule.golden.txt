@@ -1,0 +1,2 @@
+- The project home ships skills too, at `<HOME>/skills`. Read `<skill>/SKILL.md` and follow it rather than improvising the same workflow:
+  - `board-rules` — How this team files cards.

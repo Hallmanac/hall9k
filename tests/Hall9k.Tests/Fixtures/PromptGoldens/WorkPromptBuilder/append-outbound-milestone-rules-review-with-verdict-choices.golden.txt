@@ -1,0 +1,56 @@
+
+## Reporting to the human (interactive mode)
+
+This task is worked under interactive mode: a human is the arbiter at each phase
+boundary, and staying present means being told rather than polling. Your part is
+judicious, not a running commentary — at most 2 messages for this review phase, one per
+moment below, in order:
+
+- **findings drafted** — a one-line note, the moment it becomes true.
+- **verdict recorded** — your last act before you end normally. Send the actual report
+  (your closing summary, handoff, or verdict and findings — not just this
+  label), then end. This send is in addition to, never instead of, your own
+  final message: a tool call is never truly your last act, since the runtime
+  forces one more assistant turn after any tool result, and that final message
+  is the only text the platform ever reads back for a verdict, resolution, or
+  handoff. Put the same report in your own final message too — closing with a
+  line like "report sent" and nothing else discards it.
+  This task's interactive-mode phase-boundary park holds from there until
+  the human's `h9k review proceed` or `h9k review resolve`, whether or not the send below actually lands.
+
+Address: `hall9k-abc12345-review` — the human's own registered session, reached through the
+cross-session mesh's SendMessage tool. Every milestone you send — whether it lands
+or the session cannot be reached — is exactly the outside-interaction case the rule
+above already commits you to logging: log each one there, so the record of what the
+human was told lives on the run stream, not only in a transcript. A send that fails
+(the session has ended, or SendMessage otherwise cannot reach it) is logged the same
+way, rather than dropped silently, and never blocks you — keep working either way.
+
+### What the human chooses from, once your report lands
+
+Your verdict decides which boundary this run parks at, so your report names the
+choices that actually apply there — with the exact command for each — rather than
+leaving them to be looked up. Include them verbatim; they are the platform's own
+wording, not a suggestion to paraphrase.
+
+**If your verdict is needs-fixes**, the run parks at the review-verdict-to-fix
+boundary, where there are four choices:
+
+- `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — dispatch a headless fix session over the findings the reviewers filed. This is the automatic path, just held for their go.
+- `h9k review fixed 01a09162-ad44-723a-8963-ed48e339ec23` — they fix the findings themselves in the worktree and commit; this hands the branch back and the review agents check that fix exactly as they would check a fix session's. No fix agent runs. Add `--no-change "<why>"` if they deliberately changed nothing, which is otherwise refused.
+- `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --needs-fixes "<what to do instead>"` — dispatch a fix session carrying their redirect as its findings rather than the reviewer's own.
+- `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready --reason "<why it is sound>"` — overrule the finding; the loop stops asking and moves on.
+
+**If your verdict is merge-ready**, the loop may still owe this branch one more
+review dispatch (the mandatory final full pass), which parks at the fix-to-re-review
+boundary first, where there are two:
+
+- `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — continue exactly where the loop parked.
+- `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --merge-ready` or `--needs-fixes "<reason>"` — redirect the boundary instead of merely approving it.
+
+Once the run does settle, the last boundary before the pull request opens is the
+human's too:
+
+- `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` — open the pull request now. Interactive mode stays on, so they keep the wheel for whatever the pull request needs next.
+- `h9k review resolve 01a09162-ad44-723a-8963-ed48e339ec23 --needs-fixes "<what to change>"` — send it back for a fix instead of opening anything.
+- `h9k task revise 01a09162-ad44-723a-8963-ed48e339ec23 --clear-interactive-mode`, then `h9k review proceed 01a09162-ad44-723a-8963-ed48e339ec23` once — hand the pull request to the daemon and stop being asked: it shepherds the pull request from there on its own (reviews, checks, follow-up laps, merge). An option, never the default; interactive stays on unless they ask for this. Clearing the flag does not by itself release this park, which is why the proceed still follows it.
