@@ -1996,7 +1996,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             launchHold);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,
             Options.Create(new DaemonOptions()), NullLogger<PrReviewEngine>.Instance);
         PrimarySessionResumer primarySessionResumer = new(
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())));

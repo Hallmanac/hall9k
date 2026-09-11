@@ -2370,7 +2370,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             launchHold);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager,
-            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,
             resolvedOptions, NullLogger<PrReviewEngine>.Instance);
         PrimarySessionResumer primarySessionResumer = new(resolvedExecutor);
         return new RunSupervisor(store, node, processManager, verification, review, prReview,
