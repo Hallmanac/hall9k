@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
@@ -527,6 +528,7 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
 
     private DispatchEngine NewEngine(DocumentStore store, NodeContext node, int maxConcurrentRuns = 100) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(new DaemonOptions { MaxConcurrentTaskRuns = maxConcurrentRuns, LeaseTimeout = TimeSpan.FromSeconds(60) }),
             NullLogger<DispatchEngine>.Instance);
 }

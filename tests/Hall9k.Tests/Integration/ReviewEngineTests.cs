@@ -10,6 +10,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -43,7 +44,7 @@ namespace Hall9k.Tests.Integration;
 [Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginFixture origins)
-    : IClassFixture<PostgresFixture>, IClassFixture<SeededGitOriginFixture>, IDisposable
+    : IClassFixture<PostgresFixture>, IClassFixture<SeededGitOriginFixture>, IDisposable, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
 
@@ -103,6 +104,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         public HashSet<int> NullSummaryErrorAtSpawnIndex { get; } = [];
 
         /// <summary>
+        /// Spawn indexes whose error result carries the zero-work launch-failure shape (task: a
+        /// session that exits at once with no work done is treated as the node failing to launch
+        /// sessions) — one turn, zero tokens, sub-second — distinct from <see cref="ErrorAtSpawnIndex"/>'s
+        /// own generic error shape (12 turns, real tokens), which must never be misclassified as
+        /// this one.
+        /// </summary>
+        public HashSet<int> LaunchFailureAtSpawnIndex { get; } = [];
+
+        /// <summary>
         /// Spawn indexes whose process is marked alive for slightly more than one
         /// SessionResultWaiter/RunSupervisor poll interval before dying on its own, instead of
         /// this class's own default "never alive" shape (this class's own doc above) — the shape
@@ -138,16 +148,32 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
             bool isError = ErrorAtSpawnIndex.Contains(spawnIndex);
             bool nullSummaryError = NullSummaryErrorAtSpawnIndex.Contains(spawnIndex);
-            string line = JsonSerializer.Serialize(new Dictionary<string, object?>
-            {
-                ["type"] = "result",
-                ["subtype"] = isError || nullSummaryError ? "error_during_execution" : "success",
-                ["is_error"] = isError || nullSummaryError,
-                ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 1_000, ["output_tokens"] = 200 },
-                ["total_cost_usd"] = 0.01,
-                ["num_turns"] = 12,
-                ["result"] = nullSummaryError ? null : summary,
-            });
+            bool launchFailure = LaunchFailureAtSpawnIndex.Contains(spawnIndex);
+            string line = launchFailure
+                ? JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["type"] = "result",
+                    ["subtype"] = "error_during_execution",
+                    ["is_error"] = true,
+                    ["usage"] = new Dictionary<string, long>
+                    {
+                        ["input_tokens"] = 0, ["cache_read_input_tokens"] = 0,
+                        ["cache_creation_input_tokens"] = 0, ["output_tokens"] = 0,
+                    },
+                    ["num_turns"] = 1,
+                    ["duration_ms"] = 150,
+                    ["result"] = summary,
+                })
+                : JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["type"] = "result",
+                    ["subtype"] = isError || nullSummaryError ? "error_during_execution" : "success",
+                    ["is_error"] = isError || nullSummaryError,
+                    ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 1_000, ["output_tokens"] = 200 },
+                    ["total_cost_usd"] = 0.01,
+                    ["num_turns"] = 12,
+                    ["result"] = nullSummaryError ? null : summary,
+                });
             Directory.CreateDirectory(request.RunDirectory);
             await File.WriteAllTextAsync(
                 RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
@@ -5572,7 +5598,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
-            NewStackedParentWatch());
+            NewStackedParentWatch(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -5639,7 +5666,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
-            NewStackedParentWatch());
+            NewStackedParentWatch(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -8196,6 +8224,49 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// The review loop's own side of the node-wide launch hold (task: a session that exits at
+    /// once with no work done is treated as the node failing to launch sessions): the zero-work
+    /// shape — one turn, zero tokens, sub-second — never spends the ordinary one-shot in-place
+    /// retry and never fails the run, unlike <see cref="A_review_session_reporting_an_error_result_is_retried_once_leaving_its_sibling_untouched"/>'s
+    /// generic error. Unlike that test's untouched sibling, the sibling here IS terminated: <see
+    /// cref="RunAggregate.Apply(RunLaunchHeld)"/> clears every in-flight pass, mirroring the
+    /// budget park's own identical behavior.
+    /// </summary>
+    [Fact]
+    public async Task A_review_sessions_zero_work_error_result_holds_the_run_rather_than_retrying_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "unused — overridden to the zero-work shape by LaunchFailureAtSpawnIndex",
+            "Nothing of my own.\n\nVERDICT: merge-ready")
+        {
+            LaunchFailureAtSpawnIndex = { 0 },
+        };
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the run holds rather than settling while the node-wide launch hold stands");
+        executor.Spawns.Should().HaveCount(2, "both lenses of the cycle still dispatch together");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.LaunchHeld);
+        run.ParkedReason.Should().Contain("waiting on the node");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunLaunchHeld>().Should().ContainSingle();
+        events.OfType<RunSessionErrorRetried>().Should().BeEmpty(
+            "a launch failure never spends the ordinary one-shot in-place retry budget");
+        events.OfType<RunFailed>().Should().BeEmpty("a launch failure never fails its run");
+
+        NodeDetails? nodeDetails = await query.LoadAsync<NodeDetails>(run.NodeId, cts.Token);
+        nodeDetails.Should().NotBeNull();
+        nodeDetails!.LaunchHoldActive.Should().BeTrue();
+    }
+
+    /// <summary>
     /// The shape that used to fall through entirely (independent pre-PR review, cycle 1, both
     /// lenses): an error result whose "result" field is missing (or non-string) parses to a
     /// null Summary, which the old "IsError: true, Summary: { }" pattern match did not treat as
@@ -8391,7 +8462,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
-            NewStackedParentWatch());
+            NewStackedParentWatch(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -8463,7 +8535,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
-            NewStackedParentWatch());
+            NewStackedParentWatch(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
 
         await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
 
@@ -8509,7 +8582,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             ghRunner,
-            NewStackedParentWatch());
+            NewStackedParentWatch(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
 
     /// <summary>
     /// The real watch, never a fake: a stacked child's rebase checkpoints read it (task: a stacked
@@ -8822,6 +8896,23 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             new ReviewCompleted(runId, 1, ReviewVerdict.Unknown, Now),
             new ReviewParked(runId, "No parseable verdict, even after a re-prompt.", Now));
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    /// <summary>
+    /// This class's every test shares one reused node (<c>SeedVerifiedRunAsync</c>'s own
+    /// <c>NodeBootstrapSeed.NewNodeAsync</c> call finds the one existing node row for this
+    /// machine name rather than minting a fresh one), and the node-wide launch hold is genuinely
+    /// node-scoped, durable state with no per-test discriminator that isolates it. A test that
+    /// raises the hold and does not itself clear it would otherwise leak into whichever sibling
+    /// xUnit's own test-case orderer schedules next. Runs after every test, pass or fail.
+    /// </summary>
+    public async Task DisposeAsync()
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(postgres.Store, CancellationToken.None);
+        await new LaunchHoldEngine(postgres.Store, NullLogger<LaunchHoldEngine>.Instance)
+            .ClearIfActiveAsync(node.NodeId, CancellationToken.None);
     }
 
     public void Dispose()

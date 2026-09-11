@@ -44,6 +44,7 @@ public sealed class RunSupervisor(
     PrReviewEngine prReview,
     PullRequestOpener pullRequests,
     PrimarySessionResumer primarySessionResumer,
+    LaunchHoldEngine launchHold,
     IOptions<DaemonOptions> options,
     ILogger<RunSupervisor> logger)
 {
@@ -105,10 +106,81 @@ public sealed class RunSupervisor(
     public void ResumeReviewLoop(RunDetails run, CancellationToken cancellationToken) =>
         ResumePipeline(run, cancellationToken);
 
+    /// <summary>
+    /// <see cref="LaunchHoldMonitor"/>'s own re-entry point for a run the node-wide launch hold
+    /// is holding (task: a session that exits at once with no work done is treated as the node
+    /// failing to launch sessions) — whether this is the probe relaunching the oldest one, or the
+    /// sweep resuming every other one once the hold clears. Deliberately the same two branches
+    /// <c>TokenBudgetRetryEngine.RetryOneAsync</c> already draws for a budget
+    /// park, and the SAME re-entry methods an ordinary in-place session-error retry already uses
+    /// — <see cref="ResumeReviewLoop"/> for a review pass, the fix session, or rebase recovery
+    /// (<see cref="RunAggregate.Apply(RunLaunchHeld)"/> already cleared the held leg, so
+    /// there is no process left to resume, only the phase to redispatch fresh), and
+    /// <see cref="ResumeBuildSessionErrorRetryAsync"/>'s own guard-and-spawn for the primary
+    /// session — never a third copy of either dispatch path. Returns whether a resume attempt was
+    /// actually made; a run whose claim moved on, or whose worktree a human reviewer is reading
+    /// (<c>h9k pr review</c>), is left held for the caller to skip over rather than resumed.
+    /// </summary>
+    public async Task<bool> ResumeLaunchHeldRunAsync(RunDetails run, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails? task = await query.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
+        if (task is null || task.State != TaskState.Claimed || task.CurrentRunId != run.Id)
+        {
+            // The claim moved on while this run sat held — nothing here left to resume.
+            return false;
+        }
+
+        if (task.ReviewLapOpen && task.ReviewLapRunId == run.Id)
+        {
+            // Mirrors TokenBudgetRetryEngine.IsUnderOpenReviewLap: a human reviewer's own review
+            // lap (h9k pr review) is attached to this held run and reuses its worktree — resuming
+            // the automated pipeline here would put a second session in the checkout the reviewer
+            // is reading. Left held; the next probe or clear-sweep tries again.
+            logger.LogInformation(
+                "Run {RunId} is launch-held under task {TaskId}'s open review lap — not resumed; a reviewer is reading in that checkout",
+                run.Id, run.TaskId);
+            return false;
+        }
+
+        RunAggregate? aggregate = await query.Events.AggregateStreamAsync<RunAggregate>(run.Id, token: cancellationToken);
+        if (aggregate is null)
+        {
+            return false;
+        }
+
+        if (aggregate.ReviewPhase != ReviewPhase.None)
+        {
+            ResumeReviewLoop(run, cancellationToken);
+            logger.LogInformation("Run {RunId}: launch hold resumed mid-review — resuming the review loop", run.Id);
+            return true;
+        }
+
+        (BuildSessionRetryOutcome outcome, int processId, DateTimeOffset processStartedAt) =
+            await ResumeBuildSessionErrorRetryAsync(run.Id, run.TaskId, cancellationToken);
+        switch (outcome)
+        {
+            case BuildSessionRetryOutcome.Resumed:
+                StartMonitoring(run.Id, run.RunDirectory, run.TaskId, processId, processStartedAt, cancellationToken);
+                logger.LogInformation("Run {RunId}: launch hold resumed (pid {ProcessId})", run.Id, processId);
+                return true;
+            case BuildSessionRetryOutcome.ClaimMovedOn:
+                return false;
+            case BuildSessionRetryOutcome.SpawnFailed:
+            default:
+                // Left held rather than failed, unlike an ordinary session-error retry's own
+                // SpawnFailed handling: the whole point of this feature is that launch trouble
+                // never fails a run, and the next probe tries again.
+                logger.LogInformation("Run {RunId}: launch-hold resume spawn failed — left held; the next probe retries", run.Id);
+                return false;
+        }
+    }
+
     private static readonly string[] AdoptableRunStates =
     [
         RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value,
         RunState.UnderReview.Value, RunState.ReviewParked.Value, RunState.BudgetParked.Value,
+        RunState.LaunchHeld.Value,
     ];
 
     /// <summary>
@@ -123,9 +195,10 @@ public sealed class RunSupervisor(
         IReadOnlyList<RunDetails> ownNode = await query.Query<RunDetails>()
             .Where(r => r.NodeId == nodeId)
             .Where(r => r.MatchesSql(
-                "d.data ->> 'state' in (?, ?, ?, ?, ?, ?)",
+                "d.data ->> 'state' in (?, ?, ?, ?, ?, ?, ?)",
                 AdoptableRunStates[0], AdoptableRunStates[1], AdoptableRunStates[2],
-                AdoptableRunStates[3], AdoptableRunStates[4], AdoptableRunStates[5]))
+                AdoptableRunStates[3], AdoptableRunStates[4], AdoptableRunStates[5],
+                AdoptableRunStates[6]))
             .ToListAsync(cancellationToken);
         IReadOnlyList<RunDetails> sentinelPrReview = await SentinelPrReviewCandidatesAsync(
             query, nodeId, AdoptableRunStates, cancellationToken);
@@ -200,12 +273,17 @@ public sealed class RunSupervisor(
                 continue;
             }
 
-            if (run.State == RunState.ReviewParked || run.State == RunState.BudgetParked)
+            if (run.State == RunState.ReviewParked || run.State == RunState.BudgetParked
+                || run.State == RunState.LaunchHeld)
             {
-                // Parked means waiting on a human or waiting on the clock, not abandoned:
-                // refresh the lease so the expiry sweep never requeues the task out from
-                // under its worktree. A budget park is cleared by the hourly retry sweep
-                // (TokenBudgetRetryEngine), never by adoption.
+                // Parked means waiting on a human, waiting on the clock, or waiting on the node,
+                // not abandoned: refresh the lease so the expiry sweep never requeues the task
+                // out from under its worktree. A budget park is cleared by the hourly retry sweep
+                // (TokenBudgetRetryEngine); a launch hold is cleared by LaunchHoldMonitor's own
+                // probe (task: a session that exits at once with no work done is treated as the
+                // node failing to launch sessions) — a daemon restart resumes the hold rather than
+                // relaunching every held run at startup, exactly as it never relaunches a budget
+                // park here either.
                 await RefreshAdoptedLeaseAsync(run, cancellationToken);
                 adopted++;
                 continue;
@@ -602,6 +680,37 @@ public sealed class RunSupervisor(
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
 
+        // Budget-exhaustion is checked FIRST and excluded here, even though this classifies on
+        // the zero-work SHAPE and never on message text otherwise (the 2026-09-07 outage's own
+        // two causes, an expired credential and a GitHub fetch timeout, were already two
+        // different strings, and the next cause will be a third): a usage-limit result can
+        // itself carry this exact numeric shape, and the budget park below is the one place text
+        // still wins, so isLaunchFailure has to already agree with that before the node-wide
+        // hold below ever reads it (task: a session that exits at once with no work done is
+        // treated as the node failing to launch sessions).
+        bool isBudgetExhausted = result.IsError
+            && result.Summary is { } observedSummary && BudgetExhaustionParser.IsBudgetExhausted(observedSummary);
+        bool isLaunchFailure = !isBudgetExhausted && result.IsError
+            && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
+
+        // Node-stream bookkeeping, deliberately BEFORE the run-stream transaction below (a
+        // different stream) rather than after it: a crash between the two must never leave
+        // RunDetails reading LaunchHeld while the node-wide hold itself is not yet standing —
+        // that would let the dispatcher keep claiming new work into the same broken node, the
+        // exact failure this feature exists to close. The reverse gap (the hold clears, or never
+        // even needed to, and then the process dies before the run's own event lands) is the safe
+        // direction: the run resumes into whatever it was doing and reports its own outcome fresh
+        // (task: a session that exits at once with no work done is treated as the node failing to
+        // launch sessions).
+        if (isLaunchFailure)
+        {
+            await launchHold.RaiseOrJoinAsync(node.NodeId, runId, result.Summary ?? "(no message)", cancellationToken);
+        }
+        else
+        {
+            await launchHold.ClearIfActiveAsync(node.NodeId, cancellationToken);
+        }
+
         bool willRetryBuildSession;
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -625,6 +734,13 @@ public sealed class RunSupervisor(
                 logger.LogWarning(
                     "Run {RunId}: token budget exhausted — parked rather than failed; the daemon retries hourly. {Message}",
                     runId, summary);
+            }
+            else if (isLaunchFailure)
+            {
+                // The node never actually launched a working session — not this run's own fault,
+                // so it holds rather than failing or spending its one in-place retry. A node-wide
+                // launch hold's own probe is what clears this, never a per-run timer.
+                session.Events.Append(runId, new RunLaunchHeld(runId, result.Summary ?? "(no message)", now));
             }
             else if (result.IsError
                 && run is not null

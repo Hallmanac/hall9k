@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -426,6 +427,7 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
     /// <summary>An engine whose ceiling is stated directly in runs (Decisions Log #111).</summary>
     private DispatchEngine Engine(IDocumentStore store, NodeContext node, int maxConcurrentRuns) => new(
         store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+        new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
         Options.Create(new DaemonOptions
         {
             MaxConcurrentTaskRuns = maxConcurrentRuns,

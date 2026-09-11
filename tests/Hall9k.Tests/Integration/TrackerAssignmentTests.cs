@@ -6,6 +6,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.JiraWrites;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Owner;
@@ -1527,6 +1528,7 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             node,
             new DaemonConnection(postgres.ConnectionString),
             new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(new DaemonOptions
             {
                 // Far above anything a neighbouring test method could occupy: the ceiling is not
