@@ -1901,10 +1901,22 @@ public sealed class RunAggregate
         // WasNoOp itself to lie about whether origin's base actually moved (independent pre-PR
         // review, cycle 5, adversarial lens: the earlier `wasNoOp: !renumberCommitted` shape broke
         // the trailing-no-op guard just below, which reads WasNoOp for its own, unrelated purpose).
+        //
+        // FromRealRebase carries an earlier still-ungated real rebase forward across exactly this
+        // renumbering-only no-op, rather than resetting to false the way a bare `!WasNoOp` would
+        // (independent pre-PR review, cycle 5, both lenses): a recovered rebase's own re-entry
+        // lands here twice in a row — once as the real, non-no-op rebase itself, then again as the
+        // mechanical renumbering-only no-op DecisionsLogRenumberer commits on the very next
+        // Settling entry, before any gate has run over either landing — so resetting on the second
+        // landing would make a recovered rebase permanently ineligible for the Settling-gate
+        // repair lap. Once an earlier real rebase HAS been gated clean, PreFinalPassRebaseAwaitingGate
+        // is already false when a later, unrelated renumbering-only no-op arrives, so the carry-
+        // forward term is false and this correctly resolves to `!WasNoOp` alone.
         if (!@event.WasNoOp || @event.DecisionsLogRenumbered)
         {
+            PreFinalPassRebaseAwaitingGateFromRealRebase = !@event.WasNoOp
+                || (PreFinalPassRebaseAwaitingGate && PreFinalPassRebaseAwaitingGateFromRealRebase);
             PreFinalPassRebaseAwaitingGate = true;
-            PreFinalPassRebaseAwaitingGateFromRealRebase = !@event.WasNoOp;
         }
 
         // Only a recovery session's own judgment call earns this (see PreFinalPassRebaseAwaitingReview's
@@ -2060,6 +2072,13 @@ public sealed class RunAggregate
                 // output and human guidance this exhaustion's own attempt already had (both left
                 // untouched here for the identical reason PendingRebaseRecoveryGuidance's own case
                 // just above leaves its own guidance untouched).
+                // SettlingGateRepairRounds is given back here (PR #316 review): Apply(SettlingGateRepairDispatched)
+                // already counted this exhausted attempt as a round, and the redispatch below counts
+                // it again — without the give-back, a session-level exhaustion (nothing to do with
+                // whether the repair actually fixed anything) would silently spend a round the
+                // acceptance criteria's own "one fix session over the gate output followed by the
+                // mandatory gate again" never intended it to spend.
+                SettlingGateRepairRounds--;
                 ClearActiveSettlingGateRepairSession();
                 ReviewPhase = ReviewPhase.SettlingGateRepairNeeded;
                 break;
@@ -2104,6 +2123,11 @@ public sealed class RunAggregate
         }
         else if (@event.Leg == RunSessionLeg.SettlingGateRepair)
         {
+            // The identical give-back Apply(RunBudgetExhausted)'s own AwaitingSettlingGateRepair
+            // case documents: this errored attempt already counted as a round, and the retry
+            // dispatch below counts it again, so an error result — not a genuine gate failure —
+            // never costs a round on its own.
+            SettlingGateRepairRounds--;
             ClearActiveSettlingGateRepairSession();
             ReviewPhase = ReviewPhase.SettlingGateRepairNeeded;
         }

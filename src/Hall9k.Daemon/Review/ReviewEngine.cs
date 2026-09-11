@@ -3460,7 +3460,7 @@ public sealed class ReviewEngine(
     /// never a no-op — or none has ever been recorded at all, in which case this is false and
     /// today's fail-hard contract is unchanged. A pure read of the aggregate's own already-folded
     /// facts, the same "no git or gate output involved" shape
-    /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op check already reads off
+    /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op check already applies —
     /// deliberately never asking whether THIS gate failure was actually caused by the rebase, a
     /// coincident commit, or a changed verify command (the task's own criteria: no such separation
     /// is attempted).
@@ -3473,10 +3473,16 @@ public sealed class ReviewEngine(
     /// raise <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/>, since the renumbering commit
     /// moved this branch's tip too — would otherwise read as "the last rebase was real" and wrongly
     /// earn repair eligibility for a gate break that has nothing to do with an actual rebase.
-    /// <c>PreFinalPassRebaseAwaitingGateFromRealRebase</c> is set directly off the triggering
-    /// event's own <c>WasNoOp</c> every time <c>PreFinalPassRebaseAwaitingGate</c> is (re)raised, so
-    /// it always reflects whichever event most recently left this tip ungated, real rebase or
-    /// renumbering-only no-op, with no trailing-guard staleness to account for.
+    /// <c>PreFinalPassRebaseAwaitingGateFromRealRebase</c> is <c>true</c> off the triggering event's
+    /// own <c>WasNoOp</c> every time <c>PreFinalPassRebaseAwaitingGate</c> is (re)raised, except that
+    /// a renumbering-only no-op landing while an earlier real rebase is still ungated carries that
+    /// earlier grant forward instead of clearing it (independent pre-PR review, cycle 5, both
+    /// lenses) — a recovered rebase's own re-entry lands the real rebase and its trailing
+    /// renumbering-only no-op back to back, with no gate in between, and clearing the grant on the
+    /// second landing would make a recovered rebase permanently ineligible for this repair lap. So
+    /// it always reflects whichever event most recently left this tip ungated: a real rebase, or a
+    /// renumbering-only no-op that followed one already-gated-clean, with no trailing-guard
+    /// staleness to account for.
     /// </para>
     /// </summary>
     private static bool EligibleForSettlingGateRepair(RunAggregate run) =>
@@ -3495,13 +3501,24 @@ public sealed class ReviewEngine(
     /// would collide a repair session's own retry count with an unrelated rebase-recovery round on
     /// the same run.
     /// <para>
-    /// <paramref name="enforceCap"/> is false for exactly one caller — the redispatch from
-    /// <see cref="ReviewPhase.SettlingGateRepairNeeded"/> after a human's own needs-fixes resolve on
-    /// a spent cap — which is what "buys exactly one more repair round" actually means: this one
-    /// dispatch is unconditional, but it still increments <see cref="RunAggregate.SettlingGateRepairRounds"/>
-    /// (<see cref="RunAggregate.Apply(Events.SettlingGateRepairDispatched)"/>) exactly like every
-    /// other dispatch, so a gate that fails again after it re-enters the ordinary, cap-enforced path
-    /// and parks again rather than granting a second free round.
+    /// <paramref name="enforceCap"/> is false for the <see cref="ReviewPhase.SettlingGateRepairNeeded"/>
+    /// case in <c>DriveAsync</c> (PR #316 review: that phase is reached three ways, not only the one
+    /// this doc originally named) — a human's own needs-fixes resolve on a spent cap, which is what
+    /// "buys exactly one more repair round" actually means; and a budget-exhausted or errored redispatch
+    /// of a round already in flight (<see cref="RunAggregate.Apply(Events.RunBudgetExhausted)"/>'s own
+    /// <c>AwaitingSettlingGateRepair</c> case, <see cref="RunAggregate.Apply(Events.RunSessionErrorRetried)"/>'s
+    /// own <see cref="RunSessionLeg.SettlingGateRepair"/> branch). Enforcing the cap on either of the
+    /// latter two would deny the one-retry-per-leg courtesy every other leg in this file gets to a
+    /// round whose own cap check already passed at its original dispatch — with the default cap of
+    /// one, any session-level hiccup would park the run before a single repair attempt ever ran to
+    /// completion. Every one of the three callers still increments
+    /// <see cref="RunAggregate.SettlingGateRepairRounds"/> on dispatch exactly like every other leg
+    /// (<see cref="RunAggregate.Apply(Events.SettlingGateRepairDispatched)"/>), but the budget-exhausted
+    /// and error-retry cases give the count back first (the two <c>Apply</c> methods named above), so a
+    /// session-level retry nets to zero rather than spending a round the acceptance criteria's own "one
+    /// fix session ... followed by the mandatory gate again" never charged it for — a gate that fails
+    /// for real still re-enters the ordinary, cap-enforced path and parks rather than granting a second
+    /// free round.
     /// </para>
     /// </summary>
     private async Task<bool> DispatchSettlingGateRepairSessionAsync(
