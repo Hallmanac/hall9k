@@ -68,6 +68,19 @@ that has never set `--model-review`/`--model-fix` resolves them identically, so 
 there dispatches on the ordinary fix model exactly as it would have anyway (PLAN.md Decisions Log
 #90).
 
+A fourth: a session that exits at once with no work done — one turn, zero tokens, sub-second, the
+shape an expired credential or an unreachable API leaves behind — is classified as the *node*
+failing to launch a working session rather than the task's own failure. The daemon raises a
+node-wide launch hold instead of failing the run, stops the dispatcher's own claim gate while the
+hold stands, and routes every in-place session-error retry on that node into the hold too rather
+than letting each one spend its own retry on a resume that cannot work yet — so an outage fails
+one node, never a queue of tasks one by one. `h9k status`/`h9k daemon status` show a NEEDS YOU line
+naming the cause and the likely fix while the hold stands. Nothing needs a human lever to clear it:
+`LaunchHoldMonitor`'s own probe relaunches the single oldest held run on a doubling backoff, and
+the first relaunch that actually records tokens — not merely one that survives, since a process can
+stay alive while doing nothing — clears the hold and resumes every run it held in place, worktree
+and lease intact, exactly where each one left off. See PLAN.md Decisions Log #174.
+
 Every gate's own wall-clock duration is recorded on the run's verification pass or failure and
 shown on `h9k task show` beside the run it belongs to. The same command flags a gate whose newest
 duration materially (1.5x) exceeds the project's own recent recorded average for that same gate —
