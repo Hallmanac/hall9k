@@ -24,6 +24,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -2002,6 +2003,66 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         return (taskId, runId, worktreePath, originPath);
     }
 
+    /// <summary>
+    /// Like <see cref="SeedVerifiedRunWithOriginAsync"/>, but the project also carries
+    /// <paramref name="verifyCommands"/> — for the Settling-gate repair lap's own tests (task: a
+    /// pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair lap
+    /// inside the same run instead of failing it), which need a real, controllable mandatory gate
+    /// on top of the real origin every pre-final-pass rebase test already needs.
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId, string WorktreePath, string OriginPath)> SeedVerifiedRunWithOriginAndGateAsync(
+        DocumentStore store, IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> verifyCommands,
+        CancellationToken cancellationToken)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid mainSessionId = DomainId.New();
+        string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
+        string originPath = OriginFor(runId, ownOrigin: true);
+        Directory.CreateDirectory(_home);
+        Git(_home, $"clone -q \"{originPath}\" \"{worktreePath}\"");
+        Git(worktreePath, "checkout -q -b task/review-me");
+        File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        Hall9k.Domain.Features.Project.ProjectAggregate project = new();
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"review-{taskId:N}", worktreePath, null, "main", Now);
+        project.Apply(registered);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(
+            projectId, registered,
+            Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                project,
+                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(verifyCommands),
+                skipPermissions: Optional<bool>.None,
+                contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                Now, node.OwnerId));
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Review me before the PR", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, 1, mainSessionId,
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (taskId, runId, worktreePath, originPath);
+    }
+
     /// <summary>Clones <paramref name="originPath"/> into a fresh temp directory and pushes one commit to <c>main</c> — "another engineer's work merging in" while this run's own worktree sits untouched.</summary>
     private void PushToOrigin(string originPath, string fileName, string content, string message)
     {
@@ -3119,6 +3180,288 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().Contain(e => e.Outcome == ReviewFixOutcome.Disputed);
         events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().Contain(e => e.Outcome == ReviewFixOutcome.Fixed);
         events.OfType<RunRebasedOntoBase>().Should().ContainSingle(e => e.RecoveredByAgentSession);
+    }
+
+    /// <summary>
+    /// Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+    /// repair lap inside the same run instead of failing it. A clean rebase's own mandatory gate
+    /// failure earns exactly one narrow repair session, dispatched inside this same run — no
+    /// RunFailed, no task reopen — and a passing re-run of the gate afterward lets the loop settle
+    /// exactly as a rebase that never broke the gate would have.
+    /// </summary>
+    [Fact]
+    public async Task A_settling_gate_failure_after_a_real_rebase_gets_one_repair_session_then_passes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        string markerPath = Path.Combine(_home, $"repair-marker-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_home);
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> verifyCommands =
+        [
+            new Hall9k.Domain.Features.Project.VerifyCommand("build", GateScript.New()
+                .BranchOnFile(markerPath,
+                    whenPresent: GateScript.New().Print("build ok").Exit(0),
+                    whenMissing: GateScript.New().Print("BUILD BROKEN: CS0246 'Widget' could not be found").Exit(1))
+                .Command),
+        ];
+        (Guid taskId, Guid runId, _, string originPath) =
+            await SeedVerifiedRunWithOriginAndGateAsync(store, verifyCommands, cts.Token);
+
+        PushToOrigin(originPath, "unrelated.txt", "merged while this run was building\n", "unrelated merge");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready",
+            "Found what the rebase left broken and fixed it.");
+        executor.OnSpawnByIndex[2] = () => File.WriteAllText(markerPath, "fixed\n");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(3, "two review passes converge clean, plus exactly one repair session");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<SettlingGateRepairDispatched>().Should().ContainSingle();
+        events.OfType<SettlingGateRepairCompleted>().Should().ContainSingle();
+        events.OfType<Hall9k.Domain.Features.Run.Events.RunFailed>().Should().BeEmpty(
+            "a repair-eligible gate failure dispatches a repair session instead of failing the run");
+    }
+
+    /// <summary>
+    /// Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+    /// repair lap inside the same run instead of failing it. A repair session that never actually
+    /// fixes the gate sends the loop straight back to the identical failure every time Settling is
+    /// re-entered — bounded here so the loop parks for a human once it has spent its round cap
+    /// (one, by default), naming both commits the triggering rebase ran between and the gate's own
+    /// output, rather than spawning a fresh session forever.
+    /// </summary>
+    [Fact]
+    public async Task A_settling_gate_repair_that_never_fixes_it_parks_once_the_round_cap_is_spent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> verifyCommands =
+        [
+            new Hall9k.Domain.Features.Project.VerifyCommand(
+                "build", GateScript.New().Print("BUILD BROKEN: CS0246 'Widget' could not be found").Exit(1).Command),
+        ];
+        (Guid taskId, Guid runId, _, string originPath) =
+            await SeedVerifiedRunWithOriginAndGateAsync(store, verifyCommands, cts.Token);
+
+        PushToOrigin(originPath, "unrelated.txt", "merged while this run was building\n", "unrelated merge");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready",
+            "Looked, but could not find the cause.");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the round cap (one, by default) parks the run rather than dispatching a second repair session");
+        executor.Spawns.Should().HaveCount(3, "two review passes converge clean, plus exactly the round cap's worth of repair sessions");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+        run.ParkedReason.Should().Contain("1 time(s) in a row")
+            .And.Contain(run.LastPreFinalPassRebaseFromCommit![..10])
+            .And.Contain(run.LastPreFinalPassRebaseOntoCommit![..10])
+            .And.Contain("BUILD BROKEN");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<SettlingGateRepairDispatched>().Should().ContainSingle(
+            "the cap stops the second dispatch before it ever spawns");
+        events.OfType<SettlingGateRepairCapReached>().Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+    /// repair lap inside the same run instead of failing it. A human's needs-fixes resolve on a
+    /// spent repair cap buys exactly one more repair round, carrying their guidance into its
+    /// prompt — and, unlike the rebase-recovery cap's own inherited resolve, deliberately does not
+    /// reset the round counter: a cap raised to two rounds proves it, since a reset would let the
+    /// bought round's own failure earn a second automatic dispatch instead of re-parking immediately.
+    /// </summary>
+    [Fact]
+    public async Task A_human_resolving_a_spent_settling_gate_repair_cap_buys_one_round_without_resetting_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> verifyCommands =
+        [
+            new Hall9k.Domain.Features.Project.VerifyCommand(
+                "build", GateScript.New().Print("BUILD BROKEN: CS0246 'Widget' could not be found").Exit(1).Command),
+        ];
+        (Guid taskId, Guid runId, _, string originPath) =
+            await SeedVerifiedRunWithOriginAndGateAsync(store, verifyCommands, cts.Token);
+
+        PushToOrigin(originPath, "unrelated.txt", "merged while this run was building\n", "unrelated merge");
+
+        DaemonOptions options = new() { MaxComplianceReviewCycles = 3, MaxSettlingGateRepairRounds = 2 };
+
+        ScriptedExecutor firstAttempt = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready",
+            "Looked, but could not find the cause.",
+            "Still could not find the cause.");
+        bool firstMergeReady = await NewEngine(store, firstAttempt, options).ReviewAsync(runId, taskId, cts.Token);
+        firstMergeReady.Should().BeFalse("both repair rounds the cap allows fail their own gate re-run");
+        firstAttempt.Spawns.Should().HaveCount(4, "two review passes plus the round cap's own two repair sessions");
+
+        const string humanGuidance = "Check Widget.cs's own namespace — the rebase likely dropped a using directive.";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.NeedsFixes, humanGuidance, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor retry = new("Still could not find the cause, even with the human's guidance.");
+        bool retryMergeReady = await NewEngine(store, retry, options).ReviewAsync(runId, taskId, cts.Token);
+
+        retryMergeReady.Should().BeFalse(
+            "the bought round also fails its own gate re-run, and the counter was never reset, so the very next automatic check is already back at the cap");
+        retry.Spawns.Should().HaveCount(1, "the human's resolve buys exactly one bought round, not a second fresh cap's worth");
+        retry.Spawns[0].Prompt.Should().Contain(humanGuidance);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<SettlingGateRepairDispatched>().Should().HaveCount(
+            3, "two ordinary rounds before the first park, plus exactly the one bought round — a reset would have " +
+            "let the bought round's own failure earn a second automatic dispatch instead of re-parking immediately");
+        events.OfType<SettlingGateRepairCapReached>().Should().HaveCount(2, "parked once at the original cap, once again right after the bought round also failed");
+    }
+
+    /// <summary>
+    /// Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+    /// repair lap inside the same run instead of failing it. A rebase that needed the recovery
+    /// session's own judgment to resolve a real conflict is just as repair-eligible as a clean one
+    /// — and the repair session's own prompt says so, naming the recovery rather than describing a
+    /// mechanical apply that never happened.
+    /// </summary>
+    [Fact]
+    public async Task A_settling_gate_repair_after_a_recovered_rebase_names_the_recovery_in_its_prompt()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        string markerPath = Path.Combine(_home, $"repair-marker-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_home);
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> verifyCommands =
+        [
+            new Hall9k.Domain.Features.Project.VerifyCommand("build", GateScript.New()
+                .BranchOnFile(markerPath,
+                    whenPresent: GateScript.New().Print("build ok").Exit(0),
+                    whenMissing: GateScript.New().Print("BUILD BROKEN: CS0246 'Widget' could not be found").Exit(1))
+                .Command),
+        ];
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAndGateAsync(store, verifyCommands, cts.Token);
+
+        // A genuine add/add conflict, the same shape every rebase-recovery test above uses.
+        PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main */ }\n", "add Widget from main");
+
+        ScriptedExecutor executor = new(
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready",
+            "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
+            "Found what the rebase left broken and fixed it.",
+            "Nothing new to flag.\n\nVERDICT: merge-ready",
+            "Still holds.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[2] = () =>
+        {
+            Git(worktreePath, "fetch -q origin");
+            TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
+            File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { /* resolved */ }\n");
+            Git(worktreePath, "add -A");
+            Git(
+                worktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+        executor.OnSpawnByIndex[3] = () => File.WriteAllText(markerPath, "fixed\n");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+        executor.Spawns.Should().HaveCount(
+            6, "two review passes, the rebase-recovery session for the conflict, the Settling-gate repair " +
+            "session, and the mandatory final pass the recovered conflict earns even on the nothing-owed path");
+        executor.Spawns[3].Prompt.Should().Contain(
+            "needed a narrow recovery session's own judgment to resolve a real conflict",
+            "the repair prompt must say a recovery rebase preceded it, not a clean one");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle();
+        events.OfType<SettlingGateRepairDispatched>().Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
+    /// repair lap inside the same run instead of failing it. A mandatory-gate failure with no real
+    /// rebase behind it — here, no origin ever reachable, so the pre-final-pass rebase check never
+    /// records a landing at all — keeps today's fail-hard contract unchanged: the run fails, and no
+    /// repair session is ever dispatched.
+    /// </summary>
+    [Fact]
+    public async Task A_settling_gate_failure_with_no_real_rebase_behind_it_fails_the_run_with_no_repair_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, Guid projectId) = await SeedVerifiedRunWithTestGateAsync(store, cts.Token);
+
+        // A mid-run verify-commands change is what this test borrows to force the mandatory
+        // Settling gate on an otherwise "nothing owed" cycle-1 convergence, the identical technique
+        // A_clean_discovery_only_convergence_still_runs_the_settling_gate_over_the_current_verify_commands
+        // above already proves forces that gate with no fix, no human, and — here — no origin at
+        // all, so the pre-final-pass rebase check never records a landing either.
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> failingVerifyCommands =
+        [
+            new Hall9k.Domain.Features.Project.VerifyCommand(
+                "build", GateScript.New().Print("BUILD BROKEN: CS0246 'Widget' could not be found").Exit(1).Command),
+        ];
+        async Task ChangeToFailingGateAsync()
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            Hall9k.Domain.Features.Project.ProjectAggregate? project =
+                await session.Events.AggregateStreamAsync<Hall9k.Domain.Features.Project.ProjectAggregate>(
+                    projectId, token: cts.Token);
+            session.Events.Append(projectId, Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ChangeSettings(
+                project!,
+                verifyCommands: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand>>.Of(failingVerifyCommands),
+                skipPermissions: Optional<bool>.None,
+                contextLinks: Optional<IReadOnlyList<Hall9k.Domain.Features.Project.ContextLink>>.None,
+                Now, project!.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Nothing survived verification.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[0] = () => ChangeToFailingGateAsync().GetAwaiter().GetResult();
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the gate fails with no real rebase behind it, so today's fail-hard contract is unchanged");
+        executor.Spawns.Should().HaveCount(
+            2, "both lenses converge clean at cycle 1 — the verify-commands change forces the mandatory " +
+            "Settling gate, but nothing here ever earns a repair session");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed);
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().BeEmpty("origin was never reachable, so no rebase was ever recorded");
+        events.OfType<SettlingGateRepairDispatched>().Should().BeEmpty("no real rebase behind the failure means no repair lap");
+        events.OfType<Hall9k.Domain.Features.Run.Events.RunFailed>().Should().ContainSingle();
     }
 
     private static string SettingsArgument(AgentSpawnRequest request) =>

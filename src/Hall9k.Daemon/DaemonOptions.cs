@@ -316,6 +316,21 @@ public sealed class DaemonOptions
     public int MaxFinalFullPassRounds { get; set; } = OperatingSettings.DefaultMaxFinalFullPassRounds;
 
     /// <summary>
+    /// Repair sessions the Settling phase's own mandatory gate may dispatch in a row, over a tree
+    /// whose most recent recorded rebase was real, before the run parks for a human (task: a
+    /// pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair lap
+    /// inside the same run instead of failing it). Configured beside
+    /// <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s own <c>MaxRebaseRecoveryRounds</c>
+    /// constant rather than through the task/project/node chain the four review-cycle caps above
+    /// use: like that sibling cap, this is a narrow, mechanical safety bound against a session that
+    /// never actually fixes the gate, not a per-project policy knob. Unlike that sibling, this one
+    /// is deliberately made configurable — the task's own criteria — because a repair round costs a
+    /// full gate pass (a real <c>dotnet build</c>/<c>dotnet test</c>), not a cheap git comparison,
+    /// so a team may reasonably want fewer than the default before involving a human.
+    /// </summary>
+    public int MaxSettlingGateRepairRounds { get; set; } = 1;
+
+    /// <summary>
     /// The task-lifetime ceiling on review cycles, counted across every run and follow-up a task
     /// has had — cycles are recorded per run (<see cref="RunAggregate.ReviewCycle"/>), so this is
     /// summed at cap-check time rather than kept as a second counter

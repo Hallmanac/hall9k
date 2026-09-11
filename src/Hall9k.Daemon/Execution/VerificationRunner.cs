@@ -55,6 +55,17 @@ public sealed partial class VerificationRunner(
     IProcessManager processManager)
 {
     /// <summary>
+    /// <see cref="VerifyForSettlingAsync"/>'s own result (task: a pre-final-pass rebase that
+    /// applies cleanly but breaks the mandatory gate gets a repair lap inside the same run instead
+    /// of failing it): <see cref="FailedGateName"/> and <see cref="FailureOutput"/> are populated
+    /// only when the gate actually failed AND that call was made with <c>allowRepairInsteadOfFail</c>
+    /// true — every other failure shape (a pre-gate stranded-work fail, or an ordinary
+    /// <see cref="VerifyAsync"/> call) leaves both null, since nothing downstream of those ever
+    /// reads them: the run already failed by the time either returns.
+    /// </summary>
+    public readonly record struct SettlingVerificationResult(bool Passed, string? FailedGateName, string? FailureOutput);
+
+    /// <summary>
     /// Runs the project's gates (task: a fix cycle's verification gate). <paramref name="scopeSinceSha"/>
     /// is the reviewed cycle's own head — the boundary <see cref="TestScopeResolver"/> diffs the fix's
     /// commits against when narrowing a `dotnet test`-shaped gate — or null to run every gate at full
@@ -72,6 +83,32 @@ public sealed partial class VerificationRunner(
         Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, RunSessionLeg leg,
         CancellationToken cancellationToken)
     {
+        SettlingVerificationResult result = await VerifyCoreAsync(
+            runId, taskId, scopeSinceSha, scopeContext, leg, allowRepairInsteadOfFail: false, cancellationToken);
+        return result.Passed;
+    }
+
+    /// <summary>
+    /// The Settling phase's own mandatory-gate call (task: a pre-final-pass rebase that applies
+    /// cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
+    /// failing it) — identical to <see cref="VerifyAsync"/> in every way except what a genuine gate
+    /// failure does: <paramref name="allowRepairInsteadOfFail"/> true skips the ordinary
+    /// <see cref="Domain.Features.Run.Events.RunFailed"/>/<c>TaskFailed</c> append for a real gate
+    /// failure (never for the pre-gate stranded-work check, which stays fail-hard unconditionally
+    /// — an agent's own uncommitted work is not something a rebase caused) and instead returns the
+    /// gate's own output so the caller can dispatch a repair session over it. The caller — not this
+    /// method — decides whether a given failure is repair-eligible at all: this always runs the
+    /// gate for real, so a passing result is recorded exactly as <see cref="VerifyAsync"/> would.
+    /// </summary>
+    public Task<SettlingVerificationResult> VerifyForSettlingAsync(
+        Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, RunSessionLeg leg,
+        bool allowRepairInsteadOfFail, CancellationToken cancellationToken) =>
+        VerifyCoreAsync(runId, taskId, scopeSinceSha, scopeContext, leg, allowRepairInsteadOfFail, cancellationToken);
+
+    private async Task<SettlingVerificationResult> VerifyCoreAsync(
+        Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, RunSessionLeg leg,
+        bool allowRepairInsteadOfFail, CancellationToken cancellationToken)
+    {
         await using IQuerySession query = store.QuerySession();
         RunDetails? run = await query.LoadAsync<RunDetails>(runId, cancellationToken);
         TaskDetails? task = run is null ? null : await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
@@ -82,7 +119,7 @@ public sealed partial class VerificationRunner(
         if (run is null || task is null)
         {
             logger.LogError("Cannot verify run {RunId}: run or task missing", runId);
-            return false;
+            return new SettlingVerificationResult(false, null, null);
         }
 
         // Fail fast on an agent that left work behind uncommitted, before any gate runs against
@@ -111,9 +148,15 @@ public sealed partial class VerificationRunner(
 
             if (failureReason is not null)
             {
+                // Fail-hard unconditionally, even when allowRepairInsteadOfFail is true: an
+                // agent's own uncommitted work is not something a rebase caused, so this pre-gate
+                // check is out of scope for the Settling-gate repair lap (task: a pre-final-pass
+                // rebase that applies cleanly but breaks the mandatory gate gets a repair lap
+                // inside the same run instead of failing it — only a genuine gate failure below
+                // is eligible).
                 await FailBeforeGatesAsync(runId, taskId, failureReason, cancellationToken);
                 logger.LogWarning("Run {RunId} failed before the gates: {Reason}", runId, failureReason);
-                return false;
+                return new SettlingVerificationResult(false, null, null);
             }
         }
 
@@ -126,7 +169,7 @@ public sealed partial class VerificationRunner(
                 runId, "No verification gates configured for this project.", ranFullScope: true, noGatesHeadSha,
                 gatesFingerprint, gateDurations: [], cancellationToken);
             logger.LogInformation("Run {RunId} verification passed: no gates configured", runId);
-            return true;
+            return new SettlingVerificationResult(true, null, null);
         }
 
         // run.RunDirectory is whatever RunDispatched recorded once, at dispatch — stale for a
@@ -167,6 +210,30 @@ public sealed partial class VerificationRunner(
         // covers why a retried gate sums both attempts into one entry rather than recording two.
         List<GateDuration> gateDurations = [];
 
+        // The one place a genuine gate failure's own recording decision is made (task: a
+        // pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair
+        // lap inside the same run instead of failing it) — shared by every failure branch below so
+        // neither can drift from the other. allowRepairInsteadOfFail true skips the ordinary
+        // RunFailed/TaskFailed append and returns the gate's own (clean-base-annotated) output
+        // instead, for the caller to dispatch a repair session over; false records the failure
+        // exactly as this method always has.
+        async Task<SettlingVerificationResult> RecordGateFailureOutcomeAsync(
+            VerifyCommand failedGate, string reason, bool isInfrastructureFailure)
+        {
+            if (allowRepairInsteadOfFail)
+            {
+                string reportedReason = await RecordGateFailureWithoutFailingRunAsync(
+                    runId, run.NodeId, project, failedGate, reason, isInfrastructureFailure, gateDurations,
+                    cancellationToken);
+                return new SettlingVerificationResult(false, failedGate.Name, reportedReason);
+            }
+
+            await RecordGateFailureAsync(
+                runId, taskId, run.NodeId, project, failedGate, reason, isInfrastructureFailure, gateDurations,
+                cancellationToken);
+            return new SettlingVerificationResult(false, failedGate.Name, null);
+        }
+
         foreach (VerifyCommand gate in gates)
         {
             bool gateIsDotnetTest = IsDotnetTestGate(gate.Command);
@@ -206,20 +273,18 @@ public sealed partial class VerificationRunner(
                     $"after already spending its one retry before an earlier daemon restart. {summary}";
                 gateDurations.Add(new GateDuration(
                     gate.Name, gateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
-                await RecordGateFailureAsync(runId, taskId, run.NodeId, project, gate, adoptedReason, isInfrastructureFailure: true, gateDurations, cancellationToken);
                 logger.LogWarning(
                     "Run {RunId} verification failed at gate '{Gate}': its one retry was already spent before adoption",
                     runId, gate.Name);
-                return false;
+                return await RecordGateFailureOutcomeAsync(gate, adoptedReason, isInfrastructureFailure: true);
             }
 
             if (!isInfrastructureFailure)
             {
                 gateDurations.Add(new GateDuration(
                     gate.Name, gateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
-                await RecordGateFailureAsync(runId, taskId, run.NodeId, project, gate, summary, isInfrastructureFailure: false, gateDurations, cancellationToken);
                 logger.LogWarning("Run {RunId} verification failed at gate '{Gate}': {Summary}", runId, gate.Name, summary);
-                return false;
+                return await RecordGateFailureOutcomeAsync(gate, summary, isInfrastructureFailure: false);
             }
 
             // Infrastructure-classified: retry once, in place, before believing the agent's
@@ -269,10 +334,8 @@ public sealed partial class VerificationRunner(
 
             gateDurations.Add(new GateDuration(
                 gate.Name, totalGateElapsed, Passed: false, RanFullScope: GateRanFullScope(gateIsDotnetTest, scope, gateFellBackToFull)));
-            await RecordGateFailureAsync(
-                runId, taskId, run.NodeId, project, gate, reason, isInfrastructureFailure: retryIsInfrastructureFailure, gateDurations, cancellationToken);
             logger.LogWarning("Run {RunId} verification failed at gate '{Gate}' after retry: {Summary}", runId, gate.Name, reason);
-            return false;
+            return await RecordGateFailureOutcomeAsync(gate, reason, isInfrastructureFailure: retryIsInfrastructureFailure);
         }
 
         // Whether the WHOLE pass covered every configured `dotnet test`-shaped gate at full
@@ -313,7 +376,7 @@ public sealed partial class VerificationRunner(
             "Run {RunId} verification passed ({Count} gate(s)){TestGateSummary}",
             runId, gates.Count,
             scope is null ? "" : $"; test gate ran {testGateModeDescription}");
-        return true;
+        return new SettlingVerificationResult(true, null, null);
     }
 
     /// <summary>
@@ -1421,29 +1484,65 @@ public sealed partial class VerificationRunner(
         Guid runId, Guid taskId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
         bool isInfrastructureFailure, IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
     {
-        string reportedReason = reason;
-        if (project is not null && !isInfrastructureFailure)
+        string reportedReason = await BuildReportedGateFailureReasonAsync(
+            runId, nodeId, project, gate, reason, isInfrastructureFailure, cancellationToken);
+        await RecordFailureAsync(runId, taskId, gate.Name, reportedReason, gateDurations, cancellationToken);
+    }
+
+    /// <summary>
+    /// The Settling-gate repair lap's own sibling to <see cref="RecordGateFailureAsync"/> (task: a
+    /// pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair lap
+    /// inside the same run instead of failing it): records the same <see cref="VerificationFailed"/>
+    /// audit fact, with the identical clean-base-comparison annotation, but never
+    /// <see cref="Domain.Features.Run.Events.RunFailed"/> or <c>TaskFailed</c> — the caller is
+    /// about to dispatch a repair session rather than end the run, so nothing here should end it
+    /// either. Returns the reported (possibly clean-base-annotated) reason for that caller to hand
+    /// the repair session and, if the round cap is spent, name in the park.
+    /// </summary>
+    private async Task<string> RecordGateFailureWithoutFailingRunAsync(
+        Guid runId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
+        bool isInfrastructureFailure, IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
+    {
+        string reportedReason = await BuildReportedGateFailureReasonAsync(
+            runId, nodeId, project, gate, reason, isInfrastructureFailure, cancellationToken);
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new VerificationFailed(runId, [gate.Name], DateTimeOffset.UtcNow, gateDurations));
+        await session.SaveChangesAsync(cancellationToken);
+        return reportedReason;
+    }
+
+    /// <summary>
+    /// A gate's own failure reason, annotated with whether it also fails against a clean checkout
+    /// of the project's own base branch — shared by <see cref="RecordGateFailureAsync"/> and
+    /// <see cref="RecordGateFailureWithoutFailingRunAsync"/> so the annotation itself can never
+    /// drift between the two.
+    /// </summary>
+    private async Task<string> BuildReportedGateFailureReasonAsync(
+        Guid runId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
+        bool isInfrastructureFailure, CancellationToken cancellationToken)
+    {
+        if (project is null || isInfrastructureFailure)
         {
-            try
-            {
-                if (await DescribeCleanBaseComparisonAsync(runId, nodeId, project, gate, cancellationToken) is { } note)
-                {
-                    reportedReason = $"{reason} {note}";
-                }
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                // Best-effort diagnostic on top of a failure that is already going to be recorded
-                // either way — never let the comparison's own failure (a locked repository, a git
-                // error) mask or replace the real gate failure this method exists to record.
-                logger.LogWarning(
-                    exception,
-                    "Run {RunId}: could not compare gate '{Gate}' against a clean checkout of the base branch",
-                    runId, gate.Name);
-            }
+            return reason;
         }
 
-        await RecordFailureAsync(runId, taskId, gate.Name, reportedReason, gateDurations, cancellationToken);
+        try
+        {
+            return await DescribeCleanBaseComparisonAsync(runId, nodeId, project, gate, cancellationToken) is { } note
+                ? $"{reason} {note}"
+                : reason;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Best-effort diagnostic on top of a failure that is already going to be recorded
+            // either way — never let the comparison's own failure (a locked repository, a git
+            // error) mask or replace the real gate failure this method exists to record.
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: could not compare gate '{Gate}' against a clean checkout of the base branch",
+                runId, gate.Name);
+            return reason;
+        }
     }
 
     /// <summary>
