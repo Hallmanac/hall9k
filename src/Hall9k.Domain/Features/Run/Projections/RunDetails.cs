@@ -469,6 +469,14 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// <summary>Why closeout was handed to the human — parked is a waiting state, not a failure.</summary>
     public string? ParkedReason { get; set; }
     /// <summary>
+    /// When this run last entered <see cref="RunState.LaunchHeld"/> (task: a session that exits
+    /// at once with no work done is treated as the node failing to launch sessions) — the sort
+    /// key <c>LaunchHoldEngine</c> reads to find the oldest held run to probe next, mirroring how
+    /// a budget-parked run needs no such field because <c>TokenBudgetRetryEngine</c> retries
+    /// every one of them each sweep rather than picking just one.
+    /// </summary>
+    public DateTimeOffset? LaunchHeldAt { get; set; }
+    /// <summary>
     /// Whether the review park just recorded in <see cref="ParkedReason"/> is one where granting
     /// <c>--needs-fixes</c> cannot clear the park (a per-track cap-0 takeover park, a
     /// final-full-pass cap-0 park, or the lifetime-budget park) — mirrors
@@ -929,8 +937,10 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         StartSession(
             view, AgentRole.Build, ReviewLens.Unknown, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
             name: view.SessionName);
-        // A budget park is the only park RunResumed currently clears (backlog 40); a review
-        // park's ParkedReason is only ever cleared by ReviewParkResolved, a human's own act.
+        // A budget park or a launch-hold park are the only parks RunResumed clears (backlog 40;
+        // task: a session that exits at once with no work done is treated as the node failing
+        // to launch sessions); a review park's ParkedReason is only ever cleared by
+        // ReviewParkResolved, a human's own act.
         view.ParkedReason = null;
         view.State = RunState.Running;
     }
@@ -1531,6 +1541,19 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ParkedReason =
             "token budget exhausted - resumes when the subscription window resets";
         view.State = RunState.BudgetParked;
+    }
+
+    public void Apply(IEvent<RunLaunchHeld> @event, RunDetails view)
+    {
+        // Sessions cleared here too, matching RunCompleted and ContextSynthesisCompleted above
+        // (Copilot review, PR #317): this event can land directly after a review, fix,
+        // rebase-recovery, or pr-review dispatch event with no generic leg-completed event first,
+        // so without this ActiveSessions would still name the process that just exited, and
+        // h9k status/task show would read a launch-held run as though a session were still live.
+        EndSessions(view);
+        view.ParkedReason = $"waiting on the node to relaunch sessions - {@event.Data.ObservedMessage}";
+        view.State = RunState.LaunchHeld;
+        view.LaunchHeldAt = @event.Data.HeldAt;
     }
 
     public void Apply(IEvent<RunSessionErrorRetried> @event, RunDetails view)

@@ -34,6 +34,15 @@ public sealed record RunState
     /// human act — distinct from ReviewParked, which waits on a person.
     /// </summary>
     public static readonly RunState BudgetParked = new("BudgetParked");
+    /// <summary>
+    /// The session's result carried the zero-work launch-failure shape (task: a session that
+    /// exits at once with no work done is treated as the node failing to launch sessions): one
+    /// turn, zero tokens, sub-second — the node could not launch a session at all, not a machine
+    /// or code fault of this run's own. The task stays Claimed and a node-wide launch hold's own
+    /// probe is what clears this without a human act, exactly as <see cref="BudgetParked"/> waits
+    /// on the clock rather than a person.
+    /// </summary>
+    public static readonly RunState LaunchHeld = new("LaunchHeld");
     public static readonly RunState Completed = new("Completed");
     public static readonly RunState Failed = new("Failed");
     public static readonly RunState Killed = new("Killed");

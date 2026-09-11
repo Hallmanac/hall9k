@@ -2104,6 +2104,35 @@ public sealed class RunAggregate
     }
 
     /// <summary>
+    /// Mirrors <see cref="Apply(RunBudgetExhausted)"/> exactly, including its choice to clear
+    /// every in-flight review pass rather than only the one that hit the shape (task: a session
+    /// that exits at once with no work done is treated as the node failing to launch sessions):
+    /// a node-wide launch hold, like a budget park, can sit for as long as a human takes to
+    /// notice, and nobody would ever read a sibling lens's verdict either while the whole run
+    /// waits on it. <see cref="RunState.LaunchHeld"/> is the only difference from the budget
+    /// park's own State — the node-wide hold's own probe is what resumes this, never the hourly
+    /// budget-retry sweep, and never this run's own SessionErrorRetryBackoff timer.
+    /// </summary>
+    public void Apply(RunLaunchHeld @event)
+    {
+        State = RunState.LaunchHeld;
+        switch (ReviewPhase)
+        {
+            case ReviewPhase.AwaitingVerdict:
+                _inFlightReviewPasses.Clear();
+                break;
+            case ReviewPhase.AwaitingFix:
+                ClearActiveFixSession();
+                ReviewPhase = ReviewPhase.FixNeeded;
+                break;
+            case ReviewPhase.AwaitingRebaseRecovery:
+                ClearActiveRebaseRecoverySession();
+                ReviewPhase = ReviewPhase.RebaseRecoveryNeeded;
+                break;
+        }
+    }
+
+    /// <summary>
     /// Records the one retry a leg/cycle/lens combination gets (task: a session that reports an
     /// error result is retried once in place). Deliberately narrower than
     /// <see cref="Apply(RunBudgetExhausted)"/>: that clears every in-flight review pass because

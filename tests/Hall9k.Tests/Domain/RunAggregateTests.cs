@@ -1399,6 +1399,73 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The launch-hold counterpart of <see cref="Budget_exhausted_run_parks_and_a_retry_resumes_it_live"/>
+    /// (task: a session that exits at once with no work done is treated as the node failing to
+    /// launch sessions): the primary session's own resume mechanics are identical — a fresh
+    /// <c>RunResumed</c> clears the park exactly as a budget retry's does — only the run state the
+    /// park itself lands on differs, so <c>h9k task show</c> can tell "waiting on the budget
+    /// window" apart from "waiting on the node".
+    /// </summary>
+    [Fact]
+    public void Launch_held_run_parks_and_a_relaunch_resumes_it_live()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+
+        run.Apply(new RunLaunchHeld(id, "Failed to authenticate: OAuth session expired", Now));
+
+        run.State.Should().Be(RunState.LaunchHeld);
+        run.State.IsLive.Should().BeFalse("nothing is running while the node-wide hold stands");
+        run.State.IsTerminal.Should().BeFalse("the work is intact; this is a wait, not an ending");
+
+        DateTimeOffset resumedProcessStartedAt = Now.AddMinutes(1);
+        run.Apply(new RunResumed(id, ProcessId: 4999, resumedProcessStartedAt, Now));
+
+        run.State.Should().Be(RunState.Running, "the hold's own probe clears it with no human act");
+        run.ProcessStartedAt.Should().Be(resumedProcessStartedAt,
+            "the resumed process is a new one; the liveness check needs its own start time, not the held process's");
+    }
+
+    /// <summary>
+    /// The launch-hold counterpart of <see cref="Budget_exhausted_review_pass_parks_and_clears_the_in_flight_passes"/>:
+    /// identical clearing behavior, mirrored down to the sibling pass, because a node-wide hold —
+    /// like a budget park — can stand for as long as a human takes to notice, and nobody would
+    /// read a sibling's verdict either while the whole run waits on it.
+    /// </summary>
+    [Fact]
+    public void Launch_held_review_pass_parks_and_clears_the_in_flight_passes()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5001, Now, Now, Lens: ReviewLens.Conformance));
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 5011, Now, Now, Lens: ReviewLens.Adversarial));
+
+        run.Apply(new RunLaunchHeld(id, "Failed to authenticate: OAuth session expired", Now));
+
+        run.State.Should().Be(RunState.LaunchHeld);
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.AwaitingVerdict, "the loop resumes the same cycle, not a fresh one");
+        run.InFlightReviewPasses.Should().BeEmpty(
+            "the launch-failed pass's process is gone and its sibling was terminated with it — both redispatch fresh");
+
+        run.Apply(new ReviewDispatched(
+            id, DomainId.New(), Cycle: 1, ProcessId: 6001, Now, Now, Lens: ReviewLens.Conformance));
+        run.State.Should().Be(RunState.UnderReview, "redispatching a pass is what clears the hold");
+    }
+
+    /// <summary>
     /// The fix-session counterpart (backlog 40): the exhausted fix session cannot be resumed
     /// either, so the phase drops back to FixNeeded and the next pass through the loop
     /// redispatches a fresh fix session over the same cycle's findings.
