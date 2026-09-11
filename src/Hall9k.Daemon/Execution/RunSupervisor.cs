@@ -127,7 +127,15 @@ public sealed class RunSupervisor(
         TaskDetails? task = await query.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
         if (task is null || task.State != TaskState.Claimed || task.CurrentRunId != run.Id)
         {
-            // The claim moved on while this run sat held — nothing here left to resume.
+            // The claim moved on while this run sat held (an abandon, a lease-expiry
+            // requeue-and-reclaim, or any other release) — retired explicitly rather than left
+            // LaunchHeld, the identical guard ResumeBuildSessionErrorRetryAsync already applies
+            // for this exact shape (independent pre-PR review, cycle 1, both lenses): a bare
+            // return would otherwise leave this run LaunchHeld forever, and since
+            // OldestHeldRunAsync sorts by LaunchHeldAt — which nothing here ever touches again —
+            // this run would keep winning that sort and starve every other held run's own probe,
+            // wedging the node-wide hold open for good.
+            await RetireStaleAdoptionCandidateAsync(run, cancellationToken);
             return false;
         }
 
@@ -599,7 +607,7 @@ public sealed class RunSupervisor(
                     }
 
                     (int ProcessId, DateTimeOffset ProcessStartedAt)? retried =
-                        await CompleteRunAsync(runId, runDirectory, taskId, result, cancellationToken);
+                        await CompleteRunAsync(runId, runDirectory, taskId, processStartedAt, result, cancellationToken);
                     if (retried is { } resumed)
                     {
                         // A session that reports an error result is retried once in place
@@ -674,8 +682,17 @@ public sealed class RunSupervisor(
     /// <see cref="MonitorAsync"/> should keep tailing instead of treating this as the run's
     /// terminal completion.
     /// </summary>
+    /// <param name="processStartedAt">
+    /// When the primary session whose result this is actually started — carried through to the
+    /// node-wide launch hold's own evidence check (task: a session that exits at once with no
+    /// work done is treated as the node failing to launch sessions): a session already running
+    /// before the hold's own raise is not proof a fresh launch works right now, only that
+    /// something already in flight eventually finished for its own, unrelated reason
+    /// (independent pre-PR review, cycle 1, adversarial lens).
+    /// </param>
     private async Task<(int ProcessId, DateTimeOffset ProcessStartedAt)?> CompleteRunAsync(
-        Guid runId, string runDirectory, Guid taskId, AgentResult result, CancellationToken cancellationToken)
+        Guid runId, string runDirectory, Guid taskId, DateTimeOffset processStartedAt, AgentResult result,
+        CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await CaptureHandoffAsync(runId, runDirectory, result, cancellationToken);
@@ -708,7 +725,7 @@ public sealed class RunSupervisor(
         }
         else
         {
-            await launchHold.ClearIfActiveAsync(node.NodeId, cancellationToken);
+            await launchHold.ClearIfEvidencedAsync(node.NodeId, processStartedAt, cancellationToken);
         }
 
         bool willRetryBuildSession;

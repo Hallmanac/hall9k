@@ -164,6 +164,7 @@ public sealed class AutoPrReviewEngine(
     NodeContext node,
     RunLauncher launcher,
     ProcessRunner processRunner,
+    LaunchHoldEngine launchHold,
     ILogger<AutoPrReviewEngine> logger)
 {
     private static readonly string[] TerminalStates =
@@ -186,6 +187,24 @@ public sealed class AutoPrReviewEngine(
     private readonly GitHubReviewAssignments reviewAssignments = new(processRunner);
 
     private int _immediateLaunchesThisSweep;
+
+    /// <summary>
+    /// Read fresh at the point <see cref="CreateOneAsync"/> decides whether to launch immediately,
+    /// not sampled once at the top of the sweep and reused (Copilot review, PR #317; this replaced
+    /// an earlier per-sweep field after independent pre-PR review, cycle 1, conformance lens, first
+    /// flagged the shape below): a node-wide launch hold means this node cannot launch a working
+    /// session at all right now (task: a session that exits at once with no work done is treated as
+    /// the node failing to launch sessions), so a Now-speed candidate must take the ordinary
+    /// queue-first slot below rather than the ceiling-exempt immediate launch — claiming and
+    /// spawning straight into a broken node strands one more task the same way the dispatcher's own
+    /// claim gate already refuses to, since this direct claim-and-launch bypasses that gate
+    /// entirely (it never goes through <c>DispatchEngine</c>). A sweep walks every project and
+    /// candidate in turn, with real GitHub fetches and <c>LinkedWorkItemImport</c> calls between
+    /// them, so a hold raised mid-sweep by an earlier candidate's own failure must still be seen by
+    /// a later one's decision — a value sampled once at the sweep's own start cannot see that.
+    /// </summary>
+    private async Task<bool> LaunchHoldActiveAsync(CancellationToken cancellationToken) =>
+        await launchHold.CurrentHoldAsync(node.NodeId, cancellationToken) is { LaunchHoldActive: true };
 
     /// <summary>
     /// One Info line per project, at daemon start, naming whether auto pr-review is on or off
@@ -802,10 +821,13 @@ public sealed class AutoPrReviewEngine(
         task.Apply(assigned);
         events.Add(assigned);
 
-        // A Now-speed candidate beyond this sweep's own immediate-launch cap is not silently
-        // downgraded: it still takes the queue-first marker First speed uses, so it takes the
-        // next free ordinary dispatch slot rather than sitting until the next poll interval.
-        bool launchImmediately = setting.Speed == AutoPrReviewSpeed.Now
+        // A Now-speed candidate beyond this sweep's own immediate-launch cap, or while a
+        // node-wide launch hold stands, is not silently downgraded: it still takes the
+        // queue-first marker First speed uses, so it takes the next free ordinary dispatch slot
+        // (behind DispatchEngine's own claim gate, which already refuses to claim into a held
+        // node) rather than sitting until the next poll interval.
+        bool launchHoldActive = setting.Speed == AutoPrReviewSpeed.Now && await LaunchHoldActiveAsync(cancellationToken);
+        bool launchImmediately = setting.Speed == AutoPrReviewSpeed.Now && !launchHoldActive
             && ++_immediateLaunchesThisSweep <= MaxImmediateLaunchesPerSweep;
 
         Guid? deliberateRunId = null;
@@ -820,8 +842,11 @@ public sealed class AutoPrReviewEngine(
                 // own (Decisions Log #161): one Info line per pull request is what an
                 // orchestrator window's log tail can rely on, so a fact about this pull request
                 // belongs in that line rather than beside it.
-                deferral = "deferred to the ordinary queue-first slot — this sweep already used its one "
-                    + "immediate ceiling-exempt launch";
+                deferral = launchHoldActive
+                    ? "deferred to the ordinary queue-first slot — a node-wide launch hold stands, so this "
+                        + "sweep never claims or launches directly into it"
+                    : "deferred to the ordinary queue-first slot — this sweep already used its one "
+                        + "immediate ceiling-exempt launch";
             }
 
             TaskRevised revised = TaskDecider.Revise(
