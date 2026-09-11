@@ -57,6 +57,15 @@ public static class TemplatePublisher
                 if (!previously.TryGetValue(name, out string? recordedHash)
                     || recordedHash != ComputeContentHash(destination))
                 {
+                    // An operator's own edit is theirs, not this pass's to overwrite — but a
+                    // package they overrode before this source shipped a new file (or a builder's
+                    // own later revision added a new named fragment to an existing file) must not
+                    // leave a builder asking PromptTemplates.Load for a path or fragment that
+                    // exists in the canonical source but was never in the operator's own snapshot.
+                    // Filling in only what is missing, never touching a file the operator already
+                    // has, keeps their edit intact while closing that gap (independent pre-PR
+                    // review, cycle 1).
+                    FillMissingFiles(package, destination);
                     leftAlone.Add(name);
                     continue;
                 }
@@ -230,10 +239,54 @@ public static class TemplatePublisher
         && !Path.IsPathRooted(name)
         && name.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]) < 0;
 
+    /// <summary>
+    /// Copies every file <paramref name="source"/> carries that <paramref name="destination"/>
+    /// does not, at the same relative path, creating whatever subdirectories that path needs — and
+    /// never overwrites a file already at <paramref name="destination"/>, since that file is
+    /// exactly what made this package an operator's override in the first place. An OS metadata
+    /// artifact (see <see cref="IsIgnorableArtifact"/>) is skipped on both sides, the same as
+    /// <see cref="ComputeContentHash"/> ignores it, so a stray <c>.DS_Store</c> a file browser left
+    /// in the operator's own directory is never copied in as though it were template content.
+    /// </summary>
+    private static void FillMissingFiles(string source, string destination)
+    {
+        foreach (string sourceFile in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            string relative = Path.GetRelativePath(source, sourceFile);
+            if (IsIgnorableArtifact(Path.GetFileName(sourceFile)))
+            {
+                continue;
+            }
+
+            string destinationFile = Path.Combine(destination, relative);
+            if (File.Exists(destinationFile))
+            {
+                continue;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationFile) ?? destination);
+            File.Copy(sourceFile, destinationFile);
+        }
+    }
+
+    /// <summary>
+    /// An OS-generated file a directory can pick up just by being browsed (Finder's
+    /// <c>.DS_Store</c>, Explorer's <c>desktop.ini</c> and <c>Thumbs.db</c>, and the AppleDouble
+    /// <c>._*</c> sidecars <c>COPYFILE_DISABLE</c> already keeps out of a release archive) rather
+    /// than anything an operator meant as template content. Included in a package's content hash,
+    /// it would flip an untouched override into "edited" the moment somebody opened the folder in a
+    /// file browser, which is not an edit this class's publish/retire/override-by-name discipline
+    /// should ever see.
+    /// </summary>
+    private static bool IsIgnorableArtifact(string fileName) =>
+        fileName is ".DS_Store" or "Thumbs.db" or "desktop.ini"
+        || fileName.StartsWith("._", StringComparison.Ordinal);
+
     private static string ComputeContentHash(string directory)
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (string file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+            .Where(path => !IsIgnorableArtifact(Path.GetFileName(path)))
             .Select(path => Path.GetRelativePath(directory, path))
             .Order(StringComparer.Ordinal))
         {
