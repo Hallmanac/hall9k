@@ -249,6 +249,16 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public bool ParkedOnRebaseRecoveryDispute { get; set; }
     /// <summary>
+    /// Whether the run's current park (if any) is a spent Settling-gate repair round cap (task: a
+    /// pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair lap
+    /// inside the same run instead of failing it) — mirrors <see cref="ParkedOnRebaseRecoveryDispute"/>
+    /// for the identical reason: this park rules on a gate failure, not a review finding, so it
+    /// must not ride into a later review prompt as a settled ruling on the diff the way
+    /// <see cref="ReviewParkResolutions"/> otherwise records every park. Set when the cap is
+    /// reached, cleared once the park resolves.
+    /// </summary>
+    public bool ParkedOnSettlingGateRepairCap { get; set; }
+    /// <summary>
     /// Whether the current park is a changes-requested lap's disagreement park (task: a
     /// changes-requested pull-request review from a human becomes a fix lap) — mirrors
     /// <see cref="RunAggregate.ParkedOnReviewDisagreement"/> so <c>AttentionComposer</c> can lead
@@ -1206,7 +1216,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         // check), so it is what the ReviewCycle == 0 check is for thread disputes here — the
         // human decided the conflict, not a review finding, so it must not ride into a later
         // review prompt as a settled ruling on the diff either.
-        if ((view.ReviewCycle != 0 || view.ParkedIsInteractiveGate) && !view.ParkedOnRebaseRecoveryDispute)
+        //
+        // A spent Settling-gate repair round cap (task: a pre-final-pass rebase that applies
+        // cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
+        // failing it) is the identical case for the identical reason: the human is ruling on a
+        // gate failure, not a review finding, so ParkedOnSettlingGateRepairCap excludes it here too
+        // (independent pre-PR review, cycle 1, adversarial lens).
+        if ((view.ReviewCycle != 0 || view.ParkedIsInteractiveGate)
+            && !view.ParkedOnRebaseRecoveryDispute && !view.ParkedOnSettlingGateRepairCap)
         {
             view.ReviewParkResolutions.Add(new ReviewParkResolution(
                 view.ReviewCycle, @event.Data.Verdict, @event.Data.Reason, @event.Data.ResolvedAt));
@@ -1216,6 +1233,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ParkedNeedsFixesOffersNoProgress = false;
         view.ParkedIsInteractiveGate = false;
         view.ParkedOnRebaseRecoveryDispute = false;
+        view.ParkedOnSettlingGateRepairCap = false;
         view.ParkedOnReviewDisagreement = false;
         // The resume sweep re-dispatches; until it does, nothing is running.
         EndSessions(view);
@@ -1424,6 +1442,19 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     /// <summary>The repair session ended — see Apply(IEvent&lt;PreFinalPassRebaseRecoveryCompleted&gt;) above for the identical shape.</summary>
     public void Apply(IEvent<SettlingGateRepairCompleted> @event, RunDetails view) => EndSessions(view);
+
+    /// <summary>
+    /// The Settling-gate repair round cap is spent and the run parked (task: a pre-final-pass
+    /// rebase that applies cleanly but breaks the mandatory gate gets a repair lap inside the same
+    /// run instead of failing it) — sets <see cref="ParkedOnSettlingGateRepairCap"/> so
+    /// <c>Apply(IEvent&lt;ReviewParkResolved&gt;)</c> knows this park rules on a gate failure, not a
+    /// review finding, the same discriminator <see cref="ParkedOnRebaseRecoveryDispute"/> already
+    /// gives that park (independent pre-PR review, cycle 1, adversarial lens: without a handler
+    /// here, this park had no way to tell itself apart from an ordinary review park, so its
+    /// resolution rode into every later review prompt as a settled ruling on the diff).
+    /// </summary>
+    public void Apply(IEvent<SettlingGateRepairCapReached> @event, RunDetails view) =>
+        view.ParkedOnSettlingGateRepairCap = true;
 
     public void Apply(IEvent<ReviewRerequested> @event, RunDetails view)
     {

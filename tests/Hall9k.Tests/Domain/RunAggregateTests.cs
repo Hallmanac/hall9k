@@ -1506,6 +1506,41 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// The round cap's own park (task: a pre-final-pass rebase that applies cleanly but breaks the
+    /// mandatory gate gets a repair lap inside the same run instead of failing it) records the
+    /// park's own gate output over <see cref="RunAggregate.LastSettlingGateRepairOutput"/>, not
+    /// whatever an earlier round's dispatch last left there (independent pre-PR review, cycle 1,
+    /// both lenses): the round that actually parks can fail on a different gate than the round
+    /// before it dispatched over, and the bought round a human's needs-fixes resolve earns reads
+    /// this property back to build its own prompt.
+    /// </summary>
+    [Fact]
+    public void Settling_gate_repair_cap_reached_records_the_parking_rounds_own_gate_output()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new SettlingGateRepairDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown,
+            "Gate 'build' failed: CS0246 'Widget' could not be found", "settling-gate-repair"));
+
+        // The round the repair session was dispatched over broke the build; the round it left
+        // behind instead breaks a test — the park has to name that SECOND failure.
+        run.Apply(new SettlingGateRepairCapReached(
+            id, Now, "Gate 'test' failed: WidgetTests.Should_render threw"));
+
+        run.LastSettlingGateRepairOutput.Should().Be(
+            "Gate 'test' failed: WidgetTests.Should_render threw",
+            "the park's own failure, not the dispatch's stale one, is what the bought round's prompt must read");
+        run.ReviewPhase.Should().Be(ReviewPhase.SettlingGateRepairCapReached);
+    }
+
+    /// <summary>
     /// PR #316 review: <see cref="ReviewPhase.SettlingGateRepairNeeded"/> is reached from
     /// <see cref="RunBudgetExhausted"/> and <see cref="RunSessionErrorRetried"/> as well as a
     /// human's own needs-fixes resolve on a spent cap, but only the human resolve is meant to buy

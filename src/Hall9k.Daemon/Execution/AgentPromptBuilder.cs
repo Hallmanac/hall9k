@@ -1129,8 +1129,10 @@ public static class AgentPromptBuilder
     /// A narrow repair session dispatched when the Settling phase's own mandatory gate fails on a
     /// tree whose most recent recorded rebase was real (task: a pre-final-pass rebase that applies
     /// cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
-    /// failing it) — the same dispatch shape and leg <see cref="BuildPreFinalPassRebase"/> already
-    /// uses, over the gate's own output instead of a git conflict. No attempt is made here to claim
+    /// failing it) — the same dispatch shape <see cref="BuildPreFinalPassRebase"/> already uses
+    /// (its own separate <see cref="RunSessionLeg.SettlingGateRepair"/> leg is
+    /// <c>ReviewEngine</c>'s concern, not this builder's), over the gate's own output instead of a
+    /// git conflict. No attempt is made here to claim
     /// the rebase caused the failure rather than a coincident commit or a verify-command change
     /// (the task's own criteria): the prompt names what actually happened — a rebase landed, then
     /// the mandatory gate failed — and lets the session's own investigation find the real cause.
