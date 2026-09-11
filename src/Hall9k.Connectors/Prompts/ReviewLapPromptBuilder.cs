@@ -162,7 +162,12 @@ public sealed record ReviewLapBriefing(
 /// </summary>
 public static class ReviewLapPromptBuilder
 {
-    private const string TemplateDirectory = "review-lap-prompt-builder";
+    /// <summary>The package name this builder's own prose ships under in <c>.claude/templates</c>
+    /// (and the canonical/release-payload equivalents) — also what <c>InstallCommand.ValidateReleasePayload</c>
+    /// checks a <c>--from-release</c> payload actually carries, since a <c>templates/</c> directory
+    /// present but empty or unrelated would otherwise validate while leaving this builder with
+    /// nothing to load at runtime.</summary>
+    public const string TemplateDirectory = "review-lap-prompt-builder";
 
     public static string Build(ReviewLapBriefing briefing)
     {
@@ -355,7 +360,7 @@ public static class ReviewLapPromptBuilder
             string name = check.Workflow.IsNotBlank() ? $"{OneLine(check.Workflow)} / {OneLine(check.Name)}" : OneLine(check.Name);
             string outcome = check.Conclusion.IsNotBlank()
                 ? OneLine(check.Conclusion)
-                : $"{OneLine(check.Status)} — no conclusion yet";
+                : $"{OneLine(check.Status)} — {PromptTemplates.Load(file, "no-conclusion-yet")}";
             prompt.AppendLine($"- {name}: {outcome}");
         }
 
@@ -450,7 +455,8 @@ public static class ReviewLapPromptBuilder
             foreach (ScopedReviewThreadDelta thread in scoped.Threads)
             {
                 prompt.AppendLine(
-                    $"#### {OneLine(thread.Location)} — {(thread.IsResolved ? "resolved" : "still unresolved")}");
+                    $"#### {OneLine(thread.Location)} — "
+                    + PromptTemplates.Load(file, thread.IsResolved ? "thread-resolved" : "thread-unresolved"));
                 prompt.AppendLine();
                 if (thread.NewComments.Count == 0 && thread.UnreadCommentCount == 0)
                 {

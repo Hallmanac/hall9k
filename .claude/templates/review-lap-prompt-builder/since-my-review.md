@@ -34,6 +34,10 @@ None of the reviewer's own threads have moved since their review
 .
 ===moved-summary-tail===
  Every reply is verbatim.
+===thread-resolved===
+resolved
+===thread-unresolved===
+still unresolved
 ===no-new-comment===
 (No new comment; the thread's own state is what changed.)
 ===unread-comment-notice===
