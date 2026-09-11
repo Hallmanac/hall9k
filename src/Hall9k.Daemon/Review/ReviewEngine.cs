@@ -565,12 +565,26 @@ public sealed class ReviewEngine(
                                 cancellationToken);
                             if (!gateResult.Passed)
                             {
-                                if (!eligibleForSettlingGateRepair)
+                                // gateResult.FailedGateName is null both for a genuine gate failure
+                                // recorded fail-hard (eligibleForSettlingGateRepair false above) AND
+                                // for the two pre-gate checks VerifyForSettlingAsync always runs
+                                // first — stranded work, and a missing run or task — which return
+                                // (false, null, null) and, for the stranded-work case, already
+                                // appended RunFailed/TaskFailed themselves regardless of
+                                // allowRepairInsteadOfFail (independent pre-PR review, cycle 1,
+                                // adversarial lens: an agent's own uncommitted work is not something
+                                // a rebase caused, so it stays fail-hard unconditionally). Only a
+                                // populated FailedGateName means RecordGateFailureWithoutFailingRunAsync
+                                // ran instead — a genuine gate failure that skipped the ordinary
+                                // RunFailed/TaskFailed append and is actually safe to dispatch a
+                                // repair session over.
+                                if (!eligibleForSettlingGateRepair || gateResult.FailedGateName is null)
                                 {
                                     // Today's unchanged fail-hard contract: VerifyForSettlingAsync
                                     // already recorded RunFailed/TaskFailed itself, exactly as
                                     // VerifyAsync always has, since allowRepairInsteadOfFail was
-                                    // false above.
+                                    // false above (or the pre-gate check failed before it was ever
+                                    // consulted).
                                     return false;
                                 }
 
@@ -981,12 +995,48 @@ public sealed class ReviewEngine(
                         && run.LastGateHeadSha is not null
                         && run.LastGateHeadSha == await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken)
                         && await VerifyCommandsFingerprintMatchesAsync(context, run, cancellationToken);
-                    if (!reverifyGateAlreadyRan && !await verification.VerifyAsync(
-                        context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext, CurrentFixLeg(run),
-                        cancellationToken))
+                    if (!reverifyGateAlreadyRan)
                     {
-                        // VerificationRunner already failed the run and task honestly.
-                        return false;
+                        // The Reverify branch's own mirror of the Settling branch's identical
+                        // repair-lap check (task: a pre-final-pass rebase that applies cleanly but
+                        // breaks the mandatory gate gets a repair lap inside the same run instead
+                        // of failing it, independent pre-PR review, cycle 1, adversarial lens): the
+                        // objective's own wording is not scoped to the Settling phase alone, and
+                        // this gate is the other place a pre-final-pass rebase (the
+                        // EnsureRebasedBeforeFinalPassAsync call above) can land immediately before
+                        // a fail-hard gate. Only reachable at all when reverifyMode is
+                        // FinalFullPass — the one case that actually ran the rebase check above —
+                        // so eligibleForSettlingGateRepair is false by construction for an ordinary
+                        // Verify or Discovery reverify's own scoped gate, which keeps this an exact
+                        // no-op for every other case.
+                        bool eligibleForSettlingGateRepair =
+                            reverifyMode == ReviewMode.FinalFullPass && EligibleForSettlingGateRepair(run);
+                        VerificationRunner.SettlingVerificationResult reverifyGateResult = await verification.VerifyForSettlingAsync(
+                            context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext,
+                            run.PreFinalPassRebaseAwaitingGate || run.PreFinalPassRebaseAwaitingReview
+                                ? RunSessionLeg.RebaseRecovery
+                                : CurrentFixLeg(run),
+                            eligibleForSettlingGateRepair,
+                            cancellationToken);
+                        if (!reverifyGateResult.Passed)
+                        {
+                            // See the identical check in the Settling branch above for why
+                            // FailedGateName, not just Passed, decides repair eligibility here too.
+                            if (!eligibleForSettlingGateRepair || reverifyGateResult.FailedGateName is null)
+                            {
+                                // VerificationRunner already failed the run and task honestly.
+                                return false;
+                            }
+
+                            if (!await DispatchSettlingGateRepairSessionAsync(
+                                context, run, reverifyGateResult.FailureOutput ?? "(gate output unavailable)",
+                                humanGuidance: null, enforceCap: true, cancellationToken))
+                            {
+                                return false;
+                            }
+
+                            break;
+                        }
                     }
 
                     // The gate above can itself run for real wall-clock minutes to hours, so
@@ -3399,9 +3449,24 @@ public sealed class ReviewEngine(
     /// <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/> — deliberately never asking whether
     /// THIS gate failure was actually caused by the rebase, a coincident commit, or a changed verify
     /// command (the task's own criteria: no such separation is attempted).
+    /// <para>
+    /// Also requires <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> (independent pre-PR
+    /// review, cycle 1, conformance lens): <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/>
+    /// alone never goes back to true once a real rebase has landed anywhere in the run's lifetime —
+    /// the trailing-no-op guard in <see cref="RunAggregate.Apply(RunRebasedOntoBase)"/> deliberately
+    /// ignores a later no-op re-check's own claim, so a later, unrelated gate failure (a fix that
+    /// broke a test after that earlier rebase's own gate already passed) would otherwise stay
+    /// repair-eligible forever. <c>PreFinalPassRebaseAwaitingGate</c> does not share that gap: it is
+    /// cleared the moment a full-scope gate actually passes over the rebased tip, and only a
+    /// genuinely new real rebase (never a no-op) sets it again — so it tracks exactly "is there a
+    /// rebase on this tip that has never yet been gated", which is the question this method exists
+    /// to answer.
+    /// </para>
     /// </summary>
     private static bool EligibleForSettlingGateRepair(RunAggregate run) =>
-        run.LastPreFinalPassRebaseAt is not null && run.LastPreFinalPassRebaseWasNoOp == false;
+        run.LastPreFinalPassRebaseAt is not null
+        && run.LastPreFinalPassRebaseWasNoOp == false
+        && run.PreFinalPassRebaseAwaitingGate;
 
     /// <summary>
     /// Spawns the narrow Settling-gate repair session (task: a pre-final-pass rebase that applies
@@ -3505,7 +3570,7 @@ public sealed class ReviewEngine(
         if (result is { IsError: true })
         {
             string errorSummary = result.Summary ?? "(no message)";
-            if (run.HasRetriedSessionError(RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null))
+            if (run.HasRetriedSessionError(RunSessionLeg.SettlingGateRepair, run.ReviewCycle, lens: null))
             {
                 await FailAsync(context.RunId, context.TaskId,
                     "The Settling-gate repair session reported an error result.", cancellationToken);
@@ -3513,7 +3578,7 @@ public sealed class ReviewEngine(
             }
 
             return await RetrySessionErrorAsync(
-                context.RunId, RunSessionLeg.RebaseRecovery, run.ReviewCycle, lens: null,
+                context.RunId, RunSessionLeg.SettlingGateRepair, run.ReviewCycle, lens: null,
                 "the Settling-gate repair session", errorSummary, result, run.ActiveSettlingGateRepairModel,
                 cancellationToken);
         }
@@ -3571,9 +3636,9 @@ public sealed class ReviewEngine(
     /// by hand.
     /// </summary>
     private static string SettlingGateRepairCapParkReason(RunAggregate run, string gateOutput) =>
-        $"The mandatory final pass's own gate has failed {run.SettlingGateRepairRounds} time(s) in a " +
-        "row since this branch was rebased onto its base, and a narrow repair session could not make " +
-        $"it pass — worth a human's look rather than another automatic round. Rebased from " +
+        $"The mandatory final pass's own gate is still failing after {run.SettlingGateRepairRounds} " +
+        "repair session(s) in a row since this branch was rebased onto its base, and a narrow repair " +
+        $"session could not make it pass — worth a human's look rather than another automatic round. Rebased from " +
         $"{ShortSha(run.LastPreFinalPassRebaseFromCommit ?? RunRebasedOntoBase.UnreadableCommit)} to " +
         $"{ShortSha(run.LastPreFinalPassRebaseOntoCommit ?? RunRebasedOntoBase.UnreadableCommit)}" +
         (run.LastPreFinalPassRebaseRecovered ? " (itself resolved by a recovery session)." : ".") +

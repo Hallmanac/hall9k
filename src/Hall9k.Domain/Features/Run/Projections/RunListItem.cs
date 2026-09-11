@@ -177,6 +177,13 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
     // (independent pre-PR review, cycle 1, conformance lens).
     public void Apply(IEvent<PreFinalPassRebaseRecoveryDispatched> @event, RunListItem view) => view.State = RunState.UnderReview;
 
+    // Mirrors RunDetails/RunAggregate and the identical PreFinalPassRebaseRecoveryDispatched
+    // handler just above, for the same reason (independent pre-PR review, cycle 1, both lenses): a
+    // Settling-gate repair session is a live agent process too, so this lean row needs the same
+    // transition off whatever state preceded it (including BudgetParked, on a retried repair) —
+    // without it NodeLoad.LiveSlots undercounts a live run for the whole repair-session window.
+    public void Apply(IEvent<SettlingGateRepairDispatched> @event, RunListItem view) => view.State = RunState.UnderReview;
+
     // Mirrors RunDetails/RunAggregate: a pr-review run's own conformance lens (PrReviewEngine)
     // is dispatched the same way ReviewDispatched moves a task's own review loop to
     // UnderReview, and PrReviewDelivered is that task type's h9k review resolve --merge-ready

@@ -57,11 +57,17 @@ public sealed partial class VerificationRunner(
     /// <summary>
     /// <see cref="VerifyForSettlingAsync"/>'s own result (task: a pre-final-pass rebase that
     /// applies cleanly but breaks the mandatory gate gets a repair lap inside the same run instead
-    /// of failing it): <see cref="FailedGateName"/> and <see cref="FailureOutput"/> are populated
-    /// only when the gate actually failed AND that call was made with <c>allowRepairInsteadOfFail</c>
-    /// true — every other failure shape (a pre-gate stranded-work fail, or an ordinary
-    /// <see cref="VerifyAsync"/> call) leaves both null, since nothing downstream of those ever
-    /// reads them: the run already failed by the time either returns.
+    /// of failing it): <see cref="FailedGateName"/> names a genuine gate failure — whether
+    /// <c>allowRepairInsteadOfFail</c> was true (the run stays open, for a caller to dispatch a
+    /// repair session over) or false (the ordinary <see cref="RunFailed"/>/<c>TaskFailed</c> append
+    /// still runs, exactly as <see cref="VerifyAsync"/> always has). <see cref="FailureOutput"/>,
+    /// by contrast, is populated only on the repair-eligible path — the reason a caller has to read
+    /// <see cref="FailedGateName"/>, not <see cref="Passed"/> alone, to tell a genuine gate failure
+    /// apart from a pre-gate one (stranded work, or a missing run or task) when deciding whether a
+    /// failure is safe to dispatch a repair session over (independent pre-PR review, cycle 1,
+    /// adversarial lens): every pre-gate failure shape leaves both null, since nothing downstream of
+    /// those ever reads them — the run (and, for stranded work, the task) already failed by the time
+    /// either returns.
     /// </summary>
     public readonly record struct SettlingVerificationResult(bool Passed, string? FailedGateName, string? FailureOutput);
 
