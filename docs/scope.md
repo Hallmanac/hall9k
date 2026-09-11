@@ -661,7 +661,7 @@ already-downloaded release payload (`--from-release`). The same run also publish
 prompt-template set to `~/.hall9k/templates`, a sibling directory rather than a member of the
 skill set: a template holds a prompt builder's own judgment-layer prose (readable, diffable,
 overridable, exactly like a skill), never a `SKILL.md`, and is never seeded into a project home or
-a session's own skill list (PLAN.md §16 PLACEHOLDER-0989c44a). `--from-release` refuses a payload
+a session's own skill list (PLAN.md §16 #175). `--from-release` refuses a payload
 missing a `templates/` directory before anything is staged, the same gate it already applies to a
 payload missing either binary, rather than installing binaries and silently leaving a prompt
 builder without its prose. `h9k update` is the same `--from-release` path wired to `gh release

@@ -945,7 +945,9 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             AnsiConsole.MarkupLine(
                 $"[yellow]Prompt templates left alone[/]: {shadowed} — each was already in the canonical "
                 + "directory without an install having put it there (or was edited since it was published), so "
-                + "yours was kept and the platform's was not written.");
+                + "your own file contents were kept rather than overwritten. Any file or fragment the canonical "
+                + "source has added since was still filled in, so a builder never finds one of your own overrides "
+                + "missing a path or fragment it asks for.");
         }
     }
 

@@ -67,9 +67,9 @@ content-hash, publish/retire/override discipline (`~/.hall9k/templates`), but a 
 seeded into a project home's `skills/` or `.claude/skills` adapter, never carries a `SKILL.md`, and
 never appears in the skill list a work prompt renders — publishing one anywhere a harness enumerates
 skills would add its description to every session's first turn, which is out of bounds (PLAN.md §16
-PLACEHOLDER-0989c44a). `PromptTemplates` (`Hall9k.Domain.Infrastructure.Storage`) is the one
-mechanism a builder, the CLI, and the test suite all use to find one: the install's own canonical
-copy first, this checkout's own source copy otherwise — the daemon assembles the prompt from
+#175). `PromptTemplates` (`Hall9k.Domain.Infrastructure.Storage`) is the one
+mechanism a builder, the CLI, and the test suite all use to find one: this checkout's own source
+copy first, the install's own canonical copy otherwise — the CLI assembles the prompt from
 templates itself and hands a session the finished string, never a path into either copy.
 
 ## Ideas and tasks
