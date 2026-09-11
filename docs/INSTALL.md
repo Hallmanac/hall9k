@@ -93,6 +93,14 @@ Nothing, mechanically — the bootstrap script is the same either way. The two d
   exactly as it always did, and the decision of which server to use is a human's. See
   *Connecting a database* below (Decisions Log #118).
 
+## Next: register a project, then read the getting-started guide
+
+Once `h9k doctor` and `h9k daemon status` both read clean, register the user's own repository
+(never this one; see the README's own [register-a-project
+section](../README.md#register-a-project-only-with-the-users-own-repository)), and then work from
+[docs/getting-started.md](getting-started.md): the first hour of settings worth setting
+deliberately, and the problems a fresh install hits first.
+
 ## After bootstrap: staying current
 
 A machine that already has `h9k` never needs the bootstrap script again — the same binary
