@@ -8267,6 +8267,48 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// The review leg's own half of the join-instead-of-retry rule (independent pre-PR review,
+    /// cycle 3, both lenses): a generic error that is not the zero-work shape, landing while a
+    /// different run's launch failure already holds this node, must wait on that hold rather than
+    /// spend this lens's one retry on a relaunch that would fail the same way. Unlike
+    /// <see cref="A_review_session_reporting_an_error_result_is_retried_once_leaving_its_sibling_untouched"/>,
+    /// the only difference is the standing hold, and it joins that hold without raising another.
+    /// </summary>
+    [Fact]
+    public async Task A_review_session_error_while_a_different_runs_hold_stands_joins_it_instead_of_retrying()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Hit a transient snag.",
+            "Nothing of my own.\n\nVERDICT: merge-ready")
+        {
+            ErrorAtSpawnIndex = { 0 },
+        };
+        DaemonOptions options = new() { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(1) };
+        bool mergeReady = await NewEngine(store, executor, options).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the run waits on the standing hold");
+        executor.Spawns.Should().HaveCount(2, "the errored lens is not relaunched while the node is held");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.LaunchHeld);
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunSessionErrorRetried>().Should().BeEmpty("the lens keeps its one retry for a genuine error later");
+
+        NodeDetails? hold = await launchHold.CurrentHoldAsync(node.NodeId, cts.Token);
+        hold!.LaunchHoldRunIds.Should().Contain(runId);
+        hold.LaunchHoldCauseText.Should().Be("Failed to authenticate", "a genuine error joins the episode; it never becomes its cause");
+    }
+
+    /// <summary>
     /// The shape that used to fall through entirely (independent pre-PR review, cycle 1, both
     /// lenses): an error result whose "result" field is missing (or non-string) parses to a
     /// null Summary, which the old "IsError: true, Summary: { }" pattern match did not treat as
