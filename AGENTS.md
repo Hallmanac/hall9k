@@ -17,6 +17,7 @@ here instead. Then, in order of need:
 - `README.md` + `docs/` — the newcomer's on-ramp (concepts, CLI map, operations, and `docs/scope.md`,
   which is the honest works-today / designed-but-unbuilt / never-doing inventory). Written from this
   file and the four above, so when behaviour changes here, `docs/` is downstream and needs the edit too.
+- **Doctrine:** Hall9k is prescriptive about the lifecycle and permissive about judgment; the template layer (prompt prose as shipped markdown templates) and the skill layer are the judgment side, the parsed contracts stay in code. Detail: [docs/concepts.md](docs/concepts.md#the-judgment-layer-templates-and-skills).
 
 ## Build / test / run
 
@@ -61,8 +62,7 @@ CI runs build + test on ubuntu and windows for every push/PR to main.
 
 **Layout**
 - Vertical slices: `Hall9k.Domain/Features/{Feature}/`. Big slices (Task, Run, Project) use
-  `Commands/ Events/ Handlers/ Queries/ Projections/ Documents/` subfolders; tiny slices
-  (Owner, Node, Connection, Idea) stay flat.
+  `Commands/ Events/ Handlers/ Queries/ Projections/ Documents/` subfolders; tiny slices (Owner, Node, Connection, Idea) stay flat.
 - Reference graph: `Cli → Domain + Connectors` · `Daemon → Domain + Connectors + ServiceDefaults`
   · `Connectors → Domain`. Domain references no Hall9k project. The CLI never hosts Wolverine.
 - Packages: pinned centrally in `Directory.Packages.props` (transitive pinning on). Add
