@@ -6,6 +6,7 @@ Where a section ends with a pointer, that pointer is the real reference and this
 summary that gets you there knowing what you are looking at.
 
 - [The shape of the system](#the-shape-of-the-system)
+- [The judgment layer: templates and skills](#the-judgment-layer-templates-and-skills)
 - [Ideas and tasks](#ideas-and-tasks)
 - [The task lifecycle](#the-task-lifecycle)
 - [The three surfaces: state, phase, attention](#the-three-surfaces-state-phase-attention)
@@ -44,6 +45,32 @@ dispatched headless session never loads it, only an interactive one, which is th
 interactive session in this repository is in.
 
 Architecture in depth: [PLAN.md §6](../PLAN.md).
+
+## The judgment layer: templates and skills
+
+**Hall9k is prescriptive about the lifecycle and permissive about judgment.** The lifecycle — how
+a task moves, what gates a merge, who is authorized to push, when a run parks for a human — is
+fixed in code and [AGENTS.md](../AGENTS.md); nothing there or in a dispatched session's own prompt
+gets to reinterpret it. Judgment — the norms an agent session reads to decide *how* to act inside
+that lifecycle — lives in the template and skill layers instead: a prompt builder's own judgment
+prose ships as markdown template files (`~/.hall9k/templates`, published and overridable exactly as
+`~/.hall9k/skills` already is) rather than a C# string literal, and a repo or home skill is the
+identical discipline for a workflow instead of a prompt section. The parsed contracts a template's
+own prose is never allowed to carry a literal copy of — a finding's line grammar, a verdict's
+vocabulary, a handoff's marker — stay fixed in code for the same reason the lifecycle does: an
+operator's edit to one of those would silently break the daemon's own parsing, not merely read
+differently to the agent.
+
+`.claude/templates/` is a sibling of `.claude/skills/`, one subdirectory per prompt builder, never
+merged into the skill set: `h9k install` publishes it to the identical canonical-directory,
+content-hash, publish/retire/override discipline (`~/.hall9k/templates`), but a template is never
+seeded into a project home's `skills/` or `.claude/skills` adapter, never carries a `SKILL.md`, and
+never appears in the skill list a work prompt renders — publishing one anywhere a harness enumerates
+skills would add its description to every session's first turn, which is out of bounds (PLAN.md §16
+PLACEHOLDER-0989c44a). `PromptTemplates` (`Hall9k.Domain.Infrastructure.Storage`) is the one
+mechanism a builder, the CLI, and the test suite all use to find one: the install's own canonical
+copy first, this checkout's own source copy otherwise — the daemon assembles the prompt from
+templates itself and hands a session the finished string, never a path into either copy.
 
 ## Ideas and tasks
 
