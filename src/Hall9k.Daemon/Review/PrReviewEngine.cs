@@ -436,21 +436,12 @@ public sealed class PrReviewEngine(
             return false;
         }
 
-        if (result is { IsError: true } ordinaryError
-            && await launchHold.JoinIfActiveAsync(launchHoldNodeId, runId, cancellationToken))
-        {
-            // Mirrors ReviewEngine's identical ordinary-error branch (ReviewEngine.cs, the review
-            // pass's own AwaitReviewPassAsync): a DIFFERENT run's own launch failure already holds
-            // this node, so this session's ordinary error is not this run's own fault either — it
-            // holds rather than failing outright (Copilot review, PR #317, "suppressed comments").
-            string observedMessage = ordinaryError.Summary ?? "(no message)";
-            await using IDocumentSession holdSession = store.LightweightSession();
-            holdSession.Events.Append(
-                runId, ordinaryError.ToTokensRecorded(runId, DateTimeOffset.UtcNow, run.PrReviewConformanceModel));
-            holdSession.Events.Append(runId, new RunLaunchHeld(runId, observedMessage, DateTimeOffset.UtcNow));
-            await holdSession.SaveChangesAsync(cancellationToken);
-            return false;
-        }
+        // Unlike ReviewEngine's own review-pass, fix, and rebase-recovery legs, the conformance
+        // lens has no in-place retry to protect (independent pre-PR review, cycle 1, conformance
+        // lens, criterion 5, "the ordinary failure path stays unchanged") — every ordinary error
+        // here already fails outright below, hold or no hold, so joining a standing hold on this
+        // session's own genuine error would give this leg a resume it never had and was never
+        // meant to get, rather than mirroring ReviewEngine's bounded, retry-preserving join.
 
         if (result is null || result.IsError)
         {
