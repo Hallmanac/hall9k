@@ -132,4 +132,49 @@ public static class StreamJsonParser
             && value.TryGetInt64(out long count)
                 ? count
                 : 0;
+
+    /// <summary>
+    /// Whether this stream-json line carries a "usage" object reporting any nonzero token count —
+    /// wherever the line puts it: the terminal "result" line's own top-level "usage"
+    /// (<see cref="TryParseResult"/>'s own field), or an intermediate "assistant" turn's own
+    /// "message.usage" (a per-turn field this parser otherwise never reads — log #6's own
+    /// "everything else is transcript" choice still holds for every other field on that line).
+    /// Used only as a lighter-weight evidence check on a session that has not finished yet
+    /// (<see cref="Hall9k.Daemon.Execution.LaunchHoldMonitor"/>'s own probe-still-running clear,
+    /// task: a session that exits at once with no work done is treated as the node failing to
+    /// launch sessions, independent pre-PR review, cycle 1, conformance lens) — never to
+    /// reconstruct a session's actual totals, which is <see cref="StreamTailReader.ReadFinalResultAsync"/>'s
+    /// own job once the session is actually over.
+    /// </summary>
+    public static bool LineReportsNonzeroUsage(string line)
+    {
+        if (!line.Contains("\"usage\"", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(line);
+            JsonElement root = document.RootElement;
+            if (root.TryGetProperty("usage", out JsonElement usage) && HasNonzeroTokenCount(usage))
+            {
+                return true;
+            }
+
+            return root.TryGetProperty("message", out JsonElement message)
+                && message.TryGetProperty("usage", out JsonElement nestedUsage)
+                && HasNonzeroTokenCount(nestedUsage);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasNonzeroTokenCount(JsonElement usage) =>
+        ReadTokenCount(usage, "input_tokens") > 0
+        || ReadTokenCount(usage, "cache_read_input_tokens") > 0
+        || ReadTokenCount(usage, "cache_creation_input_tokens") > 0
+        || ReadTokenCount(usage, "output_tokens") > 0;
 }

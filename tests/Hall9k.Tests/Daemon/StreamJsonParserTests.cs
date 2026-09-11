@@ -115,4 +115,27 @@ public sealed class StreamJsonParserTests
     [InlineData("")]
     public void Lines_that_are_not_a_terminal_result_are_ignored(string line) =>
         StreamJsonParser.TryParseResult(line, out _).Should().BeFalse();
+
+    /// <summary>
+    /// The evidence check <see cref="Hall9k.Daemon.Execution.LaunchHoldMonitor"/> reads off an
+    /// in-flight session's own stream file (task: a session that exits at once with no work done
+    /// is treated as the node failing to launch sessions, independent pre-PR review, cycle 1,
+    /// conformance lens): "still Running" alone is not evidence, so this reads for a nonzero
+    /// "usage" object wherever a stream line carries one.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"type":"assistant","message":{"usage":{"input_tokens":50,"output_tokens":10}}}""")]
+    [InlineData("""{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"output_tokens":300}}""")]
+    [InlineData("""{"type":"assistant","message":{"usage":{"cache_read_input_tokens":9000}}}""")]
+    public void A_line_reporting_nonzero_usage_is_evidence_of_real_work(string line) =>
+        StreamJsonParser.LineReportsNonzeroUsage(line).Should().BeTrue();
+
+    [Theory]
+    [InlineData("""{"type":"assistant"}""")]
+    [InlineData("""{"type":"assistant","message":{"content":[{"type":"text","text":"thinking..."}]}}""")]
+    [InlineData("""{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":0}}}""")]
+    [InlineData("not json at all")]
+    [InlineData("")]
+    public void A_line_with_no_nonzero_usage_is_not_evidence(string line) =>
+        StreamJsonParser.LineReportsNonzeroUsage(line).Should().BeFalse();
 }
