@@ -255,11 +255,16 @@ public sealed class RunAggregate
 
     /// <summary>
     /// The gate output the most recently dispatched (or in-flight) Settling-gate repair session
-    /// carried, or was told to carry — read back by a human-resolve redispatch
-    /// (<see cref="ReviewPhase.SettlingGateRepairNeeded"/>) so it can build a fresh session's
-    /// prompt without paying for another gate run first, mirroring how a rebase-recovery retry
-    /// redoes its own cheap git read instead (that mechanism's check is cheap; this one is a full
-    /// build/test pass, so re-running it just to redispatch would be the opposite of narrow).
+    /// carried, or was told to carry, OR — once the round cap is spent —
+    /// the park's own failure output (<see cref="Apply(Events.SettlingGateRepairCapReached)"/>):
+    /// read back by a human-resolve redispatch (<see cref="ReviewPhase.SettlingGateRepairNeeded"/>)
+    /// so it can build a fresh session's prompt without paying for another gate run first,
+    /// mirroring how a rebase-recovery retry redoes its own cheap git read instead (that
+    /// mechanism's check is cheap; this one is a full build/test pass, so re-running it just to
+    /// redispatch would be the opposite of narrow). The cap-reached update matters because the
+    /// round that actually parked can fail on a DIFFERENT gate than the round before it dispatched
+    /// over — without it, the bought round would be handed a stale, already-fixed failure instead
+    /// of the one the park (and the human reading it) actually named.
     /// </summary>
     public string? LastSettlingGateRepairOutput { get; private set; }
 
@@ -1987,7 +1992,15 @@ public sealed class RunAggregate
         PreFinalPassRebaseAwaitingReview = true;
     }
 
-    public void Apply(SettlingGateRepairCapReached @event) => ReviewPhase = ReviewPhase.SettlingGateRepairCapReached;
+    public void Apply(SettlingGateRepairCapReached @event)
+    {
+        ReviewPhase = ReviewPhase.SettlingGateRepairCapReached;
+        // The park's own failure output, not whatever an earlier round's SettlingGateRepairDispatched
+        // last left here (see the event's own doc) — the bought round SettlingGateRepairNeeded
+        // dispatches next reads this property back to build its prompt, and must see the failure the
+        // park itself reported, not a fixed-and-gone one from a prior round.
+        LastSettlingGateRepairOutput = @event.GateOutput;
+    }
 
     public void Apply(ReviewRerequested @event)
     {

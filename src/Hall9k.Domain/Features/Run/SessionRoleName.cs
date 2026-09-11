@@ -84,9 +84,10 @@ public static class SessionRoleName
     /// A narrow repair session dispatched when the Settling phase's own mandatory gate fails over
     /// a tree whose most recent recorded rebase was real (task: a pre-final-pass rebase that
     /// applies cleanly but breaks the mandatory gate gets a repair lap inside the same run instead
-    /// of failing it) — its own prefix, distinct from <see cref="PreFinalPassRebasePrefix"/>, even
-    /// though both share the rebase-recovery leg and dispatch path: this session fixes what the
-    /// gate reports broken, never a git conflict.
+    /// of failing it) — its own prefix, distinct from <see cref="PreFinalPassRebasePrefix"/>: this
+    /// session fixes what the gate reports broken, never a git conflict. Its own
+    /// <see cref="RunSessionLeg.SettlingGateRepair"/> leg, too, not the rebase-recovery session's —
+    /// only the spawn and dispatch-event shape are shared between the two.
     /// </summary>
     public const string SettlingGateRepairPrefix = "settling-gate-repair";
 

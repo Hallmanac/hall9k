@@ -130,6 +130,17 @@ public sealed class ReviewEngine(
         Stop,
     }
 
+    /// <summary><see cref="EnsureGateCoversHeadRepairEligibleAsync"/>'s own result — mirrors <see cref="RebaseGateOutcome"/>'s three-way shape.</summary>
+    private enum GateCoverageOutcome
+    {
+        /// <summary>The gate already covers this tip, or the mandatory gate just ran clean — proceed to settle in this same iteration.</summary>
+        Proceed,
+        /// <summary>The gate failed on a real pre-final-pass rebase and a narrow repair session was dispatched — stop this iteration and let the loop re-enter fresh.</summary>
+        LoopAgain,
+        /// <summary>The run was failed (a genuine, non-repair-eligible gate failure) or could not dispatch a repair session.</summary>
+        Stop,
+    }
+
     /// <summary>
     /// The artifact name a pass with no lens recorded files its findings under. It is an
     /// honest label rather than <c>conformance</c>: the pass covers the conformance track
@@ -274,12 +285,17 @@ public sealed class ReviewEngine(
                         // `run` this iteration started with does not yet reflect it) — the identical
                         // staleness gap the Settling branch's own reload comment explains.
                         run = await LoadRunAsync(context.RunId, cancellationToken);
-                        if (!await EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync(context, run, cancellationToken))
+                        switch (await EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync(context, run, cancellationToken))
                         {
-                            return false;
+                            case GateCoverageOutcome.Stop:
+                                return false;
+                            case GateCoverageOutcome.Proceed:
+                                await SettleWithNoReviewAsync(run, cancellationToken);
+                                break;
+                            case GateCoverageOutcome.LoopAgain:
+                                break;
                         }
 
-                        await SettleWithNoReviewAsync(run, cancellationToken);
                         break;
                     }
 
@@ -487,12 +503,17 @@ public sealed class ReviewEngine(
                     // honestly make.
                     if (run.ReviewStageComposition == ReviewStageComposition.None)
                     {
-                        if (!await EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync(context, run, cancellationToken))
+                        switch (await EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync(context, run, cancellationToken))
                         {
-                            return false;
+                            case GateCoverageOutcome.Stop:
+                                return false;
+                            case GateCoverageOutcome.Proceed:
+                                await SettleWithNoReviewAsync(run, cancellationToken);
+                                break;
+                            case GateCoverageOutcome.LoopAgain:
+                                break;
                         }
 
-                        await SettleWithNoReviewAsync(run, cancellationToken);
                         break;
                     }
 
@@ -558,9 +579,7 @@ public sealed class ReviewEngine(
                                 run.ReviewStageComposition.WaivesFinalFullPassGuarantee
                                     ? "composition skip-final-pass waives the mandatory final full pass: gating at full scope as the run's terminal check"
                                     : "mandatory final full pass: nothing merges on scoped green alone",
-                                run.PreFinalPassRebaseAwaitingGate || run.PreFinalPassRebaseAwaitingReview
-                                    ? RunSessionLeg.RebaseRecovery
-                                    : CurrentFixLeg(run),
+                                SettlingGateVerificationLeg(run),
                                 eligibleForSettlingGateRepair,
                                 cancellationToken);
                             if (!gateResult.Passed)
@@ -1028,9 +1047,7 @@ public sealed class ReviewEngine(
                             reverifyMode == ReviewMode.FinalFullPass && EligibleForSettlingGateRepair(run);
                         VerificationRunner.SettlingVerificationResult reverifyGateResult = await verification.VerifyForSettlingAsync(
                             context.RunId, context.TaskId, reverifyScopeSinceSha, reverifyScopeContext,
-                            run.PreFinalPassRebaseAwaitingGate || run.PreFinalPassRebaseAwaitingReview
-                                ? RunSessionLeg.RebaseRecovery
-                                : CurrentFixLeg(run),
+                            SettlingGateVerificationLeg(run),
                             eligibleForSettlingGateRepair,
                             cancellationToken);
                         if (!reverifyGateResult.Passed)
@@ -2018,14 +2035,67 @@ public sealed class ReviewEngine(
     /// the run's own tip was last gated — event-sourced rather than a live git HEAD comparison, for
     /// the same reason the Settling branch's own check is (see that case's opening comment): a no-op
     /// rebase, or one this run's own opening gate already covers, costs nothing extra here.
+    /// <para>
+    /// Repair-eligible, unlike the plain <see cref="EnsureGateCoversHeadAsync"/> this composition
+    /// used to route through (independent pre-PR review, cycle 1, both lenses): a genuine gate
+    /// failure right after a real rebase is exactly what the Settling branch's own mandatory-gate
+    /// call already treats as repair-eligible (task: a pre-final-pass rebase that applies cleanly
+    /// but breaks the mandatory gate gets a repair lap inside the same run instead of failing it),
+    /// and nothing about composition none's own attestation — waiving the review guarantee — scopes
+    /// that objective down to compositions that still dispatch a reviewer. A dispatched repair
+    /// session's completion always lands back on <see cref="ReviewPhase.Settling"/>
+    /// (<see cref="Apply(Events.SettlingGateRepairCompleted)"/>), whose own composition-none branch
+    /// re-enters this exact method, so the loop re-gates and settles once the repair round lands
+    /// with no extra plumbing needed here.
+    /// </para>
     /// </summary>
-    private async Task<bool> EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync(
+    private async Task<GateCoverageOutcome> EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync(
         ReviewContext context, RunAggregate run, CancellationToken cancellationToken) =>
-        await EnsureGateCoversHeadAsync(
+        await EnsureGateCoversHeadRepairEligibleAsync(
             context, run,
             "composition none waives the review guarantee, not the mandatory build/test gate: " +
             "the pre-final-pass rebase moved HEAD past the last tip this run actually gated",
             cancellationToken);
+
+    /// <summary>
+    /// <see cref="EnsureGateCoversHeadBeforeSettlingWithNoReviewAsync"/>'s own worker — the
+    /// composition-none-only, repair-eligible sibling of <see cref="EnsureGateCoversHeadAsync"/>.
+    /// Kept separate from that method rather than widening it in place: the other caller
+    /// (<see cref="DriveAsync"/>'s stacked-child <see cref="StackedCheckpoint.BeforeFirstReviewCycle"/>
+    /// checkpoint) gates a mechanical parent-branch replay, not the pre-final-pass rebase this
+    /// task's own objective names, and stays on its own plain, fail-hard path — extending repair
+    /// eligibility there is a separate question this task's own findings never raised.
+    /// </summary>
+    private async Task<GateCoverageOutcome> EnsureGateCoversHeadRepairEligibleAsync(
+        ReviewContext context, RunAggregate run, string reason, CancellationToken cancellationToken)
+    {
+        if (!run.PreFinalPassRebaseAwaitingGate)
+        {
+            return GateCoverageOutcome.Proceed;
+        }
+
+        bool eligibleForSettlingGateRepair = EligibleForSettlingGateRepair(run);
+        VerificationRunner.SettlingVerificationResult gateResult = await verification.VerifyForSettlingAsync(
+            context.RunId, context.TaskId, scopeSinceSha: null, reason,
+            SettlingGateVerificationLeg(run), eligibleForSettlingGateRepair, cancellationToken);
+        if (gateResult.Passed)
+        {
+            return GateCoverageOutcome.Proceed;
+        }
+
+        // See the identical check in the Settling branch's own mandatory-gate call for why
+        // FailedGateName, not just Passed, decides repair eligibility here too.
+        if (!eligibleForSettlingGateRepair || gateResult.FailedGateName is null)
+        {
+            return GateCoverageOutcome.Stop;
+        }
+
+        return await DispatchSettlingGateRepairSessionAsync(
+            context, run, gateResult.FailureOutput ?? "(gate output unavailable)",
+            humanGuidance: null, enforceCap: true, cancellationToken)
+            ? GateCoverageOutcome.LoopAgain
+            : GateCoverageOutcome.Stop;
+    }
 
     /// <summary>
     /// Runs the build/test gate at full scope when — and only when —
@@ -3491,6 +3561,29 @@ public sealed class ReviewEngine(
         && run.PreFinalPassRebaseAwaitingGateFromRealRebase;
 
     /// <summary>
+    /// The leg the mandatory gate's own re-run right after a pre-final-pass rebase (or a Settling-
+    /// gate repair round over one) is gated under — decides which run/leg key the automatic
+    /// uncommitted-work recovery's one-attempt budget is spent against (independent pre-PR review,
+    /// cycle 1, both lenses). <see cref="RunAggregate.SettlingGateRepairRounds"/> above zero means
+    /// at least one repair session has already been dispatched, and not yet given back, since the
+    /// current <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> grant was raised — exactly
+    /// the gate re-run <see cref="Apply(SettlingGateRepairCompleted)"/>'s own doc says always
+    /// follows a repair session, since that event never clears the awaiting-gate flags itself. Read
+    /// BEFORE that count, <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> or
+    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/> alone would still pick
+    /// <see cref="RunSessionLeg.RebaseRecovery"/> for that re-run — the same leg an actual
+    /// rebase-recovery session on this same run may already have spent its own one attempt
+    /// against — reopening the exact cross-leg collision <see cref="RunSessionLeg.SettlingGateRepair"/>
+    /// was created to prevent for the repair session's own error-retry bookkeeping.
+    /// </summary>
+    private static RunSessionLeg SettlingGateVerificationLeg(RunAggregate run) =>
+        run.SettlingGateRepairRounds > 0
+            ? RunSessionLeg.SettlingGateRepair
+            : run.PreFinalPassRebaseAwaitingGate || run.PreFinalPassRebaseAwaitingReview
+                ? RunSessionLeg.RebaseRecovery
+                : CurrentFixLeg(run);
+
+    /// <summary>
     /// Spawns the narrow Settling-gate repair session (task: a pre-final-pass rebase that applies
     /// cleanly but breaks the mandatory gate gets a repair lap inside the same run instead of
     /// failing it) — the same dispatch mechanics <see cref="DispatchRebaseRecoverySessionAsync"/>
@@ -3658,7 +3751,7 @@ public sealed class ReviewEngine(
         ReviewContext context, RunAggregate run, string gateOutput, CancellationToken cancellationToken) =>
         await ParkAsync(
             context.RunId, context.TaskId, SettlingGateRepairCapParkReason(run, gateOutput),
-            precedingEvents: [new SettlingGateRepairCapReached(context.RunId, DateTimeOffset.UtcNow)],
+            precedingEvents: [new SettlingGateRepairCapReached(context.RunId, DateTimeOffset.UtcNow, gateOutput)],
             cancellationToken: cancellationToken);
 
     /// <summary>

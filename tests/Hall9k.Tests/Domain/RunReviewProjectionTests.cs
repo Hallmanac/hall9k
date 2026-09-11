@@ -403,6 +403,49 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// A spent Settling-gate repair round cap (task: a pre-final-pass rebase that applies cleanly
+    /// but breaks the mandatory gate gets a repair lap inside the same run instead of failing it)
+    /// is the identical case as the disputed-rebase park just above, for the identical reason: the
+    /// human is ruling on a gate failure, not a review finding, so it must not ride into a later
+    /// review prompt as a settled ruling either (independent pre-PR review, cycle 1, adversarial
+    /// lens: before this fix, <see cref="RunDetailsProjection"/> had no handler for
+    /// <see cref="SettlingGateRepairCapReached"/> at all, so this park's own resolution rode into
+    /// <see cref="RunDetails.ReviewParkResolutions"/> exactly like an ordinary review park's would).
+    /// </summary>
+    [Fact]
+    public void Run_details_does_not_record_a_settling_gate_repair_cap_resolution_as_a_settled_ruling()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        // An ordinary cycle 1 review pass ran and converged before the mandatory final pass's own
+        // gate broke on the rebase, so ReviewCycle is genuinely non-zero here — the same shape the
+        // disputed-rebase park above needs its own discriminator for.
+        projection.Apply(new FakeEvent<ReviewDispatched>(
+            new ReviewDispatched(id, DomainId.New(), 1, 5001, Now, Now)), view);
+        projection.Apply(new FakeEvent<ReviewCompleted>(
+            new ReviewCompleted(id, 1, ReviewVerdict.MergeReady, Now)), view);
+        view.ReviewCycle.Should().Be(1, "an ordinary review pass genuinely ran before the gate broke");
+
+        projection.Apply(new FakeEvent<SettlingGateRepairCapReached>(
+            new SettlingGateRepairCapReached(id, Now, "BUILD BROKEN: CS0246 'Widget' could not be found")), view);
+        view.ParkedOnSettlingGateRepairCap.Should().BeTrue();
+
+        projection.Apply(new FakeEvent<ReviewParked>(
+            new ReviewParked(id, "The mandatory final pass's own gate is still failing.", Now)), view);
+
+        projection.Apply(new FakeEvent<ReviewParkResolved>(new ReviewParkResolved(
+            id, ReviewVerdict.NeedsFixes, "check Widget.cs's own namespace", Now, DomainId.New())), view);
+
+        view.ReviewCycle.Should().Be(1, "resolving the repair cap does not touch the ordinary cycle counter");
+        view.ReviewParkResolutions.Should().BeEmpty(
+            "the human decided the gate failure, not a review finding, even though an earlier ordinary " +
+            "cycle genuinely ran on this same run");
+        view.ParkedOnSettlingGateRepairCap.Should().BeFalse("resolving the park clears the flag");
+    }
+
+    /// <summary>
     /// Escalation (task: a second fix round over the same findings) is a fact about the fix
     /// session that dispatched, so it rides on the same event the model does and reads back the
     /// same way — visible for a reader of <c>h9k task show</c> while the escalated round is the
