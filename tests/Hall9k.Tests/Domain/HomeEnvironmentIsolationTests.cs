@@ -158,6 +158,13 @@ public sealed class HomeEnvironmentIsolationTests
         "RecipeSkillPublisher.PublishCanonical(",
         "RecipeSkillPublisher.Seed(",
         "RecipeSkillPublisher.SeedNode(",
+        // The canonical prompt-template set (task: agent prompt prose lives in shipped markdown
+        // templates rather than hard-coded C# strings) is SkillLibraryPaths's own sibling, found
+        // the same way: reading TemplatePublisher's own callers of TemplateLibraryPaths.
+        "TemplateLibraryPaths.CanonicalDirectory",
+        "TemplateLibraryPaths.PublishedManifest",
+        "TemplatePublisher.PublishCanonical(",
+        "TemplatePublisher.RemovePublished(",
     ];
 
     private static readonly Regex ClassDeclaration = new(

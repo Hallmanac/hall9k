@@ -656,22 +656,26 @@ and no .NET SDK bootstraps from that release directly (`scripts/install.sh` / `s
 or the agent-followable [`docs/INSTALL.md`](INSTALL.md)): fetch via `gh`, verify the checksum, ask
 consent, install, and finish with `h9k doctor`. `h9k install` publishes binaries to `~/.hall9k/bin`,
 links `h9k` onto the PATH, and publishes the skill set to `~/.hall9k/skills`, either from a local
-`dotnet publish` (`--repo`) or from an already-downloaded release payload (`--from-release`).
-`h9k update` is the same `--from-release` path wired to `gh release download`, for a machine that
-already has `h9k`. The daemon has a CLI-owned lifecycle with a strictly opt-in autostart (a
-launchd LaunchAgent on macOS, a Task Scheduler logon task on Windows) that snapshots the
-environment it will need and reports any tool it cannot resolve. Daemon start/stop/status run on
-macOS, Windows, and Linux; autostart runs on macOS and Windows (see Windows support, below, and
-Decisions Log #3 for why neither is a service).
+`dotnet publish` (`--repo`) or from an already-downloaded release payload (`--from-release`). The
+same run also publishes the canonical prompt-template set to `~/.hall9k/templates`, a sibling
+directory rather than a member of the skill set: a template holds a prompt builder's own
+judgment-layer prose (readable, diffable, overridable, exactly like a skill), never a `SKILL.md`,
+and is never seeded into a project home or a session's own skill list (PLAN.md §16
+PLACEHOLDER-0989c44a). `h9k update` is the same `--from-release` path wired to `gh release
+download`, for a machine that already has `h9k`. The daemon has a CLI-owned lifecycle with a
+strictly opt-in autostart (a launchd LaunchAgent on macOS, a Task Scheduler logon task on
+Windows) that snapshots the environment it will need and reports any tool it cannot resolve.
+Daemon start/stop/status run on macOS, Windows, and Linux; autostart runs on macOS and Windows
+(see Windows support, below, and Decisions Log #3 for why neither is a service).
 
 `h9k uninstall` reverses the install without reversing the work: it stops a running daemon,
 unregisters autostart, removes the PATH link, and deletes only what `h9k install` itself wrote
-under `~/.hall9k` (bin/, the skill set, the Postgres compose file, the daemon's log and pid
-files) — never a registered project's home, `config.json` (an operator, `h9k install` itself
-when nothing was configured yet, or `h9k doctor`'s start-offer may have written it, and
-uninstall keeps it regardless, since it is the reconnect path a later install needs), credentials,
-or the global idea/run fallback directories, which are real work living as siblings of those
-files, not the install. The
+under `~/.hall9k` (bin/, the skill set, the prompt-template set, the Postgres compose file, the
+daemon's log and pid files) — never a registered project's home, `config.json` (an operator,
+`h9k install` itself when nothing was configured yet, or `h9k doctor`'s start-offer may have
+written it, and uninstall keeps it regardless, since it is the reconnect path a later install
+needs), credentials, or the global idea/run fallback directories, which are real work living as
+siblings of those files, not the install. The
 `hall9k-postgres` Docker container is only ever stopped — its data volume is never touched,
 because the data lives in Docker rather than in the home this command trims, and a later
 `h9k install` reconnects to it. `--purge-data` is the one path that destroys the container and its

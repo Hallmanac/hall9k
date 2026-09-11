@@ -9,6 +9,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Installation;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
+using Hall9k.Cli.Prompts;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Microsoft.Win32;
@@ -208,6 +209,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         if (skillsSource is not null)
         {
             PublishSkills(skillsSource);
+            // A sibling of the skills source this same run just published from, never a second
+            // argument threaded through FinishAsync's callers: .claude/templates sits beside
+            // .claude/skills for --repo, templates/ beside skills/ for --from-release, the
+            // identical seam PublishSkills itself already reads off skillsSource.
+            PublishTemplates(Path.Combine(Path.GetDirectoryName(skillsSource) ?? string.Empty, "templates"));
         }
 
         // Platform-owned, overwritten outright on every install and update (task: an operator
@@ -867,6 +873,63 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         AnsiConsole.MarkupLine(
             "[dim]Project homes link into that directory, so they already have these. A skill added "
             + "since a home was created reaches it at the next h9k project init.[/]");
+    }
+
+    /// <summary>
+    /// Republishes the canonical prompt-template set from <paramref name="source"/> — a sibling of
+    /// the skills source this same install run just published from (<c>.claude/templates</c> next
+    /// to <c>.claude/skills</c> for <c>--repo</c>, <c>templates/</c> next to <c>skills/</c> for
+    /// <c>--from-release</c>). Unlike <see cref="PublishSkills"/>, a missing source directory is
+    /// not reported: a checkout predating this task's own template migration, or one that has not
+    /// moved any prompt prose into templates yet, has none to publish and that is not a problem
+    /// worth a yellow line.
+    /// </summary>
+    /// <remarks>The copying itself is <see cref="TemplatePublisher.PublishCanonical"/>; this is
+    /// the command's half of it, which is finding the source and saying what happened.</remarks>
+    private static void PublishTemplates(string source)
+    {
+        string canonical = TemplateLibraryPaths.CanonicalDirectory;
+        if (!Directory.Exists(source))
+        {
+            return;
+        }
+
+        SkillPublication publication = TemplatePublisher.PublishCanonical(source);
+        if (publication.ManifestUnconfirmed)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Prompt templates not published this run[/]: {TemplateLibraryPaths.PublishedManifest.EscapeMarkup()} "
+                + "exists but could not be read (likely held open by another process — an antivirus scan or an "
+                + "editor). Without it, an already-published template cannot be told apart from one you wrote "
+                + "yourself, so nothing in the canonical set was published, retired, or classified as an override "
+                + "this pass. Run h9k install again once it's free.");
+            return;
+        }
+
+        if (publication.Published.Count > 0)
+        {
+            string names = string.Join(", ", publication.Published);
+            AnsiConsole.MarkupLineInterpolated(
+                $"[green]Prompt templates[/]: {publication.Published.Count} published to {canonical} ({names})");
+        }
+
+        if (publication.Retired.Count > 0)
+        {
+            string retired = string.Join(", ", publication.Retired).EscapeMarkup();
+            AnsiConsole.MarkupLine(
+                $"[yellow]Prompt templates retired[/]: {retired} — this install no longer ships them, so they "
+                + "were removed from the canonical set. Anything you wrote into that directory yourself is left "
+                + "alone: only what an install published is an install's to retire.");
+        }
+
+        if (publication.LeftAlone.Count > 0)
+        {
+            string shadowed = string.Join(", ", publication.LeftAlone).EscapeMarkup();
+            AnsiConsole.MarkupLine(
+                $"[yellow]Prompt templates left alone[/]: {shadowed} — each was already in the canonical "
+                + "directory without an install having put it there (or was edited since it was published), so "
+                + "yours was kept and the platform's was not written.");
+        }
     }
 
     /// <summary>
