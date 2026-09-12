@@ -229,15 +229,17 @@ public sealed class AutoPrReviewEngine(
             query, projects.Select(project => project.Id), cancellationToken);
 
         logger.LogInformation(
-            "Auto-pr-review is on by default (Decisions Log #161); this install adopted that on {AdoptedAt:u}, "
-            + "and no review request GitHub recorded before a project's own cutoff starts a task on its own",
+            "Auto-pr-review is on by default (Decisions Log #161), watching both a review request and a "
+            + "GitHub mention of the install's own login (idea 2f079bcd); this install adopted that on "
+            + "{AdoptedAt:u}, and nothing GitHub recorded before a project's own cutoff starts a task on its own",
             adoptedAt);
 
         foreach (ProjectDetails project in projects.OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase))
         {
             AutoPrReviewSetting setting = settings[project.Id];
             logger.LogInformation(
-                "Auto pr-review is {State} for project {Project} — {Speed} ({Origin}); change it with "
+                "Auto pr-review is {State} for project {Project} — {Speed} ({Origin}) — covering both a "
+                + "review request and a GitHub mention of the install's own login; change it with "
                 + "h9k project set {Project} --auto-pr-review off|normal|first|now",
                 setting.OnOff, project.Name, setting.Speed.Value.ToLowerInvariant(), setting.Origin, project.Name);
         }
@@ -364,6 +366,13 @@ public sealed class AutoPrReviewEngine(
             project, setting, repository, login, cutoff, currentlyRequested, cancellationToken);
         int recalled = await ConcludeWithdrawnAsync(project, repository, login, currentlyRequested, cancellationToken);
         await ForgetWithdrawnObservationsAsync(repository, login, currentlyRequested, cancellationToken);
+        // The second search (idea 2f079bcd, decision 1): every open pull request in this
+        // repository currently mentioning the install's own login, alongside the review-requested
+        // search above — the same "read fresh every sweep" discipline, and the same "every
+        // registered project, whatever its setting says" scope, for the identical reason: the
+        // needs-you row an operator has to act on is only possible if the mention was observed at
+        // all, even when the project's own setting refuses to act on it.
+        created += await ObserveMentionsAsync(project, setting, repository, login, cutoff, cancellationToken);
         return (created, recalled);
     }
 
@@ -1182,4 +1191,385 @@ public sealed class AutoPrReviewEngine(
     private static string OwnerFrom(string repository) => repository.Split('/')[0];
 
     private static string NameFrom(string repository) => repository.Split('/')[1];
+
+    /// <summary>
+    /// The mentions half of this sweep (idea 2f079bcd, decision 1): every open pull request
+    /// mentioning the install's own login, and every comment on each one that actually names it —
+    /// the search alone only proves a pull request carries a mention somewhere, never which
+    /// comment. Every comment this method has already decided is skipped outright
+    /// (<see cref="ObservedReviewMention"/> is the permanent dedupe record, unlike its sibling
+    /// <see cref="ObservedReviewRequest"/>: a comment never stops having been written, so once a
+    /// comment id is recorded here it is never re-decided, whatever its outcome was — the same
+    /// "a comment id already handled never fires again" rule the request side does not need,
+    /// because a standing request can genuinely change and a written comment cannot).
+    /// </summary>
+    private async Task<int> ObserveMentionsAsync(
+        ProjectDetails project, AutoPrReviewSetting setting, string repository, string login,
+        DateTimeOffset cutoff, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<ReviewRequestedPullRequest> mentioned =
+            await reviewAssignments.ListMentionedAsync(repository, login, project.RepositoryPath, cancellationToken);
+
+        int created = 0;
+        foreach (ReviewRequestedPullRequest candidate in mentioned)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            IReadOnlyList<PullRequestMentionComment> comments = await reviewAssignments.FindMentionCommentsAsync(
+                OwnerFrom(repository), NameFrom(repository), candidate.Number, login, project.RepositoryPath,
+                cancellationToken);
+
+            foreach (PullRequestMentionComment comment in comments)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (await ProcessMentionAsync(project, setting, repository, login, cutoff, candidate, comment, cancellationToken))
+                {
+                    created++;
+                }
+            }
+        }
+
+        return created;
+    }
+
+    /// <summary>
+    /// One mentioning comment, decided and recorded — returns whether it minted a fresh task, the
+    /// one fact <see cref="ObserveMentionsAsync"/> tallies. A comment already recorded is skipped
+    /// before anything else runs, including the dedup query the mint path would otherwise pay for
+    /// on every single sweep for the life of the pull request.
+    /// </summary>
+    private async Task<bool> ProcessMentionAsync(
+        ProjectDetails project, AutoPrReviewSetting setting, string repository, string login,
+        DateTimeOffset cutoff, ReviewRequestedPullRequest candidate, PullRequestMentionComment comment,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        string id = ObservedReviewMention.ComputeId(
+            node.NodeId, project.Id, repository, candidate.Number, login, comment.CommentId);
+        if (await session.LoadAsync<ObservedReviewMention>(id, cancellationToken) is not null)
+        {
+            return false;
+        }
+
+        (ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail) decision = await DecideMentionAsync(
+            session, project, setting, repository, login, cutoff, candidate, comment, cancellationToken);
+
+        ObservedReviewMention observed = new()
+        {
+            Id = id,
+            ObservingNodeId = node.NodeId,
+            ProjectId = project.Id,
+            Repository = repository,
+            Number = candidate.Number,
+            PullRequestUrl = candidate.Url,
+            MentionedLogin = login,
+            CommentId = comment.CommentId,
+            CommentAuthorLogin = comment.AuthorLogin,
+            CommentUrl = comment.Url,
+            CommentCreatedAt = comment.CreatedAt,
+            ObservedAt = DateTimeOffset.UtcNow,
+            Outcome = decision.Outcome,
+            OutcomeDetail = decision.Detail,
+            TaskId = decision.TaskId,
+        };
+        session.Store(observed);
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Auto-pr-review observed a mention: {Repository}#{Number} comment {CommentId} by {Author} in "
+            + "project {Project} — {Outcome}",
+            repository, candidate.Number, comment.CommentId, comment.AuthorLogin, project.Name,
+            DescribeMentionOutcome(decision.Outcome, decision.Detail, decision.TaskId));
+
+        return decision.Outcome == ReviewMentionOutcome.TaskCreated;
+    }
+
+    private static string DescribeMentionOutcome(ReviewMentionOutcome outcome, string? detail, Guid? taskId)
+    {
+        string task = taskId is { } id ? DomainId.Short(id) : "none";
+        string sentence = ReviewMentionOutcome.FromInput(outcome.Value) switch
+        {
+            { } known when known == ReviewMentionOutcome.TaskCreated =>
+                $"task {task} is created and reviewing",
+            { } known when known == ReviewMentionOutcome.Attached =>
+                $"attached to task {task}",
+            { } known when known == ReviewMentionOutcome.HeldSettingOff =>
+                "nothing was created: auto pr-review is off here, so this one is yours to take by hand",
+            { } known when known == ReviewMentionOutcome.HeldBeforeCutoff =>
+                "nothing was created: the comment predates this project's own auto-pr-review cutoff, so it "
+                + "never starts on its own (the no-backfill guard) and is yours to take by hand",
+            { } known when known == ReviewMentionOutcome.MintFailed =>
+                "nothing was created: the pull request could not be adopted",
+            _ => $"an outcome this build does not recognise ({RelayedText.OneLine(outcome.Value)})",
+        };
+
+        return detail.IsBlank() ? sentence : $"{sentence} ({detail})";
+    }
+
+    /// <summary>
+    /// One mentioning comment's own decision, in the same order <see cref="DecideAsync"/> asks its
+    /// four questions in, minus the actor-timeline read a mention has no equivalent of (the
+    /// comment's own <c>createdAt</c> already IS the fact both the cutoff and the record need):
+    /// <list type="number">
+    /// <item>Is a live pr-review task already covering this pull request? Attach rather than mint —
+    /// never a second task per pull request per install.</item>
+    /// <item>Does the comment postdate this project's own cutoff? The no-backfill guard outranks
+    /// the setting, exactly as it does on the request side.</item>
+    /// <item>Is the setting off here? Then the row is theirs to act on.</item>
+    /// <item>Mint.</item>
+    /// </list>
+    /// </summary>
+    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> DecideMentionAsync(
+        IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
+        string login, DateTimeOffset cutoff, ReviewRequestedPullRequest candidate, PullRequestMentionComment comment,
+        CancellationToken cancellationToken)
+    {
+        // The identical guessed-reference fast path DecideAsync's own comment explains at length:
+        // never trusted as "nothing exists" on its own, only as a cheap check in front of the
+        // canonical dedup CreateFromMentionAsync still runs after importing.
+        string guessedReference = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#{candidate.Number}";
+        TaskListItem? likelyCovering = await session.Query<TaskListItem>()
+            .Where(task => task.MatchesSql("lower(d.data ->> 'externalReference') = lower(?)", guessedReference))
+            .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
+            .Where(task => task.MatchesSql(
+                "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
+                TaskType.PrReview.Value, TaskState.Done.Value))
+            .OrderByDescending(task => task.AddedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (likelyCovering is not null)
+        {
+            return await AttachMentionAsync(session, likelyCovering, candidate, comment, cancellationToken);
+        }
+
+        if (!AutoPrReviewCutoff.StartsOnItsOwn(comment.CreatedAt, cutoff))
+        {
+            return (ReviewMentionOutcome.HeldBeforeCutoff, null, null);
+        }
+
+        if (!setting.IsOn)
+        {
+            return (ReviewMentionOutcome.HeldSettingOff, null, null);
+        }
+
+        try
+        {
+            return await CreateFromMentionAsync(session, project, setting, repository, candidate, login, comment, cancellationToken);
+        }
+        catch (DomainException exception)
+        {
+            logger.LogWarning(
+                exception, "Auto-pr-review could not mint a mention-triggered task for {Repository}#{Number}",
+                repository, candidate.Number);
+            return (ReviewMentionOutcome.MintFailed, null, RelayedText.OneLine(exception.Message));
+        }
+    }
+
+    /// <summary>
+    /// Attaches a mention to a live pr-review task that already covers this pull request — never a
+    /// second task (idea 2f079bcd, decision 2). Dispatches the bounded follow-up lap when the task
+    /// is currently eligible for one (<see cref="TaskDecider.AwaitsPrReviewFollowThrough"/>: the
+    /// report is already parked, or the task is waiting on the pull request) — never for a task
+    /// that is still Queued, Blocked, or actively Claimed by a live run, where the mention is
+    /// recorded for the record and picked up by whatever runs next rather than interrupting it.
+    /// </summary>
+    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> AttachMentionAsync(
+        IDocumentSession session, TaskListItem existing, ReviewRequestedPullRequest candidate,
+        PullRequestMentionComment comment, CancellationToken cancellationToken)
+    {
+        StreamState? fence = await session.Events.FetchStreamStateAsync(existing.Id, cancellationToken);
+        if (fence is null)
+        {
+            return (ReviewMentionOutcome.MintFailed, null, "the covering task's own stream could not be read");
+        }
+
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+            existing.Id, version: fence.Version, token: cancellationToken);
+        if (task is null)
+        {
+            return (ReviewMentionOutcome.MintFailed, null, "the covering task's own stream could not be read");
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
+            task, candidate.Url, comment.CommentId, comment.AuthorLogin, comment.Body, comment.Url,
+            comment.CreatedAt, now);
+
+        if (!TaskDecider.AwaitsPrReviewFollowThrough(task))
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            return (
+                ReviewMentionOutcome.Attached, existing.Id,
+                "recorded; the task is not currently waiting on its pull request or holding an unwalked "
+                + "report, so no follow-up was dispatched");
+        }
+
+        Guid runId = DomainId.New();
+        Guid? priorReviewRunId = task.PrReviewFollowThroughRunId;
+        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, node.OwnerId, runId, now);
+        session.Events.Append(existing.Id, expectedVersion: fence.Version + 2, observed, claimed);
+        await session.SaveChangesAsync(cancellationToken);
+
+        try
+        {
+            await launcher.LaunchPrReviewMentionFollowUpAsync(
+                existing.Id, runId, node.OwnerId, claimed.LeaseGeneration, node.NodeId, comment, priorReviewRunId,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+
+        return (
+            ReviewMentionOutcome.Attached, existing.Id,
+            "attached, and a bounded follow-up lap was dispatched to answer it");
+    }
+
+    /// <summary>
+    /// One fresh pr-review task for a mention on a pull request no live task covers (idea 2f079bcd,
+    /// decision 2) — the mirror of <see cref="CreateOneAsync"/>, minus the re-request-genuineness
+    /// dance that method needs and this one does not: a comment id is unique forever, so there is
+    /// no "same standing request" a later sweep could ever confuse a fresh comment with. A Done or
+    /// Abandoned task's own prior coverage is exactly as silent here as it is on the request side —
+    /// nothing about a closed-out earlier review blocks a fresh mint.
+    /// </summary>
+    private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> CreateFromMentionAsync(
+        IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
+        ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment,
+        CancellationToken cancellationToken)
+    {
+        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken, processRunner: processRunner);
+        ImportedWorkItem imported = await importer.ImportAsync(
+            new WorkItemImportRequest(WorkItemProvider.GitHubPullRequest, $"{repository}#{candidate.Number}", project.RepositoryPath),
+            cancellationToken);
+
+        string canonical = imported.Reference.ToString();
+        TaskListItem? existing = await session.Query<TaskListItem>()
+            .Where(task => task.ExternalReference == canonical)
+            .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
+            .Where(task => task.MatchesSql(
+                "NOT (d.data ->> 'type' = ? AND d.data ->> 'state' = ?)",
+                TaskType.PrReview.Value, TaskState.Done.Value))
+            .OrderByDescending(task => task.AddedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (existing is not null)
+        {
+            // The canonical dedup caught a live task the guessed-reference fast path in
+            // DecideMentionAsync missed (a casing mismatch) — attach, the same discipline
+            // CreateOneAsync's own identical canonical re-check follows.
+            return await AttachMentionAsync(session, existing, candidate, comment, cancellationToken);
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        string objective = RelayedText.WithoutClosingKeywords(RelayedText.OneLine(imported.Title)).Trim() is { Length: > 0 } seed
+            ? seed
+            : $"Review pull request {imported.Reference.Key}";
+
+        string provenance = $"GitHub mention observed: {comment.AuthorLogin} tagged {login} in a comment on "
+            + $"this pull request at {comment.CreatedAt:yyyy-MM-dd HH:mm:ss}Z.";
+        string? linkedContext = await LinkedWorkItemImport.TryImportContextAsync(
+            session, project, imported, cancellationToken, processRunner: processRunner);
+        string composedAdditional = linkedContext.IsNotBlank() ? $"{linkedContext}\n\n{provenance}" : provenance;
+        string agentContext = WorkItemContext.Compose(imported, composedAdditional);
+
+        string[] criteria =
+        [
+            "The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed.",
+            "The report's own \"You were asked\" section answers the tagged comment that minted this task.",
+        ];
+
+        Guid taskId = DomainId.New();
+        TaskAdded added = TaskDecider.Add(
+            taskId, project.Id, objective, criteria, TaskType.PrReview, agentContext, constraints: null,
+            imported.Reference, now, node.OwnerId, model: null, blockedBy: null, sourceIdeaId: null, epicId: null);
+
+        PullRequestReviewMentionObserved observed = new(
+            taskId, imported.Url?.ToString() ?? candidate.Url, comment.CommentId, comment.AuthorLogin,
+            comment.Body, comment.Url, comment.CreatedAt, now);
+
+        TaskAggregate task = new();
+        task.Apply(added);
+        task.Apply(observed);
+
+        List<object> events = [added, observed];
+
+        TaskPublished published = TaskDecider.Publish(
+            task, TaskDependencyGraph.Empty, now, node.OwnerId, project.BacklogPolicy);
+        task.Apply(published);
+        events.Add(published);
+
+        TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, dependencies: [], now, node.OwnerId);
+        task.Apply(assigned);
+        events.Add(assigned);
+
+        // The identical ceiling-exempt-launch bookkeeping CreateOneAsync's own tail keeps, for the
+        // identical reason: one immediate launch per sweep across BOTH triggers, since the consent
+        // text a human agreed to at --auto-pr-review now still promises "an extra concurrent agent
+        // session", singular, whichever trigger asked for it.
+        bool launchHoldActive = setting.Speed == AutoPrReviewSpeed.Now && await LaunchHoldActiveAsync(cancellationToken);
+        bool launchImmediately = setting.Speed == AutoPrReviewSpeed.Now && !launchHoldActive
+            && ++_immediateLaunchesThisSweep <= MaxImmediateLaunchesPerSweep;
+
+        Guid? deliberateRunId = null;
+        int? deliberateLeaseGeneration = null;
+        string? deferral = null;
+        if (setting.Speed == AutoPrReviewSpeed.First
+            || (setting.Speed == AutoPrReviewSpeed.Now && !launchImmediately))
+        {
+            if (setting.Speed == AutoPrReviewSpeed.Now)
+            {
+                deferral = launchHoldActive
+                    ? "deferred to the ordinary queue-first slot — a node-wide launch hold stands, so this "
+                        + "sweep never claims or launches directly into it"
+                    : "deferred to the ordinary queue-first slot — this sweep already used its one "
+                        + "immediate ceiling-exempt launch";
+            }
+
+            TaskRevised revised = TaskDecider.Revise(
+                task, Optional<string>.None, Optional<IReadOnlyList<string>>.None, Optional<string>.None,
+                Optional<IReadOnlyList<Guid>>.None, Optional<TaskType>.None, Optional<AgentModel>.None,
+                now, node.OwnerId, Optional<Guid?>.None, Optional<bool>.Of(true));
+            task.Apply(revised);
+            events.Add(revised);
+        }
+        else if (launchImmediately)
+        {
+            deliberateRunId = DomainId.New();
+            TaskClaimed claimed = TaskDecider.ClaimDeliberately(
+                task, node.OwnerId, deliberateRunId.Value, now, dependencyOverrideAcknowledged: false);
+            task.Apply(claimed);
+            events.Add(claimed);
+            deliberateLeaseGeneration = claimed.LeaseGeneration;
+        }
+
+        long claimedVersion = events.Count;
+        session.Events.StartStream<TaskAggregate>(taskId, [.. events]);
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogDebug(
+            "Auto-created pr-review task {TaskId} for {Repository}#{Number} from a mention by {Author}, at "
+            + "{Speed} speed", taskId, repository, candidate.Number, comment.AuthorLogin, setting.Speed.Value);
+
+        if (deliberateRunId is { } runId && deliberateLeaseGeneration is { } generation)
+        {
+            try
+            {
+                await launcher.LaunchAsync(
+                    taskId, runId, Guid.Empty, node.OwnerId, generation,
+                    dispatchingNodeId: node.NodeId, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                await FailDeliberateLaunchAsync(
+                    taskId, runId, claimedVersion,
+                    "the daemon stopped while launching this auto-created review", CancellationToken.None);
+                throw;
+            }
+        }
+
+        return (
+            ReviewMentionOutcome.TaskCreated, taskId,
+            deferral ?? (launchImmediately ? "started immediately, ceiling-exempt" : null));
+    }
 }
