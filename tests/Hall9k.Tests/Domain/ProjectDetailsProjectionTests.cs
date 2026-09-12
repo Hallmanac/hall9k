@@ -202,4 +202,43 @@ public sealed class ProjectDetailsProjectionTests
         view.MaxParallelAgents.Should().Be(6);
         view.MaxParallelTasks.Should().BeNull("the retired value is not carried into the enforced ceiling");
     }
+
+    [Fact]
+    public void Archive_then_reactivate_round_trips_the_read_model()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+
+        projection.Apply(new FakeEvent<ProjectArchived>(
+            new ProjectArchived(id, "Accidental registration", Now.AddMinutes(5), DomainId.New())), view);
+        view.IsArchived.Should().BeTrue();
+        view.ArchivedAt.Should().Be(Now.AddMinutes(5));
+        view.ArchivedReason.Should().Be("Accidental registration");
+
+        projection.Apply(new FakeEvent<ProjectReactivated>(
+            new ProjectReactivated(id, Now.AddMinutes(10), DomainId.New())), view);
+        view.IsArchived.Should().BeFalse();
+        view.ArchivedAt.Should().BeNull();
+        view.ArchivedReason.Should().BeNull();
+        view.Name.Should().Be("hall9k", "reactivation touches only the archive fields");
+    }
+
+    [Fact]
+    public void Rename_changes_only_the_name()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+
+        projection.Apply(new FakeEvent<ProjectRenamed>(
+            new ProjectRenamed(id, "hall9k", "hall9k-old", Now.AddMinutes(5), DomainId.New())), view);
+
+        view.Name.Should().Be("hall9k-old");
+        view.RepositoryPath.Should().Be("/repos/hall9k.git", "NAME IS NOT AN IDENTIFIER — nothing else changes");
+    }
 }

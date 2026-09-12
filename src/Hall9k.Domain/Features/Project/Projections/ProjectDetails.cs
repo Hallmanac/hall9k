@@ -125,6 +125,16 @@ public sealed class ProjectDetails
     public List<LaunchText> LaunchTexts { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
     public DateTimeOffset? SettingsChangedAt { get; set; }
+    /// <summary>
+    /// Whether this project is archived on this install (task: a project can be archived, listed
+    /// as archived, reactivated, and renamed). Named for the purge follow-up to build on: the
+    /// second half of this design schedules a hard delete off this same flag rather than a new one.
+    /// </summary>
+    public bool IsArchived { get; set; }
+    /// <summary>When this project was archived; null while it never has been or after reactivation.</summary>
+    public DateTimeOffset? ArchivedAt { get; set; }
+    /// <summary>Why this project was archived; left unknown when omitted, never inferred.</summary>
+    public string? ArchivedReason { get; set; }
 }
 
 public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDetails, Guid>
@@ -283,5 +293,24 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
+    }
+
+    public void Apply(IEvent<ProjectArchived> @event, ProjectDetails view)
+    {
+        view.IsArchived = true;
+        view.ArchivedAt = @event.Data.ArchivedAt;
+        view.ArchivedReason = @event.Data.Reason;
+    }
+
+    public void Apply(IEvent<ProjectReactivated> @event, ProjectDetails view)
+    {
+        view.IsArchived = false;
+        view.ArchivedAt = null;
+        view.ArchivedReason = null;
+    }
+
+    public void Apply(IEvent<ProjectRenamed> @event, ProjectDetails view)
+    {
+        view.Name = @event.Data.NewName;
     }
 }

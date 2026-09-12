@@ -761,4 +761,94 @@ public sealed class ProjectDeciderTests
             launchTexts: Optional<IReadOnlyList<LaunchText>>.Of([new LaunchText("claude-code", " ")]));
         noText.Should().Throw<DomainValidationException>();
     }
+
+    [Fact]
+    public void Archive_produces_an_event_and_the_aggregate_replays_it_archived()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        ProjectArchived archived = ProjectDecider.Archive(project, "Accidental registration", Now, DomainId.New());
+        project.Apply(archived);
+
+        project.IsArchived.Should().BeTrue();
+        project.ArchivedAt.Should().Be(Now);
+        project.ArchivedReason.Should().Be("Accidental registration");
+    }
+
+    [Fact]
+    public void Archive_leaves_the_reason_unknown_when_blank_never_inferred()
+    {
+        ProjectArchived archived = ProjectDecider.Archive(RegisteredProject(), reason: "  ", Now, DomainId.New());
+
+        archived.Reason.Should().BeNull("a blank reason is recorded as unknown, never inferred (h9k task abandon's own discipline)");
+    }
+
+    [Fact]
+    public void Archive_refuses_a_project_already_archived()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.Archive(project, null, Now, DomainId.New()));
+
+        Action archiveAgain = () => ProjectDecider.Archive(project, null, Now.AddDays(1), DomainId.New());
+
+        archiveAgain.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void Reactivate_clears_the_archive_in_place_leaving_id_and_settings_untouched()
+    {
+        ProjectAggregate project = RegisteredProject();
+        Guid originalId = project.Id;
+        project.Apply(ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            priority: Optional<ProjectPriority>.Of(ProjectPriority.High)));
+        project.Apply(ProjectDecider.Archive(project, "temporary", Now, DomainId.New()));
+
+        ProjectReactivated reactivated = ProjectDecider.Reactivate(project, Now.AddDays(1), DomainId.New());
+        project.Apply(reactivated);
+
+        project.IsArchived.Should().BeFalse();
+        project.ArchivedAt.Should().BeNull();
+        project.ArchivedReason.Should().BeNull();
+        project.Id.Should().Be(originalId, "reactivation is the same stream, the same id — never a new registration");
+        project.Priority.Should().Be(ProjectPriority.High, "every other setting is untouched by an archive/reactivate round trip");
+    }
+
+    [Fact]
+    public void Reactivate_refuses_a_project_that_is_not_archived()
+    {
+        Action reactivate = () => ProjectDecider.Reactivate(RegisteredProject(), Now, DomainId.New());
+
+        reactivate.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void Rename_changes_the_name_only()
+    {
+        ProjectAggregate project = RegisteredProject();
+        string originalRepositoryPath = project.RepositoryPath;
+        Guid originalId = project.Id;
+
+        ProjectRenamed renamed = ProjectDecider.Rename(project, "hall9k-old", Now, DomainId.New());
+        project.Apply(renamed);
+
+        renamed.PreviousName.Should().Be("hall9k");
+        renamed.NewName.Should().Be("hall9k-old");
+        project.Name.Should().Be("hall9k-old");
+        project.Id.Should().Be(originalId);
+        project.RepositoryPath.Should().Be(originalRepositoryPath, "NAME IS NOT AN IDENTIFIER — nothing else on the aggregate changes");
+    }
+
+    [Fact]
+    public void Rename_refuses_a_blank_name_and_refuses_the_projects_own_current_name()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action blank = () => ProjectDecider.Rename(project, " ", Now, DomainId.New());
+        blank.Should().Throw<DomainValidationException>();
+
+        Action sameName = () => ProjectDecider.Rename(project, "hall9k", Now, DomainId.New());
+        sameName.Should().Throw<DomainValidationException>();
+    }
 }

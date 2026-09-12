@@ -118,6 +118,17 @@ public sealed class ProjectAggregate
     /// </summary>
     public WritingConventions WritingConventions { get; private set; } = WritingConventions.Default;
     public DateTimeOffset RegisteredAt { get; private set; }
+    /// <summary>
+    /// Whether this project is archived on this install (task: a project can be archived, listed
+    /// as archived, reactivated, and renamed). Archiving is reversible and per-install — it never
+    /// touches the home directory on disk, never deletes anything, and says nothing about whether
+    /// the same repository is registered on another node.
+    /// </summary>
+    public bool IsArchived { get; private set; }
+    /// <summary>When this project was archived; null while it never has been or after reactivation clears it.</summary>
+    public DateTimeOffset? ArchivedAt { get; private set; }
+    /// <summary>Why this project was archived; left unknown when omitted, never inferred (the same discipline TaskAbandoned's own Reason follows).</summary>
+    public string? ArchivedReason { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
     public IReadOnlyList<VerifyCommand> VerifyCommands => _verifyCommands;
@@ -286,5 +297,24 @@ public sealed class ProjectAggregate
         {
             WritingConventions = @event.WritingConventions.Value ?? WritingConventions.Default;
         }
+    }
+
+    public void Apply(ProjectArchived @event)
+    {
+        IsArchived = true;
+        ArchivedAt = @event.ArchivedAt;
+        ArchivedReason = @event.Reason;
+    }
+
+    public void Apply(ProjectReactivated @event)
+    {
+        IsArchived = false;
+        ArchivedAt = null;
+        ArchivedReason = null;
+    }
+
+    public void Apply(ProjectRenamed @event)
+    {
+        Name = @event.NewName;
     }
 }
