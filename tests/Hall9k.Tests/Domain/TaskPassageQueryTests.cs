@@ -843,4 +843,229 @@ public sealed class TaskPassageQueryTests
         // RunEventSet starts after dispatch, so only the two mid-run dispatches count here.
         passage.Sessions.Should().Be(2);
     }
+
+    [Fact]
+    public void Sessions_count_uncommitted_work_recovery_verdict_reprompt_and_context_synthesis_dispatches()
+    {
+        // These three each spawn a real Claude Code process too (VerificationRunner's bounded
+        // commit-only agent, a same-session claude -p --resume for an unparseable verdict, and
+        // BlockerContextAssembler's synthesis dispatch) but the closing "sessions" enumeration
+        // omitted all three (independent pre-PR review, cycle 6, conformance finding).
+        Guid runId = DomainId.New();
+        DateTimeOffset at = Now.AddHours(-2);
+
+        List<IEvent> runEvents =
+        [
+            Ev(new RunUncommittedWorkRecoveryAttempted(runId, DomainId.New(), ["a.txt"], "meaningful uncommitted files", at)),
+            Ev(new ReviewVerdictReprompted(runId, DomainId.New(), DomainId.New(), 1, 1, at, at)),
+            Ev(new ContextSynthesisDispatched(runId, DomainId.New(), 2, 1, at, at)),
+        ];
+        RunEventSet run = new(runId, at, null, runEvents);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.Sessions.Should().Be(3);
+    }
+
+    [Fact]
+    public void Interactive_session_started_for_the_run_dispatched_process_does_not_double_count()
+    {
+        // h9k task work/start's own interactive claim appends InteractiveSessionStarted for the
+        // identical process RunDispatched already named (the same ClaudeSessionId/SessionId) —
+        // counting both doubles a single launch (independent pre-PR review, cycle 6, adversarial
+        // finding).
+        Guid runId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid claudeSessionId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddHours(-2);
+
+        List<IEvent> runEvents =
+        [
+            Ev(new RunDispatched(
+                runId, taskId, DomainId.New(), DomainId.New(), 1, claudeSessionId,
+                "/wt/interactive", "task/interactive", ExecutorMode.Subscription, dispatchedAt)),
+            Ev(new InteractiveSessionStarted(runId, claudeSessionId, dispatchedAt.AddSeconds(2), 123)),
+        ];
+        RunEventSet run = new(runId, dispatchedAt, null, runEvents);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.Sessions.Should().Be(1);
+    }
+
+    [Fact]
+    public void Interactive_session_started_with_a_different_session_id_counts_as_a_genuine_reattach()
+    {
+        Guid runId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid claudeSessionId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddHours(-2);
+
+        List<IEvent> runEvents =
+        [
+            Ev(new RunDispatched(
+                runId, taskId, DomainId.New(), DomainId.New(), 1, claudeSessionId,
+                "/wt/interactive", "task/interactive", ExecutorMode.Subscription, dispatchedAt)),
+            Ev(new InteractiveSessionStarted(runId, DomainId.New(), dispatchedAt.AddMinutes(30), 456)),
+        ];
+        RunEventSet run = new(runId, dispatchedAt, null, runEvents);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.Sessions.Should().Be(2);
+    }
+
+    [Fact]
+    public void A_verdict_missing_park_with_no_review_completed_does_not_grow_review_elapsed_forever()
+    {
+        // ReviewPhase.VerdictMissing's own re-prompt-exhausted arm parks the run without ever
+        // appending ReviewCompleted for the cycle it just dispatched, and nothing further
+        // re-dispatches that same cycle — the dangling dispatch must not keep reading as "still
+        // running" (independent pre-PR review, cycle 6, adversarial finding).
+        Guid runId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddDays(-2);
+        DateTimeOffset parkedAt = dispatchedAt.AddHours(1);
+
+        RunEventSet run = new(runId, dispatchedAt, null,
+        [
+            Ev(new ReviewDispatched(runId, DomainId.New(), 1, 1, dispatchedAt, dispatchedAt)),
+            Ev(new ReviewParked(runId, "no parseable verdict after one re-prompt", parkedAt)),
+        ]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.Review.Cycles.Should().Be(0);
+        passage.Review.Elapsed.Should().Be(TimeSpan.Zero);
+        passage.Review.StillOpen.Should().BeFalse();
+
+        HumanWaitPassage wait = passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.ReviewPark).Subject;
+        wait.Elapsed.StillOpen.Should().BeTrue();
+    }
+
+    [Fact]
+    public void An_unresolved_closeout_park_on_the_last_run_after_it_merges_reports_unknown_rather_than_vanishing()
+    {
+        // CompleteMergeAsync appends RunCompleted alongside PullRequestMerged, so FinishedAt is
+        // set even though CloseoutBudgetGranted never landed — the wait genuinely happened and
+        // must not disappear just because the run it happened on has since finished (independent
+        // pre-PR review, cycle 6, conformance finding — the high-severity fix).
+        Guid runId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddDays(-3);
+        DateTimeOffset parkedAt = Now.AddDays(-2);
+        DateTimeOffset mergedAt = Now.AddHours(-1);
+
+        RunEventSet run = new(runId, dispatchedAt, mergedAt,
+        [
+            Ev(new CloseoutParked(runId, "closeout budget spent — merge without it", parkedAt)),
+            Ev(new PullRequestMerged(runId, mergedAt, mergedAt)),
+        ]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        HumanWaitPassage wait = passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.CloseoutPark).Subject;
+        wait.Elapsed.IsUnknown.Should().BeTrue();
+    }
+
+    [Fact]
+    public void An_unresolved_review_park_on_the_last_run_after_it_is_released_reports_unknown_rather_than_vanishing()
+    {
+        // h9k task release/abandon/handback on a parked run appends RunSuperseded, closing the
+        // run (FinishedAt set) without ever resolving the park — the same class as the closeout
+        // case above (independent pre-PR review, cycle 6, conformance finding).
+        Guid runId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddDays(-2);
+        DateTimeOffset parkedAt = Now.AddDays(-1);
+        DateTimeOffset supersededAt = Now.AddHours(-3);
+
+        RunEventSet run = new(runId, dispatchedAt, supersededAt,
+        [
+            Ev(new ReviewParked(runId, "cap reached", parkedAt)),
+        ]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        HumanWaitPassage wait = passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.ReviewPark).Subject;
+        wait.Elapsed.IsUnknown.Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_review_park_interval_recorded_by_two_skewed_clocks_clamps_to_zero_rather_than_going_negative()
+    {
+        Guid runId = DomainId.New();
+        DateTimeOffset parkedAt = Now.AddMinutes(-10);
+        DateTimeOffset resolvedAt = Now.AddMinutes(-20);
+
+        RunEventSet run = new(runId, Now.AddMinutes(-30), null,
+        [
+            Ev(new ReviewParked(runId, "cap reached", parkedAt)),
+            Ev(new ReviewParkResolved(runId, ReviewVerdict.MergeReady, null, resolvedAt, DomainId.New())),
+        ]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        HumanWaitPassage wait = passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.ReviewPark).Subject;
+        wait.Elapsed.Elapsed.Should().Be(TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void A_still_dispatched_review_cycle_started_after_the_query_s_own_clock_clamps_to_zero()
+    {
+        Guid runId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddMinutes(5);
+
+        RunEventSet run = new(runId, Now.AddMinutes(-10), null,
+        [
+            Ev(new ReviewDispatched(runId, DomainId.New(), 1, 1, dispatchedAt, dispatchedAt)),
+        ]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.Review.StillOpen.Should().BeTrue();
+        passage.Review.Elapsed.Should().Be(TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void Merge_wait_still_open_clamps_to_zero_when_the_claim_time_is_after_the_query_s_own_clock()
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset completedAt = Now.AddMinutes(5);
+
+        List<IEvent> taskEvents = [Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/1", completedAt))];
+
+        TaskPassage passage = Compute(taskEvents, [], taskConcluded: false);
+
+        passage.MergeWait.StillOpen.Should().BeTrue();
+        passage.MergeWait.Elapsed.Should().Be(TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void An_unanswered_question_on_the_newest_ended_run_reports_unknown_even_though_an_earlier_question_was_answered()
+    {
+        // SumOpenIntervals used to collapse this shape to Closed(the earlier answered duration),
+        // printing a confident exact figure for a task whose record actually says a later
+        // question was never answered (independent pre-PR review, cycle 6, adversarial finding).
+        Guid taskId = DomainId.New();
+        Guid oldRunId = DomainId.New();
+        Guid newRunId = DomainId.New();
+        Guid questionId1 = DomainId.New();
+        Guid questionId2 = DomainId.New();
+        DateTimeOffset askedAt1 = Now.AddDays(-2);
+        DateTimeOffset answeredAt1 = askedAt1.AddMinutes(10);
+        DateTimeOffset askedAt2 = Now.AddDays(-1);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new QuestionAsked(taskId, questionId1, oldRunId, "first?", askedAt1)),
+            Ev(new AnswerProvided(taskId, questionId1, "the first answer", answeredAt1, DomainId.New())),
+            Ev(new QuestionAsked(taskId, questionId2, newRunId, "second?", askedAt2)),
+        ];
+        RunEventSet oldRun = new(oldRunId, askedAt1.AddMinutes(-5), askedAt1.AddMinutes(20), []);
+        RunEventSet newRun = new(newRunId, askedAt2.AddMinutes(-5), Now.AddHours(-1), []);
+
+        TaskPassage passage = Compute(taskEvents, [oldRun, newRun]);
+
+        HumanWaitPassage wait = passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.Question).Subject;
+        wait.Elapsed.IsUnknown.Should().BeTrue();
+    }
 }

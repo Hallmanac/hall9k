@@ -44,17 +44,30 @@ public static class TaskPassageQuery
     /// query already reads for the phases above: each is a distinct process the platform paid to
     /// launch, which is the plain, defensible reading of "how many sessions did this task take"
     /// absent any recorded session identity to count instead (<see cref="TokensRecorded"/> carries
-    /// no session id — <c>PeriodSpend</c>'s own doc).
+    /// no session id — <c>PeriodSpend</c>'s own doc). <see cref="RunUncommittedWorkRecoveryAttempted"/>
+    /// (<c>VerificationRunner</c>'s bounded commit-only agent for meaningful uncommitted files),
+    /// <see cref="ReviewVerdictReprompted"/> (<c>claude -p --resume</c> for an unparseable
+    /// verdict), and <see cref="ContextSynthesisDispatched"/> (<c>BlockerContextAssembler</c>'s
+    /// synthesis over the blocker-review threshold) each spawn a real process too and are counted
+    /// alongside the rest (independent pre-PR review, cycle 6, conformance finding — the
+    /// enumeration above omitted all three). <see cref="InteractiveSessionStarted"/> is excluded
+    /// here on its own, and folded into the loop below instead, because it does not always name a
+    /// distinct process: <c>h9k task work</c>/<c>h9k task start</c>'s own interactive claim
+    /// appends it for the identical process <see cref="RunDispatched"/> already named
+    /// (<see cref="RunDispatched.SessionId"/>), and only a genuine re-attach carries a different
+    /// session id (independent pre-PR review, cycle 6, adversarial finding).
     /// </summary>
     private static bool IsSessionDispatch(object data) => data is RunDispatched
         or RunResumed
-        or InteractiveSessionStarted
         or ReviewDispatched
         or ReviewFixDispatched
         or PrReviewConformanceDispatched
         or PreFinalPassRebaseRecoveryDispatched
         or SettlingGateRepairDispatched
-        or RunSessionErrorRetried;
+        or RunSessionErrorRetried
+        or RunUncommittedWorkRecoveryAttempted
+        or ReviewVerdictReprompted
+        or ContextSynthesisDispatched;
 
     public static async Task<TaskPassage> ReadAsync(
         IQuerySession session, Guid taskId, TaskType taskType, bool taskConcluded, DateTimeOffset now,
@@ -329,10 +342,29 @@ public static class TaskPassageQuery
         Dictionary<int, DateTimeOffset> fixDispatchedAt = [];
         DateTimeOffset? reviewParkedSince = null;
         DateTimeOffset? closeoutParkedSince = null;
+        Guid? dispatchedSessionId = null;
 
         foreach (IEvent recorded in run.Events)
         {
             object data = recorded.Data;
+            bool sameProcessAsDispatch = data is InteractiveSessionStarted started
+                && started.ClaudeSessionId == dispatchedSessionId;
+            if (data is RunDispatched runDispatched)
+            {
+                dispatchedSessionId = runDispatched.SessionId;
+            }
+            else if (sameProcessAsDispatch)
+            {
+                // Only the first InteractiveSessionStarted for this run can be the same process
+                // RunDispatched already named; a later one (a genuine re-attach) always carries a
+                // different session id, so clearing here never hides a real re-attach.
+                dispatchedSessionId = null;
+            }
+            else if (data is InteractiveSessionStarted)
+            {
+                fold.SessionCount++;
+            }
+
             if (IsSessionDispatch(data))
             {
                 fold.SessionCount++;
@@ -386,6 +418,25 @@ public static class TaskPassageQuery
                     // review, cycle 3, both lenses).
                     fold.BuildEnd ??= parked.ParkedAt;
                     reviewParkedSince ??= parked.ParkedAt;
+                    // ReviewPhase.VerdictMissing's own re-prompt-exhausted arm (ReviewEngine.cs)
+                    // parks the run without ever appending ReviewCompleted for the cycle it just
+                    // dispatched, and never will: nothing further re-dispatches that same cycle.
+                    // Left in the dictionary, that dispatch read as "still running" long past this
+                    // park and past the eventual merge (isLast && FinishedAt is null stays true
+                    // for the whole window), growing "N cycles so far" forever and double-counting
+                    // the identical window the ReviewPark human-wait row below already reports in
+                    // full (independent pre-PR review, cycle 6, adversarial finding). Clearing here
+                    // is a no-op for every other park reason, since a verdict is required before
+                    // FixNeeded/MergeReady/Disputed can be decided at all, and ReviewCompleted
+                    // already removed that cycle's entry by the time any of those park.
+                    reviewDispatchedAt.Clear();
+                    // Defensive, matching fixDispatchedAt to the same rule: every reachable park
+                    // ahead of a fix dispatch (CappedTrack's own check in the FixNeeded phase)
+                    // fires before DispatchFixSessionAsync ever runs, so fixDispatchedAt is always
+                    // empty here today — but clearing it is a no-op in that case and the one
+                    // guard against the same dangling-dispatch shape ReviewEngine's own fix leg
+                    // would otherwise leave this fold to explain incorrectly as still running.
+                    fixDispatchedAt.Clear();
                     break;
                 case ReviewParkResolved resolved when reviewParkedSince is { } parkedSince:
                     fold.ReviewParkIntervals.Add((parkedSince, resolved.ResolvedAt));
@@ -411,13 +462,13 @@ public static class TaskPassageQuery
                     // ResolvePrReviewAsync's own verdict shape appends only this event — never
                     // ReviewParkResolved/ReviewBoundaryApproved/ReviewHumanFixApplied, which a
                     // pr-review run's own RunSupervisor routing (ReviewParked's own doc, above)
-                    // never gives it a path to append either. Left unhandled here, a completed
-                    // pr-review run's still-open reviewParkedSince fell through every closing
-                    // arm and every "still open" arm alike (isLast && FinishedAt is null, just
-                    // below, is false once the run has finished) — discarded rather than
-                    // surfaced, so the multi-day owner wait a completed pr-review task actually
-                    // sat through disappeared from the passage entirely (independent pre-PR
-                    // review, cycle 4, conformance finding).
+                    // never gives it a path to append either. This wait genuinely ended here, with
+                    // a known close time — left unhandled, it would instead fall to the
+                    // OpenReviewParkSince capture below, which (correctly, for a wait that really
+                    // never closed) reports it as an unresolved "unknown" rather than the exact
+                    // duration this event actually records, so the multi-day owner wait a completed
+                    // pr-review task actually sat through would print honest-but-wrong instead of
+                    // exact (independent pre-PR review, cycle 4, conformance finding).
                     if (reviewParkedSince is { } openSince)
                     {
                         fold.ReviewParkIntervals.Add((openSince, delivered.ResolvedAt));
@@ -440,11 +491,11 @@ public static class TaskPassageQuery
         }
 
         // Only the newest run, and only while it has not itself ended, can plausibly still have
-        // a cycle, fix session, or park genuinely in flight — a run that finished (superseded,
-        // failed, or closed) with a dangling dispatch never completed left it superseded along
-        // with everything else about that run, not "still running" (independent of whether it
-        // happens to be the newest run in this task's list, which every terminal run except the
-        // very last one already is by construction).
+        // a cycle or fix session genuinely in flight — a run that finished (superseded, failed,
+        // or closed) with a dangling dispatch never completed left it superseded along with
+        // everything else about that run, not "still running" (independent of whether it happens
+        // to be the newest run in this task's list, which every terminal run except the very last
+        // one already is by construction).
         if (isLast && run.FinishedAt is null)
         {
             if (reviewDispatchedAt.Count > 0)
@@ -453,17 +504,31 @@ public static class TaskPassageQuery
                 // earlier one left un-completed while a later cycle already dispatched is a
                 // stream oddity this fold does not try to explain, so only the max is surfaced.
                 DateTimeOffset latestStart = reviewDispatchedAt.Values.Max();
-                fold.ReviewElapsed += now - latestStart;
+                fold.ReviewElapsed += Clamp(now - latestStart);
                 fold.ReviewStillOpen = true;
             }
 
             if (fixDispatchedAt.Count > 0)
             {
                 DateTimeOffset latestStart = fixDispatchedAt.Values.Max();
-                fold.FixElapsed += now - latestStart;
+                fold.FixElapsed += Clamp(now - latestStart);
                 fold.FixStillOpen = true;
             }
+        }
 
+        // Unlike the still-running cycle/fix check above, a dangling review or closeout park is
+        // captured for the last run whether or not that run has itself finished: CompleteMergeAsync
+        // appends RunCompleted alongside PullRequestMerged, and RunSuperseded closes a run the
+        // owner released/abandoned/handed back out from under an open park, so a genuinely
+        // unresolved wait on the last run can have FinishedAt set well before anything ever closed
+        // the park. Reading this only under "FinishedAt is null" (as the block above still
+        // correctly does for a cycle that could still be running) discarded that wait entirely
+        // instead of surfacing it as unknown, the same class the cycle-4 fix already corrected for
+        // a pr-review run's PrReviewDelivered path above (independent pre-PR review, cycle 6,
+        // conformance finding). SumOpenIntervals below reads run liveness separately (lastRunStillLive)
+        // to decide Open (run still going) vs Unknown (run ended, wait never closed).
+        if (isLast)
+        {
             fold.OpenReviewParkSince = reviewParkedSince;
             fold.OpenCloseoutParkSince = closeoutParkedSince;
         }
@@ -639,7 +704,7 @@ public static class TaskPassageQuery
         // review, cycle 3, conformance finding: a Delivered-composed row with a closed,
         // unmerged pull request read taskConcluded false and grew this figure forever).
         bool neverWillMerge = taskConcluded || folds.Any(fold => fold.PullRequestClosedWithoutMerge);
-        return neverWillMerge ? PassagePhase.Unknown() : PassagePhase.Open(now - anchor);
+        return neverWillMerge ? PassagePhase.Unknown() : PassagePhase.Open(Clamp(now - anchor));
     }
 
     // --- Human waits: pairs of start/end markers, FIFO, with the newest only ever open on the newest run ---
@@ -655,24 +720,28 @@ public static class TaskPassageQuery
             return PassagePhase.NotApplicable;
         }
 
-        TimeSpan total = closed.Aggregate(TimeSpan.Zero, (sum, interval) => sum + (interval.End - interval.Start));
+        // Each interval clamped on its own, not just the running sum: a start and its own close
+        // can be recorded by two different clocks (the agent's own node appends the start, the
+        // owner's CLI on a different machine appends the close), so one skewed pair going negative
+        // must not silently cancel out a real positive one recorded elsewhere in the same list
+        // (independent pre-PR review, cycle 6, conformance finding).
+        TimeSpan total = closed.Aggregate(TimeSpan.Zero, (sum, interval) => sum + Clamp(interval.End - interval.Start));
         if (open.Count > 0)
         {
             if (leaveOpen)
             {
                 DateTimeOffset since = open.Min();
-                return PassagePhase.Open(total + (now - since));
+                return PassagePhase.Open(total + Clamp(now - since));
             }
 
             // A start with nothing left to close it, and nothing further that ever will (the run
-            // that raised it has ended): a genuinely unresolved wait, not the zero-length one
-            // Closed(TimeSpan.Zero) would otherwise claim when nothing closed ever landed either
-            // (independent pre-PR review, cycle 1, adversarial lens; PassagePhase's own doc names
-            // exactly this case for Unknown()).
-            if (closed.Count == 0)
-            {
-                return PassagePhase.Unknown();
-            }
+            // that raised it has ended): a genuinely unresolved wait. Unknown regardless of
+            // whether anything else already closed — an earlier, unrelated wait that did close
+            // does not make this one any less unresolved, and reporting Closed(total) here would
+            // print a confident, exact figure for a task whose record actually says a later wait
+            // was never answered (independent pre-PR review, cycle 6, adversarial finding;
+            // PassagePhase's own doc names exactly this case for Unknown()).
+            return PassagePhase.Unknown();
         }
 
         return PassagePhase.Closed(total);
