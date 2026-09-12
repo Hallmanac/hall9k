@@ -402,8 +402,12 @@ reviewer's own open threads. The closeout watcher polls it on its existing caden
 of those threads that the reviewer did not write themselves, new commits pushed, or a re-review
 newly requested of them, flags the task
 **needs-you** with a line naming what it saw and the pull request that moved — never an author,
-because the counts do not observe who wrote a comment; every one of those threads resolved with no
-re-review outstanding, or the pull request merging or closing, reaches Done. A reply that arrives
+because the counts do not observe who wrote a comment. Only the pull request merging or closing,
+or a human's own `h9k task abandon`, ever reaches Done from here (Decisions Log #178): every
+review thread resolving, with nothing else outstanding, used to end the wait on its own, but a
+task that reached Done the moment its threads went quiet would leave nothing live for a mention
+arriving afterward to attach to, so that thread-resolution ending is gone and the wait stays open
+until the pull request itself ends. A reply that arrives
 before the watcher's first look is caught by that look rather than absorbed into its baseline. A
 re-review request wakes the reviewer on its own — it is the one thing the watch reads that is an
 explicit ask *of* them, and an author who resolves the threads themselves and asks them back
