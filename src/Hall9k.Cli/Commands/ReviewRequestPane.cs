@@ -123,7 +123,19 @@ internal static class ReviewRequestPane
 
         IReadOnlyList<ObservedReviewRequest> observed =
             await session.Query<ObservedReviewRequest>().ToListAsync(cancellationToken);
-        if (observed.Count == 0)
+        // Every mention this install ever left with no task of its own, never retried
+        // (ObservedReviewMention's own class doc: a comment id already decided is never
+        // re-decided) — the needs-you row an operator has to act on is only possible if one of
+        // these is surfaced somewhere, and until now nothing in Hall9k did (independent pre-PR
+        // review, cycle 1, adversarial lens): ProcessMentionAsync recorded HeldSettingOff,
+        // HeldBeforeCutoff and MintFailed permanently and no CLI surface ever read any of them
+        // back, the identical sweep the same finding's own class covers on the request side below.
+        IReadOnlyList<ObservedReviewMention> unresolvedMentions = [.. (await session.Query<ObservedReviewMention>()
+            .ToListAsync(cancellationToken))
+            .Where(mention => mention.Outcome == ReviewMentionOutcome.HeldSettingOff
+                || mention.Outcome == ReviewMentionOutcome.HeldBeforeCutoff
+                || mention.Outcome == ReviewMentionOutcome.MintFailed)];
+        if (observed.Count == 0 && unresolvedMentions.Count == 0)
         {
             return new ReviewRequestPaneContents(settingLines, []);
         }
@@ -154,9 +166,27 @@ internal static class ReviewRequestPane
 
             ReviewRequestRow row = Compose(
                 request, project.Name, settings[request.ProjectId],
-                Covering(request, adopted, rowsByTask), now);
+                Covering(request.Repository, request.Number, adopted, rowsByTask), now);
             // Two deciders that reached the same answer about one request have one thing to say,
             // and say it once (see this method's own remarks).
+            if (alreadySaid.Add(row.Markup))
+            {
+                rendered.Add(row);
+            }
+        }
+
+        foreach (ObservedReviewMention mention in unresolvedMentions
+            .OrderBy(mention => mention.Repository, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(mention => mention.Number)
+            .ThenBy(mention => mention.ObservedAt))
+        {
+            if (!byId.TryGetValue(mention.ProjectId, out ProjectDetails? project))
+            {
+                continue;
+            }
+
+            ReviewRequestRow row = ComposeMentionRow(
+                mention, project.Name, Covering(mention.Repository, mention.Number, adopted, rowsByTask));
             if (alreadySaid.Add(row.Markup))
             {
                 rendered.Add(row);
@@ -182,10 +212,10 @@ internal static class ReviewRequestPane
     /// </para>
     /// </summary>
     private static CoveringReview? Covering(
-        ObservedReviewRequest request, IReadOnlyList<TaskListItem> adopted,
+        string repository, int number, IReadOnlyList<TaskListItem> adopted,
         IReadOnlyDictionary<Guid, TaskStatusRow> rowsByTask)
     {
-        string reference = $"{WorkItemProvider.GitHubPullRequest.Value}:{request.Repository}#{request.Number}";
+        string reference = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#{number}";
         IReadOnlyList<TaskListItem> matching = [.. adopted
             .Where(task => string.Equals(task.ExternalReference, reference, StringComparison.OrdinalIgnoreCase))];
         if (matching.Count == 0)
@@ -251,7 +281,7 @@ internal static class ReviewRequestPane
         {
             string id = DomainId.Short(task.TaskId);
             return Informational(
-                request,
+                request.Repository, request.Number,
                 task.Live
                     ? $"{opening}{age}; task {id} is created and reviewing ({task.StateWord})"
                     : $"{opening}{age}; task {id} already covered it ({task.StateWord}) — {ClosedTaskHold(setting, task)}");
@@ -260,7 +290,7 @@ internal static class ReviewRequestPane
         if (outcome == ReviewRequestOutcome.HeldBeforeCutoff)
         {
             return NeedsYou(
-                request,
+                request.Repository, request.Number,
                 $"{opening}{age}; it predates auto pr-review's start on this install, so nothing starts on "
                 + "its own (no backfill — Decisions Log #161)",
                 byHand);
@@ -269,7 +299,7 @@ internal static class ReviewRequestPane
         if (outcome == ReviewRequestOutcome.HeldRequestTimeUnknown)
         {
             return NeedsYou(
-                request,
+                request.Repository, request.Number,
                 $"{opening}; GitHub's own requested-at time could not be read, so nothing proves the request "
                 + "postdates auto pr-review's start on this install and nothing starts on its own",
                 byHand);
@@ -278,7 +308,7 @@ internal static class ReviewRequestPane
         if (!setting.IsOn)
         {
             return NeedsYou(
-                request,
+                request.Repository, request.Number,
                 $"{opening}{age}; auto pr-review is off here",
                 $"{byHand} [dim]or turn it on with:[/] h9k project set {project} --auto-pr-review normal");
         }
@@ -286,7 +316,7 @@ internal static class ReviewRequestPane
         if (outcome == ReviewRequestOutcome.MintFailed)
         {
             return NeedsYou(
-                request,
+                request.Repository, request.Number,
                 $"{opening}{age}; auto pr-review could not adopt it"
                 + (request.OutcomeDetail.IsBlank() ? string.Empty : $" ({request.OutcomeDetail.EscapeMarkup()})"),
                 byHand);
@@ -297,15 +327,66 @@ internal static class ReviewRequestPane
             // Never guessed at (AGENTS.md): a row this build cannot read is said to be
             // unreadable, with the one lever that works regardless.
             return NeedsYou(
-                request,
+                request.Repository, request.Number,
                 $"{opening}{age}; what became of it was recorded by a newer build and cannot be read here",
                 byHand);
         }
 
         return Informational(
-            request,
+            request.Repository, request.Number,
             $"{opening}{age}; auto pr-review is on here ({setting.Speed.Value.ToLowerInvariant()}) — a task "
             + "starts on the next sweep");
+    }
+
+    /// <summary>
+    /// One unresolved mention's own row — held by the setting, held by the no-backfill cutoff, or
+    /// refused while trying to mint — none of which a later sweep ever revisits:
+    /// <see cref="ObservedReviewMention"/>'s own class doc makes a comment id's dedupe permanent, so
+    /// turning the setting on or waiting past the cutoff never re-grades it, and a refused mint is
+    /// a one-shot dedup key exactly like the other two. The only lever is the operator reading the
+    /// comment and adopting the pull request by hand — the same gap the setting line above (idea
+    /// 2f079bcd) already says in prose for the held cases, but said nowhere per-comment, and never
+    /// at all for a refused mint, until this row existed (independent pre-PR review, cycle 1,
+    /// adversarial lens, medium).
+    /// </summary>
+    internal static ReviewRequestRow ComposeMentionRow(
+        ObservedReviewMention mention, string projectName, CoveringReview? covering)
+    {
+        string pullRequest = $"{mention.Repository.EscapeMarkup()}#{mention.Number}";
+        string project = projectName.EscapeMarkup();
+        string taggedBy = mention.CommentAuthorLogin.IsBlank()
+            ? "a comment"
+            : $"a comment from {mention.CommentAuthorLogin.EscapeMarkup()}";
+        string opening = $"{taggedBy} mentioned this install's login on {pullRequest}";
+        string byHand = $"h9k task add --project {project} --from-pr {mention.Number}";
+
+        if (covering is { } task)
+        {
+            string id = DomainId.Short(task.TaskId);
+            return Informational(
+                mention.Repository, mention.Number,
+                task.Live
+                    ? $"{opening}; task {id} already covers it ({task.StateWord})"
+                    : $"{opening}; task {id} already covered it ({task.StateWord})");
+        }
+
+        if (mention.Outcome == ReviewMentionOutcome.MintFailed)
+        {
+            return NeedsYou(
+                mention.Repository, mention.Number,
+                $"{opening}; auto pr-review could not adopt it"
+                + (mention.OutcomeDetail.IsBlank() ? string.Empty : $" ({mention.OutcomeDetail.EscapeMarkup()})"),
+                byHand);
+        }
+
+        string cause = mention.Outcome == ReviewMentionOutcome.HeldBeforeCutoff
+            ? $"{opening} before auto pr-review's start on this install, so nothing started on its own "
+              + "(no backfill — Decisions Log #161)"
+            : $"{opening} while auto pr-review was off here, so nothing started on its own";
+        return NeedsYou(
+            mention.Repository, mention.Number,
+            $"{cause}; a mention already seen is never retried",
+            byHand);
     }
 
     /// <summary>
@@ -331,13 +412,13 @@ internal static class ReviewRequestPane
                 + "may start one of its own on the next sweep",
         };
 
-    private static ReviewRequestRow NeedsYou(ObservedReviewRequest request, string cause, string lever) =>
+    private static ReviewRequestRow NeedsYou(string repository, int number, string cause, string lever) =>
         new(
             NeedsYou: true,
             $"[red bold]NEEDS YOU[/] [red]{cause}.[/] [dim]Take it with:[/] {lever}",
-            request.Repository,
-            request.Number);
+            repository,
+            number);
 
-    private static ReviewRequestRow Informational(ObservedReviewRequest request, string cause) =>
-        new(NeedsYou: false, $"[dim]{cause}.[/]", request.Repository, request.Number);
+    private static ReviewRequestRow Informational(string repository, int number, string cause) =>
+        new(NeedsYou: false, $"[dim]{cause}.[/]", repository, number);
 }
