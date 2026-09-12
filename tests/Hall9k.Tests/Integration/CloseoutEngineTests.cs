@@ -1856,10 +1856,49 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
-    /// The still-open twin of the test above: nothing here to close out yet, and — unlike the
-    /// RunDetails-driven orphan path — nothing here to record a close-without-merge against
-    /// either, since there is still no run stream to append one onto. The row stays exactly as
-    /// unwatched as it was.
+    /// Archiving a project (task: a project can be archived, listed as archived, reactivated, and
+    /// renamed) stops this sweep from touching it, the same skip the render and auto-pr-review
+    /// sweeps already had — before this fix, this exact shape (a Done task with a missing run
+    /// record) kept reaching a live <c>gh</c> merge inspection, and could reach a real merge, for
+    /// a project the operator had just said this install no longer maintains (independent pre-PR
+    /// review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_missing_run_under_an_archived_project_is_never_inspected()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(
+            store, node, repoPath, cts.Token, archiveProject: true);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-2) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.MergesObserved.Should().Be(0, "an archived project's own task is never merged, however mergeable gh reports it");
+        sweep.Skipped.Should().Be(1);
+        inspector.StateInspections.Should().Be(0, "the archived check is hit before gh is ever called");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamStateAsync(runId, cts.Token)).Should().BeNull(
+            "nothing is reconstructed for a project this install no longer maintains");
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+
+        await RetireMissingRunTaskAsync(store, taskId, node.OwnerId, cts.Token);
+    }
+
+    /// <summary>
+    /// The still-open twin of
+    /// <see cref="A_task_whose_completed_run_has_no_run_record_reconstructs_it_and_reaches_true_closeout"/>:
+    /// nothing here to close out yet, and — unlike the RunDetails-driven orphan path — nothing
+    /// here to record a close-without-merge against either, since there is still no run stream to
+    /// append one onto. The row stays exactly as unwatched as it was.
     /// </summary>
     [Fact]
     public async Task A_task_whose_completed_run_has_no_run_record_and_an_open_pull_request_is_left_alone()
@@ -1892,7 +1931,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// <summary>See the two tests above: RunLauncher's declined-dispatch shape, seeded directly on the task stream.</summary>
     private static async Task<(Guid TaskId, Guid RunId)> SeedTaskWithMissingRunRecordAsync(
         DocumentStore store, NodeContext node, string repoPath, CancellationToken cancellationToken,
-        TaskType? taskType = null, string? pullRequestUrl = null, Uri? projectRepositoryUrl = null)
+        TaskType? taskType = null, string? pullRequestUrl = null, Uri? projectRepositoryUrl = null,
+        bool archiveProject = false)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -1924,6 +1964,18 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
 
         await session.SaveChangesAsync(cancellationToken);
+
+        if (archiveProject)
+        {
+            await using IDocumentSession archiveSession = store.LightweightSession();
+            Hall9k.Domain.Features.Project.ProjectAggregate project =
+                (await archiveSession.Events.AggregateStreamAsync<Hall9k.Domain.Features.Project.ProjectAggregate>(
+                    projectId, token: cancellationToken))!;
+            archiveSession.Events.Append(
+                projectId, Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Archive(project, null, Now, ownerId));
+            await archiveSession.SaveChangesAsync(cancellationToken);
+        }
+
         return (taskId, runId);
     }
 

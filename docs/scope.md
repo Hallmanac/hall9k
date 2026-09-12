@@ -723,8 +723,8 @@ See [PLAN.md Decisions Log #78, #83, #85](../PLAN.md).
 `h9k project remove <project>` archives a project on this install: an event on its own stream,
 reversible, and nothing is deleted — a different "archive" from the task-directory one described
 below, which only moves a finished task's files inside a project's home. Once archived, the
-dispatcher never claims the project's tasks, the project-home render and auto-pr-review sweeps
-skip it, `h9k project list` hides it by default (`--include-archived` shows it, marked archived
+dispatcher never claims the project's tasks, the project-home render, closeout, and auto-pr-review
+sweeps skip it, `h9k project list` hides it by default (`--include-archived` shows it, marked archived
 with the date), and `h9k project show` names it archived with the date. It is refused while any of
 the project's tasks sits in a state the daemon may still act on — anything other than Draft,
 Published (always unassigned, Decisions Log #34), Done, or Abandoned — naming those tasks and the
