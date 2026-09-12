@@ -994,9 +994,13 @@ public static class CliCommandTree
                     + "flag exactly as h9k task handback does; --keep-interactive preserves it, so the next "
                     + "headless run still parks at each phase boundary for a recorded h9k review proceed. Refused "
                     + "when the claim's session was recorded on another machine this one cannot check — --force "
-                    + "attests you confirmed by hand that it has exited.")
+                    + "attests you confirmed by hand that it has exited. --unassign takes the same untouched claim "
+                    + "straight to Published instead of back to the queue, in one atomic act — nothing between "
+                    + "them ever leaves the task visible to the dispatcher as claimable, unlike a separate release "
+                    + "followed by h9k task unassign.")
                 .WithExample("task", "release", "28b19893")
-                .WithExample("task", "release", "28b19893", "--keep-interactive");
+                .WithExample("task", "release", "28b19893", "--keep-interactive")
+                .WithExample("task", "release", "28b19893", "--unassign");
             task.AddCommand<TaskHandbackCommand>("handback")
                 .WithDescription(
                     "Hand an interactive claim to a headless agent partway through: refuses on uncommitted "
