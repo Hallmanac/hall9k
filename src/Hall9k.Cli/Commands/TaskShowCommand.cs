@@ -45,12 +45,51 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             ?? throw new DomainNotFoundException($"No task {taskId}.");
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(details.ProjectId, cancellationToken);
 
+        // One "now" for every still-open elapsed figure this command renders — the phase line's
+        // own liveness and the passage section's own open phases below should never disagree
+        // about what instant "so far" was measured against.
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
         // State, phase, attention — the three surfaces, before the context mountain
         // (Decisions Log #66). Composed by the same composer h9k status reads, so the answer to
         // "why am I looking at this" is the same answer on both screens.
-        TaskStatusRow? row = await TaskStatusComposer.ComposeOneAsync(
-            session, details, DateTimeOffset.UtcNow, cancellationToken);
-        WriteStanding(row, details);
+        TaskStatusRow? row = await TaskStatusComposer.ComposeOneAsync(session, details, now, cancellationToken);
+
+        // Whether the task has truly closed out — the merge observed, or a task that never
+        // pushed anything closed by hand — the same bar the header's own Draft/pre-approval row
+        // below reads. Raw TaskState.IsTerminal is the wrong test for this: TaskCompleted sets
+        // TaskState.Done the moment a pull request opens, so it already reads true for the whole
+        // window the closeout monitor still watches the merge (independent pre-PR review, cycle 1,
+        // both lenses: passing IsTerminal to TaskPassageQuery.ReadAsync below made every Delivered
+        // task's merge wait and claim-to-merge render "unknown" instead of the live counter).
+        bool trueCloseout = row is not null && row.State == LifecycleState.Done;
+
+        // Whether the passage's merge-anchored rows have truly concluded — nothing further will
+        // ever close an open merge wait. trueCloseout is the bar for an ordinary merge; Abandoned
+        // is concluded too, since a walked-away task with an open pull request has nothing further
+        // that will ever merge it.
+        //
+        // Deliberately NOT widened to every Done task whose composed row still reads Delivered
+        // (independent pre-PR review, cycle 3, conformance finding): a pull request closed
+        // without merging is exactly that shape, and TaskPassageQuery.FoldUntilMerged now reads
+        // it directly off the owning run's own PullRequestClosed event rather than through this
+        // flag, so it renders Unknown() regardless of what this bool says. A hand-resolved task
+        // (h9k task resolve --pr <url> on a Failed run) is the other Done-but-Delivered shape
+        // and is deliberately left reading Open "so far" here: CloseoutEngine.PollOnceAsync's own
+        // orphaned-run sweep keeps polling that exact run (PullRequestRecordedOnFailedRun set its
+        // PullRequestNumber, and its FailureReason is not PullRequestClosedWithoutMerge), so a
+        // real merge can still land and close it — growing "so far" is the honest answer, not a
+        // defect, for as long as that stays true.
+        bool taskConcluded = trueCloseout || details.State == TaskState.Abandoned;
+
+        // A task's passage in time (task: h9k task show tells a task's passage in time), read
+        // from the same task and run streams h9k status and h9k project show can fold the
+        // identical way through TaskPassageQuery.ReadAsync — no flag, and no gate on the task's
+        // own state: an assigned-but-unclaimed task still has a queued phase worth showing, and
+        // AppendPassage below says nothing at all when nothing on the task has happened yet.
+        TaskPassage passage = await TaskPassageQuery.ReadAsync(
+            session, details.Id, details.Type, taskConcluded, now, cancellationToken);
+        WriteStanding(row, details, passage);
 
         Table header = new Table().Border(TableBorder.None).HideHeaders();
         header.AddColumns("k", "v");
@@ -96,8 +135,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // abandonment must not go on claiming a merge the platform will never attempt (independent
         // pre-PR review, cycle 1, adversarial lens). A row that could not be composed carries no
         // closeout answer to gate on, so it falls back to the raw state's own Abandoned check
-        // rather than guessing.
-        bool trueCloseout = row is not null && row.State == LifecycleState.Done;
+        // rather than guessing. (trueCloseout itself is computed once, above, alongside
+        // taskConcluded — the passage section's own merge-anchored rows need the identical bar.)
         if (details.EffectivePreApproval.MergesAutomatically
             && details.State != TaskState.Abandoned
             && !trueCloseout)
@@ -559,7 +598,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// lands: the block is a list of labelled rows for exactly that reason.
     /// </para>
     /// </summary>
-    private static void WriteStanding(TaskStatusRow? row, TaskDetails details)
+    private static void WriteStanding(TaskStatusRow? row, TaskDetails details, TaskPassage passage)
     {
         Table standing = new Table().Border(TableBorder.None).HideHeaders();
         standing.AddColumns("k", "v");
@@ -595,8 +634,152 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 row.Attention.Markup);
         }
 
+        AppendPassage(standing, passage);
+
         AnsiConsole.Write(standing);
     }
+
+    /// <summary>
+    /// A task's passage in time (task: h9k task show tells a task's passage in time), one row per
+    /// line so a reader's eye lands on it right under the phase line rather than after the whole
+    /// context mountain below. Prints nothing at all when <paramref name="passage"/> has nothing
+    /// to say yet — a Draft or Published task that has never been assigned has no queued phase,
+    /// no runs, and nothing else this section could honestly report.
+    /// </summary>
+    private static void AppendPassage(Table standing, TaskPassage passage)
+    {
+        List<string> lines = ComposePassageLines(passage);
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        standing.AddRow("[bold]Passage[/]", lines[0]);
+        foreach (string line in lines.Skip(1))
+        {
+            standing.AddRow(string.Empty, line);
+        }
+    }
+
+    /// <summary>
+    /// The passage section's own lines, composed rather than printed directly (the same split
+    /// <see cref="ComposeChangesRequestedReviews"/> already uses) so what a reader sees is
+    /// assertable without a terminal. Empty exactly when every field on <paramref name="passage"/>
+    /// is <see cref="PassagePhase.NotApplicable"/>/zero/empty — nothing on the task has happened
+    /// yet worth reporting a passage over.
+    /// </summary>
+    internal static List<string> ComposePassageLines(TaskPassage passage)
+    {
+        bool reviewHasAnything = passage.Review.Cycles > 0 || passage.Review.FixSessions > 0
+            || passage.Review.StillOpen || passage.Review.FixStillOpen;
+        bool hasAnything = passage.Queued.Applicable || passage.Building.Applicable || passage.Gates > TimeSpan.Zero
+            || reviewHasAnything || passage.Delivery.Applicable
+            || passage.MergeWait.Applicable || passage.HumanWaits.Count > 0 || passage.ClaimToMerge.Applicable
+            || passage.Laps.Count > 0 || passage.Sessions > 0;
+        if (!hasAnything)
+        {
+            return [];
+        }
+
+        List<string> clock = [];
+        AddClause(clock, "queued", passage.Queued);
+        AddClause(clock, "build", passage.Building);
+        if (passage.Gates > TimeSpan.Zero)
+        {
+            clock.Add($"gates {FormatDuration(passage.Gates)}");
+        }
+
+        List<string> review = [];
+        if (reviewHasAnything)
+        {
+            string cycles = $"review {passage.Review.Cycles} cycle{(passage.Review.Cycles == 1 ? "" : "s")} "
+                + $"{FormatDuration(passage.Review.Elapsed)}{(passage.Review.StillOpen ? " so far" : string.Empty)}";
+            // FixStillOpen alongside the completed count, the same reasoning reviewHasAnything
+            // above already applies: a fix session mid-flight before its first
+            // ReviewFixCompleted has FixSessions still 0, and gating on the count alone would
+            // silently drop its own elapsed-so-far from this clause (class sweep off the
+            // Cycles/StillOpen finding above — independent pre-PR review, cycle 1, both lenses).
+            string fix = passage.Review.FixSessions > 0 || passage.Review.FixStillOpen
+                ? $" ({passage.Review.FixSessions} fix session{(passage.Review.FixSessions == 1 ? "" : "s")} "
+                  + $"{FormatDuration(passage.Review.FixElapsed)}{(passage.Review.FixStillOpen ? " so far" : string.Empty)})"
+                : string.Empty;
+            review.Add(cycles + fix);
+        }
+
+        List<string> delivery = [];
+        AddClause(delivery, "delivery", passage.Delivery);
+        AddClause(delivery, "merge wait", passage.MergeWait);
+
+        List<string> humanWaits = [.. passage.HumanWaits.Select(wait =>
+            $"{HumanWaitLabel(wait.Kind)} {FormatPhaseValue(wait.Elapsed)}")];
+
+        List<string> summary = [];
+        AddClause(summary, "claim to merge", passage.ClaimToMerge);
+        summary.Add(FormatLaps(passage.Laps));
+        summary.Add($"sessions {passage.Sessions}");
+
+        List<string> lines = [];
+        if (clock.Count > 0)
+        {
+            lines.Add(string.Join(" [dim]·[/] ", clock));
+        }
+
+        lines.AddRange(review);
+        if (delivery.Count > 0)
+        {
+            lines.Add(string.Join(" [dim]·[/] ", delivery));
+        }
+
+        lines.AddRange(humanWaits);
+        lines.Add(string.Join(" [dim]·[/] ", summary));
+
+        return lines;
+    }
+
+    private static void AddClause(List<string> clauses, string label, PassagePhase phase)
+    {
+        string? value = FormatPhaseOrNull(phase);
+        if (value is not null)
+        {
+            clauses.Add($"{label} {value}");
+        }
+    }
+
+    private static string? FormatPhaseOrNull(PassagePhase phase) => phase.Applicable ? FormatPhaseValue(phase) : null;
+
+    private static string FormatPhaseValue(PassagePhase phase) => phase.Elapsed is { } elapsed
+        ? $"{FormatDuration(elapsed)}{(phase.StillOpen ? " so far" : string.Empty)}"
+        : "unknown";
+
+    private static string HumanWaitLabel(HumanWaitKind kind) => kind switch
+    {
+        HumanWaitKind.ReviewPark => "parked for review",
+        HumanWaitKind.CloseoutPark => "parked for closeout budget",
+        HumanWaitKind.Question => "waited on your answer",
+        HumanWaitKind.PendingExternalReview => "waited on the external review request",
+        _ => "waited",
+    };
+
+    private static string FormatLaps(IReadOnlyList<LapKindCount> laps)
+    {
+        int total = laps.Sum(lap => lap.Count);
+        if (total == 0)
+        {
+            return "laps 0";
+        }
+
+        string breakdown = string.Join(", ", laps.Select(lap => $"{LapKindLabel(lap.Kind)} {lap.Count}"));
+        return $"laps {total} ({breakdown})";
+    }
+
+    private static string LapKindLabel(FollowUpKind kind) => kind switch
+    {
+        _ when kind == FollowUpKind.Rebase => "rebase",
+        _ when kind == FollowUpKind.FailingChecks => "failing checks",
+        _ when kind == FollowUpKind.ReviewRequestedChanges => "changes requested",
+        _ when kind == FollowUpKind.StackReplay => "stack replay",
+        _ => "review feedback",
+    };
 
     /// <summary>
     /// What the lifecycle word means, spelled out once where there is room for it. The board has

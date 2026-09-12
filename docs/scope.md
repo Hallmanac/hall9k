@@ -94,6 +94,21 @@ percent per run: that smooth multi-day drift, the origin incident's own shape, s
 threshold on every run of the climb and is not what this flag catches. Seeing that shape still
 needs a human reading the Gates column's own raw numbers over time.
 
+`h9k task show` also renders a task's own passage in time, computed fresh on every read from the
+task's own stream and every run it has dispatched, never a persisted projection: how long it sat
+queued, how long each run spent building before its first verification, gate wall-clock time
+summed across every run, every pre-PR review cycle and fix session with their own elapsed time,
+the delivery window between the final review verdict and the push, how long the pull request
+waited for its merge and how long the whole task took from first claim to merge, every wait on a
+human (parked for review, parked for closeout budget, an unanswered question, or — for a pr-review
+task — the wait on the external review request itself) reported as its own row in addition to,
+not carved out of, whichever phase it interrupted — the two overlap in time, so the rows are not
+meant to be added on top of the phase figures — and the closing lap, review-cycle, and session
+counts. A phase that has
+not closed yet renders its elapsed-so-far rather than nothing; a phase whose own boundary event
+genuinely cannot be found (an older stream missing a field, or a wait a run ended without ever
+resolving) renders "unknown" rather than a bare zero.
+
 ### Interactive claims
 
 `h9k task work <id> [--direct-launch] [--acknowledge-unmet-dependencies]` lets an operator work a
