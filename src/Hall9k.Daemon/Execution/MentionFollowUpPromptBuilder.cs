@@ -135,5 +135,20 @@ public static class MentionFollowUpPromptBuilder
 
     private static string OneLine(string text) => RelayedText.OneLine(text).Trim();
 
-    private static string Block(string text) => RelayedText.Printable(text);
+    /// <summary>
+    /// Fenced, not merely printable: this text is a GitHub comment body, written by whoever can
+    /// comment on the pull request, landing here with no delimiter of its own between it and the
+    /// platform's surrounding instructions. <see cref="RelayedText.FenceFor"/> picks a backtick run
+    /// longer than any the text itself contains, so a forged closing fence inside the comment
+    /// cannot end the quote early and make the platform's own following headings read as part of
+    /// it — the same boundary <see cref="Hall9k.Connectors.WorkItems.WorkItemContext.Compose"/>
+    /// draws around an imported item's body (independent pre-PR review, cycle 1, adversarial
+    /// lens).
+    /// </summary>
+    private static string Block(string text)
+    {
+        string printable = RelayedText.Printable(text);
+        string fence = RelayedText.FenceFor(printable);
+        return printable.EndsWith('\n') ? $"{fence}\n{printable}{fence}" : $"{fence}\n{printable}\n{fence}";
+    }
 }
