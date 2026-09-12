@@ -418,12 +418,25 @@ public sealed class RunLauncher(
                 // appends to the findings report as a "You were asked" section — the identical
                 // shape a mention that instead attaches to an already-reviewed pull request gets
                 // from PrReviewEngine.DriveMentionFollowUpAsync's own bounded lap.
+                //
+                // Read off task.LatestMention* rather than the ObservedReviewMention row queried
+                // by TaskId/Outcome==TaskCreated: at "now" speed (the only speed that reaches here
+                // before ProcessMentionAsync's own session.Store(observed) has committed) that row
+                // does not exist yet, so a query-based read finds nothing on the common path. A
+                // second mention landing on this same task before its first ("first"/"normal"
+                // speed) dispatch can still move these fields — a narrower version of the same
+                // staleness independent pre-PR review (cycle 1, both lenses) found in
+                // PrReviewEngine's own park line — named rather than fixed here, since closing it
+                // needs a stable "minted by exactly this comment" marker distinct from "the most
+                // recent mention observed," which the first-observed-mention heuristic this method
+                // could otherwise reach for gets wrong for a request-minted task that picks up a
+                // mention before its own first dispatch.
                 if (task.LatestMentionCommentId is not null && task.LatestMentionAuthorLogin is not null
                     && task.LatestMentionCreatedAt is { } mentionCreatedAt)
                 {
                     prompt += "\n\n" + MentionFollowUpPromptBuilder.BuildMintAddendum(
                         task.LatestMentionAuthorLogin, mentionCreatedAt, task.LatestMentionBody ?? string.Empty,
-                        task.LatestMentionUrl);
+                        task.LatestMentionUrl, runDirectory);
                 }
             }
             else if (followUp is { } review)

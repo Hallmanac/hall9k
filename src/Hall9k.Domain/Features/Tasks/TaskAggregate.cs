@@ -511,6 +511,9 @@ public sealed class TaskAggregate
     /// <summary>See <see cref="LatestMentionCommentId"/> — GitHub's own timestamp for the comment, not this install's poll time.</summary>
     public DateTimeOffset? LatestMentionCreatedAt { get; private set; }
 
+    /// <summary>See <see cref="LatestMentionCommentId"/> — the numeric REST id, set only for an inline review-comment-thread reply, the one shape the REST reply endpoint's own <c>in_reply_to</c> accepts; null for every other comment shape, or a mention observed before this field existed.</summary>
+    public long? LatestMentionCommentDatabaseId { get; private set; }
+
     /// <summary>
     /// The run a human reviewer's own review lap is riding on (<c>h9k pr review</c>, Decisions
     /// Log #149), or null when no lap has ever been opened on this task. Never cleared by
@@ -1452,6 +1455,7 @@ public sealed class TaskAggregate
         LatestMentionBody = @event.CommentBody;
         LatestMentionUrl = @event.CommentUrl;
         LatestMentionCreatedAt = @event.CommentCreatedAt;
+        LatestMentionCommentDatabaseId = @event.CommentDatabaseId;
     }
 
     public void Apply(PullRequestReviewLapOpened @event)

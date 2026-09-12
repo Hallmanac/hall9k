@@ -5,6 +5,8 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -1265,7 +1267,9 @@ public sealed class AutoPrReviewEngine(
             MentionedLogin = login,
             CommentId = comment.CommentId,
             CommentAuthorLogin = comment.AuthorLogin,
+            CommentBody = comment.Body,
             CommentUrl = comment.Url,
+            CommentDatabaseId = comment.DatabaseId,
             CommentCreatedAt = comment.CreatedAt,
             ObservedAt = DateTimeOffset.UtcNow,
             Outcome = decision.Outcome,
@@ -1312,7 +1316,11 @@ public sealed class AutoPrReviewEngine(
     /// comment's own <c>createdAt</c> already IS the fact both the cutoff and the record need):
     /// <list type="number">
     /// <item>Is a live pr-review task already covering this pull request? Attach rather than mint —
-    /// never a second task per pull request per install.</item>
+    /// never a second task per pull request per install. Attaching always records the mention on
+    /// the task's own stream; whether it ALSO dispatches a follow-up lap is gated by the identical
+    /// cutoff and setting checks below, computed once here and handed in — a covering task must
+    /// never buy an attach-triggered launch a mint on the same comment could not (independent
+    /// pre-PR review, cycle 1, both lenses).</item>
     /// <item>Does the comment postdate this project's own cutoff? The no-backfill guard outranks
     /// the setting, exactly as it does on the request side.</item>
     /// <item>Is the setting off here? Then the row is theirs to act on.</item>
@@ -1336,12 +1344,14 @@ public sealed class AutoPrReviewEngine(
                 TaskType.PrReview.Value, TaskState.Done.Value))
             .OrderByDescending(task => task.AddedAt)
             .FirstOrDefaultAsync(cancellationToken);
+
+        bool pastCutoff = AutoPrReviewCutoff.StartsOnItsOwn(comment.CreatedAt, cutoff);
         if (likelyCovering is not null)
         {
-            return await AttachMentionAsync(session, likelyCovering, candidate, comment, cancellationToken);
+            return await AttachMentionAsync(session, likelyCovering, setting, pastCutoff, candidate, comment, cancellationToken);
         }
 
-        if (!AutoPrReviewCutoff.StartsOnItsOwn(comment.CreatedAt, cutoff))
+        if (!pastCutoff)
         {
             return (ReviewMentionOutcome.HeldBeforeCutoff, null, null);
         }
@@ -1353,7 +1363,8 @@ public sealed class AutoPrReviewEngine(
 
         try
         {
-            return await CreateFromMentionAsync(session, project, setting, repository, candidate, login, comment, cancellationToken);
+            return await CreateFromMentionAsync(
+                session, project, setting, repository, candidate, login, comment, pastCutoff, cancellationToken);
         }
         catch (DomainException exception)
         {
@@ -1366,15 +1377,34 @@ public sealed class AutoPrReviewEngine(
 
     /// <summary>
     /// Attaches a mention to a live pr-review task that already covers this pull request — never a
-    /// second task (idea 2f079bcd, decision 2). Dispatches the bounded follow-up lap when the task
-    /// is currently eligible for one (<see cref="TaskDecider.AwaitsPrReviewFollowThrough"/>: the
-    /// report is already parked, or the task is waiting on the pull request) — never for a task
-    /// that is still Queued, Blocked, or actively Claimed by a live run, where the mention is
-    /// recorded for the record and picked up by whatever runs next rather than interrupting it.
+    /// second task (idea 2f079bcd, decision 2). The attach itself — recording the mention on the
+    /// task's own stream — always happens: it costs nothing and keeps the record honest whatever
+    /// the setting says, exactly as an observed review request is recorded whatever the setting
+    /// says. Dispatching the bounded follow-up lap is a second, separate decision, gated on all of:
+    /// <list type="number">
+    /// <item>the task is currently eligible for one at all
+    /// (<see cref="TaskDecider.AwaitsPrReviewMentionFollowUp"/>: the report is already parked and
+    /// unresolved, or the task is waiting on the pull request or the author) — never for a task
+    /// that is still Queued, Blocked, or actively being reviewed by a live run, where the mention
+    /// is recorded for the record and picked up by whatever runs next rather than interrupting it;</item>
+    /// <item><paramref name="pastCutoff"/> and <paramref name="setting"/> being on — the identical
+    /// no-backfill and off-silences-it guards a mint answers to, since dispatching here is exactly
+    /// as much a "start on its own" action as a mint is (independent pre-PR review, cycle 1, both
+    /// lenses: this ordering used to attach-and-launch before ever asking either question); and</item>
+    /// <item>this sweep's own shared ceiling — a node-wide launch hold, or the one ceiling-exempt
+    /// immediate launch <see cref="MaxImmediateLaunchesPerSweep"/> allows across BOTH triggers —
+    /// since this claim uses the identical ceiling-exempt sentinel a mint's own Now-speed launch
+    /// does, and bypasses the ordinary dispatcher exactly as that launch does.</item>
+    /// </list>
+    /// A comment id is a one-shot dedup key (the class doc on <see cref="ObservedReviewMention"/>),
+    /// so a mention held back by the ceiling or a launch hold is not retried automatically — it
+    /// stays attached and visible on the task (an owner can always run
+    /// <c>h9k pr review --since-my-review</c> by hand), rather than silently reappearing to
+    /// automation on some later sweep with no record of ever having been seen before.
     /// </summary>
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> AttachMentionAsync(
-        IDocumentSession session, TaskListItem existing, ReviewRequestedPullRequest candidate,
-        PullRequestMentionComment comment, CancellationToken cancellationToken)
+        IDocumentSession session, TaskListItem existing, AutoPrReviewSetting setting, bool pastCutoff,
+        ReviewRequestedPullRequest candidate, PullRequestMentionComment comment, CancellationToken cancellationToken)
     {
         StreamState? fence = await session.Events.FetchStreamStateAsync(existing.Id, cancellationToken);
         if (fence is null)
@@ -1392,9 +1422,10 @@ public sealed class AutoPrReviewEngine(
         DateTimeOffset now = DateTimeOffset.UtcNow;
         PullRequestReviewMentionObserved observed = TaskDecider.ObservePrReviewMention(
             task, candidate.Url, comment.CommentId, comment.AuthorLogin, comment.Body, comment.Url,
-            comment.CreatedAt, now);
+            comment.CreatedAt, now, comment.DatabaseId);
 
-        if (!TaskDecider.AwaitsPrReviewFollowThrough(task))
+        bool reportParkedAwaitingWalk = await IsReportParkedAwaitingWalkAsync(session, task, cancellationToken);
+        if (!TaskDecider.AwaitsPrReviewMentionFollowUp(task, reportParkedAwaitingWalk))
         {
             session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
             await session.SaveChangesAsync(cancellationToken);
@@ -1404,10 +1435,55 @@ public sealed class AutoPrReviewEngine(
                 + "report, so no follow-up was dispatched");
         }
 
+        if (!pastCutoff)
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            return (
+                ReviewMentionOutcome.Attached, existing.Id,
+                "recorded; the comment predates this project's own auto-pr-review cutoff, so no follow-up "
+                + "was dispatched (the no-backfill guard) — yours to take by hand");
+        }
+
+        if (!setting.IsOn)
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            return (
+                ReviewMentionOutcome.Attached, existing.Id,
+                "recorded; auto-pr-review is off here, so no follow-up was dispatched — yours to take by hand");
+        }
+
+        // Unconditional on setting.Speed, unlike a mint's own Now-only check: a follow-up has no
+        // First-speed queued alternative to fall back to (ClaimForMentionFollowUp always uses the
+        // ceiling-exempt sentinel), so the hold and the shared ceiling are the only things standing
+        // between this claim and a broken or already-spent node (independent pre-PR review, cycle
+        // 1, adversarial lens).
+        bool launchHoldActive = await LaunchHoldActiveAsync(cancellationToken);
+        bool launchImmediately = !launchHoldActive && ++_immediateLaunchesThisSweep <= MaxImmediateLaunchesPerSweep;
+        if (!launchImmediately)
+        {
+            session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
+            await session.SaveChangesAsync(cancellationToken);
+            string reason = launchHoldActive
+                ? "a node-wide launch hold stands, so this sweep never claims or launches directly into it"
+                : "this sweep already used its one immediate ceiling-exempt launch across both triggers";
+            return (
+                ReviewMentionOutcome.Attached, existing.Id,
+                $"recorded; {reason} — yours to take by hand with h9k pr review --since-my-review");
+        }
+
         Guid runId = DomainId.New();
-        Guid? priorReviewRunId = task.PrReviewFollowThroughRunId;
-        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, node.OwnerId, runId, now);
+        // The original review's own run — the one holding review-1-findings.md — rather than
+        // task.PrReviewFollowThroughRunId, which OpenPrReviewFollowThrough overwrites with whatever
+        // run most recently opened the follow-through, including an earlier follow-up's own run
+        // with no findings file of its own (independent pre-PR review, cycle 1, adversarial lens).
+        // RunIds[0] is always that original review, because a pr-review task's very first dispatch
+        // is always its adversarial-lens review (RunLauncher's own isPrReview branch).
+        Guid? priorReviewRunId = task.RunIds.Count > 0 ? task.RunIds[0] : null;
+        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, node.OwnerId, runId, now, reportParkedAwaitingWalk);
         session.Events.Append(existing.Id, expectedVersion: fence.Version + 2, observed, claimed);
+        long claimedVersion = fence.Version + 2;
         await session.SaveChangesAsync(cancellationToken);
 
         try
@@ -1418,12 +1494,38 @@ public sealed class AutoPrReviewEngine(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // The identical fenced compensation FailDeliberateLaunchAsync runs for a mint's own
+            // deliberate claim (independent pre-PR review, cycle 1, adversarial lens): uncaught,
+            // a daemon shutdown mid-launch would leave this task permanently Claimed under a run
+            // with no stream and nothing that ever recovers it.
+            await FailDeliberateLaunchAsync(
+                existing.Id, runId, claimedVersion,
+                "the daemon stopped while launching this mention follow-up", CancellationToken.None);
             throw;
         }
 
         return (
             ReviewMentionOutcome.Attached, existing.Id,
             "attached, and a bounded follow-up lap was dispatched to answer it");
+    }
+
+    /// <summary>
+    /// Whether this pr-review task's own report is parked and not yet resolved — a fact that lives
+    /// entirely on the run stream (<c>PrReviewEngine.ComposeReportAndParkAsync</c> leaves the task
+    /// itself Claimed and parks its current run in <c>RunState.ReviewParked</c>), so
+    /// <see cref="TaskAggregate"/> alone can never answer it. Read here, once, and handed to the
+    /// domain as an observed fact (<see cref="TaskDecider.AwaitsPrReviewMentionFollowUp"/>).
+    /// </summary>
+    private async Task<bool> IsReportParkedAwaitingWalkAsync(
+        IDocumentSession session, TaskAggregate task, CancellationToken cancellationToken)
+    {
+        if (task.Type != TaskType.PrReview || task.State != TaskState.Claimed || task.CurrentRunId is not { } runId)
+        {
+            return false;
+        }
+
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        return run?.State == RunState.ReviewParked;
     }
 
     /// <summary>
@@ -1436,7 +1538,7 @@ public sealed class AutoPrReviewEngine(
     /// </summary>
     private async Task<(ReviewMentionOutcome Outcome, Guid? TaskId, string? Detail)> CreateFromMentionAsync(
         IDocumentSession session, ProjectDetails project, AutoPrReviewSetting setting, string repository,
-        ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment,
+        ReviewRequestedPullRequest candidate, string login, PullRequestMentionComment comment, bool pastCutoff,
         CancellationToken cancellationToken)
     {
         WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken, processRunner: processRunner);
@@ -1457,8 +1559,10 @@ public sealed class AutoPrReviewEngine(
         {
             // The canonical dedup caught a live task the guessed-reference fast path in
             // DecideMentionAsync missed (a casing mismatch) — attach, the same discipline
-            // CreateOneAsync's own identical canonical re-check follows.
-            return await AttachMentionAsync(session, existing, candidate, comment, cancellationToken);
+            // CreateOneAsync's own identical canonical re-check follows. pastCutoff is already
+            // known true and setting.IsOn already known on here — DecideMentionAsync only reaches
+            // this method after both gates passed.
+            return await AttachMentionAsync(session, existing, setting, pastCutoff, candidate, comment, cancellationToken);
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -1486,7 +1590,7 @@ public sealed class AutoPrReviewEngine(
 
         PullRequestReviewMentionObserved observed = new(
             taskId, imported.Url?.ToString() ?? candidate.Url, comment.CommentId, comment.AuthorLogin,
-            comment.Body, comment.Url, comment.CreatedAt, now);
+            comment.Body, comment.Url, comment.CreatedAt, now, comment.DatabaseId);
 
         TaskAggregate task = new();
         task.Apply(added);

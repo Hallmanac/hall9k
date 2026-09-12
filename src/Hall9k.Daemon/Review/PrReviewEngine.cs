@@ -3,6 +3,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Documents;
@@ -19,6 +20,7 @@ using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
+using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Review;
@@ -621,13 +623,24 @@ public sealed class PrReviewEngine(
         // of their comment are exactly what the orchestrator window's own board reads off
         // run.ParkedReason for every other park, and a reader deciding what to look at next should
         // not have to open the file to learn who is asking and about what.
+        //
+        // Read off the ObservedReviewMention row for the exact comment THIS run answers
+        // (run.PrReviewMentionCommentId, frozen at dispatch), never task.LatestMention* — a second
+        // mention attaching while this run was in flight moves those fields to the newer comment,
+        // and this park would otherwise credit the wrong author with the answer it actually gives
+        // (independent pre-PR review, cycle 1, both lenses).
+        ObservedReviewMention? answeredMention = run.PrReviewMentionCommentId is { } answeredCommentId
+            ? await session.Query<ObservedReviewMention>()
+                .Where(mention => mention.CommentId == answeredCommentId)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
         string pullRequestName = task.ExternalReference.IsNotBlank()
             ? ExternalReference.Parse(task.ExternalReference).Reference
             : "this pull request";
-        string firstCommentLine = FirstLine(task.LatestMentionBody);
+        string firstCommentLine = FirstLine(answeredMention?.CommentBody ?? string.Empty);
         session.Events.Append(runId, new ReviewParked(
             runId,
-            $"{pullRequestName}: {task.LatestMentionAuthorLogin ?? "someone"} tagged you"
+            $"{pullRequestName}: {answeredMention?.CommentAuthorLogin ?? "someone"} tagged you"
             + (firstCommentLine.IsNotBlank() ? $" — \"{firstCommentLine}\"" : string.Empty)
             + $". Addendum: {addendumPath}. Walk it with walk-pr-review-findings — show the drafted reply, "
             + "take any edits, and post it only on the owner's explicit go — then resolve with "
@@ -708,10 +721,21 @@ public sealed class PrReviewEngine(
         // Gated on mentionAnswer, not task.LatestMentionCommentId: a mention that attached to this
         // task while this same run was already in flight leaves that field set with no answer in
         // the report to point at, and the line must never claim one that is not there.
+        //
+        // Read off the ObservedReviewMention row this task was actually MINTED from (Outcome ==
+        // TaskCreated), never task.LatestMention* — a second mention attaching to this task while
+        // this same run was still in flight moves those fields to the newer comment, which this
+        // report never answered (independent pre-PR review, cycle 1, both lenses).
+        ObservedReviewMention? mintingMention = mentionAnswer.IsNotBlank()
+            ? await session.Query<ObservedReviewMention>()
+                .Where(mention => mention.TaskId == taskId)
+                .Where(mention => mention.MatchesSql("d.data ->> 'outcome' = ?", ReviewMentionOutcome.TaskCreated.Value))
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
         string mentionPrefix = mentionAnswer.IsNotBlank()
             ? $"{(task.ExternalReference.IsNotBlank() ? ExternalReference.Parse(task.ExternalReference).Reference : "This pull request")}: "
-              + $"{task.LatestMentionAuthorLogin ?? "someone"} tagged you"
-              + (FirstLine(task.LatestMentionBody) is { Length: > 0 } firstLine ? $" — \"{firstLine}\". " : ". ")
+              + $"{mintingMention?.CommentAuthorLogin ?? "someone"} tagged you"
+              + (FirstLine(mintingMention?.CommentBody ?? string.Empty) is { Length: > 0 } firstLine ? $" — \"{firstLine}\". " : ". ")
             : string.Empty;
         session.Events.Append(runId, new ReviewParked(
             runId,

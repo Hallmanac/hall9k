@@ -1678,7 +1678,8 @@ public static class TaskDecider
     /// </summary>
     public static PullRequestReviewMentionObserved ObservePrReviewMention(
         TaskAggregate task, string pullRequestUrl, string commentId, string commentAuthorLogin,
-        string commentBody, string commentUrl, DateTimeOffset commentCreatedAt, DateTimeOffset observedAt)
+        string commentBody, string commentUrl, DateTimeOffset commentCreatedAt, DateTimeOffset observedAt,
+        long? commentDatabaseId = null)
     {
         if (task.Type != TaskType.PrReview)
         {
@@ -1697,24 +1698,47 @@ public static class TaskDecider
 
         return new PullRequestReviewMentionObserved(
             task.Id, pullRequestUrl, commentId, commentAuthorLogin, commentBody, commentUrl, commentCreatedAt,
-            observedAt);
+            observedAt, commentDatabaseId);
     }
+
+    /// <summary>
+    /// Whether a mention attaching to this task should dispatch a bounded follow-up lap (idea
+    /// 2f079bcd, decision 2 and 3): either of the two states <see cref="AwaitsPrReviewFollowThrough"/>
+    /// already admits (the review was delivered and the task is waiting on the pull request or on
+    /// the author), or — the state that predicate cannot see, because it lives on the run stream,
+    /// never the task's own — a report already parked and not yet resolved, where the task itself
+    /// is still Claimed and its current run sits in <c>RunState.ReviewParked</c>
+    /// (<c>PrReviewEngine.ComposeReportAndParkAsync</c>'s own doc: "the task stays Claimed"). The
+    /// daemon reads that run state and hands the answer in here as <paramref name="reportParkedAwaitingWalk"/>
+    /// rather than this method reaching across to the run stream itself, the same
+    /// cross-aggregate-fact-as-parameter shape <see cref="ObservePrReviewFollowThrough"/> already
+    /// takes its own GitHub read as.
+    /// </summary>
+    public static bool AwaitsPrReviewMentionFollowUp(TaskAggregate task, bool reportParkedAwaitingWalk) =>
+        AwaitsPrReviewFollowThrough(task)
+        || (reportParkedAwaitingWalk && task.Type == TaskType.PrReview && task.State == TaskState.Claimed);
 
     /// <summary>
     /// The mention follow-up's own claim (auto-pr-review's second trigger, idea 2f079bcd): a
     /// fourth sibling of <see cref="ClaimInteractively"/>, <see cref="ClaimDeliberately"/> and
-    /// <see cref="ClaimForScopedReviewLap"/>, entered from the identical pair of states
-    /// <see cref="ClaimForScopedReviewLap"/> accepts (<see cref="AwaitsPrReviewFollowThrough"/> —
-    /// the report already parked, or the task waiting on the pull request) but headless like
+    /// <see cref="ClaimForScopedReviewLap"/>, entered from either state
+    /// <see cref="AwaitsPrReviewMentionFollowUp"/> admits, but headless like
     /// <see cref="ClaimDeliberately"/>'s own automatic dispatch: a GitHub mention is the daemon's
     /// own go signal, not a human sitting at a terminal running <c>h9k pr review</c>, so
     /// <c>InteractiveMode</c> is false and there is no assigned-owner identity check — the caller
     /// is always the sweep's own node owner, exactly as an auto-created mint already is.
     /// </summary>
     public static TaskClaimed ClaimForMentionFollowUp(
-        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt)
+        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool reportParkedAwaitingWalk)
     {
-        RefuseUnlessFollowingThrough(task, "dispatch a mention follow-up on");
+        if (!AwaitsPrReviewMentionFollowUp(task, reportParkedAwaitingWalk))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a {task.Type.Value} task in {task.State.Value} with no posted review "
+                + "being followed through and no parked report awaiting a walk, so there is nothing to "
+                + "dispatch a mention follow-up on.");
+        }
+
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
             DependencyOverrideAcknowledged: false, DependencyOverrideCarriedForward: false,

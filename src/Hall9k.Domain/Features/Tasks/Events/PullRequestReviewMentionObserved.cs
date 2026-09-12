@@ -16,6 +16,14 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// <see cref="PullRequestReviewAssignmentObserved"/> already keeps between a provider fact and a
 /// local observation moment.
 /// </para>
+/// <para>
+/// <see cref="CommentDatabaseId"/> is the numeric REST id, set only when the comment is an inline
+/// review-comment-thread reply — the one shape the REST reply endpoint's own <c>in_reply_to</c>
+/// parameter accepts (<c>CommentId</c> is the GraphQL node id, which 404s there). Null for an
+/// issue comment, a review body, or the pull request's own description, exactly as
+/// <c>PullRequestMentionComment.DatabaseId</c> is — a reader seeing null already knows to post an
+/// ordinary comment instead. Null also on a stream written before this field existed.
+/// </para>
 /// </summary>
 public sealed record PullRequestReviewMentionObserved(
     Guid Id,
@@ -25,4 +33,5 @@ public sealed record PullRequestReviewMentionObserved(
     string CommentBody,
     string CommentUrl,
     DateTimeOffset CommentCreatedAt,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    long? CommentDatabaseId = null);

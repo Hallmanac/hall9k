@@ -423,8 +423,16 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         executor.Request.Should().NotBeNull("Now speed launches the primary review session immediately");
         executor.Request!.Prompt.Should().Contain("@brian does this handle the empty-list case?");
-        executor.Request.Prompt.Should().Contain("mention-answer.md");
         executor.Request.Prompt.Should().Contain("ryan");
+        // The session's own working directory is the pull request checkout, a different directory
+        // entirely from where its findings files land — the prompt must therefore name the exact
+        // absolute path to write mention-answer.md to, never just the bare filename, or
+        // PrReviewEngine.ComposeReportAndParkAsync's own read of Path.Combine(runDirectory,
+        // "mention-answer.md") finds nothing (independent pre-PR review, cycle 1, conformance
+        // lens, high).
+        executor.Request.Prompt.Should().Contain(
+            Path.Combine(executor.Request.RunDirectory, "mention-answer.md"),
+            "the prompt must name the exact path PrReviewEngine reads back, not just the bare filename");
     }
 
     [Fact]
@@ -523,6 +531,86 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
         observed.Outcome.Should().Be(ReviewMentionOutcome.HeldSettingOff);
+    }
+
+    /// <summary>
+    /// Off silences a follow-up dispatch onto an existing, already-covered task exactly as it
+    /// silences a mint (independent pre-PR review, cycle 1, both lenses: the attach path used to
+    /// launch before ever checking the setting). The mention still attaches — it costs nothing and
+    /// keeps the record honest — but no session is spawned.
+    /// </summary>
+    [Fact]
+    public async Task Auto_pr_review_off_silences_a_follow_up_onto_an_already_covered_task_too()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-attach-off-test";
+        const int number = 4208;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-attach-off", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off), cts.Token);
+        Guid watchedTaskId = await SeedWaitingReviewAsync(store, node, projectId, repository, number, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian one more question about this", Now.AddMinutes(5))]);
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("off silences the follow-up too"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails watched = (await query.LoadAsync<TaskDetails>(watchedTaskId, cts.Token))!;
+        watched.LatestMentionCommentId.Should().Be("IC_1", "the mention is still recorded on the task, off or not");
+        watched.State.Should().Be(TaskState.AwaitingAuthor, "no follow-up claim was made, so the task never moved off its waiting state");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.Attached);
+        observed.TaskId.Should().Be(watchedTaskId);
+    }
+
+    /// <summary>
+    /// The no-backfill guard applies to a follow-up dispatch onto an existing task exactly as it
+    /// applies to a mint (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_stale_mention_never_dispatches_a_follow_up_onto_an_already_covered_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-attach-cutoff-test";
+        const int number = 4209;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-attach-cutoff", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        Guid watchedTaskId = await SeedWaitingReviewAsync(store, node, projectId, repository, number, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian could you take a look?", Now.AddDays(-14))]);
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node, new RefusingWorktreeManager(), new RefusingExecutor("stale mentions never dispatch"), gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails watched = (await query.LoadAsync<TaskDetails>(watchedTaskId, cts.Token))!;
+        watched.LatestMentionCommentId.Should().Be("IC_1");
+        watched.State.Should().Be(TaskState.AwaitingAuthor, "no follow-up claim was made — the comment predates this project's own cutoff");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.Attached);
+        observed.TaskId.Should().Be(watchedTaskId);
     }
 
     [Fact]
@@ -665,6 +753,86 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         executor.Request.Should().NotBeNull("a bounded follow-up session was dispatched");
         executor.Request!.Prompt.Should().Contain("@brian one more question about this");
         executor.Request.Prompt.Should().Contain("ryan");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.Attached);
+        observed.TaskId.Should().Be(watchedTaskId);
+    }
+
+    /// <summary>
+    /// A task whose review already parked but is not yet resolved sits Claimed, never
+    /// AwaitingAuthor/NeedsHuman — the park lives entirely on the run stream
+    /// (<c>RunState.ReviewParked</c>), never the task's own. Both independent review lenses (cycle
+    /// 1) found <see cref="TaskDecider.AwaitsPrReviewFollowThrough"/> alone blind to this, so a
+    /// mention arriving here used to just sit recorded with no follow-up ever dispatched — exactly
+    /// the criterion's own "when that task's report is already parked" case.
+    /// </summary>
+    private static async Task<Guid> SeedParkedReviewAsync(
+        DocumentStore store, NodeContext node, Guid projectId, string repository, int number,
+        CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, $"Review pull request {repository}#{number}",
+            ["The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed."],
+            TaskType.PrReview, null, null,
+            new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#{number}"), Now.AddHours(-2), node.OwnerId);
+        TaskAggregate task = new();
+        task.Apply(added);
+        TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now.AddHours(-2), node.OwnerId);
+        task.Apply(published);
+        TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, [], Now.AddHours(-2), node.OwnerId);
+        task.Apply(assigned);
+        Guid runId = DomainId.New();
+        TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now.AddHours(-2));
+        task.Apply(claimed);
+
+        session.Events.StartStream<TaskAggregate>(taskId, [added, published, assigned, claimed]);
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, node.NodeId, node.OwnerId, LeaseGeneration: 1, SessionId: DomainId.New(),
+            WorktreePath: "/tmp/does-not-exist", Branch: $"pr/{number}", ExecutorMode.Subscription, Now.AddHours(-2)));
+        session.Events.Append(runId, new ReviewParked(
+            runId, "Pull request review complete. Findings: /tmp/does-not-exist/review-1-findings.md.", Now.AddHours(-1)));
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
+    [Fact]
+    public async Task A_mention_on_a_task_whose_report_is_parked_and_unresolved_attaches_and_dispatches_a_follow_up()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-parked-report-test";
+        const int number = 5301;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-parked", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        Guid watchedTaskId = await SeedParkedReviewAsync(store, node, projectId, repository, number, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian does the retry logic look right to you?", Now.AddMinutes(5))]);
+        CapturingExecutor executor = new();
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node, new StubWorktreeManager(), executor, gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails watched = (await query.LoadAsync<TaskDetails>(watchedTaskId, cts.Token))!;
+        watched.LatestMentionCommentId.Should().Be("IC_1");
+        watched.State.Should().Be(
+            TaskState.Claimed, "reclaimed for the bounded follow-up lap, exactly as the AwaitingAuthor case is");
+
+        executor.Request.Should().NotBeNull(
+            "a report parked and not yet resolved is one of the two states the criterion names for a dispatched follow-up");
+        executor.Request!.Prompt.Should().Contain("@brian does the retry logic look right to you?");
 
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;

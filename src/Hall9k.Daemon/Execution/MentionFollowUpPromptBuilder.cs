@@ -100,7 +100,8 @@ public static class MentionFollowUpPromptBuilder
     /// full review rather than in place of one.
     /// </summary>
     public static string BuildMintAddendum(
-        string commentAuthorLogin, DateTimeOffset commentCreatedAt, string commentBody, string? commentUrl)
+        string commentAuthorLogin, DateTimeOffset commentCreatedAt, string commentBody, string? commentUrl,
+        string runDirectory)
     {
         const string file = $"{TemplateDirectory}/mint-addendum.md";
         StringBuilder prompt = new();
@@ -123,7 +124,8 @@ public static class MentionFollowUpPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(file, "what-to-produce-heading"));
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "what-to-produce-body"));
+        prompt.AppendLine(PromptTemplates.Load(
+            file, "what-to-produce-body", Params(("MentionAnswerPath", Path.Combine(runDirectory, "mention-answer.md")))));
 
         return prompt.ToString();
     }

@@ -38,7 +38,13 @@ public sealed class ObservedReviewMention
 
     public string CommentAuthorLogin { get; set; } = string.Empty;
 
+    /// <summary>The mentioning comment's own text, verbatim — read back at park time so the needs-you line and the report's own "You were asked" section always name the comment this install actually answered, never whichever mention happened to attach most recently (independent pre-PR review, cycle 1, both lenses).</summary>
+    public string CommentBody { get; set; } = string.Empty;
+
     public string CommentUrl { get; set; } = string.Empty;
+
+    /// <summary>The numeric REST id, set only for an inline review-comment-thread reply — see <c>PullRequestMentionComment.DatabaseId</c>'s own doc for why every other shape leaves this null.</summary>
+    public long? CommentDatabaseId { get; set; }
 
     /// <summary>GitHub's own timestamp for the comment — what the no-backfill cutoff compared against.</summary>
     public DateTimeOffset CommentCreatedAt { get; set; }
