@@ -373,6 +373,65 @@ public static class ProjectDecider
     }
 
     /// <summary>
+    /// Archives a project on this install (task: a project can be archived, listed as archived,
+    /// reactivated, and renamed). Pure and database-free like every decider method here — it
+    /// refuses only what the aggregate itself already knows (already archived); the task-state
+    /// refusal named in the acceptance criteria needs a query across this project's tasks, which
+    /// only the CLI command can run, the same division <see cref="Register"/>'s duplicate-name
+    /// check already draws with <c>ProjectAddCommand</c>.
+    /// </summary>
+    public static ProjectArchived Archive(
+        ProjectAggregate project, string? reason, DateTimeOffset archivedAt, Guid archivedByOwnerId)
+    {
+        if (project.IsArchived)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is already archived"
+                + (project.ArchivedAt is { } at ? $" (since {at:g})" : string.Empty)
+                + $". Reactivate it: h9k project reactivate {project.Name}");
+        }
+
+        return new ProjectArchived(project.Id, reason.IsBlank() ? null : reason, archivedAt, archivedByOwnerId);
+    }
+
+    /// <summary>Ends an archive in place, on the same stream and the same id — the inverse of <see cref="Archive"/>.</summary>
+    public static ProjectReactivated Reactivate(
+        ProjectAggregate project, DateTimeOffset reactivatedAt, Guid reactivatedByOwnerId)
+    {
+        if (!project.IsArchived)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is not archived, so there is nothing to reactivate.");
+        }
+
+        return new ProjectReactivated(project.Id, reactivatedAt, reactivatedByOwnerId);
+    }
+
+    /// <summary>
+    /// Changes a project's name only (task: a project can be archived, listed as archived,
+    /// reactivated, and renamed) — NAME IS NOT AN IDENTIFIER, so nothing else on this project's
+    /// stream, nor any task, run, or idea that references it by id, is affected. The duplicate-name
+    /// check against every OTHER project's name is the caller's (<c>ProjectAddCommand</c>'s own
+    /// check, factored out to <see cref="ProjectNameUniqueness"/>), the same division
+    /// <see cref="Register"/>'s own duplicate check already draws.
+    /// </summary>
+    public static ProjectRenamed Rename(
+        ProjectAggregate project, string newName, DateTimeOffset renamedAt, Guid renamedByOwnerId)
+    {
+        if (newName.IsBlank())
+        {
+            throw new DomainValidationException("A project needs a name; rename needs a new one to rename it to.");
+        }
+
+        if (newName.Equals(project.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainValidationException($"'{newName}' is already this project's name.");
+        }
+
+        return new ProjectRenamed(project.Id, project.Name, newName, renamedAt, renamedByOwnerId);
+    }
+
+    /// <summary>
     /// The repository path carries the same rule <see cref="ProjectHome"/> carries, and for the
     /// same reason: it is recorded once and read back by the daemon, which runs in no particular
     /// directory, so a relative path names a different repository for every process that resolves
