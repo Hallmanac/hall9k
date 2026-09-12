@@ -395,8 +395,13 @@ public sealed class CloseoutEngine(
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (project is null)
+        if (project is null || project.IsArchived)
         {
+            // An archived project (task: a project can be archived, listed as archived,
+            // reactivated, and renamed) gets the same skip the render and auto-pr-review sweeps
+            // already give it — this install is no longer maintaining that repository, so no gh
+            // inspection, merge, or closeout event runs against it; h9k project reactivate resumes
+            // this sweep for it immediately (independent pre-PR review, cycle 1, adversarial lens).
             return InspectionOutcome.Skipped;
         }
 
@@ -418,6 +423,18 @@ public sealed class CloseoutEngine(
         {
             logger.LogDebug(
                 "Task {TaskId} advanced while inspecting its unrecorded run's pull request {Url}; deferring to the next sweep",
+                candidateId, task.PullRequestUrl);
+            return InspectionOutcome.Inspected;
+        }
+
+        // The archive check above is only as fresh as the moment it ran — the same slow network
+        // call could just as easily straddle an archive landing mid-inspection, and a project
+        // archive never advances the task stream the check above just revalidated (review thread,
+        // PR #336). Re-read it here too, rather than trusting the earlier answer through the call.
+        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { IsArchived: false })
+        {
+            logger.LogDebug(
+                "Project for task {TaskId} was archived while inspecting its unrecorded run's pull request {Url}; deferring to the next sweep",
                 candidateId, task.PullRequestUrl);
             return InspectionOutcome.Inspected;
         }
@@ -607,6 +624,19 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
+        // The archive check runs ahead of the CurrentRunId branch below (independent review, PR
+        // #336): that branch appends RunSuperseded on its own, unfenced by anything here, and an
+        // archived project (task: a project can be archived, listed as archived, reactivated, and
+        // renamed) gets the same skip the render and auto-pr-review sweeps already give it before
+        // any event lands on any of its streams — this install is no longer maintaining that
+        // repository, so no gh inspection, merge, or closeout event runs against it;
+        // h9k project reactivate resumes this sweep for it immediately.
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (project is null || project.IsArchived)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
         // A newer run owns this task's pull request now; this Failed run's own history is
         // no longer the task's current story and there is nothing here to complete. Retire
         // it the same way the watched path does (InspectAndActAsync) so it stops matching
@@ -635,12 +665,6 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (project is null)
-        {
-            return InspectionOutcome.Skipped;
-        }
-
         // State-only: this sweep never dispatches a follow-up onto a dead run, so the
         // reviews-and-checks half of a full InspectAsync (a second remote read while the
         // PR is still open — GitHubPullRequestInspector.cs's own InspectReviewsAsync
@@ -659,6 +683,18 @@ public sealed class CloseoutEngine(
             // gh already answered above — only the read is discarded as stale, so this is
             // evidence gh is healthy, not a run this sweep passed over without calling it
             // (independent pre-PR review, cycle 2 adversarial).
+            return InspectionOutcome.Inspected;
+        }
+
+        // The archive check above is only as fresh as the moment it ran — the same slow network
+        // call could just as easily straddle an archive landing mid-inspection, and a project
+        // archive never advances the task stream the check above just revalidated (review thread,
+        // PR #336). Re-read it here too, rather than trusting the earlier answer through the call.
+        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { IsArchived: false })
+        {
+            logger.LogDebug(
+                "Project for task {TaskId} was archived while inspecting the orphaned pull request {Url}; deferring to the next sweep",
+                run.TaskId, run.PullRequestUrl);
             return InspectionOutcome.Inspected;
         }
 
@@ -705,6 +741,19 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
+        // The archive check runs ahead of the CurrentRunId branch below (independent review, PR
+        // #336): that branch appends RunSuperseded on its own, unfenced by anything here, and an
+        // archived project (task: a project can be archived, listed as archived, reactivated, and
+        // renamed) gets the same skip the render and auto-pr-review sweeps already give it before
+        // any event lands on any of its streams — this install is no longer maintaining that
+        // repository, so no gh inspection, merge, or closeout event runs against it;
+        // h9k project reactivate resumes this sweep for it immediately.
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (project is null || project.IsArchived)
+        {
+            return InspectionOutcome.Skipped;
+        }
+
         // A newer run owns this task's PR now (a follow-up pushed after this one) — this
         // run's watch is over; retire it so the watch set stays bounded.
         if (task.CurrentRunId != run.Id)
@@ -731,12 +780,6 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (project is null)
-        {
-            return InspectionOutcome.Skipped;
-        }
-
         PullRequestSnapshot snapshot = await inspector.InspectAsync(
             project.RepositoryPath, task.PullRequestUrl, run.PullRequestNumber.Value, cancellationToken);
 
@@ -753,6 +796,18 @@ public sealed class CloseoutEngine(
             // gh already answered above — only the read is discarded as stale, so this is
             // evidence gh is healthy, not a run this sweep passed over without calling it
             // (independent pre-PR review, cycle 2 adversarial).
+            return InspectionOutcome.Inspected;
+        }
+
+        // The archive check above is only as fresh as the moment it ran — the same slow network
+        // call could just as easily straddle an archive landing mid-inspection, and a project
+        // archive never advances the task stream the check above just revalidated (review thread,
+        // PR #336). Re-read it here too, rather than trusting the earlier answer through the call.
+        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { IsArchived: false })
+        {
+            logger.LogDebug(
+                "Project for task {TaskId} was archived while inspecting {Url}; deferring to the next sweep",
+                run.TaskId, run.PullRequestUrl);
             return InspectionOutcome.Inspected;
         }
 

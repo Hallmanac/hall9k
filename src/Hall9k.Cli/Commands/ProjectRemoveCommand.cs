@@ -8,7 +8,9 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -30,7 +32,12 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
     /// platform's own two terminal states (TaskState.IsTerminal) — a human calls an abandoned task
     /// "closed". Everything else (Queued, Blocked, Claimed, NeedsHuman, AwaitingAuthor, Failed) is a
     /// state the daemon, the closeout monitor, or a park a human still owes an answer to may still
-    /// act on, and archiving over it would leave live work orphaned mid-flight.
+    /// act on, and archiving over it would leave live work orphaned mid-flight. A Done task with a
+    /// still-open pull request is admitted here on the strength of <c>CloseoutEngine</c> itself
+    /// skipping every archived project's tasks (the same skip the render and auto-pr-review sweeps
+    /// already had) rather than this predicate refusing over it — see the archived-project checks
+    /// beside every <c>ProjectDetails</c> load in <c>CloseoutEngine</c> (independent pre-PR review,
+    /// cycle 1, adversarial lens: this predicate's own claim was true only once that skip existed).
     /// </summary>
     internal static bool IsInertUnderArchive(TaskState state) =>
         state == TaskState.Draft || state == TaskState.Published
@@ -59,7 +66,10 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
-        ProjectAggregate aggregate = await session.Events.AggregateStreamAsync<ProjectAggregate>(project.Id, token: cancellationToken)
+        StreamState? fence = await session.Events.FetchStreamStateAsync(project.Id, cancellationToken)
+            ?? throw new DomainNotFoundException($"No project {project.Id}.");
+        ProjectAggregate aggregate = await session.Events.AggregateStreamAsync<ProjectAggregate>(
+                project.Id, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No project {project.Id}.");
 
         if (aggregate.IsArchived)
@@ -95,16 +105,45 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
             return ExitCodes.Error;
         }
 
+        // The confirmation prompt above can sit open indefinitely — wide enough for h9k task
+        // assign or the dispatcher's own claim to land a task in a state this method already
+        // refused to archive over. The blocking check is re-run against the database right before
+        // the append, not only against the snapshot read before the prompt, so a task that turned
+        // live while the operator was answering still stops the archive (review thread, PR #336).
+        IReadOnlyList<TaskListItem> tasksAtCommit = await session.Query<TaskListItem>()
+            .Where(task => task.ProjectId == project.Id)
+            .ToListAsync(cancellationToken);
+        TaskListItem[] blockingAtCommit = [.. tasksAtCommit.Where(task => !IsInertUnderArchive(task.State))];
+        if (blockingAtCommit.Length > 0)
+        {
+            throw new DomainConflictException(
+                $"Project '{project.Name}' cannot be archived: {blockingAtCommit.Length} of its task(s) moved "
+                + "into a state the daemon may still act on while this confirmation was open — "
+                + string.Join(", ", blockingAtCommit.Select(task => $"{DomainId.Short(task.Id)} ({task.State.Value})"))
+                + ". Resolve them first, then archive again.");
+        }
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         session.Events.Append(
-            project.Id, ProjectDecider.Archive(aggregate, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId));
-        await session.SaveChangesAsync(cancellationToken);
+            project.Id, expectedVersion: fence.Version + 1,
+            ProjectDecider.Archive(aggregate, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId));
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Project '{project.Name}' changed while archiving — check h9k status; re-run this command "
+                + "if it should still be archived.");
+        }
+
         await Doorbell.RingAsync($"project-archived:{project.Id}", cancellationToken);
 
         AnsiConsole.MarkupLine($"[yellow]Project '{project.Name.EscapeMarkup()}' archived.[/] The dispatcher "
-            + "will not claim its tasks, and the project-home render and auto-pr-review sweeps skip it. "
-            + "This is this install's own record — a registration of the same repository on another node "
-            + "is unaffected.");
+            + "will not claim its tasks, and the project-home render, closeout, and auto-pr-review sweeps "
+            + "skip it. This is this install's own record — a registration of the same repository on "
+            + "another node is unaffected.");
         if (stayingAsIs.Length > 0)
         {
             AnsiConsole.MarkupLine(
@@ -134,8 +173,9 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
 
         AnsiConsole.MarkupLine(
             $"[yellow]Archiving '{project.Name.EscapeMarkup()}'[/] hides it from h9k project list, stops "
-            + "the dispatcher claiming its tasks, and stops the project-home and auto-pr-review sweeps "
-            + "visiting it. Nothing is deleted; the home directory on disk is untouched; this is reversible.");
+            + "the dispatcher claiming its tasks, and stops the project-home, closeout, and auto-pr-review "
+            + "sweeps visiting it. Nothing is deleted; the home directory on disk is untouched; this is "
+            + "reversible.");
         if (stayingAsIs.Count > 0)
         {
             AnsiConsole.MarkupLine(
