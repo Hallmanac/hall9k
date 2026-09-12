@@ -1463,10 +1463,12 @@ public static class TaskDecider
         // finalizing straight to Done here is what stops a later TaskDependencyCompleted from
         // re-queuing a task whose work already shipped (independent pre-PR review, cycle 3,
         // adversarial lens, on h9k task start).
-        // AwaitingAuthor and NeedsHuman are admitted for the pr-review follow-through's own two
-        // endings (task: a pr-review task stays open while the pull request's review threads are
-        // unresolved): every thread the reviewer opened is resolved, or the pull request merged
-        // or closed. The follow-through poll is what observes either, and the task it observes it
+        // AwaitingAuthor and NeedsHuman are admitted for the pr-review follow-through's own
+        // ending (task: a pr-review task stays open while the pull request's review threads are
+        // unresolved): only the pull request merging or closing ends the wait (Decisions Log
+        // #178 removed the thread-resolution ending, so a task with nothing left to watch stays
+        // open for a later mention to attach to rather than reaching Done on its own). The
+        // follow-through poll is what observes the merge or close, and the task it observes it
         // for is sitting in one of those two states with no lease and no live run — AwaitingAuthor
         // while the author has said nothing, NeedsHuman once they have — so the Claimed-only rule
         // above would leave the one state this feature invented with no way to reach Done at all.
@@ -1713,10 +1715,21 @@ public static class TaskDecider
     /// rather than this method reaching across to the run stream itself, the same
     /// cross-aggregate-fact-as-parameter shape <see cref="ObservePrReviewFollowThrough"/> already
     /// takes its own GitHub read as.
+    /// <para>
+    /// <see cref="TaskAggregate.ReviewLapOpen"/> refuses the parked-report arm regardless: a human
+    /// reviewer's own <c>h9k pr review</c> lap re-enters exactly that Claimed/ReviewParked shape
+    /// without moving either off it, so a mention landing mid-lap could otherwise claim the task
+    /// out from under a live human review and hand
+    /// <see cref="ClaimForMentionFollowUp"/>'s own worktree cleanup the reviewer's own checkout to
+    /// delete (independent pre-PR review, cycle 1, adversarial lens). No such live-human-lap state
+    /// exists for the other arm — a lap only ever opens on a report already parked, never on a
+    /// task <see cref="AwaitsPrReviewFollowThrough"/> alone admits — so the guard is scoped there.
+    /// </para>
     /// </summary>
     public static bool AwaitsPrReviewMentionFollowUp(TaskAggregate task, bool reportParkedAwaitingWalk) =>
         AwaitsPrReviewFollowThrough(task)
-        || (reportParkedAwaitingWalk && task.Type == TaskType.PrReview && task.State == TaskState.Claimed);
+        || (reportParkedAwaitingWalk && task.Type == TaskType.PrReview && task.State == TaskState.Claimed
+            && !task.ReviewLapOpen);
 
     /// <summary>
     /// The mention follow-up's own claim (auto-pr-review's second trigger, idea 2f079bcd): a

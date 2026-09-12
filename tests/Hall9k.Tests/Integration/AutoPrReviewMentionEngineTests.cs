@@ -841,6 +841,92 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
     }
 
     /// <summary>
+    /// A human reviewer's own <c>h9k pr review</c> lap re-enters the identical Claimed/ReviewParked
+    /// shape <see cref="SeedParkedReviewAsync"/> leaves a task in, without moving either off it
+    /// (<c>PullRequestReviewCommand</c>'s own re-entry path). A mention landing mid-lap must not
+    /// claim the task out from under that live human review — the worktree cleanup a mention
+    /// follow-up's own launch runs would delete the checkout the reviewer is sitting in
+    /// (independent pre-PR review, cycle 1, adversarial lens, high).
+    /// </summary>
+    [Fact]
+    public async Task A_mention_on_a_task_with_an_open_human_review_lap_attaches_without_claiming_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mention-open-lap-test";
+        const int number = 5302;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mention-open-lap", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        (Guid watchedTaskId, Guid lapRunId) = await SeedParkedReviewWithOpenLapAsync(
+            store, node, projectId, repository, number, cts.Token);
+
+        ProcessRunner gh = MentionScriptedGh(
+            repository, number, "brian",
+            [("IC_1", "ryan", "@brian does the retry logic look right to you?", Now.AddMinutes(5))]);
+        CapturingExecutor executor = new();
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node, new RefusingWorktreeManager(), executor, gh),
+            gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails watched = (await query.LoadAsync<TaskDetails>(watchedTaskId, cts.Token))!;
+        watched.LatestMentionCommentId.Should().Be("IC_1", "the mention is still recorded on the task's own stream");
+        watched.State.Should().Be(TaskState.Claimed, "the lap's own claim, never reclaimed for a follow-up");
+        watched.CurrentRunId.Should().Be(
+            lapRunId, "the reviewer's own lap run is still current — a follow-up would have repointed it");
+        watched.ReviewLapOpen.Should().BeTrue("the human reviewer's lap is still open");
+
+        executor.Request.Should().BeNull(
+            "a mention must never dispatch a follow-up onto a task a live human review lap already owns");
+
+        ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
+            ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
+        observed.Outcome.Should().Be(ReviewMentionOutcome.Attached, "the mention is still recorded, just without a claim");
+        observed.TaskId.Should().Be(watchedTaskId);
+    }
+
+    private static async Task<(Guid TaskId, Guid RunId)> SeedParkedReviewWithOpenLapAsync(
+        DocumentStore store, NodeContext node, Guid projectId, string repository, int number,
+        CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, $"Review pull request {repository}#{number}",
+            ["The findings report is walked with the owner (walk-pr-review-findings) and every finding is directed."],
+            TaskType.PrReview, null, null,
+            new ExternalReference(WorkItemProvider.GitHubPullRequest, $"{repository}#{number}"), Now.AddHours(-2), node.OwnerId);
+        TaskAggregate task = new();
+        task.Apply(added);
+        TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now.AddHours(-2), node.OwnerId);
+        task.Apply(published);
+        TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, [], Now.AddHours(-2), node.OwnerId);
+        task.Apply(assigned);
+        Guid runId = DomainId.New();
+        TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now.AddHours(-2));
+        task.Apply(claimed);
+        PullRequestReviewLapOpened lapOpened = new(
+            taskId, runId, "/tmp/does-not-exist", $"https://github.com/{repository}/pull/{number}",
+            Now.AddMinutes(-30), node.OwnerId);
+        task.Apply(lapOpened);
+
+        session.Events.StartStream<TaskAggregate>(taskId, [added, published, assigned, claimed, lapOpened]);
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, node.NodeId, node.OwnerId, LeaseGeneration: 1, SessionId: DomainId.New(),
+            WorktreePath: "/tmp/does-not-exist", Branch: $"pr/{number}", ExecutorMode.Subscription, Now.AddHours(-2)));
+        session.Events.Append(runId, new ReviewParked(
+            runId, "Pull request review complete. Findings: /tmp/does-not-exist/review-1-findings.md.", Now.AddHours(-1)));
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, runId);
+    }
+
+    /// <summary>
     /// The second search itself: <c>gh</c> is asked for <c>mentions:&lt;login&gt;</c>, a distinct
     /// call from the review-requested search the sweep already made — proof the sweep runs both,
     /// not that a single search happens to answer both trigger names.
