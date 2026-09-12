@@ -459,6 +459,27 @@ default for every project, new and existing, since Decisions Log #161 (it was an
 defaulting to off until 2026-09-08, and had never minted a task on either node in the three days
 it was installed). `off` is an explicit opt-out and is honoured for as long as it stands.
 
+A second search runs beside that one, over the same registered repositories: GitHub's own
+`mentions:` qualifier for the install's login, read fresh from `gh` on the same sweep — a direct
+`@login` mention fires, a team-handle mention never does, since `mentions:` matches only the
+former. A mention on a pull request no live pr-review task watches mints, publishes and starts the
+identical task type a review request does — never a new one — at the project's own effective
+speed, with the same no-backfill cutoff comparing against the comment's own timestamp rather than a
+request's. A mention on a pull request a live task already covers attaches to it instead of minting
+a second one; when that task's report is already parked or it is waiting on the pull request, the
+daemon dispatches a bounded follow-up lap that reads the tagged comment against the review already
+done and parks an addendum beside the report, naming the pull request, who tagged the install, and
+the first line of their comment in the needs-you line itself. A comment id already handled never
+fires again, and a comment the install's own login wrote never counts. `--auto-pr-review off`
+silences mentions exactly as it silences review requests, with no separate switch for either
+trigger.
+
+One pr-review task per pull request per install stays waiting on it until it merges or closes,
+whether or not anything was ever posted to it (Decisions Log PLACEHOLDER-ed6044a5, amending #160):
+every review thread being resolved no longer ends the wait by itself, because a task that closed
+out the moment it had nothing left to watch would leave a later mention with no live task to attach
+to and mint a redundant second one instead. `h9k task abandon` remains the one early exit.
+
 Three properties bound the default. Its state is always printed — one daemon-start line, one
 `h9k status` line, and one `h9k project show` row per project, each naming the effective value and
 whether it is the project's own choice or the platform default. There is no backfill: a request
