@@ -1315,6 +1315,89 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainConflictException>();
     }
 
+    /// <summary>
+    /// h9k task release --unassign: the atomic form lands the task straight on Published, in one
+    /// event, rather than Queued — never passing through the dispatcher-visible state a plain
+    /// release followed by a separate h9k task unassign would (task: h9k task release gains an
+    /// atomic --unassign option).
+    /// </summary>
+    [Fact]
+    public void ReleaseInteractiveClaimUnassigned_lands_published_directly_and_clears_the_claim()
+    {
+        TaskAggregate task = InteractivelyClaimedTask();
+        Guid ownerBeforeRelease = task.AssignedOwnerId!.Value;
+
+        task.Apply(TaskDecider.ReleaseInteractiveClaimUnassigned(task, Now));
+
+        task.State.Should().Be(TaskState.Published);
+        task.AssignedOwnerId.Should().BeNull();
+        task.IsInteractiveClaim.Should().BeFalse();
+        task.ClaimedByNodeId.Should().BeNull();
+        task.CurrentRunId.Should().BeNull();
+        ownerBeforeRelease.Should().NotBeEmpty("sanity: the claim really was assigned before release");
+    }
+
+    /// <summary>
+    /// The one-event union of ReleaseInteractiveClaim and Unassign: a claim taken from a Blocked
+    /// task through the dependency override still carries its unmet dependency in
+    /// UnmetDependencies (Claim never clears it, only Assign does) — this event clears it exactly
+    /// as Apply(TaskUnassigned) already does, because the task is leaving assignment altogether.
+    /// </summary>
+    [Fact]
+    public void ReleaseInteractiveClaimUnassigned_clears_unmet_dependencies_carried_from_a_blocked_claim()
+    {
+        TaskAggregate task = BlockedTask();
+        TaskClaimed claimed = TaskDecider.ClaimInteractively(
+            task, Owner, DomainId.New(), Now, dependencyOverrideAcknowledged: true);
+        task.Apply(claimed);
+        task.UnmetDependencies.Should().NotBeEmpty("sanity: the claim carried the blocker forward");
+
+        task.Apply(TaskDecider.ReleaseInteractiveClaimUnassigned(task, Now));
+
+        task.State.Should().Be(TaskState.Published);
+        task.UnmetDependencies.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ReleaseInteractiveClaimUnassigned_clears_interactive_mode_by_default()
+    {
+        TaskAggregate task = InteractivelyClaimedTask();
+
+        task.Apply(TaskDecider.ReleaseInteractiveClaimUnassigned(task, Now));
+
+        task.InteractiveModeEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ReleaseInteractiveClaimUnassigned_with_keepInteractive_preserves_interactive_mode()
+    {
+        TaskAggregate task = InteractivelyClaimedTask();
+
+        task.Apply(TaskDecider.ReleaseInteractiveClaimUnassigned(task, Now, keepInteractive: true));
+
+        task.InteractiveModeEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public void ReleaseInteractiveClaimUnassigned_of_a_node_claimed_task_refuses()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.ReleaseInteractiveClaimUnassigned(task, Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*claimed by a node*");
+    }
+
+    [Fact]
+    public void ReleaseInteractiveClaimUnassigned_of_a_queued_task_refuses()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.ReleaseInteractiveClaimUnassigned(task, Now);
+
+        act.Should().Throw<DomainConflictException>();
+    }
+
     [Fact]
     public void HandBack_carries_the_branch_forward_as_a_retry_branch_the_next_headless_claim_resumes()
     {

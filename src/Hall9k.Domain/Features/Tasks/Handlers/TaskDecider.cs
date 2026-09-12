@@ -1389,6 +1389,33 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// h9k task release --unassign: the same operator act as <see cref="ReleaseInteractiveClaim"/>
+    /// — an untouched interactive claim given back — except it lands the task straight on
+    /// Published rather than Queued/Blocked, in the single <see cref="TaskInteractiveClaimUnassigned"/>
+    /// event rather than <see cref="Requeue"/>'s <see cref="TaskRequeued"/>. The guard is
+    /// identical to <see cref="ReleaseInteractiveClaim"/>'s own — only a live interactive claim
+    /// releases this way — because everything else that separates a releasable claim from a
+    /// refused one (a node's headless claim, a claim already handed off, uncommitted or
+    /// committed work in the worktree) is checked by the caller before this decider is ever
+    /// reached, the same caller for both forms of release.
+    /// </summary>
+    public static TaskInteractiveClaimUnassigned ReleaseInteractiveClaimUnassigned(
+        TaskAggregate task, DateTimeOffset releasedAt, bool keepInteractive = false)
+    {
+        if (task.State != TaskState.Claimed || !task.IsInteractiveClaim)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only a task with an active interactive claim " +
+                "releases this way." + (task.State == TaskState.Claimed
+                    ? " This task is claimed by a node running headless work, not an interactive session — " +
+                      "let the run finish, or h9k task abandon it."
+                    : string.Empty));
+        }
+
+        return new TaskInteractiveClaimUnassigned(task.Id, releasedAt, !keepInteractive);
+    }
+
+    /// <summary>
     /// h9k task handback: an operator working a task interactively hands it to a headless agent
     /// partway through. Refused unless the current claim is theirs to hand back for the same
     /// reason <see cref="ReleaseInteractiveClaim"/> is scoped to an interactive claim — this is

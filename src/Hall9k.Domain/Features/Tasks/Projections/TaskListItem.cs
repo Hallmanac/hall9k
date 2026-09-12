@@ -368,6 +368,22 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.State = TaskState.Published;
     }
 
+    // The union of Apply(IEvent<TaskRequeued>) and Apply(IEvent<TaskUnassigned>) above, landing
+    // unconditionally on Published — mirrors TaskAggregate.Apply(TaskInteractiveClaimUnassigned).
+    public void Apply(IEvent<TaskInteractiveClaimUnassigned> @event, TaskListItem view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+
+        view.AssignedOwnerId = null;
+        view.AssignedAt = null;
+        view.UnmetDependencies = [];
+        view.DeadDependencies = [];
+        view.DeadDependencyReasons = [];
+        view.DependencyFailureReason = null;
+        view.State = TaskState.Published;
+    }
+
     // Dependency bookkeeping only means anything while the task is Blocked, and the decider
     // only ever emits these three events from that state. Anything else on the stream is a lost
     // race — a human unassigned or abandoned the task between a resolver's read and its append

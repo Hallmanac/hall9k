@@ -580,6 +580,32 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.State = TaskState.Published;
     }
 
+    // The union of Apply(IEvent<TaskRequeued>) and Apply(IEvent<TaskUnassigned>) above, landing
+    // unconditionally on Published rather than deriving Queued/Blocked — mirrors
+    // TaskAggregate.Apply(TaskInteractiveClaimUnassigned)'s own reasoning.
+    public void Apply(IEvent<TaskInteractiveClaimUnassigned> @event, TaskDetails view)
+    {
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        EndAnyOpenReviewLap(view);
+        view.ResumesFromHandback = false;
+        view.DependencyOverrideAcknowledged = false;
+        view.DependencyOverrideCarriedForward = false;
+
+        view.AssignedOwnerId = null;
+        view.AssignedAt = null;
+        view.UnmetDependencies = [];
+        view.DeadDependencies = [];
+        view.DeadDependencyReasons = [];
+        view.DependencyFailureReason = null;
+        view.State = TaskState.Published;
+
+        if (@event.Data.ClearInteractiveMode)
+        {
+            view.InteractiveModeEnabled = false;
+        }
+    }
+
     // Dependency bookkeeping only means anything while the task is Blocked, and the decider
     // only ever emits these three events from that state. Anything else on the stream is a lost
     // race — a human unassigned or abandoned the task between a resolver's read and its append
@@ -743,7 +769,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
         // it mirrors and lets the ordinary Blocked-state dependency sweep pick it back up.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
-        // The second exit door alongside Apply(TaskHandedBack) below — mirrors
+        // The second exit door alongside Apply(TaskHandedBack) below and
+        // Apply(IEvent<TaskInteractiveClaimUnassigned>) above — mirrors
         // TaskAggregate.Apply(TaskRequeued) (design ruling R6, amended 2026-09-05): a default
         // h9k task release clears interactive mode; --keep-interactive leaves it alone.
         if (@event.Data.ClearInteractiveMode)
