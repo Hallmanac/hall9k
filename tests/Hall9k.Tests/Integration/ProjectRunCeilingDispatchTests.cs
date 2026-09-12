@@ -328,6 +328,50 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
                 "this project admits, so the budget is the limit that really is holding its row");
     }
 
+    /// <summary>
+    /// The dispatcher never claims an archived project's tasks (task: a project can be archived,
+    /// listed as archived, reactivated, and renamed). h9k project remove itself already refuses to
+    /// archive over a Queued task, so this state — a Queued task under an archived project — is
+    /// not reachable through the ordinary CLI path; it is seeded directly here to prove the
+    /// dispatcher's own filter holds regardless of how the state was reached, the same
+    /// belt-and-suspenders discipline this codebase already gives a task's own state
+    /// (re-validated in TryClaimAsync right before a claim commits).
+    /// </summary>
+    [Fact]
+    public async Task An_archived_projects_queued_task_is_never_claimed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await FreshNodeAsync(store, cts.Token);
+        DispatchEngine engine = Engine(store, node, maxConcurrentRuns: 2);
+
+        Guid archived = await SeedProjectAsync(store, node, "archived", maxParallelTasks: null, cts.Token);
+        Guid open = await SeedProjectAsync(store, node, "open", maxParallelTasks: null, cts.Token);
+        await ArchiveAsync(store, node, archived, cts.Token);
+
+        Guid[] archivedTasks = await SeedQueuedAsync(store, node, archived, count: 1, from: Now, cts.Token);
+        Guid[] openTasks = await SeedQueuedAsync(store, node, open, count: 1, from: Now.AddMinutes(10), cts.Token);
+
+        IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(cts.Token);
+
+        claimed.Select(work => work.TaskId).Should().Equal([openTasks[0]],
+            "the archived project's own task is never even a candidate — invisible, not merely deferred");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem stillQueued = (await query.LoadAsync<TaskListItem>(archivedTasks[0], cts.Token))!;
+        stillQueued.State.Value.Should().Be("Queued", "archiving never touches the task itself");
+    }
+
+    private static async Task ArchiveAsync(
+        IDocumentStore store, NodeContext node, Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectAggregate aggregate =
+            (await session.Events.AggregateStreamAsync<ProjectAggregate>(projectId, token: cancellationToken))!;
+        session.Events.Append(projectId, ProjectDecider.Archive(aggregate, null, Now, node.OwnerId));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
 
     private static async Task<NodeContext> FreshNodeAsync(IDocumentStore store, CancellationToken cancellationToken)
     {

@@ -296,6 +296,19 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         Guid assignedByOwnerId,
         CancellationToken cancellationToken)
     {
+        // An archived project's own tasks stay exactly as they are (task: a project can be
+        // archived, listed as archived, reactivated, and renamed) — refused here rather than left
+        // to the dispatcher's own belt-and-suspenders skip, since assigning is the one act that
+        // would otherwise move this task to Queued, the very state h9k project remove already
+        // refused to archive over. Shared by h9k task publish --assign, which calls this same
+        // method in the same transaction it publishes in.
+        if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is { IsArchived: true } project)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is archived, so its tasks cannot be assigned. Reactivate it "
+                + $"first: h9k project reactivate {project.Name}");
+        }
+
         IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
             session, task.BlockedBy, cancellationToken);
         TaskAssigned assigned = TaskDecider.Assign(
