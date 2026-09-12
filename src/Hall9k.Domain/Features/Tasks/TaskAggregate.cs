@@ -162,11 +162,13 @@ public sealed class TaskAggregate
     /// (h9k task work's claim always does; h9k task start's does only when the human asked for it)
     /// and never unset by any other claim — a plain node claim or an ordinary reclaim carries the
     /// flag false and leaves this alone rather than clearing it. The clearing acts are
-    /// <see cref="Apply(TaskHandedBack)"/> (h9k task handback) and a default
-    /// <see cref="Apply(TaskRequeued)"/> (h9k task release, design ruling R6 amended 2026-09-05):
-    /// both are the human's own explicit act of returning the task to the machine, so headless
-    /// dispatch stops gating phase boundaries for a human who walked away —
-    /// <c>--keep-interactive</c> on release is the one stated exception. Delivering
+    /// <see cref="Apply(TaskHandedBack)"/> (h9k task handback), a default
+    /// <see cref="Apply(TaskRequeued)"/> (h9k task release, design ruling R6 amended 2026-09-05),
+    /// and a default <see cref="Apply(TaskInteractiveClaimUnassigned)"/> (h9k task release
+    /// --unassign, the same release ruling): all three are the human's own explicit act of
+    /// returning the task to the machine, so headless dispatch stops gating phase boundaries for a
+    /// human who walked away — <c>--keep-interactive</c> is the one stated exception on either
+    /// form of release. Delivering
     /// (h9k task deliver) never touches this field at all — that command appends no
     /// <see cref="TaskAggregate"/> event of its own — which is exactly what lets a delivered run's
     /// review/fix/re-review/pull-request boundaries keep parking for the human under this flag.
@@ -827,10 +829,10 @@ public sealed class TaskAggregate
             CloseLinkedIssue = @event.CloseLinkedIssue.Value;
         }
 
-        // The third clearing act alongside Apply(TaskHandedBack) and a default
-        // Apply(TaskRequeued) — the one that needs no active interactive claim at all (task:
-        // interactive mode becomes a recorded property of the task, the gap independent pre-PR
-        // review, cycle 1, found in h9k task start).
+        // The fourth clearing act alongside Apply(TaskHandedBack), a default Apply(TaskRequeued),
+        // and a default Apply(TaskInteractiveClaimUnassigned) — the one that needs no active
+        // interactive claim at all (task: interactive mode becomes a recorded property of the
+        // task, the gap independent pre-PR review, cycle 1, found in h9k task start).
         if (@event.ClearInteractiveMode)
         {
             InteractiveModeEnabled = false;
@@ -1116,6 +1118,36 @@ public sealed class TaskAggregate
         // the task to the machine, so it clears the flag exactly as handback does. Every other
         // requeue caller — a node's lease expiring, or a release given --keep-interactive — leaves
         // the flag alone by construction (TaskRequeued.ClearInteractiveMode's own doc).
+        if (@event.ClearInteractiveMode)
+        {
+            InteractiveModeEnabled = false;
+        }
+    }
+
+    // The atomic union of Apply(TaskRequeued) and Apply(TaskUnassigned): everything the first
+    // clears about the claim itself, everything the second clears about the assignment, landing
+    // unconditionally on Published rather than deriving Queued/Blocked from the unmet set — the
+    // task is leaving assignment altogether, so there is no unmet set left for that derivation to
+    // matter to (Apply(TaskUnassigned)'s own reasoning). RetryBranch is deliberately untouched,
+    // exactly as neither event it replaces touches it: release is only for a claim nothing has
+    // been done in yet, so it is already null in the ordinary case, and where it is not — this
+    // claim resumed an earlier handback or retry — a plain release followed by a plain unassign
+    // would not have cleared it either.
+    public void Apply(TaskInteractiveClaimUnassigned @event)
+    {
+        ClaimedByNodeId = null;
+        CurrentRunId = null;
+        PendingQuestionId = null;
+        EndAnyOpenReviewLap();
+
+        AssignedOwnerId = null;
+        _unmetDependencies.Clear();
+        _deadDependencies.Clear();
+        _deadDependencyReasons.Clear();
+        DependencyFailureReason = null;
+        _acknowledgedUnmetDependencyIds.Clear();
+        State = TaskState.Published;
+
         if (@event.ClearInteractiveMode)
         {
             InteractiveModeEnabled = false;

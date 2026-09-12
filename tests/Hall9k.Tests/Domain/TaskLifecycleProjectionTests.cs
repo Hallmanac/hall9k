@@ -301,6 +301,65 @@ public sealed class TaskLifecycleProjectionTests
         view.AssignedOwnerId.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void The_atomic_unassign_clears_the_claim_and_the_dependency_override_off_the_detail_row(
+        bool clearInteractiveMode)
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        TaskDetailsProjection projection = new();
+
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId)));
+        projection.Apply(new FakeEvent<TaskPublished>(new TaskPublished(id, Now, ownerId)), view);
+        projection.Apply(new FakeEvent<TaskAssigned>(new TaskAssigned(id, ownerId, [], Now, ownerId)), view);
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, nodeId, ownerId, 1, DomainId.New(), Now, InteractiveMode: true)), view);
+        projection.Apply(new FakeEvent<TaskHandedBack>(
+            new TaskHandedBack(id, DomainId.New(), "release/branch", "stepping away", Now, ownerId)), view);
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, nodeId, ownerId, 2, DomainId.New(), Now,
+            DependencyOverrideAcknowledged: true, DependencyOverrideCarriedForward: true, InteractiveMode: true)), view);
+
+        projection.Apply(new FakeEvent<TaskInteractiveClaimUnassigned>(
+            new TaskInteractiveClaimUnassigned(id, Now, clearInteractiveMode)), view);
+
+        view.State.Should().Be(TaskState.Published);
+        view.ClaimedByNodeId.Should().BeNull();
+        view.CurrentRunId.Should().BeNull();
+        view.AssignedOwnerId.Should().BeNull();
+        view.ResumesFromHandback.Should().BeFalse("the claim it would have resumed is gone");
+        view.DependencyOverrideAcknowledged.Should().BeFalse();
+        view.DependencyOverrideCarriedForward.Should().BeFalse();
+        view.InteractiveModeEnabled.Should().Be(!clearInteractiveMode,
+            "a default release clears the flag exactly as handback does; --keep-interactive leaves it standing");
+    }
+
+    [Fact]
+    public void The_atomic_unassign_clears_the_claim_off_the_list_row_so_the_dispatcher_reads_published()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        TaskListItemProjection projection = new();
+
+        TaskListItem view = projection.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId)));
+        projection.Apply(new FakeEvent<TaskPublished>(new TaskPublished(id, Now, ownerId)), view);
+        projection.Apply(new FakeEvent<TaskAssigned>(new TaskAssigned(id, ownerId, [], Now, ownerId)), view);
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, nodeId, ownerId, 1, DomainId.New(), Now, InteractiveMode: true)), view);
+
+        projection.Apply(new FakeEvent<TaskInteractiveClaimUnassigned>(
+            new TaskInteractiveClaimUnassigned(id, Now)), view);
+
+        view.State.Should().Be(TaskState.Published, "the dispatcher must never read this row as Claimed or Queued");
+        view.ClaimedByNodeId.Should().BeNull();
+        view.CurrentRunId.Should().BeNull();
+        view.AssignedOwnerId.Should().BeNull();
+    }
+
     [Fact]
     public void A_dependency_event_that_lost_the_race_to_an_unassign_replays_as_a_no_op()
     {

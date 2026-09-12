@@ -158,6 +158,87 @@ public sealed class ClaimAndLeaseArbitrationTests(PostgresFixture postgres) : IC
         final.AssignedOwnerId.Should().Be(ownerId, "the contract stayed under the running agent");
     }
 
+    /// <summary>
+    /// h9k task release --unassign (task: h9k task release gains an atomic --unassign option).
+    /// The old two-step path — release (Claimed -> Queued, committed) then a separate unassign
+    /// (Queued -> Published) — left a real, committed Queued state on the stream between the two
+    /// commands, and a dispatcher sweep landing inside that gap won a genuine claim: observed
+    /// directly at ceiling 4 (cd7e0202, 2026-09-04 23:12, the task's own origin incident). The
+    /// atomic form appends exactly one event, <see cref="TaskInteractiveClaimUnassigned"/>, so the
+    /// task goes straight from Claimed to Published with no committed state in between. Proven two
+    /// ways here: a racing claim built off the identical pre-release snapshot the atomic append
+    /// itself reads refuses immediately, before either side ever reaches the database, because
+    /// that snapshot is Claimed, never Queued — and the stream this leaves behind carries no
+    /// <see cref="TaskRequeued"/> event at all, so there was never a point later replay (or the
+    /// dispatcher's own live projection) could read as Queued either.
+    /// </summary>
+    [Fact]
+    public async Task An_atomic_release_unassign_leaves_no_queued_window_for_a_racing_claim()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession setup = store.LightweightSession())
+        {
+            TaskAggregate seedTask = new();
+            TaskAdded added = TaskDecider.Add(
+                taskId, DomainId.New(), "Prove release --unassign never lands a claimable Queued state",
+                ["no racing claim can ever land"], TaskType.Chore, null, null, null, Now, ownerId);
+            seedTask.Apply(added);
+            TaskPublished published = TaskDecider.Publish(seedTask, TaskDependencyGraph.Empty, Now, ownerId);
+            seedTask.Apply(published);
+            TaskAssigned assigned = TaskDecider.Assign(seedTask, ownerId, [], Now, ownerId);
+            seedTask.Apply(assigned);
+            TaskClaimed claimed = TaskDecider.ClaimInteractively(seedTask, ownerId, runId, Now);
+            setup.Events.StartStream<TaskAggregate>(taskId, added, published, assigned, claimed);
+            await setup.SaveChangesAsync(cts.Token);
+        }
+
+        // Two readers see the identical pre-release snapshot: Claimed, interactive — exactly what
+        // h9k task release --unassign and a racing dispatcher sweep would each read.
+        await using IDocumentSession releasing = store.LightweightSession();
+        await using IDocumentSession racingClaim = store.LightweightSession();
+
+        StreamState fence = (await releasing.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+        TaskAggregate releaseView = (await releasing.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, version: fence.Version, token: cts.Token))!;
+        TaskAggregate racingView = (await racingClaim.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, version: fence.Version, token: cts.Token))!;
+        releaseView.State.Should().Be(TaskState.Claimed);
+        releaseView.IsInteractiveClaim.Should().BeTrue();
+
+        // The dispatcher's own claim guard reads Queued straight off a snapshot like this one —
+        // with the two-step release-then-unassign, this was exactly the moment a racing claim
+        // used to win. Here it refuses before either side ever reaches the database, because the
+        // snapshot both sides read is Claimed, never Queued.
+        Action racingClaimAttempt = () =>
+            TaskDecider.Claim(racingView, DomainId.New(), ownerId, DomainId.New(), Now);
+        racingClaimAttempt.Should().Throw<DomainConflictException>().WithMessage("*not Queued*");
+
+        releasing.Events.Append(taskId, expectedVersion: fence.Version + 1,
+            TaskDecider.ReleaseInteractiveClaimUnassigned(releaseView, Now));
+        await releasing.SaveChangesAsync(cts.Token);
+
+        await using IDocumentSession verify = store.LightweightSession();
+        TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        final.State.Should().Be(TaskState.Published);
+        final.AssignedOwnerId.Should().BeNull();
+
+        // A fresh read after the atomic commit is just as unclaimable — the task skipped Queued
+        // entirely rather than passing through it and landing somewhere else afterward.
+        Action freshClaimAttempt = () => TaskDecider.Claim(final, DomainId.New(), ownerId, DomainId.New(), Now);
+        freshClaimAttempt.Should().Throw<DomainConflictException>().WithMessage("*not Queued*");
+
+        Type[] recorded = [.. (await verify.Events.FetchStreamAsync(taskId, token: cts.Token))
+            .Select(@event => @event.Data.GetType())];
+        recorded.Should().NotContain(typeof(TaskRequeued),
+            "the atomic form never appends TaskRequeued — there is no intermediate Queued state on the "
+            + "stream for any reader, live or replayed, to ever observe");
+    }
+
     [Fact]
     public async Task Telemetry_documents_upsert_without_touching_any_stream()
     {
