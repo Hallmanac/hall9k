@@ -1022,7 +1022,15 @@ public sealed class PrReviewEngine(
     private static async Task<string> ReadIfExistsAsync(string path, CancellationToken cancellationToken) =>
         File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : "(no findings recorded)";
 
-    /// <summary>The mentioning comment's own first line, one-lined and relayed-text-defused — what the mention needs-you line quotes, never the whole comment.</summary>
+    /// <summary>
+    /// The mentioning comment's own first line, one-lined, relayed-text-defused and bounded to
+    /// <see cref="FirstLineMaxLength"/> — what the mention needs-you line quotes, never the whole
+    /// comment. Every other relayed-text-into-one-line site in the daemon pairs
+    /// <see cref="RelayedText.OneLine"/> with <see cref="RelayedText.Truncate"/>; this one used to
+    /// be the exception, leaving an externally-authored comment with no newline free to reach
+    /// <c>ParkedReason</c> (and every <c>h9k status</c>/<c>h9k task show</c> that prints it)
+    /// unbounded (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
     private static string FirstLine(string? body)
     {
         if (body.IsBlank())
@@ -1031,8 +1039,10 @@ public sealed class PrReviewEngine(
         }
 
         string first = body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')[0];
-        return RelayedText.OneLine(first).Trim();
+        return RelayedText.Truncate(RelayedText.OneLine(first).Trim(), FirstLineMaxLength);
     }
+
+    private const int FirstLineMaxLength = 200;
 
     /// <summary>
     /// The same missing-verdict / unnamed-finding gate <see cref="ReviewEngine.RecordReviewPassAsync"/>
