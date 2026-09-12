@@ -791,31 +791,6 @@ public sealed class RunSupervisor(
         await using (IQuerySession earlyQuery = store.QuerySession())
         {
             run = await earlyQuery.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
-
-            // Checked here, ahead of every branch below, rather than only on the later
-            // thread-dispute park (Copilot review, PR #334): CompleteRunAsync's own error
-            // branches append RunBudgetExhausted, RunLaunchHeld, or (via
-            // RunSessionErrorRetried) resume a fresh build session before that later check
-            // ever runs, and a plain result: IsError=false with no dispute marker never
-            // reaches it at all. An abandon landing after this run's dispatch but before its
-            // completion must win over all of those — a park invites an hourly retry sweep
-            // to relaunch a session, a retry spends this leg's one resume on walked-away
-            // work, and a plain RunFailed leaves the run in a state nothing here ever revisits
-            // — so this task's own abandonment must retire the run outright instead.
-            if (run is not null
-                && !await GenerationFence.AllowsAsync(
-                    earlyQuery, logger, taskId, runId, run.LeaseGeneration, "to complete", cancellationToken,
-                    refuseAbandonedTask: true))
-            {
-                await using IDocumentSession retireSession = store.LightweightSession();
-                retireSession.Events.Append(runId, new RunSuperseded(runId, run.LeaseGeneration, now));
-                await retireSession.SaveChangesAsync(cancellationToken);
-                logger.LogInformation(
-                    "Run {RunId}: retired as superseded — task {TaskId} was abandoned before this session's "
-                    + "completion could be recorded",
-                    runId, taskId);
-                return null;
-            }
         }
 
         // Budget-exhaustion is checked FIRST and excluded here, even though this classifies on
@@ -877,6 +852,7 @@ public sealed class RunSupervisor(
             && await launchHold.JoinIfActiveAsync(node.NodeId, runId, cancellationToken);
 
         bool willRetryBuildSession;
+        bool abandonedDuringCompletion = false;
         await using (IDocumentSession session = store.LightweightSession())
         {
             // The build session's own resolved model, as RunDispatched recorded it — read back
@@ -888,8 +864,32 @@ public sealed class RunSupervisor(
             session.Events.Append(runId, new AgentSessionCompleted(runId, now));
             session.Events.Append(runId, result.ToTokensRecorded(runId, now, model));
 
+            // Checked here, immediately after the tokens this session actually spent are
+            // recorded above like any other completion, rather than before either append the
+            // way an earlier version of this fix did (independent pre-PR review, cycle 1, both
+            // lenses): the earlier placement discarded a completed session's entire observed
+            // token spend, since nothing else ever reads this run's stream.jsonl back for a
+            // daemon-dispatched run once it retires. An abandon landing after this run's
+            // dispatch but before its completion must still win over every branch below — a
+            // park invites an hourly retry sweep to relaunch a session, a retry spends this
+            // leg's one resume on walked-away work, and a plain RunFailed leaves the run in a
+            // state nothing here ever revisits — so this task's own abandonment retires the run
+            // outright instead, now that its tokens are already accounted for.
+            int? abandonedAtGeneration = run is null
+                ? null
+                : await GenerationFence.AllowsAsync(
+                    session, logger, taskId, runId, run.LeaseGeneration, "to complete", cancellationToken,
+                    refuseAbandonedTask: true)
+                    ? null
+                    : run.LeaseGeneration;
+
             willRetryBuildSession = false;
-            if (result.IsError && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
+            if (abandonedAtGeneration is { } generation)
+            {
+                abandonedDuringCompletion = true;
+                session.Events.Append(runId, new RunSuperseded(runId, generation, now));
+            }
+            else if (result.IsError && result.Summary is { } summary && BudgetExhaustionParser.IsBudgetExhausted(summary))
             {
                 // External and clock-recoverable, not a machine or code fault (backlog 40): the
                 // run parks with the task still Claimed — worktree and lease intact — instead of
@@ -955,6 +955,15 @@ public sealed class RunSupervisor(
             result.CacheCreationInputTokens,
             result.OutputTokens,
             result.IsError);
+
+        if (abandonedDuringCompletion)
+        {
+            logger.LogInformation(
+                "Run {RunId}: retired as superseded — task {TaskId} was abandoned before this session's "
+                + "completion could be recorded",
+                runId, taskId);
+            return null;
+        }
 
         if (willRetryBuildSession)
         {
@@ -1211,8 +1220,18 @@ public sealed class RunSupervisor(
             session, logger, taskId, runId, run.LeaseGeneration, "unattended-exit handling", cancellationToken,
             refuseAbandonedTask: true))
         {
-            session.Events.Append(
-                runId, new RunSuperseded(runId, task.LeaseGeneration, DateTimeOffset.UtcNow));
+            // Tokens are recorded here, unlike the plain error-result flagged branch further
+            // down (whose own comment explains it defers to whichever human lever eventually
+            // reads this run's stream.jsonl back): an abandoned task's run retires immediately,
+            // right here, and none of deliver/release/abandon/handback ever follows to read it
+            // (independent pre-PR review, cycle 1, both lenses) — this is the only chance this
+            // session's own spend is ever recorded.
+            object[] retireEvents =
+            [
+                .. result is not null ? (object[])[result.ToTokensRecorded(runId, DateTimeOffset.UtcNow, run.Model)] : [],
+                new RunSuperseded(runId, task.LeaseGeneration, DateTimeOffset.UtcNow),
+            ];
+            session.Events.Append(runId, retireEvents);
             await session.SaveChangesAsync(cancellationToken);
             logger.LogInformation(
                 "Run {RunId}: retired as superseded — task {TaskId} is Abandoned, so its deliberate headless "
