@@ -475,7 +475,7 @@ silences mentions exactly as it silences review requests, with no separate switc
 trigger.
 
 One pr-review task per pull request per install stays waiting on it until it merges or closes,
-whether or not anything was ever posted to it (Decisions Log PLACEHOLDER-ed6044a5, amending #160):
+whether or not anything was ever posted to it (Decisions Log #178, amending #160):
 every review thread being resolved no longer ends the wait by itself, because a task that closed
 out the moment it had nothing left to watch would leave a later mention with no live task to attach
 to and mint a redundant second one instead. `h9k task abandon` remains the one early exit.

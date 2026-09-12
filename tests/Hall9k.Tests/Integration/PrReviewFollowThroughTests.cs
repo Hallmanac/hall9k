@@ -449,7 +449,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
 
     /// <summary>
     /// Every review thread resolved, with nothing else outstanding, no longer ends the wait by
-    /// itself (Decisions Log PLACEHOLDER-ed6044a5, amending #160): one pr-review task per pull
+    /// itself (Decisions Log #178, amending #160): one pr-review task per pull
     /// request per install stays waiting until the pull request itself merges or closes, so a
     /// later GitHub mention of the install's own login always has a live task to attach to
     /// instead of minting a redundant second one. This used to reach Done on this very look; now
@@ -727,7 +727,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
         (await ReadTaskAsync(taskId, cts.Token)).State.Should().Be(TaskState.NeedsHuman);
 
         // Resolving the thread alone no longer ends the watch (Decisions Log
-        // PLACEHOLDER-ed6044a5) — the watch keeps running through needs-you, and only the pull
+        // #178) — the watch keeps running through needs-you, and only the pull
         // request itself merging or closing does.
         conversations.Conversation = conversations.Conversation with
         {

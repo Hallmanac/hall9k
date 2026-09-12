@@ -163,7 +163,7 @@ them. A re-review request is the one part that names you, because GitHub records
 request is addressed to — and it wakes you on its own, since an author who resolves your threads
 themselves and asks you back without a word or a push is still asking. Only the moment it arrives
 wakes you; a request left standing holds the wait open without re-announcing itself. Every thread
-you opened being resolved no longer ends the wait by itself (Decisions Log PLACEHOLDER-ed6044a5,
+you opened being resolved no longer ends the wait by itself (Decisions Log #178,
 amending #160): the task stays Waiting until the pull request itself merges or closes, whatever the
 threads say, since a task that closed the moment it had nothing left to watch would leave a later
 `@login` mention on the same pull request with no live task to attach to and mint a redundant
@@ -246,7 +246,7 @@ from. A comment id already handled never fires again, and a comment the install'
 never counts. `--auto-pr-review off` silences mentions too; there is no separate switch.
 
 One pr-review task per pull request per install stays waiting on it until it merges or closes,
-whether or not anything was ever posted to it (Decisions Log PLACEHOLDER-ed6044a5, amending #160):
+whether or not anything was ever posted to it (Decisions Log #178, amending #160):
 every review thread being resolved no longer ends the wait by itself, since a task that closed out
 the moment it had nothing left to watch would leave a later mention with no live task to attach to.
 `h9k task abandon` remains the one early exit.

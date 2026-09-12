@@ -749,7 +749,7 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
     /// UnderReview exactly as ReviewParkResolved does so the daemon's own resume sweep picks
     /// it up, but PrReviewEngine finalizes it directly (parked waiting on the pull request as
     /// AwaitingAuthor, never completing outright — Decisions Log #160, lifetime amended by
-    /// PLACEHOLDER-ed6044a5) rather than re-entering any review loop.
+    /// #178) rather than re-entering any review loop.
     /// <para>Internal so the pr-review verdict rules are testable against a real store without going through <see cref="CliStore.Open"/>'s ambient connection (test: pr-review resolve coverage).</para>
     /// </summary>
     internal static async Task<int> ResolvePrReviewAsync(
