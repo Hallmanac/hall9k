@@ -22,6 +22,7 @@ namespace Hall9k.Tests.Connectors;
 /// pre-PR review, cycle 1, both lenses: the session was previously told nothing supervised it at
 /// all, which stopped being true the moment that sweep started adopting it).
 /// </summary>
+[Collection("Hall9kHome")]
 public sealed class WorkPromptBuilderTests
 {
     private readonly string _worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-work-prompt-{Guid.NewGuid():N}");
