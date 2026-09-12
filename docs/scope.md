@@ -134,17 +134,19 @@ the claim to a headless agent
 partway through, resuming the same branch (`--first` marks it queue-first for the next free
 dispatch slot, `--now` dispatches it immediately instead, ceiling-exempt, through
 `h9k task start`'s own mechanism — refused together); `h9k task release` gives an untouched claim
-back to the dispatch queue. See [PLAN.md Decisions Log #103, #122, #124, #126, #127](../PLAN.md).
+back to the dispatch queue, or, with `--unassign`, straight to Published instead, atomically —
+nobody can claim it in between, unlike a plain release followed by a separate
+`h9k task unassign`. See [PLAN.md Decisions Log #103, #122, #124, #126, #127](../PLAN.md).
 
 ### Interactive mode's own review boundaries
 
 An interactive claim (`h9k task work` or a deliberate `h9k task start`) sets a recorded
 task-level flag — `InteractiveModeEnabled` — independent of who currently holds the claim: once
-on, it stays on across every later run and follow-up until `h9k task handback`, or a default
-`h9k task release`, clears it — both are the human's own explicit act of returning the task to the
-machine, so headless dispatch stops gating boundaries for a human who walked away.
-`h9k task release --keep-interactive` is the stated exception, for an operator who wants the next
-headless run to keep parking at each boundary. Both ordinary doors need an active interactive
+on, it stays on across every later run and follow-up until `h9k task handback`, a default
+`h9k task release`, or a default `h9k task release --unassign`, clears it — all three are the
+human's own explicit act of returning the task to the machine, so headless dispatch stops gating
+boundaries for a human who walked away. `--keep-interactive` is the stated exception on either
+form of release, for an operator who wants the next headless run to keep parking at each boundary. Both ordinary doors need an active interactive
 claim to act on, though, and a task can outlive one: a headless follow-up `CloseoutEngine`
 dispatches under a real node claim while the flag is still on, or the task has already reached
 Done with its pull request open. `h9k task revise <id> --clear-interactive-mode` is the fallback
