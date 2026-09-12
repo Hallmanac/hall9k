@@ -5653,7 +5653,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
-            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -5721,7 +5722,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
-            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -8711,7 +8713,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
-            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -8784,7 +8787,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
-            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
 
         await engine.ParkAsync(staleRunId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
 
@@ -8836,7 +8840,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
-            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
 
         bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -8883,7 +8888,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
-            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
 
         await engine.ParkAsync(runId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
 
@@ -8898,6 +8904,445 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             line.Contains("retired as superseded") && line.Contains("review loop's park"));
     }
 
+    /// <summary>
+    /// Task: a post-PR follow-up's review loop checks the pull request's merge state between
+    /// passes. A human merging while a follow-up run sits at a boundary ends the loop there — no
+    /// reviewer is dispatched over a branch that can never ship any differently — and the run
+    /// takes the same closeout every merged run gets, with <see cref="ReviewEndedByMerge"/> saying
+    /// why it never reached MergeReady on its own. This is also the nothing-stranded half of the
+    /// pair: the branch's tip is already fully reflected in the merged base, so no re-land draft
+    /// is minted (its mirror is
+    /// <see cref="A_merged_follow_ups_stranded_commits_are_saved_and_routed_to_a_re_land_draft"/>).
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_whose_pull_request_merged_before_its_opening_cycle_closes_out_instead_of_dispatching()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, Guid projectId, _) =
+            await SeedFollowUpRunAtItsOpeningBoundaryAsync(store, cts.Token, strandedCommit: false);
+
+        ScriptedExecutor executor = new("Every acceptance criterion is met.\n\nVERDICT: merge-ready");
+        MergeReportingInspector inspector = new(mergedFromInspection: 1);
+        RecordingWorktreeManager worktrees = new();
+
+        ReviewEngine engine = await NewMergeAwareEngineAsync(store, executor, inspector, worktrees, cts.Token);
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the loop stopped; it never concluded merge-ready on its own");
+        executor.Spawns.Should().BeEmpty("the merge settled this boundary, so no review pass was dispatched");
+        inspector.Inspections.Should().Be(1, "one state-only read, immediately before the dispatch it replaced");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "merged work closes out — the follow-up has nothing left to do");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+        run.ReviewEndedByMergeAtCycle.Should().Be(0, "no cycle had dispatched yet when the merge was observed");
+        run.ReLandDraftTaskId.Should().BeNull("the branch tip was already fully reflected in the merge");
+        run.PullRequestMergedAt.Should().Be(MergedAt, "PullRequestMerged carries GitHub's own timestamp");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        List<Type> closeout =
+            [.. events.Select(item => item.GetType()).SkipWhile(type => type != typeof(ReviewEndedByMerge))];
+        closeout.Should().Equal(
+            [typeof(ReviewEndedByMerge), typeof(PullRequestMerged), typeof(RunHandoffRecorded), typeof(RunCompleted)],
+            "the reason the loop ended lands in the same transaction, immediately before the closeout it explains");
+
+        List<TaskListItem> projectTasks =
+            [.. await query.Query<TaskListItem>().Where(item => item.ProjectId == projectId).ToListAsync(cts.Token)];
+        projectTasks.Should().ContainSingle("nothing was stranded, so there is no re-land draft to mint");
+
+        worktrees.DeletedBranches.Should().ContainSingle(branch => branch == "task/review-me",
+            "the merged branch is cleaned up exactly as any other closeout cleans it up");
+    }
+
+    /// <summary>
+    /// The guard's own first clause, proven from the outside: a pre-PR run has no follow-up and no
+    /// pull request of its own, so the loop never asks the provider anything at all — the network
+    /// call is not merely harmless there, it never happens. Wired with the same always-merged
+    /// inspector the tests above use, so a guard that widened would visibly close this run out
+    /// instead of reviewing it.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_pr_run_never_asks_whether_a_pull_request_merged()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+        MergeReportingInspector inspector = new(mergedFromInspection: 1);
+
+        ReviewEngine engine = await NewMergeAwareEngineAsync(
+            store, executor, inspector, new RecordingWorktreeManager(), cts.Token);
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the ordinary pre-PR loop ran to its own clean convergence");
+        inspector.Inspections.Should().Be(0, "a run with no pull request of its own has nothing to ask about");
+        executor.Spawns.Should().HaveCount(2, "the review pass this run was owed still dispatched");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewEndedByMergeAtCycle.Should().BeNull("nothing here ended by merge");
+        run.State.Should().Be(RunState.UnderReview, "the opener, not this loop, is what moves a settled run on");
+    }
+
+    /// <summary>
+    /// The worktree carried commits the merge never included, so they are saved to disk before
+    /// closeout deletes the branch and a draft task is minted naming where — finished work is
+    /// never silently discarded (Decisions Log #34: the draft dispatches nothing until a human
+    /// publishes it, because a re-land is a judgment call).
+    /// </summary>
+    [Fact]
+    public async Task A_merged_follow_ups_stranded_commits_are_saved_and_routed_to_a_re_land_draft()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, Guid projectId, _) =
+            await SeedFollowUpRunAtItsOpeningBoundaryAsync(store, cts.Token, strandedCommit: true);
+
+        ScriptedExecutor executor = new("Every acceptance criterion is met.\n\nVERDICT: merge-ready");
+        MergeReportingInspector inspector = new(mergedFromInspection: 1);
+
+        ReviewEngine engine = await NewMergeAwareEngineAsync(
+            store, executor, inspector, new RecordingWorktreeManager(), cts.Token);
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        executor.Spawns.Should().BeEmpty();
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReLandDraftTaskId.Should().NotBeNull("the branch carried a commit origin/main does not have");
+
+        string directory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        string patchFile = Path.Combine(directory, $"re-land-{runId}.patch");
+        string commitListFile = Path.Combine(directory, $"re-land-{runId}-commits.txt");
+        File.ReadAllText(patchFile).Should().Contain("class Widget",
+            "the saved patch is the real diff between the merged base and this worktree's tip");
+        File.ReadAllText(commitListFile).Should().Contain("widget", "the commit list names the stranded commit");
+
+        TaskDetails draft = (await query.LoadAsync<TaskDetails>(run.ReLandDraftTaskId!.Value, cts.Token))!;
+        draft.ProjectId.Should().Be(projectId);
+        draft.Type.Should().Be(TaskType.Chore, "re-landing already-finished work is a chore, never a bug");
+        draft.State.Should().Be(TaskState.Draft, "a re-land is a judgment call — it waits for a human to publish it");
+        draft.Objective.Should().Contain(taskId.ToString(), "the draft names the task whose work was stranded");
+        draft.AgentContext.Should().Contain(patchFile).And.Contain(commitListFile,
+            "the draft points at the saved files rather than describing them");
+    }
+
+    /// <summary>
+    /// The guard sits at the three dispatch boundaries and nowhere else, proven end-to-end rather
+    /// than by reading the call sites: a merge that lands while a fix session is already running
+    /// never reaches <c>AwaitFixSessionAsync</c>, so that session finishes and its resolution is
+    /// recorded, and the short-circuit takes effect only at the next boundary the loop reaches
+    /// (Reverify). Killing work already in flight would lose a fix a human may well have merged
+    /// the pull request expecting.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_landing_while_a_fix_session_runs_lets_that_session_finish_and_stops_at_the_next_boundary()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedFollowUpRunAtItsOpeningBoundaryAsync(
+            store, cts.Token, strandedCommit: true,
+            reviewStageComposition: ReviewStageComposition.AdversarialOnly);
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: the widget never initializes.\n\nVERDICT: needs-fixes",
+            "Initialized the widget.\n\nRESOLUTION: fixed");
+        MergeReportingInspector inspector = new(mergedFromInspection: 2);
+
+        ReviewEngine engine = await NewMergeAwareEngineAsync(
+            store, executor, inspector, new RecordingWorktreeManager(), cts.Token);
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        inspector.Inspections.Should().Be(2,
+            "the opening boundary and the post-fix Reverify boundary — never the await sitting between them");
+        executor.Spawns.Should().HaveCount(2, "cycle 1's one pass and the fix session it dispatched, and nothing after");
+        executor.Spawns[1].Prompt.Should().Contain("the widget never initializes",
+            "the fix session was dispatched over the finding, before the merge was ever observed");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewFixDispatched>().Should().ContainSingle();
+        events.OfType<ReviewFixCompleted>().Should().ContainSingle().Which.Outcome.Should().Be(
+            ReviewFixOutcome.Fixed, "the in-flight fix session ran to completion and its resolution landed");
+        events.OfType<ReviewDispatched>().Should().ContainSingle(
+            "the Reverify pass the guard replaced was never dispatched");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+        run.ReviewEndedByMergeAtCycle.Should().Be(1, "the merge was observed at the boundary after cycle 1's own fix");
+    }
+
+    /// <summary>
+    /// The third and last boundary the guard sits at: the mandatory final full pass (Decisions
+    /// Log #92). The full-scope gate and the pre-final-pass rebase that precede it run for real
+    /// wall-clock minutes to hours, which is exactly the window a human merging mid-review needs,
+    /// so the pass is never dispatched over a branch that merged while they ran.
+    /// </summary>
+    [Fact]
+    public async Task A_merge_landing_before_the_mandatory_final_pass_stops_the_loop_instead_of_re_reviewing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedFollowUpRunAtItsOpeningBoundaryAsync(
+            store, cts.Token, strandedCommit: true,
+            reviewStageComposition: ReviewStageComposition.AdversarialOnly);
+
+        ScriptedExecutor executor = new(
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\n"
+            + "Defect: the widget never initializes.\n\nVERDICT: needs-fixes",
+            "Initialized the widget.\n\nRESOLUTION: fixed",
+            "Verified the fix; nothing new stands.\n\nVERDICT: merge-ready");
+        MergeReportingInspector inspector = new(mergedFromInspection: 3);
+        // The pre-final-pass rebase's own retargeted-base check is the one thing on this path that
+        // asks gh anything, and this task has a real pull request for it to ask about: answering
+        // with the project's own base is what lets the rebase proceed as the ordinary no-op it is
+        // here, so the boundary under test is actually reached.
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding(
+            $$"""{"number":31,"title":"x","body":null,"state":"OPEN","url":"{{FollowUpPullRequestUrl}}","baseRefName":"main"}""");
+
+        ReviewEngine engine = await NewMergeAwareEngineAsync(
+            store, executor, inspector, new RecordingWorktreeManager(), cts.Token, gh.Runner);
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+        inspector.Inspections.Should().Be(3, "the opening, the post-fix Reverify, and this settling boundary");
+        executor.Spawns.Should().HaveCount(3, "cycle 1's pass, its fix session, and cycle 2's verify pass — no final pass");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<ReviewDispatched>().Select(e => e.Mode).Should().Equal(
+            [ReviewMode.Discovery, ReviewMode.Verify],
+            "the mandatory final full pass the merge replaced is nowhere on the stream");
+        events.OfType<ReviewSettled>().Should().BeEmpty(
+            "this run never converged on its own — ReviewEndedByMerge is the honest record, not a settlement");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+        run.ReviewEndedByMergeAtCycle.Should().Be(2, "cycle 2's verify pass was the last one that ever dispatched");
+    }
+
+    /// <summary>The merge timestamp <see cref="MergeReportingInspector"/> reports — GitHub's own, minutes before this node ever looked.</summary>
+    private static readonly DateTimeOffset MergedAt = Now.AddMinutes(-5);
+
+    private const string FollowUpPullRequestUrl = "https://github.com/x/y/pull/31";
+
+    private static readonly Uri FollowUpRepositoryUrl = new("https://github.com/x/y");
+
+    /// <summary>
+    /// Reports the pull request still open until its <paramref name="mergedFromInspection"/>'th
+    /// state read, and merged from there on — the only way to reach a boundary PAST the opening
+    /// one, since the guard at <see cref="ReviewPhase.None"/> would otherwise short-circuit a
+    /// follow-up before any pass ever dispatched. <see cref="Inspections"/> is what proves the
+    /// guard is consulted exactly where the design says and nowhere else, mirroring
+    /// <c>RunLauncherTests.MergedInspector</c>'s own counter. Every other member throws: this
+    /// short-circuit reads state only, never the heavier full inspection.
+    /// </summary>
+    private sealed class MergeReportingInspector(int mergedFromInspection) : IPullRequestInspector
+    {
+        public int Inspections { get; private set; }
+
+        public Task<PullRequestSnapshot> InspectAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "the review loop's already-merged guard reads state only — a full inspection here is a defect");
+
+        public Task<PullRequestStateSnapshot> InspectStateAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken)
+        {
+            Inspections++;
+            return Task.FromResult(Inspections >= mergedFromInspection
+                ? new PullRequestStateSnapshot(IsMerged: true, IsClosed: false, MergedAt: MergedAt, ClosedAt: null)
+                : new PullRequestStateSnapshot(IsMerged: false, IsClosed: false, MergedAt: null, ClosedAt: null));
+        }
+
+        public Task RerequestReviewAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("closing out on an observed merge re-requests nothing");
+
+        public Task MergeAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the pull request is already merged — nothing here merges it again");
+
+        public Task RetargetAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("no stacked child is involved in any of these runs");
+    }
+
+    /// <summary>
+    /// The worktree seam <see cref="CloseoutEngine"/> is handed, recorded rather than performed:
+    /// the run's own worktree is a real clone these tests still read from after closeout runs, and
+    /// its branch never reached the bare origin at all, so letting real git act on either would be
+    /// deleting fixtures to observe a call. <see cref="ReviewEngine"/> itself keeps the real
+    /// <c>GitWorktreeManager</c> every other test in this file gives it.
+    /// </summary>
+    private sealed class RecordingWorktreeManager : IWorktreeManager
+    {
+        public List<string> DeletedBranches { get; } = [];
+
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("closing out a merged pull request never cuts a worktree.");
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("closing out a merged pull request never checks one out either.");
+
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("no pr-review task is involved in any of these runs.");
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
+        {
+            DeletedBranches.Add(branch);
+            return Task.CompletedTask;
+        }
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken) =>
+            Task.FromResult(new CheckoutRefresh(UpToDate: true, "nothing here reads a project checkout"));
+
+        public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(UncontendedLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(UncontendedLock.Instance);
+    }
+
+    private sealed class UncontendedLock : IAsyncDisposable
+    {
+        public static readonly UncontendedLock Instance = new();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Like <see cref="NewEngine(DocumentStore, ScriptedExecutor)"/>, but with a real inspector
+    /// and a real <see cref="CloseoutEngine"/> instead of the never-invoked pair every other test
+    /// in this file gets — the already-merged guard is the one path that reaches both. The same
+    /// <paramref name="inspector"/> instance is handed to the closeout so a single counter covers
+    /// every read either one could make.
+    /// </summary>
+    private async Task<ReviewEngine> NewMergeAwareEngineAsync(
+        DocumentStore store, ScriptedExecutor executor, IPullRequestInspector inspector,
+        IWorktreeManager closeoutWorktrees, CancellationToken cancellationToken, ProcessRunner? ghRunner = null)
+    {
+        // This class's own machine node, resolved through the seed rather than constructed blank
+        // (PLAN.md §16 #110): a closeout that actually runs is not the never-invoked stand-in
+        // NewUnusedCloseoutEngine builds, so the node it reads should be the same one every seed
+        // here already claims its tasks under.
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+        return new(store, executor, executor.Processes,
+            new VerificationRunner(
+                store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
+            Options.Create(new DaemonOptions()),
+            NullLogger<ReviewEngine>.Instance,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            ghRunner ?? RecordingProcessRunner.NeverInvoked(),
+            NewStackedParentWatch(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            inspector,
+            new CloseoutEngine(
+                store, node, new DaemonConnection(postgres.ConnectionString), inspector,
+                closeoutWorktrees,
+                new StackedParentWatch(closeoutWorktrees, NullLogger<StackedParentWatch>.Instance),
+                RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
+                Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance));
+    }
+
+    /// <summary>
+    /// A post-PR follow-up run sitting exactly where its opening review cycle would dispatch: the
+    /// task completed once behind a real pull request, was reopened as a ReviewFeedback follow-up
+    /// and reclaimed under this run, and the project records the repository that pull request
+    /// belongs to — without which the guard's own safe-URL check would shell out to gh to observe
+    /// the repository host instead of answering from the store.
+    /// <para>
+    /// The worktree is a real clone of the class's shared origin, never a bare directory: the
+    /// stranded-delta capture runs real git against a real <c>origin/main</c>, and
+    /// <paramref name="strandedCommit"/> is the whole difference between the two shapes it has to
+    /// tell apart — a branch carrying a commit the base does not have, and one whose tip the base
+    /// already contains. Nothing here pushes, so the shared template is safe to clone from.
+    /// </para>
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId, Guid ProjectId, string WorktreePath)>
+        SeedFollowUpRunAtItsOpeningBoundaryAsync(
+            DocumentStore store, CancellationToken cancellationToken, bool strandedCommit,
+            ReviewStageComposition? reviewStageComposition = null)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
+        Directory.CreateDirectory(_home);
+        Git(_home, $"clone -q \"{OriginFor(runId, ownOrigin: false)}\" \"{worktreePath}\"");
+        Git(worktreePath, "checkout -q -b task/review-me");
+        if (strandedCommit)
+        {
+            File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
+            Git(worktreePath, "add -A");
+            Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"followup-{taskId:N}", worktreePath,
+            FollowUpRepositoryUrl, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Address the review feedback", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var firstClaim = TaskDecider.Claim(task, node.NodeId, node.OwnerId, firstRunId, Now);
+        task.Apply(firstClaim);
+        var completed = TaskDecider.Complete(task, firstRunId, FollowUpPullRequestUrl, Now);
+        task.Apply(completed);
+        var reopened = TaskDecider.Reopen(
+            task, firstRunId, "task/review-me", "A reviewer left feedback on the pull request.",
+            FollowUpKind.ReviewFeedback, automatic: true, Now, node.OwnerId);
+        task.Apply(reopened);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        task.Apply(claimed);
+        session.Events.StartStream<TaskAggregate>(
+            taskId, [.. lifecycle, firstClaim, completed, reopened, claimed]);
+        session.Store(new TaskLease
+        {
+            Id = taskId, NodeId = node.NodeId, LeaseGeneration = task.LeaseGeneration, HeartbeatAt = Now,
+        });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, task.LeaseGeneration, DomainId.New(),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now, IsFollowUp: true,
+                ReviewStageComposition: reviewStageComposition),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (taskId, runId, projectId, worktreePath);
+    }
 
     private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor) =>
         NewEngine(store, executor, new DaemonOptions());
@@ -8914,8 +9359,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// shelling out to the real gh CLI and the real network.
     /// </summary>
     private static ReviewEngine NewEngine(
-        DocumentStore store, ScriptedExecutor executor, DaemonOptions options, ProcessRunner ghRunner) =>
-        new(store, executor, executor.Processes,
+        DocumentStore store, ScriptedExecutor executor, DaemonOptions options, ProcessRunner ghRunner)
+    {
+        NeverInvokedPullRequestInspector inspector = new();
+        return new(store, executor, executor.Processes,
             new VerificationRunner(
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
@@ -8924,7 +9371,54 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             ghRunner,
             NewStackedParentWatch(),
-            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            inspector,
+            NewUnusedCloseoutEngine(store, inspector));
+    }
+
+    /// <summary>
+    /// Every test built through <see cref="NewEngine(DocumentStore, ScriptedExecutor)"/> drives a
+    /// fresh, non-follow-up run, so <c>ReviewEngine</c>'s own already-merged guard
+    /// (<see cref="RunAggregate.IsFollowUp"/>) always returns before ever reaching either dependency
+    /// this builds — both exist solely to satisfy the constructor, and either throwing here is proof
+    /// that assumption ever stops holding. The already-merged tests are the ones that do drive a
+    /// follow-up run, and they build their engine through <see cref="NewMergeAwareEngineAsync"/>
+    /// instead, with a real inspector and a real closeout.
+    /// </summary>
+    private sealed class NeverInvokedPullRequestInspector : IPullRequestInspector
+    {
+        private static InvalidOperationException NeverInvoked([System.Runtime.CompilerServices.CallerMemberName] string member = "") =>
+            new($"This file's review loop never drives a follow-up run, so {member} must never be called.");
+
+        public Task<PullRequestSnapshot> InspectAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task<PullRequestStateSnapshot> InspectStateAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task RerequestReviewAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
+            CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task MergeAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task RetargetAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
+            CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+    }
+
+    private static CloseoutEngine NewUnusedCloseoutEngine(DocumentStore store, IPullRequestInspector inspector) =>
+        new(store, new NodeContext(), new DaemonConnection("unused"), inspector,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            NewStackedParentWatch(), RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
+            Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
 
     /// <summary>
     /// The real watch, never a fake: a stacked child's rebase checkpoints read it (task: a stacked

@@ -203,6 +203,13 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        RefusingInspector inspector = new();
+        RefusingWorktreeManager closeoutWorktrees = new();
+        CloseoutEngine closeout = new(
+            store, node, new DaemonConnection(postgres.ConnectionString), inspector, closeoutWorktrees,
+            new StackedParentWatch(closeoutWorktrees, NullLogger<StackedParentWatch>.Instance),
+            RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
+            Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
@@ -210,7 +217,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             new StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
                 NullLogger<StackedParentWatch>.Instance),
-            launchHold);
+            launchHold, inspector, closeout);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,
@@ -224,13 +231,6 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         BlockerContextAssembler blockerContext = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())),
             processes, Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
-        RefusingInspector inspector = new();
-        RefusingWorktreeManager closeoutWorktrees = new();
-        CloseoutEngine closeout = new(
-            store, node, new DaemonConnection(postgres.ConnectionString), inspector, closeoutWorktrees,
-            new StackedParentWatch(closeoutWorktrees, NullLogger<StackedParentWatch>.Instance),
-            RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
-            Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         return new RunLauncher(
             store, new RefusingWorktreeManager(), new RefusingExecutor("The withdrawal/recall tests never dispatch a run — nothing here should ever spawn an agent."), supervisor, blockerContext, inspector,
             closeout, RecordingProcessRunner.NeverInvoked(), Options.Create(new DaemonOptions()),
@@ -2367,6 +2367,17 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        // Every run this factory's ReviewEngine drives is a fresh, non-follow-up run, so its own
+        // already-merged guard (RunAggregate.IsFollowUp) always returns before ever reaching
+        // either dependency below — both exist solely to satisfy the constructor.
+        RefusingInspector reviewInspector = new();
+        RefusingWorktreeManager closeoutWorktrees = new();
+        CloseoutEngine unusedCloseout = new(
+            store, node, new DaemonConnection("unused"), reviewInspector, closeoutWorktrees,
+            new Hall9k.Daemon.Closeout.StackedParentWatch(
+                closeoutWorktrees, NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
+            RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
+            Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
@@ -2374,7 +2385,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             new Hall9k.Daemon.Closeout.StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
                 NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
-            launchHold);
+            launchHold, reviewInspector, unusedCloseout);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,

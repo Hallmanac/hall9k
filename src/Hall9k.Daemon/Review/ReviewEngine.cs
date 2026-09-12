@@ -9,6 +9,7 @@ using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
+using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -101,7 +102,9 @@ public sealed class ReviewEngine(
     IWorktreeManager worktrees,
     ProcessRunner processRunner,
     StackedParentWatch stackedParents,
-    LaunchHoldEngine launchHold)
+    LaunchHoldEngine launchHold,
+    IPullRequestInspector inspector,
+    CloseoutEngine closeout)
 {
     /// <summary>
     /// How long a single git call in the pre-final-pass rebase check gets (task: a run rebases
@@ -352,6 +355,16 @@ public sealed class ReviewEngine(
                     if (!await EnsureInteractiveProceedAsync(
                         context, run, "the verification gates just passed and cycle 1's review is ready to dispatch",
                         InteractiveBoundaryLevers.ProceedOrRedirect, cancellationToken))
+                    {
+                        return false;
+                    }
+
+                    // The already-merged guard (task: a post-PR follow-up's review loop checks the
+                    // pull request's merge state between passes): a requeued or reopened follow-up
+                    // can sit through a build/fix session before ever reaching its own opening
+                    // review cycle, and the human can merge the still-open pull request in that
+                    // window exactly as easily as during any later pass.
+                    if (await TryShortCircuitOnMergedPullRequestAsync(context, run, cancellationToken))
                     {
                         return false;
                     }
@@ -741,6 +754,15 @@ public sealed class ReviewEngine(
                             return false;
                         }
 
+                        // The already-merged guard (task: a post-PR follow-up's review loop checks
+                        // the pull request's merge state between passes): the mandatory gate above
+                        // can run for real wall-clock minutes to hours, plenty of time for a human
+                        // to merge the pull request this mandatory final pass is about to re-review.
+                        if (await TryShortCircuitOnMergedPullRequestAsync(context, run, cancellationToken))
+                        {
+                            return false;
+                        }
+
                         string? settlingHeadSha =
                             await GetWorktreeHeadShaAsync(context.Run.WorktreePath, cancellationToken);
                         // The boundary this new FinalFullPass cycle's own diff instruction scopes
@@ -914,6 +936,16 @@ public sealed class ReviewEngine(
                     break;
 
                 case ReviewPhase.Reverify:
+                    // The already-merged guard (task: a post-PR follow-up's review loop checks the
+                    // pull request's merge state between passes), checked as soon as this phase is
+                    // entered rather than only immediately before the dispatch below: the fix
+                    // session that just completed (AwaitingFix, above) is exactly the kind of
+                    // window — real wall-clock minutes — a human merging mid-review needs.
+                    if (await TryShortCircuitOnMergedPullRequestAsync(context, run, cancellationToken))
+                    {
+                        return false;
+                    }
+
                     // Whichever tracks are still owed a look get one merged Verify pass (task:
                     // review cycles after the first) — unless nothing is left, in which case this
                     // fix's own commits have never had a fresh-context read, and the mandatory
@@ -1222,6 +1254,243 @@ public sealed class ReviewEngine(
                 case ReviewPhase.Parked:
                     return false;
             }
+        }
+    }
+
+    /// <summary>
+    /// The review-pass boundary's own already-merged guard (task: a post-PR follow-up's review
+    /// loop checks the pull request's merge state between passes) — the same guard
+    /// <c>RunLauncher.TryCloseOutMergedPullRequestAsync</c> applies at dispatch, moved here for
+    /// the one case that guard cannot see: a human merging while a follow-up run's OWN review
+    /// loop is already mid-flight, between one pass and the next. A fix session already
+    /// executing is never touched here — this is called only immediately before each of the
+    /// three places <see cref="DriveAsync"/> is about to dispatch a fresh review pass
+    /// (<see cref="ReviewPhase.None"/>'s opening cycle, <see cref="ReviewPhase.Settling"/>'s
+    /// mandatory final pass, and <see cref="ReviewPhase.Reverify"/>'s post-fix pass), never at a
+    /// boundary that is only resuming one already in flight.
+    /// <para>
+    /// Applies only to a follow-up run whose task already has an open pull request —
+    /// <see cref="RunAggregate.IsFollowUp"/> is the observed fact <see cref="PullRequestOpener"/>'s
+    /// own doc says to read rather than re-inferring from the task's own <c>PullRequestUrl</c> — and
+    /// never to a pr-review task, exactly like RunLauncher's own guard: a pr-review task's
+    /// <c>PullRequestUrl</c> names the pull request it reviewed, never one of its own, so this never
+    /// collides with the pr-review follow-through <c>PrReviewFollowThroughEngine</c> (#326) already
+    /// watches. A pre-PR run (no follow-up, no pull request yet) never reaches the one check this
+    /// method makes past its own guard clause, let alone a remote call.
+    /// </para>
+    /// <para>
+    /// State-only (<see cref="IPullRequestInspector.InspectStateAsync"/>), not the heavier full
+    /// inspection RunLauncher's own guard pays for at dispatch: a review pass about to dispatch
+    /// has no reviews-or-checks question to answer here, only whether this already shipped. A
+    /// read failure dispatches normally, the same non-fatal stance RunLauncher's own guard takes —
+    /// the network being down is never a reason to stop a review loop that has done nothing wrong.
+    /// </para>
+    /// </summary>
+    private async Task<bool> TryShortCircuitOnMergedPullRequestAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        if (!context.Run.IsFollowUp || context.Task.PullRequestUrl.IsBlank() || context.Task.Type == TaskType.PrReview)
+        {
+            return false;
+        }
+
+        string pullRequestUrl = context.Task.PullRequestUrl!;
+        int pullRequestNumber = PullRequestUrls.ParseNumber(pullRequestUrl);
+        if (pullRequestNumber <= 0)
+        {
+            return false;
+        }
+
+        Uri? projectRepositoryUrl = context.Project.RepositoryUrl
+            ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
+                context.Project.RepositoryPath, cancellationToken);
+        if (!PullRequestUrls.IsSafePullRequestUrl(pullRequestUrl, projectRepositoryUrl))
+        {
+            return false;
+        }
+
+        PullRequestStateSnapshot snapshot;
+        try
+        {
+            snapshot = await inspector.InspectStateAsync(
+                context.Project.RepositoryPath, pullRequestUrl, pullRequestNumber, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: could not check pull request {Url} before dispatching the next review pass; dispatching normally",
+                context.RunId, pullRequestUrl);
+            return false;
+        }
+
+        if (!snapshot.IsMerged)
+        {
+            return false;
+        }
+
+        await ConcludeOnMergedPullRequestAsync(context, run, pullRequestUrl, snapshot.MergedAt, cancellationToken);
+        return true;
+    }
+
+    /// <summary>A follow-up run's worktree carrying commits the merge never included: the patch and the commit list that name them.</summary>
+    private readonly record struct StrandedDelta(IReadOnlyList<string> CommitSummaries, string Patch);
+
+    /// <summary>
+    /// Whatever this run's worktree carries beyond the just-merged base branch, read fresh — a
+    /// fetch first, never the worktree's own possibly-stale remote-tracking ref, since the merge
+    /// this method exists to react to may be minutes old by the time it runs. Best-effort: a
+    /// worktree this read cannot account for (removed, unreachable, any git failure) returns
+    /// null exactly as "nothing stranded" does, because this method is only ever called once the
+    /// merge itself is already certain, and there is nowhere honest left to report a read failure
+    /// separately from an honestly empty delta — either way, closeout proceeds without a draft.
+    /// </summary>
+    private async Task<StrandedDelta?> CaptureStrandedDeltaAsync(ReviewContext context, CancellationToken cancellationToken)
+    {
+        string worktreePath = context.Run.WorktreePath;
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            return null;
+        }
+
+        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        string upstream = $"origin/{context.BaseBranch}";
+        ProcessResult fetch = await git("git", ["fetch", "origin", context.BaseBranch], worktreePath, cancellationToken);
+        if (fetch.ExitCode != 0)
+        {
+            return null;
+        }
+
+        ProcessResult revList = await git("git", ["rev-list", $"{upstream}..HEAD"], worktreePath, cancellationToken);
+        string[] shas = revList.ExitCode == 0
+            ? revList.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [];
+        if (shas.Length == 0)
+        {
+            // Either the read failed or HEAD is already fully reflected in the merged base — the
+            // ordinary case either way: nothing here for a draft to name.
+            return null;
+        }
+
+        ProcessResult log = await git("git", ["log", "--oneline", $"{upstream}..HEAD"], worktreePath, cancellationToken);
+        ProcessResult diff = await git("git", ["diff", $"{upstream}...HEAD"], worktreePath, cancellationToken);
+        if (log.ExitCode != 0 || diff.ExitCode != 0)
+        {
+            return null;
+        }
+
+        return new StrandedDelta(
+            log.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            diff.StandardOutput);
+    }
+
+    /// <summary>
+    /// Where the stranded delta's own patch and commit list land: the task's own workspace when
+    /// the project has a home, resolved against whatever directory is actually on disk right now
+    /// rather than a freshly-computed slug — the identical reasoning RunLauncher's own run-directory
+    /// resolution already applies (backlog 49/51), since the render sweep renames a task's directory
+    /// on its own schedule and trusting a freshly computed name here could create the not-yet-renamed
+    /// directory itself. Falls back to this run's own directory, which always exists whether or not
+    /// the project has a home, the same fallback <see cref="RunPaths.ResolveDirectory"/> takes.
+    /// </summary>
+    private static string ResolveStrandedDeltaDirectory(ReviewContext context)
+    {
+        if (context.Project.HomeDirectory.HasValue)
+        {
+            string home = context.Project.HomeDirectory.Value;
+            string? existingTaskDirectory = HomeEntryWriter.FindExistingDirectory(
+                ProjectHomePaths.TasksDirectory(home), context.TaskId,
+                alternateRoots: [ProjectHomePaths.ArchivedTasksDirectory(home)]);
+            if (existingTaskDirectory is not null)
+            {
+                return ProjectHomePaths.TaskWorkspaceDirectory(existingTaskDirectory);
+            }
+        }
+
+        return RunPaths.ResolveCurrentDirectory(context.Run.RunDirectory);
+    }
+
+    private static async Task<(string PatchFile, string CommitListFile)> SaveStrandedDeltaAsync(
+        ReviewContext context, StrandedDelta delta, CancellationToken cancellationToken)
+    {
+        string directory = ResolveStrandedDeltaDirectory(context);
+        Directory.CreateDirectory(directory);
+        string patchFile = Path.Combine(directory, $"re-land-{context.RunId}.patch");
+        string commitListFile = Path.Combine(directory, $"re-land-{context.RunId}-commits.txt");
+        await File.WriteAllTextAsync(patchFile, delta.Patch, cancellationToken);
+        await File.WriteAllTextAsync(
+            commitListFile, string.Join(Environment.NewLine, delta.CommitSummaries), cancellationToken);
+        return (patchFile, commitListFile);
+    }
+
+    /// <summary>
+    /// The already-merged guard's own landing. Whatever the worktree stranded is captured and
+    /// saved to disk BEFORE this method ever opens a document session — well before
+    /// <c>CloseoutEngine</c>'s own cleanup deletes this run's worktree and branch — so the save
+    /// survives regardless of which of the branches below actually commits. A stranded delta
+    /// routes a re-land draft naming it; the task then completes and the run's own closeout runs
+    /// atomically with both, through <c>CloseoutEngine.ReconstructAndCompleteAsync</c>'s own
+    /// <c>completeClaimedTaskHere</c>/<c>precedingRunEvents</c> — the same closeout every merged
+    /// run gets, minus RunLauncher's heavier full inspection this call never paid for. The caller
+    /// stops dispatching either way once this returns — the pull request is confirmed merged
+    /// whether this call is the one that actually commits the closeout or loses a race to a
+    /// concurrent one that already has.
+    /// </summary>
+    private async Task ConcludeOnMergedPullRequestAsync(
+        ReviewContext context, RunAggregate run, string pullRequestUrl, DateTimeOffset? mergedAt,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        StrandedDelta? stranded = await CaptureStrandedDeltaAsync(context, cancellationToken);
+        (string PatchFile, string CommitListFile, IReadOnlyList<string> CommitSummaries)? saved = null;
+        if (stranded is { } delta)
+        {
+            (string PatchFile, string CommitListFile) written = await SaveStrandedDeltaAsync(context, delta, cancellationToken);
+            saved = (written.PatchFile, written.CommitListFile, delta.CommitSummaries);
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        StreamState? taskFence = await session.Events.FetchStreamStateAsync(context.TaskId, cancellationToken);
+        TaskAggregate? task = taskFence is null
+            ? null
+            : await session.Events.AggregateStreamAsync<TaskAggregate>(
+                context.TaskId, version: taskFence.Version, token: cancellationToken);
+        if (task is null || task.State != TaskState.Claimed || task.CurrentRunId != context.RunId)
+        {
+            // The task moved on its own between the merge check above and this fence — a
+            // takeover, a human's own resolution, another generation's write. Whatever now owns
+            // the task's fate is not this call's to override; the pull request is still merged
+            // either way, so the caller still stops dispatching.
+            logger.LogInformation(
+                "Run {RunId}: pull request {Url} merged, but task {TaskId} is no longer this run's to close out; deferring",
+                context.RunId, pullRequestUrl, context.TaskId);
+            return;
+        }
+
+        Guid? reLandDraftTaskId = null;
+        if (saved is { } files)
+        {
+            reLandDraftTaskId = DomainId.New();
+            TaskAdded added = ReLandDraftTask.Compose(
+                reLandDraftTaskId.Value, task, context.RunId, context.Run.Branch, pullRequestUrl,
+                files.PatchFile, files.CommitListFile, files.CommitSummaries, now, context.Run.OwnerId);
+            session.Events.StartStream<TaskAggregate>(reLandDraftTaskId.Value, added);
+        }
+
+        // ReconstructAndCompleteAsync already catches both the collision and the version-conflict
+        // exceptions a lost race can raise here and reports the honest outcome as its own return
+        // value (its own doc, second paragraph) — the re-land draft's stream start above committed
+        // nothing on its own either way, since Marten commits everything staged in this session
+        // together.
+        bool committed = await closeout.ReconstructAndCompleteAsync(
+            session, task, context.Project, context.RunId, context.Run.NodeId, context.Run.OwnerId,
+            mergedAt, now, cancellationToken, completeClaimedTaskHere: true,
+            precedingRunEvents: [new ReviewEndedByMerge(context.RunId, run.ReviewCycle, reLandDraftTaskId, now)]);
+        if (!committed)
+        {
+            logger.LogInformation(
+                "Run {RunId}: lost the race closing out merged pull request {Url}; a concurrent write got there first",
+                context.RunId, pullRequestUrl);
         }
     }
 
