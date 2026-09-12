@@ -71,9 +71,18 @@ public sealed record HumanWaitPassage(HumanWaitKind Kind, PassagePhase Elapsed);
 /// A task's whole passage in time, computed once from its own stream and every run it has ever
 /// dispatched (task: h9k task show tells a task's passage in time) — how long it queued, built,
 /// sat in gates, cycled through review, waited on a human, and waited for its merge, plus the
-/// lap, cycle, and session counts. Every elapsed figure is <see cref="PassagePhase"/> rather than
-/// a bare <see cref="TimeSpan"/> so a reader can never mistake "never happened", "still running",
-/// and "happened, but this stream does not say how long it took" for the same zero.
+/// lap, cycle, and session counts. Every figure whose own boundary event can go missing — every
+/// field here except <see cref="Gates"/> and <see cref="Review"/>'s own — is
+/// <see cref="PassagePhase"/> rather than a bare <see cref="TimeSpan"/>, so a reader can never
+/// mistake "never happened", "still running", and "happened, but this stream does not say how
+/// long it took" for the same zero. <see cref="Gates"/> and <see cref="ReviewCyclePassage"/>'s own
+/// fields stay bare <see cref="TimeSpan"/>s because their own fold never has an unobserved case to
+/// report: <c>TaskPassageQuery.SumGateDurations</c> maps a null <c>VerificationPassed.GateDurations</c>
+/// to zero honestly, the same "unobserved reads as zero" a run predating that field already
+/// carries on <c>RunListItem.GateDurations</c> itself, and a review cycle or fix session either
+/// completed (its own duration is exact) or is still running (folded into
+/// <see cref="ReviewCyclePassage.StillOpen"/>/<see cref="ReviewCyclePassage.FixStillOpen"/>) —
+/// there is no third, silently-missing case for either to hide behind a bare zero.
 /// </summary>
 public sealed record TaskPassage(
     PassagePhase Queued,

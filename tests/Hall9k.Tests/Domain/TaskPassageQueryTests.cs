@@ -429,6 +429,172 @@ public sealed class TaskPassageQueryTests
     }
 
     [Fact]
+    public void Queued_sums_time_after_a_retry_even_with_no_requeue_event()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        DateTimeOffset retriedAt = Now.AddMinutes(-30);
+        DateTimeOffset claimedAt = Now.AddMinutes(-10);
+
+        // h9k task retry appends only TaskRetried, never a TaskRequeued alongside it
+        // (independent pre-PR review, cycle 1, adversarial lens) — the queued wait after a
+        // retry has to open on TaskRetried's own timestamp or it is dropped entirely.
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskRetried(taskId, null, null, "flaky infra", retriedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, DomainId.New(), claimedAt)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, []);
+
+        passage.Queued.Applicable.Should().BeTrue();
+        passage.Queued.Elapsed.Should().Be(TimeSpan.FromMinutes(20));
+    }
+
+    [Fact]
+    public void Queued_sums_time_after_a_handback_even_with_no_requeue_event()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset handedBackAt = Now.AddMinutes(-25);
+        DateTimeOffset claimedAt = Now.AddMinutes(-5);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskHandedBack(taskId, runId, "task/x", "back to headless", handedBackAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, DomainId.New(), claimedAt)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, []);
+
+        passage.Queued.Applicable.Should().BeTrue();
+        passage.Queued.Elapsed.Should().Be(TimeSpan.FromMinutes(20));
+    }
+
+    [Fact]
+    public void Building_drops_an_older_run_whose_lease_expired_and_was_never_resolved()
+    {
+        // DispatchEngine.RequeueExpiredLeasesAsync reclaims a task whose lease expired on
+        // another node but deliberately leaves that node's own run alone — no RunSuperseded,
+        // no RunFailed — so its FinishedAt (and FoldRun's own BuildEnd fallback) never fires.
+        // The task is reclaimed and a second run dispatches and finishes normally; the fold must
+        // not let the first run's own dangling shape mark the whole phase still open.
+        Guid stuckRunId = DomainId.New();
+        Guid finishedRunId = DomainId.New();
+        DateTimeOffset finishedRunDispatchedAt = Now.AddHours(-2);
+        DateTimeOffset finishedRunPassedAt = Now.AddHours(-1);
+
+        RunEventSet stuckRun = new(stuckRunId, Now.AddHours(-5), null, []);
+        RunEventSet finishedRun = new(finishedRunId, finishedRunDispatchedAt, Now.AddMinutes(-50),
+            [Ev(new VerificationPassed(finishedRunId, finishedRunPassedAt))]);
+
+        TaskPassage passage = Compute([], [stuckRun, finishedRun]);
+
+        passage.Building.Applicable.Should().BeTrue();
+        passage.Building.StillOpen.Should().BeFalse();
+        passage.Building.Elapsed.Should().Be(TimeSpan.FromHours(1));
+    }
+
+    [Fact]
+    public void Merge_wait_clamps_to_zero_rather_than_a_negative_span()
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset mergedAt = Now.AddHours(-3);
+        DateTimeOffset completedAt = Now.AddHours(-1);
+
+        RunEventSet run = new(runId, Now.AddHours(-4), completedAt,
+            [Ev(new PullRequestMerged(runId, mergedAt, mergedAt))]);
+        List<IEvent> taskEvents = [Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/1", completedAt))];
+
+        TaskPassage passage = Compute(taskEvents, [run], taskConcluded: true);
+
+        passage.MergeWait.Elapsed.Should().Be(TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void A_second_taskcompleted_on_the_same_run_does_not_double_count_delivery_or_merge_wait()
+    {
+        // CloseoutEngine.CompleteCloseoutAsync re-appends TaskDecider.Complete on the identical
+        // run id when a Blocked task's own merge-observation closeout lands, dated to the
+        // observation rather than the earlier push PullRequestOpener already recorded a
+        // TaskCompleted for.
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset reviewCompletedAt = Now.AddHours(-5);
+        DateTimeOffset pushedAt = Now.AddHours(-4);
+        DateTimeOffset mergedAt = Now.AddHours(-1);
+        DateTimeOffset observedAt = Now;
+
+        RunEventSet run = new(runId, Now.AddHours(-6), observedAt,
+        [
+            Ev(new ReviewCompleted(runId, 1, ReviewVerdict.MergeReady, reviewCompletedAt)),
+            Ev(new PullRequestMerged(runId, mergedAt, observedAt)),
+        ]);
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/1", pushedAt)),
+            Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/1", observedAt)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, [run], taskConcluded: true);
+
+        passage.Delivery.Elapsed.Should().Be(pushedAt - reviewCompletedAt);
+        passage.MergeWait.Elapsed.Should().Be(mergedAt - pushedAt);
+    }
+
+    [Fact]
+    public void A_pr_review_task_has_no_merge_wait_or_claim_to_merge_of_its_own()
+    {
+        // PrReviewFollowThroughEngine completes a pr-review task carrying the reviewed pull
+        // request's own URL, but no pr-review run stream ever appends PullRequestMerged for it
+        // — that pull request is never this task's own to merge.
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        List<IEvent> taskEvents = [Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/9", Now.AddHours(-1)))];
+
+        TaskPassage passage = Compute(taskEvents, [], TaskType.PrReview, taskConcluded: true);
+
+        passage.MergeWait.Applicable.Should().BeFalse();
+        passage.ClaimToMerge.Applicable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void An_unanswered_question_from_a_superseded_run_is_dropped_rather_than_attributed_to_a_later_live_run()
+    {
+        Guid taskId = DomainId.New();
+        Guid oldRunId = DomainId.New();
+        Guid newRunId = DomainId.New();
+        DateTimeOffset askedAt = Now.AddDays(-3);
+
+        List<IEvent> taskEvents = [Ev(new QuestionAsked(taskId, DomainId.New(), oldRunId, "which approach?", askedAt))];
+        RunEventSet oldRun = new(oldRunId, Now.AddDays(-3).AddMinutes(-10), Now.AddDays(-2), []);
+        RunEventSet newRun = new(newRunId, Now.AddDays(-2), null, []);
+
+        TaskPassage passage = Compute(taskEvents, [oldRun, newRun]);
+
+        passage.HumanWaits.Should().NotContain(w => w.Kind == HumanWaitKind.Question);
+    }
+
+    [Fact]
+    public void An_unanswered_question_on_a_run_that_has_ended_reports_unknown_rather_than_zero()
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset askedAt = Now.AddHours(-3);
+
+        List<IEvent> taskEvents = [Ev(new QuestionAsked(taskId, DomainId.New(), runId, "which approach?", askedAt))];
+        RunEventSet run = new(runId, Now.AddHours(-4), Now.AddHours(-1), []);
+
+        TaskPassage passage = Compute(taskEvents, [run]);
+
+        HumanWaitPassage wait = passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.Question).Subject;
+        wait.Elapsed.IsUnknown.Should().BeTrue();
+    }
+
+    [Fact]
     public void Sessions_count_every_dispatch_across_every_run()
     {
         Guid runId = DomainId.New();
