@@ -22,7 +22,8 @@ namespace Hall9k.Cli.Prompts;
 /// <para>
 /// Deliberately has no <c>Seed</c>/<c>SeedNode</c> counterpart: a template is read directly out of
 /// the canonical directory (<see cref="PromptTemplates"/>) by whichever process assembles the
-/// prompt — the CLI today, for the one builder this task moved — and is never linked into a
+/// prompt — the CLI (<c>ReviewLapPromptBuilder</c>) and, once <c>WorkPromptBuilder</c> moved onto
+/// the same mechanism, the daemon too — and is never linked into a
 /// project home's <c>skills/</c> or <c>.claude/skills</c> adapter, and never carries a
 /// <c>SKILL.md</c> — publishing it into either would add its description to every session's first
 /// turn, which this task's own token-cost rule puts out of bounds.
