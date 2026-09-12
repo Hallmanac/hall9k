@@ -48,9 +48,12 @@ internal static class GenerationFence
     /// objective was met by an earlier run; this run is still live, addressing further
     /// feedback under the same task) is exactly as current as any other, and a caller that
     /// only finalizes an already-executed run's own conclusion (PrReviewEngine's own
-    /// Finalize, the pull-request opener) must keep proceeding on a task a human abandoned
-    /// after the run's real work already happened. Only the callers that would dispatch a
-    /// fresh agent session or create a park pass true.
+    /// Finalize) must keep proceeding on a task a human abandoned after the run's real work
+    /// already happened. Only the callers that would dispatch a fresh agent session or create
+    /// a park pass true. The pull-request opener is not such a caller either way: it checks
+    /// <c>TaskState.Abandoned</c> itself, before this fence's own identity check ever runs,
+    /// because publishing to GitHub is a side effect this fence's read-only check cannot undo
+    /// once made (<see cref="Hall9k.Daemon.Execution.PullRequestOpener.OpenAsync"/>'s own doc).
     /// </para>
     /// <para>
     /// Reads through <paramref name="session"/> rather than opening a second connection, and a

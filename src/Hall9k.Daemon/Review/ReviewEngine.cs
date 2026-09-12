@@ -590,13 +590,15 @@ public sealed class ReviewEngine(
                                 // regardless of allowRepairInsteadOfFail (SettlingVerificationResult's
                                 // own doc) — that flag only decides whether the ordinary
                                 // RunFailed/TaskFailed append also runs. FailedGateName stays null
-                                // only for the two pre-gate checks VerifyForSettlingAsync always runs
-                                // first — stranded work, and a missing run or task — which return
-                                // (false, null, null) and, for the stranded-work case, already
-                                // appended RunFailed/TaskFailed themselves regardless of
-                                // allowRepairInsteadOfFail (independent pre-PR review, cycle 1,
+                                // only for the pre-gate checks VerifyForSettlingAsync always runs
+                                // first — stranded work, a missing run or task, or an abandoned task
+                                // — which return (false, null, null) and, for the stranded-work
+                                // case, already appended RunFailed/TaskFailed themselves regardless
+                                // of allowRepairInsteadOfFail (independent pre-PR review, cycle 1,
                                 // adversarial lens: an agent's own uncommitted work is not something
-                                // a rebase caused, so it stays fail-hard unconditionally). So a
+                                // a rebase caused, so it stays fail-hard unconditionally), while the
+                                // abandoned-task case retires the run superseded instead of failing
+                                // it (task: abandoning a task halts its in-flight run entirely). So a
                                 // populated FailedGateName alone does not mean repair is safe here:
                                 // eligibleForSettlingGateRepair still has to gate it, since a genuine
                                 // failure recorded fail-hard (eligibleForSettlingGateRepair false,
