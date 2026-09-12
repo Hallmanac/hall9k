@@ -57,10 +57,16 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
 
         foreach (ProjectDetails project in projects)
         {
+            // An archived project (task: a project can be archived, listed as archived,
+            // reactivated, and renamed) is skipped outright, ahead of the home-exists check below:
+            // its home is left exactly as the last live sweep rendered it, and h9k project
+            // reactivate resumes the sweep rather than this one repairing drift on an archive
+            // nobody is looking at.
+            //
             // A recorded home is a setting, not a guarantee: it may not be materialised on this
             // machine yet (h9k project init has not run here), and rendering into a directory that
             // does not exist would just recreate a bare tasks/ideas pair nothing else populated.
-            if (!project.HomeDirectory.HasValue || !Directory.Exists(project.HomeDirectory.Value))
+            if (project.IsArchived || !project.HomeDirectory.HasValue || !Directory.Exists(project.HomeDirectory.Value))
             {
                 continue;
             }

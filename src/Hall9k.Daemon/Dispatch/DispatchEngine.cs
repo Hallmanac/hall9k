@@ -437,7 +437,14 @@ public sealed class DispatchEngine(
     {
         await using IDocumentSession session = store.LightweightSession();
 
-        IReadOnlyList<QueuedCandidate> queued = await ReadQueueAsync(session, cancellationToken);
+        // Read once per sweep and threaded through both the queue read and the claim itself
+        // (task: a project can be archived, listed as archived, reactivated, and renamed): an
+        // archived project's tasks are never even candidates here, which is the primary way "the
+        // dispatcher never claims its tasks" holds, and TryClaimAsync's own check below is a
+        // belt-and-suspenders second look — the same discipline this method already gives a task's
+        // own state (re-validated in TryClaimAsync right before the claim commits).
+        IReadOnlySet<Guid> archivedProjects = await ReadArchivedProjectIdsAsync(session, cancellationToken);
+        IReadOnlyList<QueuedCandidate> queued = await ReadQueueAsync(session, archivedProjects, cancellationToken);
 
         // Measured after the queue is read rather than before it, because a project cap can only
         // be measured against the projects that actually have a candidate this sweep — a paused
@@ -501,7 +508,7 @@ public sealed class DispatchEngine(
             // leaving it in would spin the loop on the same task until the capacity ran out.
             waiting.Remove(slot.Candidate);
 
-            if (await TryClaimAsync(slot.Candidate.TaskId, cancellationToken) is { } work)
+            if (await TryClaimAsync(slot.Candidate.TaskId, archivedProjects, cancellationToken) is { } work)
             {
                 claimed.Add(work);
                 claimedByProject[slot.Candidate.ProjectId] =
@@ -615,7 +622,7 @@ public sealed class DispatchEngine(
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<QueuedCandidate>> ReadQueueAsync(
-        IQuerySession session, CancellationToken cancellationToken)
+        IQuerySession session, IReadOnlySet<Guid> archivedProjects, CancellationToken cancellationToken)
     {
         Guid ownerId = node.OwnerId;
 
@@ -656,7 +663,30 @@ public sealed class DispatchEngine(
             .Select(t => new QueuedRow(t.Id, t.ProjectId, t.QueuePriorityMarked))
             .ToListAsync(cancellationToken);
 
-        return [.. rows.Select(row => new QueuedCandidate(row.Id, row.ProjectId, row.QueuePriorityMarked ?? false))];
+        // An archived project's tasks stay Queued in the database (h9k project remove already
+        // refused to archive over a Queued one, so this can only be reached if a project was
+        // archived and the task predates that — never through the ordinary path), but they are
+        // filtered out here rather than merely deferred: "the dispatcher never claims its tasks"
+        // means invisible, not held with a reason the way a paused project's own cap holds one.
+        return [.. rows
+            .Where(row => !archivedProjects.Contains(row.ProjectId))
+            .Select(row => new QueuedCandidate(row.Id, row.ProjectId, row.QueuePriorityMarked ?? false))];
+    }
+
+    /// <summary>
+    /// Every project archived on this install, read once per sweep (task: a project can be
+    /// archived, listed as archived, reactivated, and renamed) — a plain bool column, unlike the
+    /// value-object-backed fields elsewhere in this file that need <c>MatchesSql</c> to filter on
+    /// server-side, so a direct LINQ <c>Where</c> translates cleanly.
+    /// </summary>
+    private static async Task<IReadOnlySet<Guid>> ReadArchivedProjectIdsAsync(
+        IQuerySession session, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<Guid> ids = await session.Query<ProjectDetails>()
+            .Where(project => project.IsArchived)
+            .Select(project => project.Id)
+            .ToListAsync(cancellationToken);
+        return ids.ToHashSet();
     }
 
     /// <summary>
@@ -1026,7 +1056,8 @@ public sealed class DispatchEngine(
         _deferredByProjectCap.UnionWith(deferred.Select(candidate => candidate.TaskId));
     }
 
-    private async Task<ClaimedWork?> TryClaimAsync(Guid taskId, CancellationToken cancellationToken)
+    private async Task<ClaimedWork?> TryClaimAsync(
+        Guid taskId, IReadOnlySet<Guid> archivedProjects, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
@@ -1034,6 +1065,19 @@ public sealed class DispatchEngine(
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
         if (state is null || task is null || task.State != TaskState.Queued || task.AssignedOwnerId != node.OwnerId)
         {
+            return null;
+        }
+
+        // Belt and suspenders (the same re-validate-right-before-claiming discipline this method
+        // already gives the task's own state above): ReadQueueAsync's own filter is what actually
+        // keeps an archived project's tasks off this sweep's candidate list, so reaching here means
+        // the project was archived between that read and this claim — a narrow race this closes
+        // rather than a path this sweep expects to take.
+        if (archivedProjects.Contains(task.ProjectId))
+        {
+            logger.LogWarning(
+                "Task {TaskId} is queued under project {ProjectId}, which is now archived — claim refused",
+                taskId, task.ProjectId);
             return null;
         }
 

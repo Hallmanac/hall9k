@@ -227,7 +227,8 @@ public sealed class AutoPrReviewEngine(
         DateTimeOffset adoptedAt = await EnsureDefaultAdoptionAsync(cancellationToken);
 
         await using IQuerySession query = store.QuerySession();
-        IReadOnlyList<ProjectDetails> projects = await query.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        IReadOnlyList<ProjectDetails> projects = [.. (await query.Query<ProjectDetails>().ToListAsync(cancellationToken))
+            .Where(project => !project.IsArchived)];
         IReadOnlyDictionary<Guid, AutoPrReviewSetting> settings = await AutoPrReviewSetting.ResolveAllAsync(
             query, projects.Select(project => project.Id), cancellationToken);
 
@@ -267,7 +268,14 @@ public sealed class AutoPrReviewEngine(
             // gh pr list per project per tick rather than per opted-in project per tick — a
             // human-timescale poll against a handful of projects, which is what the interval is
             // sized for.
-            projects = await query.Query<ProjectDetails>().ToListAsync(cancellationToken);
+            //
+            // An archived project (task: a project can be archived, listed as archived,
+            // reactivated, and renamed) is excluded here rather than merely left off like the
+            // opt-out case above: off still watches for a request an operator has to act on, but
+            // an archived repository is not one this install is maintaining any more, and
+            // reactivating resumes this sweep for it immediately.
+            projects = [.. (await query.Query<ProjectDetails>().ToListAsync(cancellationToken))
+                .Where(project => !project.IsArchived)];
             settings = await AutoPrReviewSetting.ResolveAllAsync(
                 query, projects.Select(project => project.Id), cancellationToken);
         }
