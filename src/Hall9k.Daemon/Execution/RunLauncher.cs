@@ -4,6 +4,7 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -24,6 +25,7 @@ using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
+using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
@@ -419,24 +421,28 @@ public sealed class RunLauncher(
                 // shape a mention that instead attaches to an already-reviewed pull request gets
                 // from PrReviewEngine.DriveMentionFollowUpAsync's own bounded lap.
                 //
-                // Read off task.LatestMention* rather than the ObservedReviewMention row queried
-                // by TaskId/Outcome==TaskCreated: at "now" speed (the only speed that reaches here
-                // before ProcessMentionAsync's own session.Store(observed) has committed) that row
-                // does not exist yet, so a query-based read finds nothing on the common path. A
-                // second mention landing on this same task before its first ("first"/"normal"
-                // speed) dispatch can still move these fields — a narrower version of the same
-                // staleness independent pre-PR review (cycle 1, both lenses) found in
-                // PrReviewEngine's own park line — named rather than fixed here, since closing it
-                // needs a stable "minted by exactly this comment" marker distinct from "the most
-                // recent mention observed," which the first-observed-mention heuristic this method
-                // could otherwise reach for gets wrong for a request-minted task that picks up a
-                // mention before its own first dispatch.
-                if (task.LatestMentionCommentId is not null && task.LatestMentionAuthorLogin is not null
-                    && task.LatestMentionCreatedAt is { } mentionCreatedAt)
+                // Read off the ObservedReviewMention row this task was actually MINTED from
+                // (Outcome == TaskCreated) — the same stable marker PrReviewEngine's own park line
+                // uses — rather than task.LatestMention*, which a second mention landing on this
+                // same task before its first ("first"/"normal" speed) dispatch can move to a
+                // comment this addendum never answered (independent pre-PR review, cycle 1, both
+                // lenses). Falls back to task.LatestMention* only when that row is not there yet:
+                // at "now" speed this dispatch happens before ProcessMentionAsync's own
+                // session.Store(observed) has committed, so a query-based read finds nothing on
+                // that path, but nothing else could have raced the fields in that window either.
+                ObservedReviewMention? mintingMention = await session.Query<ObservedReviewMention>()
+                    .Where(mention => mention.TaskId == taskId)
+                    .Where(mention => mention.MatchesSql("d.data ->> 'outcome' = ?", ReviewMentionOutcome.TaskCreated.Value))
+                    .FirstOrDefaultAsync(cancellationToken);
+                string? mentionAuthorLogin = mintingMention?.CommentAuthorLogin ?? task.LatestMentionAuthorLogin;
+                string? mentionBody = mintingMention?.CommentBody ?? task.LatestMentionBody;
+                string? mentionUrl = mintingMention?.CommentUrl ?? task.LatestMentionUrl;
+                DateTimeOffset? mentionCreatedAt = mintingMention?.CommentCreatedAt ?? task.LatestMentionCreatedAt;
+                if (mentionAuthorLogin is not null && mentionCreatedAt is { } resolvedMentionCreatedAt)
                 {
                     prompt += "\n\n" + MentionFollowUpPromptBuilder.BuildMintAddendum(
-                        task.LatestMentionAuthorLogin, mentionCreatedAt, task.LatestMentionBody ?? string.Empty,
-                        task.LatestMentionUrl, runDirectory);
+                        mentionAuthorLogin, resolvedMentionCreatedAt, mentionBody ?? string.Empty,
+                        mentionUrl, runDirectory);
                 }
             }
             else if (followUp is { } review)
