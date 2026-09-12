@@ -247,6 +247,35 @@ public sealed class TaskPassageQueryTests
     }
 
     [Fact]
+    public void Review_park_closes_on_pr_review_delivered_for_a_completed_pr_review_run()
+    {
+        // ResolvePrReviewAsync (h9k review resolve --merge-ready on a pr-review task) appends only
+        // PrReviewDelivered — never ReviewParkResolved/ReviewBoundaryApproved/ReviewHumanFixApplied,
+        // the three events the review-park fold otherwise closes on — so the still-open park has to
+        // close here or it is silently dropped once the run finishes right behind it (independent
+        // pre-PR review, cycle 4, conformance finding).
+        Guid runId = DomainId.New();
+        Guid sessionId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddDays(-3);
+        DateTimeOffset conformanceDispatchedAt = dispatchedAt.AddMinutes(10);
+        DateTimeOffset parkedAt = dispatchedAt.AddMinutes(25);
+        DateTimeOffset deliveredAt = Now.AddHours(-1);
+
+        RunEventSet run = new(runId, dispatchedAt, deliveredAt,
+        [
+            Ev(new PrReviewConformanceDispatched(runId, sessionId, 123, conformanceDispatchedAt, conformanceDispatchedAt, AgentModel.Unknown)),
+            Ev(new ReviewParked(runId, "findings ready", parkedAt)),
+            Ev(new PrReviewDelivered(runId, null, deliveredAt, DomainId.New())),
+        ]);
+
+        TaskPassage passage = Compute([], [run], TaskType.PrReview);
+
+        HumanWaitPassage wait = passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.ReviewPark).Subject;
+        wait.Elapsed.StillOpen.Should().BeFalse();
+        wait.Elapsed.Elapsed.Should().Be(deliveredAt - parkedAt);
+    }
+
+    [Fact]
     public void Building_closes_on_review_parked_for_a_mention_follow_up_run_with_no_dispatch_recorded_at_all()
     {
         // DriveMentionFollowUpAsync appends only ReviewParked — no PrReviewConformanceDispatched,

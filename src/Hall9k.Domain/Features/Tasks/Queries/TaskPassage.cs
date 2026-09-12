@@ -8,7 +8,11 @@ namespace Hall9k.Domain.Features.Tasks.Queries;
 /// </summary>
 public enum HumanWaitKind
 {
-    /// <summary>ReviewParked to whichever of ReviewParkResolved/ReviewBoundaryApproved/ReviewHumanFixApplied closed it first.</summary>
+    /// <summary>
+    /// ReviewParked to whichever of ReviewParkResolved/ReviewBoundaryApproved/ReviewHumanFixApplied
+    /// closed it first — or, on a pr-review task's own run, to PrReviewDelivered, the only one of
+    /// the four its run ever appends.
+    /// </summary>
     ReviewPark,
     /// <summary>CloseoutParked to CloseoutBudgetGranted.</summary>
     CloseoutPark,
