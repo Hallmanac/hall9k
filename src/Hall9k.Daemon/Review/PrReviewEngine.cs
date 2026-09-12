@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -198,6 +199,17 @@ public sealed class PrReviewEngine(
             return;
         }
 
+        // A bounded mention follow-up lap (idea 2f079bcd) never enters the two-lens dance below at
+        // all: it dispatched one narrowly-scoped session already, at launch, and this is that
+        // session's own completion reaching the daemon — the identical entry point an ordinary
+        // review's primary session completion reaches, just for a run RunLauncher.LaunchPrReviewMentionFollowUpAsync
+        // shaped differently from the start.
+        if (aggregate.PrReviewMentionCommentId is not null)
+        {
+            await DriveMentionFollowUpAsync(runId, taskId, run, task, cancellationToken);
+            return;
+        }
+
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
 
         // RecordAdversarialResultAsync's own doc comment claims this is already on disk by the
@@ -252,7 +264,7 @@ public sealed class PrReviewEngine(
             }
         }
 
-        await ComposeReportAndParkAsync(runId, taskId, runDirectory, run.LeaseGeneration, cancellationToken);
+        await ComposeReportAndParkAsync(runId, taskId, runDirectory, run.LeaseGeneration, task, cancellationToken);
     }
 
     /// <summary>
@@ -487,8 +499,149 @@ public sealed class PrReviewEngine(
         return true;
     }
 
+    /// <summary>
+    /// Writes a mention follow-up's own primary (and only) session result to disk — the sibling of
+    /// <see cref="RecordAdversarialResultAsync"/>, kept as its own method rather than a shared one
+    /// with an extra path parameter so a caller can never hand the wrong file to the wrong reader:
+    /// an ordinary review's adversarial file and a follow-up's addendum draft mean different things
+    /// to different readers, and a shared method risks one bug silently mixing the two up.
+    /// </summary>
+    public async Task RecordMentionFollowUpResultAsync(
+        string runDirectory, string summary, CancellationToken cancellationToken)
+    {
+        string path = MentionFollowUpResultFile(runDirectory);
+        if (!File.Exists(path))
+        {
+            Directory.CreateDirectory(runDirectory);
+            await File.WriteAllTextAsync(path, summary, cancellationToken);
+        }
+    }
+
+    /// <summary>The recovery half of <see cref="RecordMentionFollowUpResultAsync"/>, mirroring <see cref="EnsureAdversarialResultRecordedAsync"/>'s identical daemon-restart gap.</summary>
+    private async Task EnsureMentionFollowUpResultRecordedAsync(string runDirectory, CancellationToken cancellationToken)
+    {
+        string path = MentionFollowUpResultFile(runDirectory);
+        if (File.Exists(path))
+        {
+            return;
+        }
+
+        string streamFile = RunPaths.StreamFile(runDirectory);
+        if (!File.Exists(streamFile))
+        {
+            return;
+        }
+
+        string? summary = null;
+        using (StreamReader reader = new(new FileStream(
+            streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)))
+        {
+            while (await reader.ReadLineAsync(cancellationToken) is { } line)
+            {
+                if (StreamJsonParser.TryParseResult(line, out AgentResult result))
+                {
+                    summary = result.Summary ?? string.Empty;
+                }
+            }
+        }
+
+        if (summary is not null)
+        {
+            await RecordMentionFollowUpResultAsync(runDirectory, summary, cancellationToken);
+        }
+    }
+
+    private static string MentionFollowUpResultFile(string runDirectory) =>
+        Path.Combine(runDirectory, "mention-followup-session-result.md");
+
+    /// <summary>
+    /// Drives a bounded mention follow-up lap from its single session's completion (idea 2f079bcd,
+    /// decision 2 and 3): reads the session's own final answer, writes it verbatim as the addendum
+    /// beside the original report, and parks the task exactly as the original review's own
+    /// <see cref="ComposeReportAndParkAsync"/> does — the SAME <see cref="ReviewParked"/> event, so
+    /// the task stays Claimed and the run's own ReviewParked state is what every existing
+    /// board-rendering and <c>h9k review resolve</c> surface already reads. Resolving the park
+    /// (still <c>h9k review resolve --merge-ready</c>, since a pr-review task takes no other
+    /// verdict) records <see cref="PrReviewDelivered"/> exactly as an ordinary review's park does,
+    /// so <see cref="DriveAsync"/>'s own unconditional <see cref="FinalizeAsync"/> branch re-parks
+    /// the task waiting on the pull request without needing to know this park came from a follow-up
+    /// at all — the same reuse the class doc promises.
+    /// </summary>
+    private async Task DriveMentionFollowUpAsync(
+        Guid runId, Guid taskId, RunDetails run, TaskDetails task, CancellationToken cancellationToken)
+    {
+        string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        await EnsureMentionFollowUpResultRecordedAsync(runDirectory, cancellationToken);
+
+        string resultPath = MentionFollowUpResultFile(runDirectory);
+        if (!File.Exists(resultPath))
+        {
+            // The session has not completed yet, or a daemon restart landed before its result was
+            // ever recorded — the next adoption sweep or completion notification re-enters here and
+            // re-derives it, exactly as the ordinary review's own EnsureAdversarialResultRecordedAsync
+            // gap is handled.
+            return;
+        }
+
+        string summary = await File.ReadAllTextAsync(resultPath, cancellationToken);
+        if (summary.IsBlank())
+        {
+            await FailAsync(
+                runId, taskId,
+                "The pr-review mention follow-up session ended with no answer to record. Retry the task "
+                + "to dispatch a fresh follow-up.",
+                cancellationToken);
+            return;
+        }
+
+        string addendumPath = Path.Combine(runDirectory, "mention-followup-addendum.md");
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(addendumPath, summary, cancellationToken);
+
+        await using IDocumentSession session = store.LightweightSession();
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
+        {
+            if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+            {
+                TaskDetails? currentTask = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+                session.Events.Append(
+                    runId, new RunSuperseded(runId, currentTask?.LeaseGeneration ?? run.LeaseGeneration, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId}: retired as superseded — the mention follow-up park found it was no longer task {TaskId}'s current generation",
+                    runId, taskId);
+            }
+
+            return;
+        }
+
+        // Named here, in the needs-you line itself, rather than left for the addendum file to say
+        // (idea 2f079bcd, decision 3): the pull request, who tagged the owner, and the first line
+        // of their comment are exactly what the orchestrator window's own board reads off
+        // run.ParkedReason for every other park, and a reader deciding what to look at next should
+        // not have to open the file to learn who is asking and about what.
+        string pullRequestName = task.ExternalReference.IsNotBlank()
+            ? ExternalReference.Parse(task.ExternalReference).Reference
+            : "this pull request";
+        string firstCommentLine = FirstLine(task.LatestMentionBody);
+        session.Events.Append(runId, new ReviewParked(
+            runId,
+            $"{pullRequestName}: {task.LatestMentionAuthorLogin ?? "someone"} tagged you"
+            + (firstCommentLine.IsNotBlank() ? $" — \"{firstCommentLine}\"" : string.Empty)
+            + $". Addendum: {addendumPath}. Walk it with walk-pr-review-findings — show the drafted reply, "
+            + "take any edits, and post it only on the owner's explicit go — then resolve with "
+            + "h9k review resolve --merge-ready.",
+            DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Run {RunId}: pr-review mention follow-up ready and parked for the human — {Path}", runId, addendumPath);
+    }
+
     private async Task ComposeReportAndParkAsync(
-        Guid runId, Guid taskId, string runDirectory, int leaseGeneration, CancellationToken cancellationToken)
+        Guid runId, Guid taskId, string runDirectory, int leaseGeneration, TaskDetails task,
+        CancellationToken cancellationToken)
     {
         string adversarial = await ReadIfExistsAsync(
             RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug), cancellationToken);
@@ -500,9 +653,27 @@ public sealed class PrReviewEngine(
             + "Nothing here was posted to the pull request or the remote — no comments, no review, no "
             + "reactions. Walk the report and direct each finding by hand: dismiss it, comment yourself, "
             + "or have the session post on your behalf. Resolve with h9k review resolve --merge-ready "
-            + "when you are done; it closes the task without opening or merging anything.\n\n"
+            + "when you are done; it opens or merges nothing of its own, and parks the task waiting on "
+            + "the pull request until it merges or closes.\n\n"
             + "## Adversarial (full depth)\n\n" + adversarial + "\n\n"
             + "## Conformance (weighted — thin basis reads as context notes, not blockers)\n\n" + conformance;
+
+        // A mint whose own trigger was a mention (idea 2f079bcd, decision 2 and 3): the primary
+        // session was also asked to write this file, and its content already opens with the
+        // report's own "# You were asked" heading, so it is appended verbatim rather than
+        // reformatted. Read off the file's own presence, not task.LatestMentionCommentId: a
+        // mention that attached to this same task WHILE this run was already in flight (recorded
+        // on the stream, but too late for RunLauncher to have asked this session to answer it)
+        // leaves that field non-null with no file to show for it — the park reason below must
+        // never claim an answer this report does not actually carry.
+        string mentionAnswerPath = Path.Combine(runDirectory, "mention-answer.md");
+        string? mentionAnswer = File.Exists(mentionAnswerPath)
+            ? await File.ReadAllTextAsync(mentionAnswerPath, cancellationToken)
+            : null;
+        if (mentionAnswer.IsNotBlank())
+        {
+            report += "\n\n" + mentionAnswer;
+        }
 
         string reportPath = RunPaths.ReviewFindingsFile(runDirectory, 1);
         await File.WriteAllTextAsync(reportPath, report, cancellationToken);
@@ -531,10 +702,21 @@ public sealed class PrReviewEngine(
             return;
         }
 
+        // Named here, in the needs-you line itself, when this report actually answers a mention
+        // (idea 2f079bcd, decision 3) — the same "pull request, who tagged you, first line of the
+        // comment" shape DriveMentionFollowUpAsync's own park reason carries for the attach case.
+        // Gated on mentionAnswer, not task.LatestMentionCommentId: a mention that attached to this
+        // task while this same run was already in flight leaves that field set with no answer in
+        // the report to point at, and the line must never claim one that is not there.
+        string mentionPrefix = mentionAnswer.IsNotBlank()
+            ? $"{(task.ExternalReference.IsNotBlank() ? ExternalReference.Parse(task.ExternalReference).Reference : "This pull request")}: "
+              + $"{task.LatestMentionAuthorLogin ?? "someone"} tagged you"
+              + (FirstLine(task.LatestMentionBody) is { Length: > 0 } firstLine ? $" — \"{firstLine}\". " : ". ")
+            : string.Empty;
         session.Events.Append(runId, new ReviewParked(
             runId,
-            $"Pull request review complete. Findings: {reportPath}. Walk them, direct each one, then "
-            + "resolve with h9k review resolve --merge-ready — nothing was posted to the pull request.",
+            $"{mentionPrefix}Pull request review complete. Findings: {reportPath}. Walk them, direct each one, "
+            + "then resolve with h9k review resolve --merge-ready — nothing was posted to the pull request.",
             DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation("Run {RunId}: pr-review findings report ready and parked for the human — {Path}", runId, reportPath);
@@ -781,6 +963,18 @@ public sealed class PrReviewEngine(
 
     private static async Task<string> ReadIfExistsAsync(string path, CancellationToken cancellationToken) =>
         File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : "(no findings recorded)";
+
+    /// <summary>The mentioning comment's own first line, one-lined and relayed-text-defused — what the mention needs-you line quotes, never the whole comment.</summary>
+    private static string FirstLine(string? body)
+    {
+        if (body.IsBlank())
+        {
+            return string.Empty;
+        }
+
+        string first = body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')[0];
+        return RelayedText.OneLine(first).Trim();
+    }
 
     /// <summary>
     /// The same missing-verdict / unnamed-finding gate <see cref="ReviewEngine.RecordReviewPassAsync"/>

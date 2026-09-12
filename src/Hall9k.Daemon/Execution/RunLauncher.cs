@@ -411,6 +411,20 @@ public sealed class RunLauncher(
                 prompt = AgentPromptBuilder.BuildPrReviewLens(
                     task, project, worktree.Branch, ReviewLens.Adversarial, baseBranch,
                     commandTimeout: options.Value.VerifyGateTimeout);
+
+                // This mint itself came from a GitHub mention (idea 2f079bcd, decision 2 and 3):
+                // the primary session's own ordinary verdict is not enough here, so it is also
+                // asked to write mention-answer.md, which ComposeReportAndParkAsync reads and
+                // appends to the findings report as a "You were asked" section — the identical
+                // shape a mention that instead attaches to an already-reviewed pull request gets
+                // from PrReviewEngine.DriveMentionFollowUpAsync's own bounded lap.
+                if (task.LatestMentionCommentId is not null && task.LatestMentionAuthorLogin is not null
+                    && task.LatestMentionCreatedAt is { } mentionCreatedAt)
+                {
+                    prompt += "\n\n" + MentionFollowUpPromptBuilder.BuildMintAddendum(
+                        task.LatestMentionAuthorLogin, mentionCreatedAt, task.LatestMentionBody ?? string.Empty,
+                        task.LatestMentionUrl);
+                }
             }
             else if (followUp is { } review)
             {
@@ -513,6 +527,165 @@ public sealed class RunLauncher(
         {
             logger.LogError(exception, "Launch failed for run {RunId}", runId);
             await RecordLaunchFailureAsync(taskId, runId, leaseGeneration, exception.Message, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The bounded follow-up lap's own launch (idea 2f079bcd, auto-pr-review's second trigger,
+    /// decision 2): a fresh, single-session run under an EXISTING pr-review task, answering one
+    /// GitHub comment that mentioned the install's login after the original review already
+    /// completed. Deliberately its own method rather than a mode threaded through
+    /// <see cref="LaunchAsync"/> — that method's <c>isPrReview</c> branch always dispatches the
+    /// adversarial lens as the run's primary session, and PrReviewEngine takes over from there to
+    /// dispatch the conformance lens second; a mention follow-up runs neither, so bending that
+    /// 400-line method around a second prompt for a case it was never shaped for would risk the
+    /// ordinary dispatch it already carries. Reuses only what is genuinely shared: the PR-facts
+    /// read, the checkout, and the process spawn — the same primitives-only reuse
+    /// <c>PrReviewEngine</c>'s own class doc describes for its relationship to <c>ReviewEngine</c>.
+    /// <para>
+    /// The caller (<c>AutoPrReviewEngine</c>) has already appended
+    /// <see cref="Handlers.TaskDecider.ClaimForMentionFollowUp"/> before calling this — the task is
+    /// Claimed under a fresh generation by the time this runs, exactly as every other launch here
+    /// assumes.
+    /// </para>
+    /// </summary>
+    public async Task LaunchPrReviewMentionFollowUpAsync(
+        Guid taskId, Guid runId, Guid ownerId, int leaseGeneration, Guid dispatchingNodeId,
+        PullRequestMentionComment comment, Guid? priorReviewRunId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        ProjectDetails? project = task is null
+            ? null
+            : await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (task is null || project is null)
+        {
+            logger.LogError("Cannot launch mention follow-up run {RunId}: task or project missing", runId);
+            return;
+        }
+
+        if (!await GenerationFence.AllowsAsync(
+            session, logger, taskId, runId, leaseGeneration, "to launch a mention follow-up", cancellationToken))
+        {
+            return;
+        }
+
+        try
+        {
+            PullRequestFacts? facts = await FetchOpenPullRequestFactsAsync(task, project, processRunner, cancellationToken);
+            if (facts is null)
+            {
+                await RecordLaunchFailureAsync(
+                    taskId, runId, leaseGeneration,
+                    $"{task.ExternalReference} is no longer open — nothing to read a mention follow-up against.",
+                    cancellationToken);
+                return;
+            }
+
+            // The identical foreign-repository guard LaunchAsync's own isPrReview branch runs
+            // before every checkout — worth re-checking on every dispatch, not only the task's
+            // first, since a project's own effective repository can change after the task was
+            // minted (h9k project set --repo re-points the project at a different local checkout,
+            // whose own git remote resolves to a different GitHub repository).
+            Uri? projectRepositoryUrl = project.RepositoryUrl
+                ?? await new GitHubWorkItemProvider(processRunner).TryObserveRepositoryHostAsync(
+                    project.RepositoryPath, cancellationToken);
+            if (OwnerRepoFrom(projectRepositoryUrl) is { } projectRepository
+                && !string.Equals(projectRepository, facts.Repository, StringComparison.OrdinalIgnoreCase))
+            {
+                await RecordLaunchFailureAsync(
+                    taskId, runId, leaseGeneration,
+                    $"{task.ExternalReference} lives in {facts.Repository}, not {project.Name}'s own repository "
+                    + $"({projectRepository}). A pr-review task's worktree is always cut from the project it "
+                    + $"was adopted against, so reviewing a pull request from another repository needs a "
+                    + $"project registered against {facts.Repository} instead.", cancellationToken);
+                return;
+            }
+
+            await CleanUpPreviousPrReviewWorktreesAsync(taskId, project, cancellationToken);
+            Worktree worktree = await worktrees.CreatePrReviewCheckoutAsync(
+                new PrReviewWorktreeRequest(project.RepositoryPath, facts.Number, taskId, runId), cancellationToken);
+
+            Guid sessionId = DomainId.New();
+            AgentModel model = options.Value.ResolveModel(AgentRole.Review, task.Model, project.Model);
+            string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.PrReviewMentionFollowUp);
+
+            string? existingTaskDirectory = project.HomeDirectory.HasValue
+                ? HomeEntryWriter.FindExistingDirectory(
+                    ProjectHomePaths.TasksDirectory(project.HomeDirectory.Value), taskId,
+                    alternateRoots: [ProjectHomePaths.ArchivedTasksDirectory(project.HomeDirectory.Value)])
+                : null;
+            string runDirectory = existingTaskDirectory is not null
+                ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
+                : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(task), runId);
+
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, Guid.Empty, ownerId, leaseGeneration, sessionId,
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
+                Model: model, RunDirectory: runDirectory, PrReviewBaseRefName: facts.BaseRefName,
+                SessionName: sessionName, ReviewStageComposition: ReviewStageComposition.FullPipeline,
+                DispatchingNodeId: dispatchingNodeId, PrReviewMentionCommentId: comment.CommentId,
+                // A pr-review run of any kind has no base of its own to record — the same reading
+                // isPrReview's own StackedBase carries in the ordinary dispatch above — and the
+                // detached checkout's own start point is its BaseCommit, the identical value a
+                // fresh (non-resumed) unstacked checkout records there.
+                BaseBranch: string.Empty, BaseCommit: worktree.StartPointCommit));
+            await session.SaveChangesAsync(cancellationToken);
+
+            string baseBranch = facts.BaseRefName.IsNotBlank() ? facts.BaseRefName : project.BaseBranch;
+            string? priorReport = priorReviewRunId is { } priorRunId
+                ? await ReadPriorReviewReportAsync(priorRunId, cancellationToken)
+                : null;
+            string prompt = MentionFollowUpPromptBuilder.Build(
+                facts.Repository, facts.Number, worktree.Path, baseBranch: baseBranch, comment: comment,
+                priorReport: priorReport);
+
+            SpawnedAgent agent = await executor.SpawnAsync(
+                new AgentSpawnRequest(
+                    runId, sessionId, worktree.Path, runDirectory, prompt, ExecutorMode.Subscription, model,
+                    project.SkipPermissions, UntrustedWorkingDirectory: true)
+                {
+                    SessionName = sessionName,
+                },
+                cancellationToken);
+
+            await using IDocumentSession startSession = store.LightweightSession();
+            startSession.Events.Append(runId, new RunProcessStarted(runId, agent.ProcessId, agent.StartedAt));
+            startSession.Store(new RunActivity { Id = runId, LastActivityAt = DateTimeOffset.UtcNow, StreamBytesRead = 0 });
+            await startSession.SaveChangesAsync(cancellationToken);
+
+            supervisor.StartMonitoring(runId, runDirectory, taskId, agent.ProcessId, agent.StartedAt, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception, "Mention follow-up launch failed for run {RunId}", runId);
+            await RecordLaunchFailureAsync(taskId, runId, leaseGeneration, exception.Message, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The original review's own merged findings report, read off disk for the follow-up prompt to
+    /// cite against — best-effort, since a missing or unreadable report is not a reason to refuse
+    /// answering a tagged comment: the follow-up prompt says plainly when none was found.
+    /// </summary>
+    private async Task<string?> ReadPriorReviewReportAsync(Guid priorReviewRunId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            RunDetails? priorRun = await query.LoadAsync<RunDetails>(priorReviewRunId, cancellationToken);
+            if (priorRun is null)
+            {
+                return null;
+            }
+
+            string path = RunPaths.ReviewFindingsFile(RunPaths.ResolveCurrentDirectory(priorRun.RunDirectory), 1);
+            return File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Could not read the prior review report for run {RunId}", priorReviewRunId);
+            return null;
         }
     }
 
