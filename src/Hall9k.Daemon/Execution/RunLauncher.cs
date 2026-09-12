@@ -87,9 +87,17 @@ public sealed class RunLauncher(
         // dispatch — a requeued lease's expiry sweep and a startup adoption both landing in
         // the same window, the origin incident GenerationFence documents — must stop this
         // stale generation here, or it checks out a worktree and spawns a second live agent
-        // for a task a fresh generation already owns.
+        // for a task a fresh generation already owns. refuseAbandonedTask: true closes the
+        // identical gap for a task abandoned in the window between the dispatch claim
+        // committing and this check (independent pre-PR review, cycle 1, conformance lens):
+        // this is the one call site that actually spawns a fresh agent session, so identity
+        // alone (CurrentRunId still naming this run — abandon never clears it) is not enough.
+        // No run stream exists yet at this point, so a rejection here has nothing to retire —
+        // unlike every other fence caller in this file's neighbours, this one simply declines
+        // to ever create the run.
         if (!await GenerationFence.AllowsAsync(
-            session, logger, taskId, runId, leaseGeneration, "to launch", cancellationToken))
+            session, logger, taskId, runId, leaseGeneration, "to launch", cancellationToken,
+            refuseAbandonedTask: true))
         {
             return;
         }
@@ -526,6 +534,27 @@ public sealed class RunLauncher(
                     commandTimeout: options.Value.VerifyGateTimeout);
             }
 
+            // Re-checked here, immediately before the actual spawn, rather than trusting the
+            // fence read at the top of this method alone (Copilot review, PR #334, a suppressed
+            // finding on that earlier check): the worktree checkout, blocker-context assembly,
+            // and prompt building above can each take real wall-clock time, and an abandon
+            // landing anywhere in that window still finds CurrentRunId naming this run (abandon
+            // never clears it) and would otherwise reach SpawnAsync anyway. This does not close
+            // the race outright — nothing can, short of making a live OS process spawn itself
+            // transactional — but it shrinks the window from "however long checkout and prompt
+            // assembly take" down to the gap between this read and the spawn call, and a
+            // rejection here retires the run stream StartStream already opened above rather than
+            // spawning into a task nobody is coming back to.
+            if (!await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, leaseGeneration, "to spawn", cancellationToken,
+                refuseAbandonedTask: true))
+            {
+                await using IDocumentSession retireSession = store.LightweightSession();
+                retireSession.Events.Append(runId, new RunSuperseded(runId, leaseGeneration, DateTimeOffset.UtcNow));
+                await retireSession.SaveChangesAsync(cancellationToken);
+                return;
+            }
+
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
                     runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, project.SkipPermissions,
@@ -583,8 +612,15 @@ public sealed class RunLauncher(
             return;
         }
 
+        // refuseAbandonedTask: true for the identical reason LaunchAsync's own fence carries it
+        // (Copilot review, PR #334): AutoPrReviewEngine commits ClaimForMentionFollowUp before
+        // calling this method, so an abandon landing in that same window still finds
+        // CurrentRunId naming this run and, without this, would still spawn a fresh agent
+        // session against work a human already walked away from. No run stream exists yet at
+        // this point either, so a rejection here has nothing of its own to retire.
         if (!await GenerationFence.AllowsAsync(
-            session, logger, taskId, runId, leaseGeneration, "to launch a mention follow-up", cancellationToken))
+            session, logger, taskId, runId, leaseGeneration, "to launch a mention follow-up", cancellationToken,
+            refuseAbandonedTask: true))
         {
             return;
         }
