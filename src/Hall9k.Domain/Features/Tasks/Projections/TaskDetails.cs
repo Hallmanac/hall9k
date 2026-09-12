@@ -372,6 +372,16 @@ public sealed class TaskDetails
     public string? PrReviewAuthorActivitySummary { get; set; }
     /// <summary>The registered interactive session the most recent author-response line was addressed to, or null when none was registered against the review's run.</summary>
     public string? PrReviewAuthorActivitySessionAddress { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionCommentId"/> — the most recent GitHub comment id that mentioned the install's login, or null when none has ever been observed.</summary>
+    public string? LatestMentionCommentId { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionAuthorLogin"/> — who wrote the mentioning comment.</summary>
+    public string? LatestMentionAuthorLogin { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionBody"/> — the mentioning comment's own text, verbatim.</summary>
+    public string? LatestMentionBody { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionUrl"/> — where the mentioning comment lives on GitHub.</summary>
+    public string? LatestMentionUrl { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionCreatedAt"/> — GitHub's own timestamp for the mentioning comment.</summary>
+    public DateTimeOffset? LatestMentionCreatedAt { get; set; }
 }
 
 public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, Guid>
@@ -1072,6 +1082,19 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PrReviewAuthorActivitySummary = @event.Data.Summary;
         view.PrReviewAuthorActivitySessionAddress = @event.Data.InteractiveSessionAddress;
         view.State = TaskState.NeedsHuman;
+    }
+
+    // Mirrors TaskAggregate.Apply(PullRequestReviewMentionObserved): state is never touched here,
+    // for the identical reason — a mention attaches to whatever state the task is already in, and
+    // whether it also earns a mint, a claim, or a dispatched follow-up is a separate decision the
+    // sweep records with its own events.
+    public void Apply(IEvent<PullRequestReviewMentionObserved> @event, TaskDetails view)
+    {
+        view.LatestMentionCommentId = @event.Data.CommentId;
+        view.LatestMentionAuthorLogin = @event.Data.CommentAuthorLogin;
+        view.LatestMentionBody = @event.Data.CommentBody;
+        view.LatestMentionUrl = @event.Data.CommentUrl;
+        view.LatestMentionCreatedAt = @event.Data.CommentCreatedAt;
     }
 
     /// <summary>

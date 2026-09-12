@@ -27,6 +27,15 @@ public sealed class RunAggregate
     /// <summary>The pull request's base branch as read at dispatch, for a pr-review run only. See <see cref="Events.RunDispatched"/>'s own doc for why.</summary>
     public string? PrReviewBaseRefName { get; private set; }
     /// <summary>
+    /// The comment id this run was dispatched to answer, or null for every ordinary pr-review run
+    /// (idea 2f079bcd, auto-pr-review's second trigger). Non-null marks this run as a bounded
+    /// mention follow-up lap on an already-reviewed pull request rather than a fresh review:
+    /// <c>PrReviewEngine.DriveAsync</c> reads it to skip the two-lens dance entirely and
+    /// dispatch a single, narrowly-scoped analysis session instead, and <c>RunSupervisor</c> reads
+    /// it to skip recording the session's result as the adversarial lens.
+    /// </summary>
+    public string? PrReviewMentionCommentId { get; private set; }
+    /// <summary>
     /// The branch this run's work sits on top of, as recorded on <see cref="RunDispatched"/> —
     /// blank for every run based on the project's own base branch, which is all of them but a
     /// stacked child's. Read it through <see cref="BaseBranchOr"/> rather than directly, so blank
@@ -875,6 +884,7 @@ public sealed class RunAggregate
         Branch = @event.Branch;
         RunDirectory = @event.RunDirectory.IsNotBlank() ? @event.RunDirectory : RunPaths.GlobalDirectory(@event.Id);
         PrReviewBaseRefName = @event.PrReviewBaseRefName;
+        PrReviewMentionCommentId = @event.PrReviewMentionCommentId;
         BaseBranch = @event.BaseBranch;
         BaseCommit = @event.BaseCommit;
         ExecutorMode = @event.ExecutorMode;

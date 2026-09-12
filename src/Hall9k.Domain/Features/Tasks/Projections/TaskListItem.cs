@@ -132,6 +132,12 @@ public sealed class TaskListItem
     public string? PrReviewAuthorActivitySummary { get; set; }
     /// <summary>The registered interactive session the most recent author-response line was addressed to, or null when none was registered.</summary>
     public string? PrReviewAuthorActivitySessionAddress { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionCommentId"/> — the needs-you line for a mention names the pull request, who tagged the owner, and the first line of their comment (idea 2f079bcd).</summary>
+    public string? LatestMentionCommentId { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionAuthorLogin"/> — who tagged the owner.</summary>
+    public string? LatestMentionAuthorLogin { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionBody"/> — the mentioning comment's own text, verbatim.</summary>
+    public string? LatestMentionBody { get; set; }
     /// <summary>
     /// The <c>owner/repo#42</c> this task adopted, or null when its reference names something else
     /// (an issue, a card) or nothing at all. Derived here rather than in each surface that needs
@@ -662,6 +668,14 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.PrReviewAuthorActivitySummary = @event.Data.Summary;
         view.PrReviewAuthorActivitySessionAddress = @event.Data.InteractiveSessionAddress;
         view.State = TaskState.NeedsHuman;
+    }
+
+    // Mirrors TaskAggregate.Apply(PullRequestReviewMentionObserved) — state untouched, same reasoning.
+    public void Apply(IEvent<PullRequestReviewMentionObserved> @event, TaskListItem view)
+    {
+        view.LatestMentionCommentId = @event.Data.CommentId;
+        view.LatestMentionAuthorLogin = @event.Data.CommentAuthorLogin;
+        view.LatestMentionBody = @event.Data.CommentBody;
     }
 
     /// <summary>

@@ -487,6 +487,31 @@ public sealed class TaskAggregate
     public string? AutoPrReviewAssigneeLogin { get; private set; }
 
     /// <summary>
+    /// The most recent GitHub comment that mentioned the install's login on this task's own pull
+    /// request (idea 2f079bcd: a mention is auto-pr-review's second trigger), or null when none
+    /// has ever been observed. Set by <see cref="Apply(Events.PullRequestReviewMentionObserved)"/>
+    /// and never cleared afterward — a mention is provenance about a comment that was written,
+    /// not a live condition a later event retracts the way a review-request assignment can be
+    /// recalled. <c>h9k task show</c> reads these four fields to name the comment's id, author,
+    /// body and time; the dedupe that stops the SAME comment id firing twice lives outside the
+    /// stream, on <c>ObservedReviewMention</c>, since a fresh sweep has to answer "have I already
+    /// acted on this" before it ever reads this task's stream at all.
+    /// </summary>
+    public string? LatestMentionCommentId { get; private set; }
+
+    /// <summary>See <see cref="LatestMentionCommentId"/>.</summary>
+    public string? LatestMentionAuthorLogin { get; private set; }
+
+    /// <summary>See <see cref="LatestMentionCommentId"/>.</summary>
+    public string? LatestMentionBody { get; private set; }
+
+    /// <summary>See <see cref="LatestMentionCommentId"/>.</summary>
+    public string? LatestMentionUrl { get; private set; }
+
+    /// <summary>See <see cref="LatestMentionCommentId"/> — GitHub's own timestamp for the comment, not this install's poll time.</summary>
+    public DateTimeOffset? LatestMentionCreatedAt { get; private set; }
+
+    /// <summary>
     /// The run a human reviewer's own review lap is riding on (<c>h9k pr review</c>, Decisions
     /// Log #149), or null when no lap has ever been opened on this task. Never cleared by
     /// <see cref="Apply(Events.PullRequestReviewVerdictDelivered)"/>: the verdict ends the lap,
@@ -1415,6 +1440,19 @@ public sealed class TaskAggregate
     // this decides Concluded from the state it read before appending, and a following
     // TaskAbandoned (never this Apply) is what actually moves State when it concluded the task.
     public void Apply(PullRequestReviewAssignmentRecalled @event) => AutoPrReviewAssigneeLogin = null;
+
+    // State is never touched here: a mention attaches to whatever state the task is already in
+    // (Queued, Claimed, AwaitingAuthor, NeedsHuman) — the caller that appends this is the one
+    // that decides, separately, whether the mention also earns a mint, a claim, or a dispatched
+    // follow-up, all of which carry their own events.
+    public void Apply(PullRequestReviewMentionObserved @event)
+    {
+        LatestMentionCommentId = @event.CommentId;
+        LatestMentionAuthorLogin = @event.CommentAuthorLogin;
+        LatestMentionBody = @event.CommentBody;
+        LatestMentionUrl = @event.CommentUrl;
+        LatestMentionCreatedAt = @event.CommentCreatedAt;
+    }
 
     public void Apply(PullRequestReviewLapOpened @event)
     {

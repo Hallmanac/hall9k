@@ -1670,6 +1670,58 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// Records a GitHub comment mentioning the install's login on this pr-review task's own pull
+    /// request (idea 2f079bcd, auto-pr-review's second trigger). Attaches to the task in
+    /// whatever state it is already in — a mint, a claim into a fresh follow-up run, and this
+    /// observation are three separate events a caller composes together as the situation calls
+    /// for, never implied by one another the way a state machine's own transition would be.
+    /// </summary>
+    public static PullRequestReviewMentionObserved ObservePrReviewMention(
+        TaskAggregate task, string pullRequestUrl, string commentId, string commentAuthorLogin,
+        string commentBody, string commentUrl, DateTimeOffset commentCreatedAt, DateTimeOffset observedAt)
+    {
+        if (task.Type != TaskType.PrReview)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is a {task.Type.Value} task — a GitHub mention of the install's login is "
+                + "recorded only on the pr-review task reviewing the pull request it was found on.");
+        }
+
+        if (pullRequestUrl.IsBlank() || commentId.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id}'s mention needs both the pull request it was found on and the comment's "
+                + "own id — an unreadable mention is nothing to record (AGENTS.md: never guess at "
+                + "unobserved facts).");
+        }
+
+        return new PullRequestReviewMentionObserved(
+            task.Id, pullRequestUrl, commentId, commentAuthorLogin, commentBody, commentUrl, commentCreatedAt,
+            observedAt);
+    }
+
+    /// <summary>
+    /// The mention follow-up's own claim (auto-pr-review's second trigger, idea 2f079bcd): a
+    /// fourth sibling of <see cref="ClaimInteractively"/>, <see cref="ClaimDeliberately"/> and
+    /// <see cref="ClaimForScopedReviewLap"/>, entered from the identical pair of states
+    /// <see cref="ClaimForScopedReviewLap"/> accepts (<see cref="AwaitsPrReviewFollowThrough"/> —
+    /// the report already parked, or the task waiting on the pull request) but headless like
+    /// <see cref="ClaimDeliberately"/>'s own automatic dispatch: a GitHub mention is the daemon's
+    /// own go signal, not a human sitting at a terminal running <c>h9k pr review</c>, so
+    /// <c>InteractiveMode</c> is false and there is no assigned-owner identity check — the caller
+    /// is always the sweep's own node owner, exactly as an auto-created mint already is.
+    /// </summary>
+    public static TaskClaimed ClaimForMentionFollowUp(
+        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt)
+    {
+        RefuseUnlessFollowingThrough(task, "dispatch a mention follow-up on");
+        return new TaskClaimed(
+            task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
+            DependencyOverrideAcknowledged: false, DependencyOverrideCarriedForward: false,
+            InteractiveMode: false);
+    }
+
+    /// <summary>
     /// Done is terminal for the work, not for the pull request: reopening queues a
     /// follow-up run on the existing PR branch (Decisions Log #20). Only from Done —
     /// Failed has its own human-only exits (Retry, Resolve, Abandon; logs #25/#27);

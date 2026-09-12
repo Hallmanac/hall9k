@@ -123,4 +123,5 @@ public sealed record RunDispatched(
     string? OpeningReviewSinceSha = null,
     string BaseBranch = "",
     string BaseCommit = "",
-    bool IsDeliberateHeadlessStart = false);
+    bool IsDeliberateHeadlessStart = false,
+    string? PrReviewMentionCommentId = null);

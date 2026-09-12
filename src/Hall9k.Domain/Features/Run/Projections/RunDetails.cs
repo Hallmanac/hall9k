@@ -44,6 +44,8 @@ public sealed class RunDetails : IJsonOnDeserialized
     public string RunDirectory { get; set; } = string.Empty;
     /// <summary>The pull request's base branch as read at dispatch, for a pr-review run only. See <see cref="RunDispatched"/>'s own doc for why.</summary>
     public string? PrReviewBaseRefName { get; set; }
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewMentionCommentId"/> — non-null marks this run as a bounded mention follow-up lap rather than an ordinary pr-review run.</summary>
+    public string? PrReviewMentionCommentId { get; set; }
     /// <summary>
     /// The branch this run's work sits on top of — its worktree's start point, its diff and review
     /// range, and the base its pull request targets. Blank for every run based on the project's own
@@ -865,6 +867,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             ? @event.Data.RunDirectory
             : RunPaths.GlobalDirectory(@event.Data.Id),
         PrReviewBaseRefName = @event.Data.PrReviewBaseRefName,
+        PrReviewMentionCommentId = @event.Data.PrReviewMentionCommentId,
         BaseBranch = @event.Data.BaseBranch,
         BaseCommit = @event.Data.BaseCommit,
         ExecutorMode = @event.Data.ExecutorMode,
