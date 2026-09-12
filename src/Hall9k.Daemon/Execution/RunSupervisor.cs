@@ -791,6 +791,31 @@ public sealed class RunSupervisor(
         await using (IQuerySession earlyQuery = store.QuerySession())
         {
             run = await earlyQuery.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
+
+            // Checked here, ahead of every branch below, rather than only on the later
+            // thread-dispute park (Copilot review, PR #334): CompleteRunAsync's own error
+            // branches append RunBudgetExhausted, RunLaunchHeld, or (via
+            // RunSessionErrorRetried) resume a fresh build session before that later check
+            // ever runs, and a plain result: IsError=false with no dispute marker never
+            // reaches it at all. An abandon landing after this run's dispatch but before its
+            // completion must win over all of those — a park invites an hourly retry sweep
+            // to relaunch a session, a retry spends this leg's one resume on walked-away
+            // work, and a plain RunFailed leaves the run in a state nothing here ever revisits
+            // — so this task's own abandonment must retire the run outright instead.
+            if (run is not null
+                && !await GenerationFence.AllowsAsync(
+                    earlyQuery, logger, taskId, runId, run.LeaseGeneration, "to complete", cancellationToken,
+                    refuseAbandonedTask: true))
+            {
+                await using IDocumentSession retireSession = store.LightweightSession();
+                retireSession.Events.Append(runId, new RunSuperseded(runId, run.LeaseGeneration, now));
+                await retireSession.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId}: retired as superseded — task {TaskId} was abandoned before this session's "
+                    + "completion could be recorded",
+                    runId, taskId);
+                return null;
+            }
         }
 
         // Budget-exhaustion is checked FIRST and excluded here, even though this classifies on
@@ -1172,9 +1197,27 @@ public sealed class RunSupervisor(
             return;
         }
 
+        // refuseAbandonedTask: true (Copilot review, PR #334): this is the h9k task
+        // start/handback --now entry point VerificationRunner.VerifyCoreAsync's own Abandoned
+        // check never sees — an ordinary headless dispatch always reaches that check through
+        // CompleteRunAsync's non-error path, but a deliberate headless start's own exit is
+        // routed here instead. Without this, identity alone still says yes (abandon never
+        // clears CurrentRunId) and this run can go on to park on RunBudgetExhausted, flag
+        // RunUnattendedExitFlagged, or even auto-deliver — every one of them leaving the run
+        // live instead of ending it Superseded. A rejection here must retire the run itself,
+        // the same reasoning ParkedOnThreadDisputeAsync's own rejection already documents:
+        // returning bare would leave it pinned in Dispatched/Running with no monitor watching.
         if (!await GenerationFence.AllowsAsync(
-            session, logger, taskId, runId, run.LeaseGeneration, "unattended-exit handling", cancellationToken))
+            session, logger, taskId, runId, run.LeaseGeneration, "unattended-exit handling", cancellationToken,
+            refuseAbandonedTask: true))
         {
+            session.Events.Append(
+                runId, new RunSuperseded(runId, task.LeaseGeneration, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Run {RunId}: retired as superseded — task {TaskId} is Abandoned, so its deliberate headless "
+                + "start's unattended exit is never flagged, parked, or auto-delivered",
+                runId, taskId);
             return;
         }
 
@@ -1726,7 +1769,8 @@ public sealed class RunSupervisor(
         bool isChangesRequestedDisagreement = task.FollowUpKind == FollowUpKind.ReviewRequestedChanges;
 
         if (!await GenerationFence.AllowsAsync(
-            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
+            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken,
+            refuseAbandonedTask: true))
         {
             // A reclaim can land between CompleteRunAsync's earlier fenced append and this
             // check, so the rejection here must retire the run with RunSuperseded like every
@@ -1734,7 +1778,10 @@ public sealed class RunSupervisor(
             // ReviewEngine.ParkAsync): returning bare leaves the run live in the non-terminal
             // Verifying state with no monitor watching it, permanently pinning a NodeLoad
             // concurrency slot until the next daemon restart's orphan adoption sweep finds it
-            // (adversarial review, cycle 3).
+            // (adversarial review, cycle 3). refuseAbandonedTask: true also closes the park this
+            // check would otherwise still create for a task the human already walked away from
+            // (independent pre-PR review, cycle 1, conformance lens) — this is a park-creating
+            // caller, exactly the shape the fence's own doc says must opt in.
             session.Events.Append(
                 runId, new RunSuperseded(runId, task?.LeaseGeneration ?? run.LeaseGeneration, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
