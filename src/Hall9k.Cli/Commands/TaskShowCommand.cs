@@ -193,6 +193,26 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Close linked issue", CloseLinkedIssueMarkup(details, project));
         }
 
+        if (details.LatestMentionCommentId is not null)
+        {
+            // idea 2f079bcd, auto-pr-review's second trigger: the triggering comment's own id,
+            // author and time, exactly what a review request's own PullRequestReviewAssignmentObserved
+            // lets the External row above name for a request — this is the mention's equivalent,
+            // always shown once any mention has ever been observed on this task, even after a later
+            // one has replaced it as the "latest".
+            string when = details.LatestMentionCreatedAt is { } createdAt
+                ? createdAt.ToLocalTime().ToString("g")
+                : "an unrecorded time";
+            header.AddRow(
+                "Tagged by",
+                $"{(details.LatestMentionAuthorLogin ?? "unknown").EscapeMarkup()} at {when} "
+                + $"[dim](comment {details.LatestMentionCommentId.EscapeMarkup()})[/]");
+            if (details.LatestMentionBody.IsNotBlank())
+            {
+                header.AddRow(string.Empty, $"[dim]{ExternalText.OneLineMarkup(details.LatestMentionBody)}[/]");
+            }
+        }
+
         if (details.Origin is { } origin)
         {
             // A mirror told apart from local work without anybody keeping a ledger (task: a
@@ -1766,9 +1786,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // stops it — never h9k task resolve, which refuses anything but a Failed task, or
             // h9k review resolve, whose park has already been resolved to get here.
             "AwaitingAuthor" => "[dim]The closeout watcher polls the pull request on its own cadence and flags "
-                + "this needs-you the moment its author replies, pushes, or re-requests your review. It reaches "
-                + "Done when every thread you opened is resolved, or the pull request merges or closes. "
-                + $"To stop watching:[/] h9k task abandon {shortId}",
+                + "this needs-you the moment its author replies, pushes, re-requests your review, or someone "
+                + "mentions this install's own login in a fresh comment on it. It reaches Done only when the "
+                + $"pull request itself merges or closes. To stop watching:[/] h9k task abandon {shortId}",
             _ => null,
         };
 

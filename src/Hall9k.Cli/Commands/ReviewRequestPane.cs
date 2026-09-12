@@ -76,11 +76,11 @@ internal static class ReviewRequestPane
                 .Select(project => project.Setting.IsOn
                     ? $"[dim]auto pr-review: [/][green]on[/][dim] for project "
                       + $"'{project.Project.EscapeMarkup()}' ({project.Setting.Speed.Value.ToLowerInvariant()}, "
-                      + $"{project.Setting.Origin}) — a review GitHub requests of this install's own login "
-                      + "here mints a pr-review task[/]"
+                      + $"{project.Setting.Origin}) — a review GitHub requests of this install's own login, or "
+                      + "a comment that mentions it, here mints a pr-review task[/]"
                     : $"[dim]auto pr-review: [/][yellow]off[/][dim] for project "
                       + $"'{project.Project.EscapeMarkup()}' ({project.Setting.Speed.Value.ToLowerInvariant()}, "
-                      + $"{project.Setting.Origin}) — a review requested here waits for you:[/] "
+                      + $"{project.Setting.Origin}) — a review request or a mention here waits for you:[/] "
                       + $"h9k project set {project.Project.EscapeMarkup()} --auto-pr-review normal"),
         ];
 
