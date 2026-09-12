@@ -36,6 +36,23 @@ internal static class GenerationFence
     /// task actually names as current is ever current.
     /// </para>
     /// <para>
+    /// <paramref name="refuseAbandonedTask"/>, when true, also rejects a run whose task has
+    /// been Abandoned, even when <c>CurrentRunId</c> still names this run: neither
+    /// <c>TaskAggregate.Apply(TaskAbandoned)</c> nor <c>TaskDetails.Apply</c> clears
+    /// <c>CurrentRunId</c> on abandon, so identity alone would keep saying yes to a run
+    /// whose task a human has already walked away from — the exact gap that let a review
+    /// loop keep spending sessions on abandoned work for an hour (origin incident
+    /// 2026-08-27, task ab484e89). Deliberately opt-in rather than folded into the identity
+    /// check every caller shares: <see cref="TaskState.Done"/> is NOT included, and cannot
+    /// be — a follow-up run dispatched against an already-Done task (the task's own
+    /// objective was met by an earlier run; this run is still live, addressing further
+    /// feedback under the same task) is exactly as current as any other, and a caller that
+    /// only finalizes an already-executed run's own conclusion (PrReviewEngine's own
+    /// Finalize, the pull-request opener) must keep proceeding on a task a human abandoned
+    /// after the run's real work already happened. Only the callers that would dispatch a
+    /// fresh agent session or create a park pass true.
+    /// </para>
+    /// <para>
     /// Reads through <paramref name="session"/> rather than opening a second connection, and a
     /// task the projection cannot find is not treated as stale — there is nothing observed to
     /// reject against, so the write proceeds and the caller's own guards decide.
@@ -48,10 +65,25 @@ internal static class GenerationFence
         Guid runId,
         int runGeneration,
         string attemptedTransition,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool refuseAbandonedTask = false)
     {
         TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
-        if (task is null || task.CurrentRunId == runId)
+        if (task is null)
+        {
+            return true;
+        }
+
+        if (refuseAbandonedTask && task.State == TaskState.Abandoned)
+        {
+            logger.LogWarning(
+                "Task {TaskId}, run {RunId}: run at generation {RunGeneration} attempted {Transition}; "
+                + "task is Abandoned - rejected",
+                taskId, runId, runGeneration, attemptedTransition);
+            return false;
+        }
+
+        if (task.CurrentRunId == runId)
         {
             return true;
         }

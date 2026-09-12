@@ -128,6 +128,21 @@ public sealed partial class VerificationRunner(
             return new SettlingVerificationResult(false, null, null);
         }
 
+        // A task abandoned while this run was in flight (task: abandoning a task halts its
+        // in-flight run entirely) — the gates below spend real process time and the
+        // review/open-PR chain this feeds is `&&`-short-circuited on this call's own result, so
+        // refusing here before any gate runs is what stops verification, review, and PR-opening
+        // together for a run whose task nobody is coming back to. Deliberately Abandoned only,
+        // not TaskState.IsTerminal: a Done task can still own a live follow-up run addressing
+        // further feedback under the same task (its own objective was already met by an earlier
+        // run), and that follow-up's own gates must still run.
+        if (task.State == TaskState.Abandoned)
+        {
+            logger.LogInformation(
+                "Run {RunId}: task {TaskId} is Abandoned - skipping verification", runId, taskId);
+            return new SettlingVerificationResult(false, null, null);
+        }
+
         // Fail fast on an agent that left work behind uncommitted, before any gate runs against
         // a tree the pull request will never actually carry — see DetectStrandedWorkAsync's own
         // doc for the two failure shapes this observes, and RecoverUncommittedWorkOrExplainAsync's
