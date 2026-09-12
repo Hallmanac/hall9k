@@ -17,14 +17,22 @@ moment below, in order:
   is the only text the platform ever reads back for a verdict, resolution, or
   handoff. Put the same report in your own final message too — closing with a
   line like "report sent" and nothing else discards it.
-===parks-at-boundary===
+===parks-at-boundary-address-present===
   This task's interactive-mode phase-boundary park holds from there until
-  the human's `h9k review proceed` or `h9k review resolve`{{SendCaveat}}.
-===does-not-park===
+  the human's `h9k review proceed` or `h9k review resolve`, whether or not the send below actually lands.
+===parks-at-boundary-no-address===
+  This task's interactive-mode phase-boundary park holds from there until
+  the human's `h9k review proceed` or `h9k review resolve` — see below for why there is no send to make on this run.
+===does-not-park-address-present===
   Nothing supervises this run once you end: verification, delivery, and
   the review loop's own first boundary are a human's to trigger by hand
   with `h9k task {{Deliver}}`, not something that starts on its own the moment
-  you finish{{SendCaveat}}.
+  you finish, whether or not the send below actually lands.
+===does-not-park-no-address===
+  Nothing supervises this run once you end: verification, delivery, and
+  the review loop's own first boundary are a human's to trigger by hand
+  with `h9k task {{Deliver}}`, not something that starts on its own the moment
+  you finish — see below for why there is no send to make on this run.
 ===address-present===
 Address: `{{Address}}` — the human's own registered session, reached through the
 cross-session mesh's SendMessage tool. Every milestone you send — whether it lands
