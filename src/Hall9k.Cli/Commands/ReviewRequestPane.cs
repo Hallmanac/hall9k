@@ -123,18 +123,20 @@ internal static class ReviewRequestPane
 
         IReadOnlyList<ObservedReviewRequest> observed =
             await session.Query<ObservedReviewRequest>().ToListAsync(cancellationToken);
-        // Every mention this install ever left with no task of its own, never retried
-        // (ObservedReviewMention's own class doc: a comment id already decided is never
+        // Every mention this install ever left with nothing that fully answered it, never
+        // retried (ObservedReviewMention's own class doc: a comment id already decided is never
         // re-decided) — the needs-you row an operator has to act on is only possible if one of
         // these is surfaced somewhere, and until now nothing in Hall9k did (independent pre-PR
-        // review, cycle 1, adversarial lens): ProcessMentionAsync recorded HeldSettingOff,
-        // HeldBeforeCutoff and MintFailed permanently and no CLI surface ever read any of them
-        // back, the identical sweep the same finding's own class covers on the request side below.
+        // review, cycle 1, adversarial lens). Excludes only the two outcomes that need nothing
+        // further: TaskCreated (a fresh task is reviewing) and Attached (a follow-up lap was
+        // actually dispatched to answer this exact comment) — every other outcome, including one
+        // this build cannot even read, is surfaced rather than silently dropped (independent
+        // pre-PR review, cycle 1, adversarial lens, low: a row whose outcome reads as Unknown used
+        // to vanish here with nothing shown at all).
         IReadOnlyList<ObservedReviewMention> unresolvedMentions = [.. (await session.Query<ObservedReviewMention>()
             .ToListAsync(cancellationToken))
-            .Where(mention => mention.Outcome == ReviewMentionOutcome.HeldSettingOff
-                || mention.Outcome == ReviewMentionOutcome.HeldBeforeCutoff
-                || mention.Outcome == ReviewMentionOutcome.MintFailed)];
+            .Where(mention => mention.Outcome != ReviewMentionOutcome.TaskCreated
+                && mention.Outcome != ReviewMentionOutcome.Attached)];
         if (observed.Count == 0 && unresolvedMentions.Count == 0)
         {
             return new ReviewRequestPaneContents(settingLines, []);
@@ -357,8 +359,31 @@ internal static class ReviewRequestPane
         string taggedBy = mention.CommentAuthorLogin.IsBlank()
             ? "a comment"
             : $"a comment from {mention.CommentAuthorLogin.EscapeMarkup()}";
-        string opening = $"{taggedBy} mentioned this install's login on {pullRequest}";
+        // The login actually mentioned, never "this install's" (independent pre-PR review, cycle
+        // 1, conformance lens, low): the sibling request row already names request.ReviewerLogin
+        // for the identical reason — two installs with two gh authentications can share one
+        // database, and a mention of the OTHER install's login must not read as the reader's own.
+        string mentionedLogin = mention.MentionedLogin.IsBlank()
+            ? "a login this row does not record"
+            : mention.MentionedLogin.EscapeMarkup();
+        string opening = $"{taggedBy} mentioned {mentionedLogin} on {pullRequest}";
         string byHand = $"h9k task add --project {project} --from-pr {mention.Number}";
+        ReviewMentionOutcome outcome = ReviewMentionOutcome.FromInput(mention.Outcome.Value);
+
+        // Checked before the covering-task branch below, deliberately: the covering task genuinely
+        // does cover the pull request, but no run of its own was ever dispatched to answer THIS
+        // comment, so rendering it the same as an already-answered mention would bury exactly the
+        // loss this outcome exists to keep visible (independent pre-PR review, cycle 1, both
+        // lenses).
+        if (outcome == ReviewMentionOutcome.AttachedNoFollowUp)
+        {
+            string taskRef = mention.TaskId is { } taskId ? DomainId.Short(taskId) : "its covering task";
+            string detail = mention.OutcomeDetail.IsBlank() ? string.Empty : $" ({mention.OutcomeDetail.EscapeMarkup()})";
+            return NeedsYou(
+                mention.Repository, mention.Number,
+                $"{opening}; attached to task {taskRef}, but no follow-up was dispatched to answer it{detail}",
+                $"h9k pr review {pullRequest} --since-my-review");
+        }
 
         if (covering is { } task)
         {
@@ -370,7 +395,7 @@ internal static class ReviewRequestPane
                     : $"{opening}; task {id} already covered it ({task.StateWord})");
         }
 
-        if (mention.Outcome == ReviewMentionOutcome.MintFailed)
+        if (outcome == ReviewMentionOutcome.MintFailed)
         {
             return NeedsYou(
                 mention.Repository, mention.Number,
@@ -379,13 +404,31 @@ internal static class ReviewRequestPane
                 byHand);
         }
 
-        string cause = mention.Outcome == ReviewMentionOutcome.HeldBeforeCutoff
-            ? $"{opening} before auto pr-review's start on this install, so nothing started on its own "
-              + "(no backfill — Decisions Log #161)"
-            : $"{opening} while auto pr-review was off here, so nothing started on its own";
+        if (outcome == ReviewMentionOutcome.HeldBeforeCutoff)
+        {
+            return NeedsYou(
+                mention.Repository, mention.Number,
+                $"{opening} before auto pr-review's start on this install, so nothing started on its own "
+                + "(no backfill — Decisions Log #161); a mention already seen is never retried",
+                byHand);
+        }
+
+        if (outcome == ReviewMentionOutcome.HeldSettingOff)
+        {
+            return NeedsYou(
+                mention.Repository, mention.Number,
+                $"{opening} while auto pr-review was off here, so nothing started on its own; a mention "
+                + "already seen is never retried",
+                byHand);
+        }
+
+        // Never guessed at (AGENTS.md), and never dropped the way this outcome used to be
+        // (independent pre-PR review, cycle 1, adversarial lens, low): a row this build cannot
+        // read is said to be unreadable, with the one lever that works regardless — the identical
+        // treatment Compose already gives ReviewRequestOutcome.Unknown on the request side.
         return NeedsYou(
             mention.Repository, mention.Number,
-            $"{cause}; a mention already seen is never retried",
+            $"{opening}; what became of it was recorded by a newer build and cannot be read here",
             byHand);
     }
 

@@ -255,7 +255,7 @@ public sealed class ReviewRequestRowTests
             ObservedMention(outcome), "arx-platform", covering: null);
 
         row.NeedsYou.Should().BeTrue("a held mention is never retried, so it is only ever the operator's to take");
-        row.Markup.Should().Contain("a comment from ryan mentioned this install's login on acme/widgets#2033");
+        row.Markup.Should().Contain("a comment from ryan mentioned brian on acme/widgets#2033");
         row.Markup.Should().Contain(expectedCause);
         row.Markup.Should().Contain("a mention already seen is never retried");
         row.Markup.Should().Contain("h9k task add --project arx-platform --from-pr 2033");
@@ -294,7 +294,64 @@ public sealed class ReviewRequestRowTests
 
         ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
 
-        row.Markup.Should().Contain("a comment mentioned this install's login");
+        row.Markup.Should().Contain("a comment mentioned brian");
+    }
+
+    /// <summary>
+    /// The login actually mentioned, not the reader's own (independent pre-PR review, cycle 1,
+    /// conformance lens): two installs with two <c>gh</c> authentications can share one database,
+    /// and this row has no observation of which login is reading it.
+    /// </summary>
+    [Fact]
+    public void A_mention_row_with_no_recorded_login_says_so_rather_than_naming_one()
+    {
+        ObservedReviewMention mention = ObservedMention("HeldSettingOff");
+        mention.MentionedLogin = string.Empty;
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+
+        row.Markup.Should().Contain("a login this row does not record");
+    }
+
+    /// <summary>
+    /// The core loss the origin incident named (independent pre-PR review, cycle 1, both lenses):
+    /// a mention that attached to a covering task with no follow-up dispatched used to render as
+    /// though the task already answered it — the covering-task branch fires for every other
+    /// outcome, but must not swallow this one.
+    /// </summary>
+    [Fact]
+    public void An_attached_mention_with_no_follow_up_asks_the_operator_despite_the_covering_task()
+    {
+        Guid taskId = DomainId.New();
+        ObservedReviewMention mention = ObservedMention("AttachedNoFollowUp");
+        mention.TaskId = taskId;
+        mention.OutcomeDetail = "recorded; auto-pr-review is off here, so no follow-up was dispatched";
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            mention, "arx-platform", new CoveringReview(taskId, Live: true, "Working", AutoCreated: true));
+
+        row.NeedsYou.Should().BeTrue(
+            "the task covers the pull request in general, but nothing ever answered this exact comment");
+        row.Markup.Should().Contain($"attached to task {DomainId.Short(taskId)}");
+        row.Markup.Should().Contain("no follow-up was dispatched");
+        row.Markup.Should().Contain("h9k pr review acme/widgets#2033 --since-my-review");
+    }
+
+    /// <summary>
+    /// Never dropped the way this outcome used to be (independent pre-PR review, cycle 1,
+    /// adversarial lens): the identical treatment <see cref="ReviewRequestOutcome.Unknown"/> gets
+    /// on the request side, rather than the row silently vanishing.
+    /// </summary>
+    [Fact]
+    public void A_mention_outcome_a_newer_build_recorded_asks_the_operator_rather_than_vanishing()
+    {
+        ObservedReviewMention mention = ObservedMention("AttachedNoFollowUp");
+        mention.Outcome = "SomethingElseEntirely";
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+
+        row.NeedsYou.Should().BeTrue();
+        row.Markup.Should().Contain("recorded by a newer build");
     }
 
     private static ObservedReviewMention ObservedMention(string outcome)

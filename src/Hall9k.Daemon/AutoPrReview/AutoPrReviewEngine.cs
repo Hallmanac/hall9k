@@ -1337,6 +1337,8 @@ public sealed class AutoPrReviewEngine(
                 $"task {task} is created and reviewing",
             { } known when known == ReviewMentionOutcome.Attached =>
                 $"attached to task {task}",
+            { } known when known == ReviewMentionOutcome.AttachedNoFollowUp =>
+                $"attached to task {task}, no follow-up dispatched",
             { } known when known == ReviewMentionOutcome.HeldSettingOff =>
                 "nothing was created: auto pr-review is off here, so this one is yours to take by hand",
             { } known when known == ReviewMentionOutcome.HeldBeforeCutoff =>
@@ -1470,7 +1472,7 @@ public sealed class AutoPrReviewEngine(
             session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
             await session.SaveChangesAsync(cancellationToken);
             return (
-                ReviewMentionOutcome.Attached, existing.Id,
+                ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
                 "recorded; the task is not currently waiting on its pull request or holding an unwalked "
                 + "report, so no follow-up was dispatched");
         }
@@ -1480,7 +1482,7 @@ public sealed class AutoPrReviewEngine(
             session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
             await session.SaveChangesAsync(cancellationToken);
             return (
-                ReviewMentionOutcome.Attached, existing.Id,
+                ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
                 "recorded; the comment predates this project's own auto-pr-review cutoff, so no follow-up "
                 + "was dispatched (the no-backfill guard) — yours to take by hand");
         }
@@ -1490,7 +1492,7 @@ public sealed class AutoPrReviewEngine(
             session.Events.Append(existing.Id, expectedVersion: fence.Version + 1, observed);
             await session.SaveChangesAsync(cancellationToken);
             return (
-                ReviewMentionOutcome.Attached, existing.Id,
+                ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
                 "recorded; auto-pr-review is off here, so no follow-up was dispatched — yours to take by hand");
         }
 
@@ -1509,7 +1511,7 @@ public sealed class AutoPrReviewEngine(
                 ? "a node-wide launch hold stands, so this sweep never claims or launches directly into it"
                 : "this sweep already used its one immediate ceiling-exempt launch across both triggers";
             return (
-                ReviewMentionOutcome.Attached, existing.Id,
+                ReviewMentionOutcome.AttachedNoFollowUp, existing.Id,
                 $"recorded; {reason} — yours to take by hand with h9k pr review --since-my-review");
         }
 
