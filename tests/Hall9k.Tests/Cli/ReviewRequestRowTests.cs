@@ -240,6 +240,86 @@ public sealed class ReviewRequestRowTests
         row.Markup.Should().Contain("recorded by a newer build");
     }
 
+    /// <summary>
+    /// A held mention had nowhere to surface at all before this row existed (independent pre-PR
+    /// review, cycle 1, adversarial lens, medium): <see cref="ObservedReviewMention"/> is permanent
+    /// dedupe with no CLI reader, so the comment was silently lost to the operator forever, whether
+    /// the hold was the project's own setting or the no-backfill cutoff.
+    /// </summary>
+    [Theory]
+    [InlineData("HeldSettingOff", "while auto pr-review was off here")]
+    [InlineData("HeldBeforeCutoff", "before auto pr-review's start on this install")]
+    public void A_held_mention_asks_the_operator_and_names_who_tagged_it(string outcome, string expectedCause)
+    {
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            ObservedMention(outcome), "arx-platform", covering: null);
+
+        row.NeedsYou.Should().BeTrue("a held mention is never retried, so it is only ever the operator's to take");
+        row.Markup.Should().Contain("a comment from ryan mentioned this install's login on acme/widgets#2033");
+        row.Markup.Should().Contain(expectedCause);
+        row.Markup.Should().Contain("a mention already seen is never retried");
+        row.Markup.Should().Contain("h9k task add --project arx-platform --from-pr 2033");
+    }
+
+    [Fact]
+    public void A_refused_mention_mint_asks_the_operator_and_quotes_what_was_recorded()
+    {
+        ObservedReviewMention mention = ObservedMention("MintFailed");
+        mention.OutcomeDetail = "gh pr view exited 1";
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+
+        row.NeedsYou.Should().BeTrue();
+        row.Markup.Should().Contain("could not adopt it (gh pr view exited 1)");
+    }
+
+    [Fact]
+    public void A_held_mention_covered_by_a_task_is_informational_and_names_the_task()
+    {
+        Guid taskId = DomainId.New();
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(
+            ObservedMention("HeldSettingOff"), "arx-platform",
+            new CoveringReview(taskId, Live: true, "Working", AutoCreated: true));
+
+        row.NeedsYou.Should().BeFalse("a task already covering the pull request is nothing to ask the operator");
+        row.Markup.Should().Contain($"task {DomainId.Short(taskId)} already covers it (Working)");
+    }
+
+    [Fact]
+    public void A_held_mention_with_no_recorded_author_says_so_rather_than_naming_one()
+    {
+        ObservedReviewMention mention = ObservedMention("HeldSettingOff");
+        mention.CommentAuthorLogin = string.Empty;
+
+        ReviewRequestRow row = ReviewRequestPane.ComposeMentionRow(mention, "arx-platform", covering: null);
+
+        row.Markup.Should().Contain("a comment mentioned this install's login");
+    }
+
+    private static ObservedReviewMention ObservedMention(string outcome)
+    {
+        Guid nodeId = DomainId.New();
+        Guid projectId = DomainId.New();
+        return new ObservedReviewMention
+        {
+            Id = ObservedReviewMention.ComputeId(nodeId, projectId, "acme/widgets", 2033, "brian", "IC_1"),
+            ObservingNodeId = nodeId,
+            ProjectId = projectId,
+            Repository = "acme/widgets",
+            Number = 2033,
+            PullRequestUrl = "https://github.com/acme/widgets/pull/2033",
+            MentionedLogin = "brian",
+            CommentId = "IC_1",
+            CommentAuthorLogin = "ryan",
+            CommentBody = "@brian what do you think?",
+            CommentUrl = "https://github.com/acme/widgets/pull/2033#issuecomment-1",
+            CommentCreatedAt = Now.AddMinutes(-5),
+            ObservedAt = Now,
+            Outcome = outcome,
+        };
+    }
+
     [Fact]
     public void The_status_setting_line_is_printed_for_every_project_including_the_default()
     {
