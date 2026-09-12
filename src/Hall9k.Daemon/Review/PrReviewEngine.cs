@@ -746,19 +746,27 @@ public sealed class PrReviewEngine(
         // the report to point at, and the line must never claim one that is not there.
         //
         // Read off the ObservedReviewMention row this task was actually MINTED from (Outcome ==
-        // TaskCreated), never task.LatestMention* — a second mention attaching to this task while
-        // this same run was still in flight moves those fields to the newer comment, which this
-        // report never answered (independent pre-PR review, cycle 1, both lenses).
+        // TaskCreated) in preference to task.LatestMention* — a second mention attaching to this
+        // task while this same run was still in flight moves those fields to the newer comment,
+        // which this report never answered (independent pre-PR review, cycle 1, both lenses). No
+        // such row exists for a task this mention only EXTENDED (Outcome == Attached) rather than
+        // minted — a review-request-origin task that picked up a mention before its own first
+        // dispatch is exactly this shape, and it still gets the addendum and mentionAnswer.md, so
+        // it must still get a needs-you prefix naming who asked — falling back to task.LatestMention*
+        // there, the same data RunLauncher's own mint addendum falls back to, on the same accepted
+        // trade: a further mention landing mid-run can still move it before this park line reads it.
         ObservedReviewMention? mintingMention = mentionAnswer.IsNotBlank()
             ? await session.Query<ObservedReviewMention>()
                 .Where(mention => mention.TaskId == taskId)
                 .Where(mention => mention.MatchesSql("d.data ->> 'outcome' = ?", ReviewMentionOutcome.TaskCreated.Value))
                 .FirstOrDefaultAsync(cancellationToken)
             : null;
+        string? mentionAuthorLogin = mintingMention?.CommentAuthorLogin ?? task.LatestMentionAuthorLogin;
+        string mentionBody = mintingMention?.CommentBody ?? task.LatestMentionBody ?? string.Empty;
         string mentionPrefix = mentionAnswer.IsNotBlank()
             ? $"{(task.ExternalReference.IsNotBlank() ? ExternalReference.Parse(task.ExternalReference).Reference : "This pull request")}: "
-              + $"{mintingMention?.CommentAuthorLogin ?? "someone"} tagged you"
-              + (FirstLine(mintingMention?.CommentBody ?? string.Empty) is { Length: > 0 } firstLine ? $" — \"{firstLine}\". " : ". ")
+              + $"{mentionAuthorLogin ?? "someone"} tagged you"
+              + (FirstLine(mentionBody) is { Length: > 0 } firstLine ? $" — \"{firstLine}\". " : ". ")
             : string.Empty;
         session.Events.Append(runId, new ReviewParked(
             runId,
