@@ -116,7 +116,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         // dispatch on it, diagnosable only from the transcript). There is deliberately no flag to
         // register with prompts left live — an operator who wants that reverts it the normal way,
         // h9k project set <name> --skip-permissions false, after registration. Amends Decisions Log
-        // #9's per-project opt-in to a per-project opt-out at registration (log #PLACEHOLDER-f4cce412).
+        // #9's per-project opt-in to a per-project opt-out at registration (log #179).
         ProjectRegistered registered = ProjectDecider.Register(
             projectId,
             context.OwnerId,

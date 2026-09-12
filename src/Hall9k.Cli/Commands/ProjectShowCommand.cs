@@ -232,7 +232,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         {
             string origin = recorded ? "explicit" : "recorded at registration";
             return $"[yellow]yes[/] [dim]({origin}) — agents run with --dangerously-skip-permissions "
-                + "(log #9, log #PLACEHOLDER-f4cce412)[/]";
+                + "(log #9, log #179)[/]";
         }
 
         return $"[dim]no ({OriginNote(recorded)}) — agents stop for every permission prompt, which a "
