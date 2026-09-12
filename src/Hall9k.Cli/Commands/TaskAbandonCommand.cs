@@ -73,6 +73,14 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
         // TaskDeliverCommand's own re-check exists to catch. Recovering tokens or superseding the
         // run here would double-book the former and race the latter against the daemon's own
         // supervisor (independent pre-PR review, cycle 1, both lenses).
+        // IsInteractiveClaim is the sentinel NodeId (Guid.Empty) alone — it does not, and
+        // cannot, tell a genuinely interactive h9k task work claim (no agent process at all)
+        // apart from h9k task start's own deliberate headless dispatch (TaskDecider.ClaimDeliberately
+        // records the identical sentinel for both), so this branch's immediate stamp still lands
+        // on a live headless agent process a `h9k task start` claimed, not only on an interactive
+        // one — pre-existing behaviour (508da8bc), not this branch's own to change, but worth
+        // naming rather than letting the three hazards above read as excluded by this check when
+        // they are not.
         if (task.State == TaskState.Claimed && task.IsInteractiveClaim && task.Type != TaskType.PrReview
             && task.CurrentRunId is { } currentRunId)
         {

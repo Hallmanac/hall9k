@@ -63,11 +63,12 @@ public sealed partial class VerificationRunner(
     /// still runs, exactly as <see cref="VerifyAsync"/> always has). <see cref="FailureOutput"/>,
     /// by contrast, is populated only on the repair-eligible path — the reason a caller has to read
     /// <see cref="FailedGateName"/>, not <see cref="Passed"/> alone, to tell a genuine gate failure
-    /// apart from a pre-gate one (stranded work, or a missing run or task) when deciding whether a
-    /// failure is safe to dispatch a repair session over (independent pre-PR review, cycle 1,
-    /// adversarial lens): every pre-gate failure shape leaves both null, since nothing downstream of
-    /// those ever reads them — the run (and, for stranded work, the task) already failed by the time
-    /// either returns.
+    /// apart from a pre-gate one (stranded work, a missing run or task, or an abandoned task) when
+    /// deciding whether a failure is safe to dispatch a repair session over (independent pre-PR
+    /// review, cycle 1, adversarial lens): every pre-gate failure shape leaves both null, since
+    /// nothing downstream of those ever reads them — the run already failed (and, for stranded
+    /// work, the task did too) or was retired superseded (for an abandoned task) by the time either
+    /// returns.
     /// </summary>
     public readonly record struct SettlingVerificationResult(bool Passed, string? FailedGateName, string? FailureOutput);
 
