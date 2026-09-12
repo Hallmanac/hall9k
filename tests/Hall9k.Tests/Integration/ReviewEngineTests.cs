@@ -8805,6 +8805,99 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             line.Contains("retired as superseded") && line.Contains("review loop's park"));
     }
 
+    /// <summary>
+    /// Abandoning a task halts its in-flight run entirely (origin incident 2026-08-27, task
+    /// ab484e89: a task abandoned mid-run still drew eight further review sessions over the next
+    /// hour before finally parking for a human already told to walk away). Neither
+    /// <c>TaskAggregate.Apply(TaskAbandoned)</c> nor <c>TaskDetails.Apply</c> clears
+    /// <c>CurrentRunId</c>, so identity alone still names this run current; the fence must reject
+    /// on the task's own terminal state instead.
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_tasks_review_loop_stops_before_dispatching_and_never_touches_the_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Abandon(task, "walked away", Now, task.AddedByOwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new("Ignored — the fence must stop before this is ever read.");
+        ListLogger<ReviewEngine> logger = new();
+        ReviewEngine engine = new(store, executor, executor.Processes,
+            new VerificationRunner(
+                store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
+            Options.Create(new DaemonOptions()), logger,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            NewStackedParentWatch(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("an abandoned task's run never reports merge-ready");
+        executor.Spawns.Should().BeEmpty(
+            "a terminal task refuses every further dispatch, checked before the loop's first spawn");
+        logger.Lines.Should().Contain(line => line.Contains("task is Abandoned - rejected"));
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Superseded,
+            "the run is concluded on the stream instead of left driving engines on walked-away work");
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Abandoned);
+    }
+
+    /// <summary>
+    /// The same terminal-task fence, exercised through <see cref="ReviewEngine.ParkAsync"/>
+    /// directly (internal for exactly this, mirroring the stale-generation park test above): a
+    /// park can never be created for a terminal task's run, so the rejection here must retire the
+    /// run with <see cref="RunSuperseded"/> rather than leaving a live, unmonitored run — or,
+    /// worse, an actual <see cref="ReviewParked"/> whose only lever (abandon the task) the human
+    /// already pulled (origin incident 2026-08-27, task ab484e89).
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_tasks_own_park_retires_the_run_instead_of_leaving_it_live()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Abandon(task, "walked away", Now, task.AddedByOwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new("Ignored — parking never dispatches.");
+        ListLogger<ReviewEngine> logger = new();
+        ReviewEngine engine = new(store, executor, executor.Processes,
+            new VerificationRunner(
+                store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
+            Options.Create(new DaemonOptions()), logger,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            NewStackedParentWatch(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance));
+
+        await engine.ParkAsync(runId, taskId, "No parseable verdict.", cancellationToken: cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Superseded,
+            "a terminal task's own park check must retire the run itself rather than park it for a human "
+            + "who already pulled the only lever a park would offer");
+
+        logger.Lines.Should().Contain(line => line.Contains("task is Abandoned - rejected"));
+        logger.Lines.Should().Contain(line =>
+            line.Contains("retired as superseded") && line.Contains("review loop's park"));
+    }
+
 
     private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor) =>
         NewEngine(store, executor, new DaemonOptions());

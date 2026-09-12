@@ -5523,7 +5523,8 @@ public sealed class ReviewEngine(
         await using IDocumentSession session = store.LightweightSession();
         RunAggregate run = await LoadRunAsync(runId, cancellationToken);
         if (!await GenerationFence.AllowsAsync(
-            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
+            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken,
+            refuseAbandonedTask: true))
         {
             // A reclaim can land in the gap between DriveAsync's loop-top fence check and
             // this one, so the rejection here must retire the run with RunSuperseded like
@@ -5787,7 +5788,7 @@ public sealed class ReviewEngine(
         {
             if (await GenerationFence.AllowsAsync(
                 query, logger, context.TaskId, context.RunId, context.Run.LeaseGeneration,
-                "to continue the review loop", cancellationToken))
+                "to continue the review loop", cancellationToken, refuseAbandonedTask: true))
             {
                 return true;
             }

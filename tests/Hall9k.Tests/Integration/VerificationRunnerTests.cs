@@ -128,6 +128,47 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// Abandoning a task halts its in-flight run entirely (task: abandoning a task halts its
+    /// in-flight run entirely) — verification is the first link in the pre-PR pipeline
+    /// (RunSupervisor's own verify-then-review-then-open-PR chain, which is
+    /// <c>&amp;&amp;</c>-short-circuited on this call's own result), so refusing here, before any
+    /// gate spends real process time, is what stops the whole chain for a run whose task nobody
+    /// is coming back to. The configured gate would fail loudly (and leave its own log behind) if
+    /// it ever actually ran — proof this returns before touching a single one.
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_tasks_run_is_never_verified()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("never", GateScript.New().Print("should never run").Exit(1).Command)],
+            cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Abandon(task, "walked away", Now, task.AddedByOwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        bool passed = await NewRunner(store)
+            .VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+
+        passed.Should().BeFalse("a terminal task's run is never actually verified");
+
+        File.Exists(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-never.log"))
+            .Should().BeFalse("the fence stops verification before the one configured gate ever runs");
+
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).Should().NotContain(data => data is VerificationPassed || data is VerificationFailed,
+            "no gate ran, so neither a pass nor a failure is recorded against the run");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Abandoned);
+    }
+
+    /// <summary>
     /// The Windows field report's own origin incident (item 11b): a gate that was never going to
     /// pass — here, unconditionally — fails every run the same way a real regression would, and a
     /// human reading only "gate failure (test)" has to rediscover by hand that the gate itself,
