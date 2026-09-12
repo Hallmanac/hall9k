@@ -695,6 +695,25 @@ public sealed class RunLauncher(
                 facts.Repository, facts.Number, worktree.Path, baseBranch: baseBranch, comment: comment,
                 priorReport: priorReport);
 
+            // Re-checked here, immediately before the actual spawn, rather than trusting the
+            // fence read at the top of this method alone (independent pre-PR review, cycle 1,
+            // adversarial lens — LaunchAsync's own sibling pre-spawn check, above, closes the
+            // identical gap): the GitHub fetch, the worktree checkout, and the prompt build above
+            // can each take real wall-clock time, and an abandon landing anywhere in that window
+            // still finds CurrentRunId naming this run (abandon never clears it) and would
+            // otherwise reach SpawnAsync anyway. A rejection here retires the run stream
+            // StartStream already opened above rather than spawning into a task nobody is coming
+            // back to.
+            if (!await GenerationFence.AllowsAsync(
+                session, logger, taskId, runId, leaseGeneration, "to spawn a mention follow-up", cancellationToken,
+                refuseAbandonedTask: true))
+            {
+                await using IDocumentSession retireSession = store.LightweightSession();
+                retireSession.Events.Append(runId, new RunSuperseded(runId, leaseGeneration, DateTimeOffset.UtcNow));
+                await retireSession.SaveChangesAsync(cancellationToken);
+                return;
+            }
+
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
                     runId, sessionId, worktree.Path, runDirectory, prompt, ExecutorMode.Subscription, model,
