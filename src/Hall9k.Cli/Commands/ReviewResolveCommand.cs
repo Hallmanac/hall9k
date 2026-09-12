@@ -87,9 +87,11 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
             + "gates and the review loop instead: your call settled the thread, not the diff. "
             + "Refused on a disputed rebase conflict — nothing has been rebased yet, so use "
             + "--needs-fixes with your resolution instead). On a pr-review task's park it means "
-            + "something different: the findings report has been walked and directed, and the "
-            + "task completes with no diff, pull request, or merge of its own — the only verdict "
-            + "a pr-review task takes.")]
+            + "something different: the findings report has been walked and directed, nothing of "
+            + "this task's own is opened or merged, and the task parks waiting on the pull request "
+            + "it reviewed (AwaitingAuthor) rather than completing outright — it reaches Done only "
+            + "when that pull request merges or closes, or you abandon it — the only verdict a "
+            + "pr-review task takes.")]
         public bool MergeReady { get; init; }
 
         [CommandOption("--needs-fixes <REASON>")]
@@ -745,8 +747,9 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
     /// outright. --merge-ready instead means "the findings report has been walked and
     /// directed" — records <see cref="PrReviewDelivered"/>, which moves the run to
     /// UnderReview exactly as ReviewParkResolved does so the daemon's own resume sweep picks
-    /// it up, but PrReviewEngine finalizes it directly (task Done, no merge ever observed)
-    /// rather than re-entering any review loop.
+    /// it up, but PrReviewEngine finalizes it directly (parked waiting on the pull request as
+    /// AwaitingAuthor, never completing outright — Decisions Log #160, lifetime amended by
+    /// PLACEHOLDER-ed6044a5) rather than re-entering any review loop.
     /// <para>Internal so the pr-review verdict rules are testable against a real store without going through <see cref="CliStore.Open"/>'s ambient connection (test: pr-review resolve coverage).</para>
     /// </summary>
     internal static async Task<int> ResolvePrReviewAsync(
