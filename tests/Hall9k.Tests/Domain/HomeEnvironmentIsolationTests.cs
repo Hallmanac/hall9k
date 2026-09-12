@@ -201,6 +201,29 @@ public sealed class HomeEnvironmentIsolationTests
         "WorkPromptBuilder.AppendInteractiveBoundaryChoices(",
         "WorkPromptBuilder.AppendProjectHome(",
         "WorkPromptBuilder.AppendHomeSkillRule(",
+        // AgentPromptBuilder moved its own prose onto the same mechanism (task: AgentPromptBuilder's
+        // prose lives in shipped markdown templates rather than C# string literals), and every one
+        // of its public entry points calls PromptTemplates.Load or AppendTemplate internally, so
+        // each carries the same risk ReviewLapPromptBuilder.Build already does one layer up
+        // (independent pre-PR review, cycle 1, conformance lens).
+        "AgentPromptBuilder.Build(",
+        "AgentPromptBuilder.BuildFollowUp(",
+        "AgentPromptBuilder.BuildReviewRequestedChanges(",
+        "AgentPromptBuilder.BuildFixChecks(",
+        "AgentPromptBuilder.BuildRebase(",
+        "AgentPromptBuilder.BuildPreFinalPassRebase(",
+        "AgentPromptBuilder.BuildSettlingGateRepair(",
+        "AgentPromptBuilder.BuildStackReplay(",
+        "AgentPromptBuilder.BuildReview(",
+        "AgentPromptBuilder.BuildPrReviewLens(",
+        "AgentPromptBuilder.BuildReviewVerify(",
+        "AgentPromptBuilder.BuildReviewVerdictReprompt(",
+        "AgentPromptBuilder.BuildBudgetRetry(",
+        "AgentPromptBuilder.BuildSessionErrorRetry(",
+        "AgentPromptBuilder.BuildUncommittedWorkRecovery(",
+        "AgentPromptBuilder.BuildReviewFix(",
+        "AgentPromptBuilder.BuildContextSynthesis(",
+        "AgentPromptBuilder.BuildCardPublication(",
     ];
 
     private static readonly Regex ClassDeclaration = new(

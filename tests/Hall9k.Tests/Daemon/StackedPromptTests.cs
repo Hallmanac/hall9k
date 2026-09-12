@@ -20,6 +20,7 @@ namespace Hall9k.Tests.Daemon;
 /// part of this branch, and, worse, the build session's own recompose resets to a fork point below
 /// the parent's commits and recomposes them as if they were this task's history.
 /// </summary>
+[Collection("Hall9kHome")]
 public sealed class StackedPromptTests
 {
     private const string ParentBranch = "task/parent-slice-one";
