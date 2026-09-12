@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
@@ -14,6 +15,10 @@ public sealed class ProjectDeciderTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
 
+    /// <summary>Matches the daemon's Marten setup, so the payload below is the stored shape.</summary>
+    private static readonly JsonSerializerOptions StoredJson =
+        new(JsonSerializerDefaults.Web) { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
     [Fact]
     public void Register_produces_event_with_main_as_default_base_branch()
     {
@@ -24,6 +29,94 @@ public sealed class ProjectDeciderTests
 
         @event.BaseBranch.Should().Be("main");
         @event.Name.Should().Be("hall9k");
+    }
+
+    /// <summary>
+    /// The direction is load-bearing (Windows field report, 2026-08-31; ruling 2026-09-01): the
+    /// default on the event record itself stays false, exactly the way <see cref="ProjectHome"/>
+    /// stays <see cref="ProjectHome.None"/> by default on the same event, so a stream written
+    /// before this field existed deserializes to the parameter default and replays unchanged
+    /// rather than flipping every project that already exists. <c>h9k project add</c> is the one
+    /// caller that passes <c>true</c> explicitly — simulated here the same way
+    /// <c>ProjectHomeTests</c> simulates "a stream written before homes existed" for its own field:
+    /// calling <see cref="ProjectDecider.Register"/> without the parameter at all.
+    /// </summary>
+    [Fact]
+    public void Register_defaults_skip_permissions_to_false_and_a_project_add_call_passes_true_explicitly()
+    {
+        ProjectRegistered beforeThisChange = ProjectDecider.Register(
+            DomainId.New(), DomainId.New(), DomainId.New(),
+            name: "hall9k", repositoryPath: "/repos/hall9k.git", repositoryUrl: null,
+            baseBranch: "main", registeredAt: Now);
+        ProjectRegistered fromProjectAdd = ProjectDecider.Register(
+            DomainId.New(), DomainId.New(), DomainId.New(),
+            name: "hall9k", repositoryPath: "/repos/hall9k.git", repositoryUrl: null,
+            baseBranch: "main", registeredAt: Now, skipPermissions: true);
+
+        beforeThisChange.SkipPermissions.Should().BeFalse(
+            "a stream written before this change carries no field and must replay as false");
+        fromProjectAdd.SkipPermissions.Should().BeTrue();
+
+        ProjectAggregate replayed = new();
+        replayed.Apply(beforeThisChange);
+        replayed.SkipPermissions.Should().BeFalse(
+            "the aggregate replays exactly what an old stream's event carries — the parameter default");
+    }
+
+    /// <summary>
+    /// The test above proves the C# default; this one proves the wire format still replays it.
+    /// A stored <c>ProjectRegistered</c> written before <see cref="ProjectRegistered.SkipPermissions"/>
+    /// existed has no <c>skipPermissions</c> property at all, so this deserializes an actual legacy
+    /// payload with the repository's own serializer settings and applies the result, rather than
+    /// only constructing the record in memory and relying on the C# parameter default to stand in
+    /// for what Marten would produce.
+    /// </summary>
+    [Fact]
+    public void An_event_written_before_skip_permissions_existed_replays_as_false()
+    {
+        const string storedBeforeSkipPermissions =
+            """
+            {"id":"01a01754-4f0e-7775-af1e-3aca2e67be8b","ownerId":"01a01754-4f0e-7775-af1e-3aca2e67be8c",
+            "connectionId":"01a01754-4f0e-7775-af1e-3aca2e67be8d","name":"hall9k",
+            "repositoryPath":"/repos/hall9k.git","repositoryUrl":null,"baseBranch":"main",
+            "registeredAt":"2026-08-16T12:00:00+00:00"}
+            """;
+
+        ProjectRegistered? replayed = JsonSerializer.Deserialize<ProjectRegistered>(storedBeforeSkipPermissions, StoredJson);
+
+        replayed.Should().NotBeNull();
+        replayed!.SkipPermissions.Should().BeFalse(
+            "what an old stream never recorded deserializes to the parameter default, not a guess");
+
+        ProjectAggregate project = new();
+        project.Apply(replayed);
+        project.SkipPermissions.Should().BeFalse("the aggregate replays exactly what the legacy payload carries");
+    }
+
+    /// <summary>
+    /// A later <c>h9k project set --skip-permissions</c> still wins over whatever registration
+    /// recorded, in both directions — the regression guard this task's own acceptance criteria
+    /// name (the behavior exists today; registration must not weaken it).
+    /// </summary>
+    [Fact]
+    public void ChangeSettings_still_overrides_whatever_registration_recorded_in_either_direction()
+    {
+        ProjectAggregate registeredOn = new();
+        registeredOn.Apply(ProjectDecider.Register(
+            DomainId.New(), DomainId.New(), DomainId.New(),
+            name: "hall9k", repositoryPath: "/repos/hall9k.git", repositoryUrl: null,
+            baseBranch: "main", registeredAt: Now, skipPermissions: true));
+        registeredOn.SkipPermissions.Should().BeTrue();
+
+        registeredOn.Apply(ProjectDecider.ChangeSettings(
+            registeredOn, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.Of(false),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New()));
+        registeredOn.SkipPermissions.Should().BeFalse("project set overrides the registration value");
+
+        registeredOn.Apply(ProjectDecider.ChangeSettings(
+            registeredOn, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.Of(true),
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New()));
+        registeredOn.SkipPermissions.Should().BeTrue("project set overrides it back the other way too");
     }
 
     [Fact]
