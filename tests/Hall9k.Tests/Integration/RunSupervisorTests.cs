@@ -2421,6 +2421,52 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             "the fence rejection must name the run it retired instead of parked");
     }
 
+    /// <summary>
+    /// Abandoning a task halts its in-flight run entirely (task: abandoning a task halts its
+    /// in-flight run entirely; origin incident 2026-08-27, task ab484e89): a human walks away
+    /// from a review-feedback follow-up while its fix session is still running, and that
+    /// session's own verdict comes back disputed. Neither <c>TaskAggregate.Apply(TaskAbandoned)</c>
+    /// nor <c>TaskDetails.Apply</c> clears <c>CurrentRunId</c>, so identity alone would still say
+    /// yes and hand the human a park whose only lever (abandon the task) they already pulled —
+    /// <c>refuseAbandonedTask: true</c> on this call site's fence is what closes that gap
+    /// (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_tasks_thread_dispute_park_retires_the_run_instead_of_parking_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token, asFollowUp: true);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Abandon(task, "walked away", Now, task.AddedByOwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        const string disputed =
+            "Answered three threads. The fourth asks for a different projection shape.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(disputed)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        ListLogger<RunSupervisor> logger = new();
+        RunSupervisor supervisor = NewSupervisor(store, node, logger: logger);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Superseded", cts.Token);
+        details.ParkedReason.Should().BeNull("an abandoned task's dispute is never actually parked");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Value.Should().Be("Abandoned");
+
+        logger.Lines.Should().Contain(line => line.Contains("task is Abandoned - rejected"));
+        logger.Lines.Should().Contain(line =>
+            line.Contains(runId.ToString()) && line.Contains("retired as superseded"),
+            "the fence rejection must name the run it retired instead of parked");
+    }
+
     /// <summary>The same marker from a first run is text, not an answer: only a follow-up was asked.</summary>
     [Fact]
     public async Task The_dispute_marker_is_read_only_from_follow_up_runs()
