@@ -28,9 +28,21 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             : [.. all.Where(project => !project.IsArchived)];
         if (projects.Count == 0)
         {
-            AnsiConsole.MarkupLine(
-                "[dim]No projects registered. Register one:[/] "
-                + "h9k project add --name <name> --repo <path> [dim][[--base-branch <branch>]][/]");
+            if (archivedHidden > 0)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[dim]No live projects registered — {archivedHidden} archived project"
+                    + $"{(archivedHidden == 1 ? string.Empty : "s")} hidden. See "
+                    + "them:[/] h9k project list --include-archived [dim]· reactivate one:[/] "
+                    + "h9k project reactivate <project>");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine(
+                    "[dim]No projects registered. Register one:[/] "
+                    + "h9k project add --name <name> --repo <path> [dim][[--base-branch <branch>]][/]");
+            }
+
             return ExitCodes.Ok;
         }
 
