@@ -30,8 +30,11 @@ public sealed record TaskState
     /// because nothing is being asked of the reviewer while the ball is in the author's court.
     /// The follow-through poll moves it on: to NeedsHuman when the author replies, pushes, or
     /// re-requests the review — the last of those being the one explicit ask of the reviewer in
-    /// the set — and to <see cref="Done"/> when every thread the reviewer opened is resolved or
-    /// the pull request merges or closes.
+    /// the set — and to <see cref="Done"/> only when the pull request itself merges or closes
+    /// (Decisions Log PLACEHOLDER-ed6044a5: every review thread being resolved no longer ends the
+    /// wait by itself, so a task stays live for a later GitHub mention of the install's own login
+    /// to attach to instead of minting a second one). <c>h9k task abandon</c> remains the one
+    /// early exit.
     /// <para>
     /// Origin incident (2026-09-08, arx-platform PR #2023, task 2402246b): the pr-review task
     /// went Done the moment the review was posted, so when the author answered all five threads

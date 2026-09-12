@@ -60,6 +60,15 @@ public static class SessionRoleName
     public const string Synthesis = "synthesis";
 
     /// <summary>
+    /// The bounded follow-up lap auto-pr-review's own mention trigger dispatches on an
+    /// already-reviewed pull request (idea 2f079bcd): a single, narrowly-scoped session answering
+    /// one tagged comment, never a fresh review. Its own role rather than <see cref="ReviewAdversarial"/>
+    /// or <see cref="ReviewConformance"/> because it runs neither lens — it reads one comment
+    /// against a review that already happened.
+    /// </summary>
+    public const string PrReviewMentionFollowUp = "pr-review-mention-followup";
+
+    /// <summary>
     /// The one bounded, commit-only session an uncommitted-files pre-gate failure may spawn onto
     /// the SAME worktree before the run fails (task: when a session ends with finished work
     /// uncommitted, the daemon recovers on its own). Not part of the epic's named vocabulary;
