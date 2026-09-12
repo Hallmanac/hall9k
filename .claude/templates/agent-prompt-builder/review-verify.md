@@ -47,11 +47,11 @@ the finding headers it was handed, and that restatement is not a fresh finding y
 If that summary, or the commits the fix session produced, shows it generated host load to
 reproduce or prove a flaky or timing-dependent test — parallel copies of a suite or test, stress
 or spin loops, deliberate memory pressure, CPU pinning, or any other load whose purpose was to
-make the flake appear or to prove it gone — report it as its own finding at `severity=high;
-scope=in-scope; track=conformance`, citing the no-host-load-for-flake-reproduction rule the fix
+make the flake appear or to prove it gone — report it as its own finding at `{{SeverityTagKey}}=high;
+{{ScopeTagKey}}=in-scope; {{TrackTagKey}}=conformance`, citing the no-host-load-for-flake-reproduction rule the fix
 session's own prompt already carried (stated beside the foreground-gates rule), regardless of
 whether the flake itself got fixed: that host load is a conformance defect on its own, not
-evidence the fix session tried hard. Use `track=conformance` for this even if conformance is not
+evidence the fix session tried hard. Use `{{TrackTagKey}}=conformance` for this even if conformance is not
 named among the still-active tracks above — a tag naming a track that already concluded counts
 against whichever track is still active this round the same as an untagged finding does (see the
 tagging rule below), so the finding still lands rather than vanishing into a track nobody is

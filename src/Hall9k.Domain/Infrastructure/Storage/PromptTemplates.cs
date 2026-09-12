@@ -150,8 +150,17 @@ public static class PromptTemplates
     /// line, or any longer run of just <c>=</c>) — content a fragment's own body is free to carry —
     /// which would have cut the fragment short at that line instead of treating it as prose
     /// (independent pre-PR review, cycle 1).
+    /// <para>
+    /// Internal rather than private so <c>PromptTemplateContractTests</c> can skip these lines
+    /// before scanning a template for a banned contract token (independent pre-PR review, cycle 1,
+    /// conformance finding): a marker line is never rendered into an assembled prompt — <see cref="Load"/>
+    /// strips it before a fragment's body is used at all — so an incidental substring collision
+    /// between a hyphenated fragment name and a tag key (<c>===discovery-lap-scope===</c> containing
+    /// <c>scope=</c>) is not a real violation the way the same text sitting in a fragment's own body
+    /// would be.
+    /// </para>
     /// </summary>
-    private static bool IsFragmentMarker(string line)
+    internal static bool IsFragmentMarker(string line)
     {
         if (line.Length < 7
             || !line.StartsWith("===", StringComparison.Ordinal)

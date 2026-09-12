@@ -40,6 +40,27 @@ internal static class PromptContractTokens
         "RESOLUTION:",
         "merge-ready",
         "needs-fixes",
+        // The finding, disagreement, and thread-triage headers' own `key=value` tag grammar
+        // (independent pre-PR review, cycle 1, conformance finding): each of these is a bare
+        // key ReviewResultParser.Tag reads literally off a header line, so an operator who
+        // edits a worked example must not be able to silently retype one. The trailing "=" is
+        // appended here rather than folded into the parser's own key constants, which stay
+        // bare (what Tag actually compares against) — every template occurrence of the full
+        // "key=" spelling goes through the matching {{...TagKey}} placeholder, never a literal.
+        ReviewResultParser.SeverityTagKey + "=",
+        ReviewResultParser.ScopeTagKey + "=",
+        ReviewResultParser.AtTagKey + "=",
+        ReviewResultParser.TrackTagKey + "=",
+        ReviewResultParser.ThreadTagKey + "=",
+        ReviewResultParser.DispositionTagKey + "=",
+        ReviewResultParser.KindTagKey + "=",
+        ReviewResultParser.AuthorTagKey + "=",
+        ReviewResultParser.ReviewTagKey + "=",
+        // The finding contract's own structural labels (same review, same finding): distinct from
+        // ReviewVerdictValidation's private FindingContractExampleBody, kept in sync by hand across
+        // the Execution/Review boundary per that constant's own doc comment, rather than shared.
+        "Defect:",
+        "Scenario:",
         // "fixed" and "disputed" (the RESOLUTION: value vocabulary) are deliberately not listed:
         // both are ordinary English words a guidance sentence uses constantly with no relation to
         // this grammar, and a substring guard over them would reject nearly every template that

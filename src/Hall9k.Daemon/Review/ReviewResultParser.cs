@@ -86,18 +86,18 @@ public static class ReviewResultParser
         }
 
         Dictionary<string, string> header = HeaderTags(block[0][FindingMarker.Length..]);
-        string location = Tag(header, "at") ?? Tag(header, "file") ?? Tag(header, "location") ?? string.Empty;
+        string location = Tag(header, AtTagKey) ?? Tag(header, "file") ?? Tag(header, "location") ?? string.Empty;
         if (location.IsNotBlank() && ReviewVerdictValidation.IsPlaceholderLocation(location))
         {
             return;
         }
 
         findings.Add(new ReviewFinding(
-            ReviewSeverity.Parse(Tag(header, "severity")),
-            ReviewFindingScope.Parse(Tag(header, "scope")),
+            ReviewSeverity.Parse(Tag(header, SeverityTagKey)),
+            ReviewFindingScope.Parse(Tag(header, ScopeTagKey)),
             location,
             string.Join('\n', block).Trim(),
-            ParseTrack(Tag(header, "track"))));
+            ParseTrack(Tag(header, TrackTagKey))));
     }
 
     /// <summary>
@@ -143,6 +143,34 @@ public static class ReviewResultParser
 
     private static string? Tag(Dictionary<string, string> tags, string key) =>
         tags.TryGetValue(key, out string? value) ? value : null;
+
+    /// <summary>
+    /// Every header tag key <see cref="HeaderTags"/> parses across this file's three marker
+    /// families — the finding header's <c>severity=</c>/<c>scope=</c>/<c>track=</c>, the shared
+    /// <c>at=</c> location, the disagreement header's <c>thread=</c>/<c>review=</c>, and the
+    /// thread-triage header's <c>thread=</c>/<c>disposition=</c>/<c>kind=</c>/<c>author=</c>.
+    /// Named here instead of left as the bare string literal each <see cref="Tag"/> call used to
+    /// pass, so <c>AgentPromptBuilder</c>'s worked examples inject the same spelling as a template
+    /// parameter rather than typing it into a template literally — see
+    /// <see cref="PromptContractTokens"/> (independent pre-PR review, cycle 1, conformance finding).
+    /// </summary>
+    internal const string SeverityTagKey = "severity";
+
+    internal const string ScopeTagKey = "scope";
+
+    internal const string AtTagKey = "at";
+
+    internal const string TrackTagKey = "track";
+
+    internal const string ThreadTagKey = "thread";
+
+    internal const string DispositionTagKey = "disposition";
+
+    internal const string KindTagKey = "kind";
+
+    internal const string AuthorTagKey = "author";
+
+    internal const string ReviewTagKey = "review";
 
     /// <summary>The header line that opens one parked-disagreement block (task: a changes-requested pull-request review from a human becomes a fix lap).</summary>
     public const string DisagreementMarker = "DISAGREEMENT:";
@@ -218,7 +246,7 @@ public static class ReviewResultParser
         // The same three spellings ParseFindings accepts for a location, for the same reason: this
         // is one contract written twice, and a session that reaches for the finding contract's own
         // `file=` here should not lose its location for it.
-        string? location = Tag(header, "at") ?? Tag(header, "file") ?? Tag(header, "location");
+        string? location = Tag(header, AtTagKey) ?? Tag(header, "file") ?? Tag(header, "location");
 
         // The same echoed-example guard <see cref="Close"/> applies to a finding, and it matters
         // more here (self-review, this task): a session that quotes the contract before answering
@@ -234,8 +262,8 @@ public static class ReviewResultParser
         disagreements.Add(new ReviewDisagreement(
             finding, reasoning, reply,
             Location: location.IsBlank() ? null : location,
-            ThreadId: Tag(header, "thread"),
-            ReviewUrl: Tag(header, "review")));
+            ThreadId: Tag(header, ThreadTagKey),
+            ReviewUrl: Tag(header, ReviewTagKey)));
     }
 
     /// <summary>
@@ -397,7 +425,7 @@ public static class ReviewResultParser
         }
 
         Dictionary<string, string> header = HeaderTags(block[0][ThreadDispositionMarker.Length..]);
-        string? threadId = Tag(header, "thread");
+        string? threadId = Tag(header, ThreadTagKey);
         if (threadId.IsBlank() || threadId.StartsWith('<'))
         {
             return;
@@ -405,10 +433,10 @@ public static class ReviewResultParser
 
         outcomes.Add(new ReviewThreadOutcome(
             threadId,
-            ReviewThreadDisposition.Parse(Tag(header, "disposition")),
+            ReviewThreadDisposition.Parse(Tag(header, DispositionTagKey)),
             string.Join('\n', block.Skip(1)).Trim(),
-            Tag(header, "author"),
-            ParseIsHuman(Tag(header, "kind"))));
+            Tag(header, AuthorTagKey),
+            ParseIsHuman(Tag(header, KindTagKey))));
     }
 
     /// <summary>

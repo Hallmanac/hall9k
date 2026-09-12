@@ -41,10 +41,54 @@ public static class AgentPromptBuilder
     /// beside the canonical skills, never inside them.</summary>
     public const string TemplateDirectory = "agent-prompt-builder";
 
-    /// <summary>A named fragment out of a template file, substituted. The <c>params</c> tuple
-    /// array is this call site's whole parameter dictionary, spelled without one to build.</summary>
-    private static string Fragment(string file, string name, params (string Key, string Value)[] values) =>
-        PromptTemplates.Load(file, name, values.ToDictionary(value => value.Key, value => value.Value));
+    /// <summary>
+    /// A named fragment out of a template file, substituted, for a single call site's
+    /// <c>prompt.AppendLine(Fragment(...))</c> — the <c>params</c> tuple array is this call
+    /// site's whole parameter dictionary, spelled without one to build.
+    /// <para>
+    /// Checks the fragment's own unsubstituted text for an embedded line break before
+    /// substituting anything into it — never the final, parameter-filled result, since a
+    /// legitimately multi-line runtime VALUE (<c>task.Objective</c>, a review comment body)
+    /// substituted into an otherwise single-line fragment is not this defect (independent
+    /// pre-PR review, cycle 1, adversarial finding: a golden-fixture assertion over the final
+    /// text would have flagged exactly that legitimate case as a false positive on Windows,
+    /// where <see cref="Environment.NewLine"/> is <c>"\r\n"</c>). What this guards against is
+    /// narrower and purely static: an author moving a fragment's own AUTHORED prose to span
+    /// several source lines without switching its call site from <see cref="Fragment"/> (one
+    /// <c>AppendLine</c>, so an embedded <c>\n</c> never becomes <see cref="Environment.NewLine"/>)
+    /// to <see cref="AppendFragment"/> (line by line, so it always does) — the exact defect
+    /// commit 9c8df66b fixed, caught immediately, on every platform, the moment any test
+    /// exercises the call site, rather than only on a Windows CI leg whose own golden fixture
+    /// happens to alias the regression away through <c>\r\n</c>-to-<c>\n</c> normalization.
+    /// </para>
+    /// </summary>
+    private static string Fragment(string file, string name, params (string Key, string Value)[] values)
+    {
+        string raw = PromptTemplates.Load(file, name);
+        if (raw.Contains('\n'))
+        {
+            throw new InvalidOperationException(
+                $"Fragment '{name}' in {file} spans multiple lines; append it with AppendFragment "
+                + "(line by line, preserving Environment.NewLine) instead of Fragment paired with a "
+                + "single AppendLine, which would leak the fragment's own bare '\\n' line breaks into "
+                + "the assembled prompt in place of Environment.NewLine.");
+        }
+
+        return values.Length == 0
+            ? raw
+            : PromptTemplates.Load(file, name, values.ToDictionary(value => value.Key, value => value.Value));
+    }
+
+    /// <summary>
+    /// A named fragment allowed to span several source lines, split back into its own lines for
+    /// a caller that appends each one itself (<see cref="FoldBoundary.Reason"/>, joined back with
+    /// <see cref="Environment.NewLine"/> wherever that reason is later printed) rather than
+    /// joining them straight into one <c>AppendLine</c> call the way <see cref="Fragment"/>
+    /// assumes — the one legitimate multi-line shape <see cref="Fragment"/>'s own single-line
+    /// guard would otherwise reject.
+    /// </summary>
+    private static string[] FragmentLines(string file, string name, params (string Key, string Value)[] values) =>
+        PromptTemplates.Load(file, name, values.ToDictionary(value => value.Key, value => value.Value)).Split('\n');
 
     /// <summary>
     /// A named multi-line fragment, appended line by line via <see cref="PromptTemplates.AppendTemplate"/>
@@ -122,7 +166,7 @@ public static class AgentPromptBuilder
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/follow-up.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         prompt.AppendLine($"Pull request: {pullRequestUrl}");
         prompt.AppendLine();
@@ -137,14 +181,14 @@ public static class AgentPromptBuilder
 
         AppendOperatorGuidanceSection(prompt, task);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "original-objective-heading"));
+        prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
         if (project.ContextLinks.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "project-links-heading"));
+            prompt.AppendLine(Fragment(file, "project-links-heading"));
             prompt.AppendLine();
             foreach (var link in project.ContextLinks)
             {
@@ -159,7 +203,7 @@ public static class AgentPromptBuilder
         AppendThreadHandlingRules(prompt, project);
         AppendThreadDisputeRules(prompt);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
         AppendRetainedWorktreeNote(prompt);
@@ -224,7 +268,7 @@ public static class AgentPromptBuilder
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         prompt.AppendLine($"Pull request: {pullRequestUrl}");
         prompt.AppendLine();
@@ -239,14 +283,14 @@ public static class AgentPromptBuilder
 
         AppendOperatorGuidanceSection(prompt, task);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "original-objective-heading"));
+        prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
         if (project.ContextLinks.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "project-links-heading"));
+            prompt.AppendLine(Fragment(file, "project-links-heading"));
             prompt.AppendLine();
             foreach (var link in project.ContextLinks)
             {
@@ -261,12 +305,12 @@ public static class AgentPromptBuilder
         AppendChangesRequestedHandlingRules(prompt, project);
         AppendChangesRequestedDisagreementRules(prompt);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
         AppendRetainedWorktreeNote(prompt);
         AppendFragment(prompt, file, "work-from-findings");
-        AppendFragment(prompt, file, "resolve-skill");
+        AppendFragment(prompt, file, "resolve-skill", ("ThreadTagKey", ReviewResultParser.ThreadTagKey));
         AppendThreadTextBoundaryRule(prompt);
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
@@ -305,7 +349,7 @@ public static class AgentPromptBuilder
     private static void AppendChangesRequestedFindings(StringBuilder prompt, TaskDetails task)
     {
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "findings-heading"));
+        prompt.AppendLine(Fragment(file, "findings-heading"));
         prompt.AppendLine();
         if (task.ChangesRequestedReviews.Count == 0)
         {
@@ -317,14 +361,19 @@ public static class AgentPromptBuilder
             return;
         }
 
-        AppendFragment(prompt, file, "findings-intro", ("FindingMarker", ReviewResultParser.FindingMarker));
+        AppendFragment(
+            prompt, file, "findings-intro",
+            ("FindingMarker", ReviewResultParser.FindingMarker),
+            ("SeverityTagKey", ReviewResultParser.SeverityTagKey),
+            ("ScopeTagKey", ReviewResultParser.ScopeTagKey),
+            ("ThreadTagKey", ReviewResultParser.ThreadTagKey));
         prompt.AppendLine();
 
         foreach (ChangesRequestedReview review in task.ChangesRequestedReviews)
         {
             string submitted = review.SubmittedAt is { } at
                 ? at.ToString("u", CultureInfo.InvariantCulture)
-                : PromptTemplates.Load(file, "time-not-reported");
+                : Fragment(file, "time-not-reported");
             prompt.AppendLine(Fragment(file, "review-heading", ("Reviewer", review.Reviewer), ("Submitted", submitted)));
             prompt.AppendLine();
             prompt.AppendLine(Fragment(file, "review-url", ("ReviewUrl", review.ReviewUrl)));
@@ -373,16 +422,16 @@ public static class AgentPromptBuilder
     private static void AppendChangesRequestedHandlingRules(StringBuilder prompt, ProjectDetails project)
     {
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "handling-heading"));
+        prompt.AppendLine(Fragment(file, "handling-heading"));
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "handling-intro"));
+        prompt.AppendLine(Fragment(file, "handling-intro"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "handling-fix");
         AppendFragment(prompt, file, "handling-question");
         AppendFragment(prompt, file, "handling-body-comment");
         AppendFragment(prompt, file, "handling-never-open-thread");
         AppendWritingConventions(
-            prompt, string.Empty, project.WritingConventions, PromptTemplates.Load(file, "writing-conventions-lead-in"));
+            prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "hides-comments");
         prompt.AppendLine();
@@ -403,7 +452,7 @@ public static class AgentPromptBuilder
     private static void AppendChangesRequestedDisagreementRules(StringBuilder prompt)
     {
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "disagreement-heading"));
+        prompt.AppendLine(Fragment(file, "disagreement-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "disagreement-intro");
         prompt.AppendLine();
@@ -412,17 +461,22 @@ public static class AgentPromptBuilder
         prompt.AppendLine(Fragment(
             file, "block-header",
             ("DisagreementMarker", ReviewResultParser.DisagreementMarker),
-            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder)));
+            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder),
+            ("AtTagKey", ReviewResultParser.AtTagKey),
+            ("ThreadTagKey", ReviewResultParser.ThreadTagKey),
+            ("ReviewTagKey", ReviewResultParser.ReviewTagKey)));
         prompt.AppendLine(Fragment(file, "reviewer-asked-line", ("ReviewerAskedMarker", ReviewResultParser.ReviewerAskedMarker)));
         AppendFragment(prompt, file, "reasoning-line", ("DisagreementReasoningMarker", ReviewResultParser.DisagreementReasoningMarker));
         prompt.AppendLine(Fragment(file, "proposed-reply-marker-line", ("ProposedReplyMarker", ReviewResultParser.ProposedReplyMarker)));
-        prompt.AppendLine(PromptTemplates.Load(file, "proposed-reply-body-line"));
+        prompt.AppendLine(Fragment(file, "proposed-reply-body-line"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "dispute-marker-line", ("DisputeMarker", DisputeMarker));
         prompt.AppendLine();
         AppendFragment(
             prompt, file, "fill-in-instructions",
-            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder));
+            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder),
+            ("AtTagKey", ReviewResultParser.AtTagKey),
+            ("ThreadTagKey", ReviewResultParser.ThreadTagKey));
         prompt.AppendLine();
         AppendFragment(prompt, file, "park-platform");
         prompt.AppendLine();
@@ -450,7 +504,7 @@ public static class AgentPromptBuilder
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/fix-checks.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         prompt.AppendLine($"Pull request: {pullRequestUrl}");
         prompt.AppendLine();
@@ -465,14 +519,14 @@ public static class AgentPromptBuilder
 
         AppendOperatorGuidanceSection(prompt, task);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "original-objective-heading"));
+        prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
         if (project.ContextLinks.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "project-links-heading"));
+            prompt.AppendLine(Fragment(file, "project-links-heading"));
             prompt.AppendLine();
             foreach (var link in project.ContextLinks)
             {
@@ -484,12 +538,12 @@ public static class AgentPromptBuilder
 
         AppendProjectHome(prompt, project);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
         AppendRetainedWorktreeNote(prompt);
         AppendFragment(prompt, file, "inspect-failures", ("PullRequestUrl", pullRequestUrl));
-        prompt.AppendLine(PromptTemplates.Load(file, "fix-and-rerun"));
+        prompt.AppendLine(Fragment(file, "fix-and-rerun"));
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
             ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
@@ -563,11 +617,11 @@ public static class AgentPromptBuilder
         string? stackedForkPoint = WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit);
         const string file = $"{TemplateDirectory}/rebase.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         prompt.AppendLine($"Pull request: {pullRequestUrl}");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "intro-lead"));
+        prompt.AppendLine(Fragment(file, "intro-lead"));
         if (isStacked)
         {
             // The ordinary sentence below is untrue of a stacked child, and the difference is not
@@ -593,7 +647,7 @@ public static class AgentPromptBuilder
 
         if (humanResolution.IsNotBlank())
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "human-decision-heading"));
+            prompt.AppendLine(Fragment(file, "human-decision-heading"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "human-decision-intro");
             prompt.AppendLine();
@@ -601,14 +655,14 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "original-objective-heading"));
+        prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
         if (project.ContextLinks.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "project-links-heading"));
+            prompt.AppendLine(Fragment(file, "project-links-heading"));
             prompt.AppendLine();
             foreach (var link in project.ContextLinks)
             {
@@ -620,7 +674,7 @@ public static class AgentPromptBuilder
 
         AppendProjectHome(prompt, project);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
         AppendRetainedWorktreeNote(prompt);
@@ -647,7 +701,7 @@ public static class AgentPromptBuilder
                 ? null
                 : new FoldBoundary(
                     "<the commit you recorded before the replay>",
-                    Fragment(file, "inline-fold-reason", ("EffectiveBaseBranch", effectiveBaseBranch)).Split('\n')));
+                    FragmentLines(file, "inline-fold-reason", ("EffectiveBaseBranch", effectiveBaseBranch))));
         AppendFragment(prompt, file, "no-push");
         AppendRebaseDisputeRules(prompt);
         AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
@@ -755,7 +809,7 @@ public static class AgentPromptBuilder
         return WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit) is { } forkPoint
             ? new FoldBoundary(
                 forkPoint,
-                Fragment(file, "resumed-stacked-fold-reason", ("EffectiveBaseBranch", effectiveBaseBranch)).Split('\n'))
+                FragmentLines(file, "resumed-stacked-fold-reason", ("EffectiveBaseBranch", effectiveBaseBranch)))
             : null;
     }
 
@@ -858,7 +912,7 @@ public static class AgentPromptBuilder
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/pre-final-pass-rebase.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         if (pullRequestUrl.IsNotBlank())
         {
@@ -875,7 +929,7 @@ public static class AgentPromptBuilder
 
         if (humanResolution.IsNotBlank())
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "human-decision-heading"));
+            prompt.AppendLine(Fragment(file, "human-decision-heading"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "human-decision-intro");
             prompt.AppendLine();
@@ -883,14 +937,14 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "original-objective-heading"));
+        prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
         if (project.ContextLinks.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "project-links-heading"));
+            prompt.AppendLine(Fragment(file, "project-links-heading"));
             prompt.AppendLine();
             foreach (var link in project.ContextLinks)
             {
@@ -902,9 +956,9 @@ public static class AgentPromptBuilder
 
         AppendProjectHome(prompt, project);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "worktree-lead"));
+        prompt.AppendLine(Fragment(file, "worktree-lead"));
         prompt.AppendLine(pullRequestUrl.IsNotBlank()
             ? Fragment(file, "worktree-with-pr", ("Branch", branch))
             : Fragment(file, "worktree-without-pr", ("Branch", branch)));
@@ -976,7 +1030,7 @@ public static class AgentPromptBuilder
     {
         const string file = $"{TemplateDirectory}/settling-gate-repair.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         if (pullRequestUrl.IsNotBlank())
         {
@@ -992,7 +1046,7 @@ public static class AgentPromptBuilder
 
         if (humanGuidance.IsNotBlank())
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "human-guidance-heading"));
+            prompt.AppendLine(Fragment(file, "human-guidance-heading"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "human-guidance-intro");
             prompt.AppendLine();
@@ -1000,21 +1054,21 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "gate-output-heading"));
+        prompt.AppendLine(Fragment(file, "gate-output-heading"));
         prompt.AppendLine();
         prompt.AppendLine("```");
         prompt.AppendLine(gateOutput);
         prompt.AppendLine("```");
         prompt.AppendLine();
 
-        prompt.AppendLine(PromptTemplates.Load(file, "original-objective-heading"));
+        prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
         if (project.ContextLinks.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "project-links-heading"));
+            prompt.AppendLine(Fragment(file, "project-links-heading"));
             prompt.AppendLine();
             foreach (var link in project.ContextLinks)
             {
@@ -1026,9 +1080,9 @@ public static class AgentPromptBuilder
 
         AppendProjectHome(prompt, project);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "worktree-lead"));
+        prompt.AppendLine(Fragment(file, "worktree-lead"));
         prompt.AppendLine(pullRequestUrl.IsNotBlank()
             ? Fragment(file, "worktree-with-pr", ("Branch", branch))
             : Fragment(file, "worktree-without-pr", ("Branch", branch)));
@@ -1099,7 +1153,7 @@ public static class AgentPromptBuilder
     {
         const string file = $"{TemplateDirectory}/stack-replay.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         prompt.AppendLine($"Pull request: {pullRequestUrl}");
         prompt.AppendLine();
@@ -1114,19 +1168,19 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "original-objective-heading"));
+        prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
         WorkPromptBuilder.AppendProjectHome(prompt, project);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
         AppendRetainedWorktreeNote(prompt);
-        prompt.AppendLine(PromptTemplates.Load(file, "replay-shape"));
-        prompt.AppendLine(PromptTemplates.Load(file, "fetch-both-commits"));
+        prompt.AppendLine(Fragment(file, "replay-shape"));
+        prompt.AppendLine(Fragment(file, "fetch-both-commits"));
         AppendFragment(prompt, file, "record-what-replays", ("UpstreamCommit", upstreamCommit));
         prompt.AppendLine(Fragment(
             file, "rebase-onto-command",
@@ -1147,7 +1201,7 @@ public static class AgentPromptBuilder
                 ? null
                 : new FoldBoundary(
                     ontoCommit,
-                    Fragment(file, "fold-reason", ("BaseBranch", baseBranch)).Split('\n')));
+                    FragmentLines(file, "fold-reason", ("BaseBranch", baseBranch))));
         AppendFragment(prompt, file, "no-push");
         AppendFragment(prompt, file, "stop-if-blocked");
         WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(
@@ -1175,7 +1229,7 @@ public static class AgentPromptBuilder
     private static void AppendReviewerAttributionRules(StringBuilder prompt)
     {
         const string file = $"{TemplateDirectory}/reviewer-attribution.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
@@ -1209,7 +1263,7 @@ public static class AgentPromptBuilder
     private static void AppendThreadTriageRules(StringBuilder prompt, string projectName)
     {
         const string file = $"{TemplateDirectory}/thread-triage.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
@@ -1224,19 +1278,28 @@ public static class AgentPromptBuilder
         AppendFragment(
             prompt, file, "block-shape",
             ("ThreadDispositionMarker", ThreadDispositionMarker),
-            ("ThreadIdPlaceholder", ReviewResultParser.ThreadIdPlaceholder));
+            ("ThreadIdPlaceholder", ReviewResultParser.ThreadIdPlaceholder),
+            ("ThreadTagKey", ReviewResultParser.ThreadTagKey),
+            ("DispositionTagKey", ReviewResultParser.DispositionTagKey),
+            ("KindTagKey", ReviewResultParser.KindTagKey),
+            ("AuthorTagKey", ReviewResultParser.AuthorTagKey));
         prompt.AppendLine();
         // Split rather than substituted whole, to match main's own accidental mid-word line
         // wrap exactly (an existing test asserts the first half as its own substring) while
-        // keeping the full contract literal out of the template file itself.
+        // keeping the full contract literal out of the template file itself. Falls back to the
+        // placeholder whole, with nothing after it, if a later edit to ThreadIdPlaceholder ever
+        // drops the space this split relies on (independent pre-PR review, cycle 1, adversarial
+        // finding) — a coupling nothing at the constant's own definition otherwise records.
         string threadIdPlaceholder = ReviewResultParser.ThreadIdPlaceholder;
         int placeholderSplitAt = threadIdPlaceholder.LastIndexOf(' ');
-        prompt.AppendLine(Fragment(file, "no-placeholder-echo-part1", ("Part1", threadIdPlaceholder[..placeholderSplitAt])));
-        prompt.AppendLine(Fragment(file, "no-placeholder-echo-part2", ("Part2", threadIdPlaceholder[(placeholderSplitAt + 1)..])));
+        string placeholderPart1 = placeholderSplitAt < 0 ? threadIdPlaceholder : threadIdPlaceholder[..placeholderSplitAt];
+        string placeholderPart2 = placeholderSplitAt < 0 ? string.Empty : threadIdPlaceholder[(placeholderSplitAt + 1)..];
+        prompt.AppendLine(Fragment(file, "no-placeholder-echo-part1", ("Part1", placeholderPart1)));
+        prompt.AppendLine(Fragment(file, "no-placeholder-echo-part2", ("Part2", placeholderPart2)));
         prompt.AppendLine();
         AppendFragment(
             prompt, file, "block-ordering", ("ThreadDispositionSummaryMarker", ThreadDispositionSummaryMarker));
-        AppendFragment(prompt, file, "kind-classification");
+        AppendFragment(prompt, file, "kind-classification", ("KindTagKey", ReviewResultParser.KindTagKey));
         prompt.AppendLine();
     }
 
@@ -1270,7 +1333,7 @@ public static class AgentPromptBuilder
     private static void AppendThreadHandlingRules(StringBuilder prompt, ProjectDetails project)
     {
         const string file = $"{TemplateDirectory}/thread-handling.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "fix-rule");
         AppendFragment(prompt, file, "decline-rule-lead");
@@ -1279,7 +1342,10 @@ public static class AgentPromptBuilder
             ("DisagreementMarker", ReviewResultParser.DisagreementMarker),
             ("ReviewerAskedMarker", ReviewResultParser.ReviewerAskedMarker),
             ("DisagreementReasoningMarker", ReviewResultParser.DisagreementReasoningMarker),
-            ("ProposedReplyMarker", ReviewResultParser.ProposedReplyMarker));
+            ("ProposedReplyMarker", ReviewResultParser.ProposedReplyMarker),
+            ("AtTagKey", ReviewResultParser.AtTagKey),
+            ("ThreadTagKey", ReviewResultParser.ThreadTagKey),
+            ("DispositionTagKey", ReviewResultParser.DispositionTagKey));
         AppendFragment(prompt, file, "route-rule");
         AppendFragment(prompt, file, "question-rule");
         AppendFragment(prompt, file, "never-resolve-without-reply");
@@ -1288,7 +1354,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "body-comment");
         prompt.AppendLine();
         AppendWritingConventions(
-            prompt, string.Empty, project.WritingConventions, PromptTemplates.Load(file, "writing-conventions-lead-in"));
+            prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
         prompt.AppendLine();
     }
 
@@ -1332,7 +1398,7 @@ public static class AgentPromptBuilder
     private static void AppendThreadDisputeRules(StringBuilder prompt)
     {
         const string file = $"{TemplateDirectory}/thread-dispute.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
@@ -1643,12 +1709,12 @@ public static class AgentPromptBuilder
             (priorCycleMode != ReviewMode.FinalFullPass && priorCycleMode != ReviewMode.Discovery)
             || priorCycleSinceSha is null;
         string priorCycleDescription = priorCycleMode == ReviewMode.Verify
-            ? PromptTemplates.Load(file, "prior-cycle-verify")
+            ? Fragment(file, "prior-cycle-verify")
             : priorCycleReadFullBranch
-                ? PromptTemplates.Load(file, "prior-cycle-full")
-                : PromptTemplates.Load(file, "prior-cycle-partial");
+                ? Fragment(file, "prior-cycle-full")
+                : Fragment(file, "prior-cycle-partial");
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro", ("PriorCycleDescription", priorCycleDescription));
         prompt.AppendLine();
@@ -1663,16 +1729,16 @@ public static class AgentPromptBuilder
         foreach (ReviewLens track in tracks)
         {
             prompt.AppendLine(track == ReviewLens.Adversarial
-                ? PromptTemplates.Load(file, "track-adversarial-line")
-                : PromptTemplates.Load(file, "track-conformance-line"));
+                ? Fragment(file, "track-adversarial-line")
+                : Fragment(file, "track-conformance-line"));
         }
 
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "what-diff-heading"));
+        prompt.AppendLine(Fragment(file, "what-diff-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "acceptance-criteria-heading"));
+        prompt.AppendLine(Fragment(file, "acceptance-criteria-heading"));
         foreach (string criterion in task.AcceptanceCriteria)
         {
             prompt.AppendLine($"- {criterion}");
@@ -1682,11 +1748,11 @@ public static class AgentPromptBuilder
         AppendSettledRulings(
             prompt, priorRulings, priorHumanDirectedInteractions,
             priorBoundaryApprovals: priorBoundaryApprovals, priorHumanFixes: priorHumanFixes);
-        prompt.AppendLine(PromptTemplates.Load(file, "prior-findings-heading"));
+        prompt.AppendLine(Fragment(file, "prior-findings-heading"));
         prompt.AppendLine();
         if (priorFindings.IsBlank())
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "no-prior-findings"));
+            prompt.AppendLine(Fragment(file, "no-prior-findings"));
         }
         else
         {
@@ -1696,11 +1762,11 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "fix-session-heading"));
+        prompt.AppendLine(Fragment(file, "fix-session-heading"));
         prompt.AppendLine();
         if (priorFixPosition.IsBlank())
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "no-fix-session-summary"));
+            prompt.AppendLine(Fragment(file, "no-fix-session-summary"));
         }
         else
         {
@@ -1710,10 +1776,14 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
-        AppendFragment(prompt, file, "host-load-warning");
+        AppendFragment(
+            prompt, file, "host-load-warning",
+            ("SeverityTagKey", ReviewResultParser.SeverityTagKey),
+            ("ScopeTagKey", ReviewResultParser.ScopeTagKey),
+            ("TrackTagKey", ReviewResultParser.TrackTagKey));
 
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "how-to-review-heading"));
+        prompt.AppendLine(Fragment(file, "how-to-review-heading"));
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "worktree-branch", ("Branch", branch)));
         prompt.AppendLine(sinceSha is { } sha
@@ -1789,9 +1859,13 @@ public static class AgentPromptBuilder
         prompt.AppendLine(Fragment(
             file, "example",
             ("FindingMarker", ReviewResultParser.FindingMarker),
-            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder)));
+            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder),
+            ("SeverityTagKey", ReviewResultParser.SeverityTagKey),
+            ("ScopeTagKey", ReviewResultParser.ScopeTagKey),
+            ("TrackTagKey", ReviewResultParser.TrackTagKey),
+            ("AtTagKey", ReviewResultParser.AtTagKey)));
         prompt.AppendLine();
-        AppendFragment(prompt, file, "body");
+        AppendFragment(prompt, file, "body", ("TrackTagKey", ReviewResultParser.TrackTagKey));
     }
 
     /// <summary>
@@ -1823,14 +1897,14 @@ public static class AgentPromptBuilder
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "heading-foreign"));
+            prompt.AppendLine(Fragment(file, "heading-foreign"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "intro-foreign");
             prompt.AppendLine();
         }
         else
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "heading-own"));
+            prompt.AppendLine(Fragment(file, "heading-own"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "intro-own");
             prompt.AppendLine();
@@ -1838,7 +1912,7 @@ public static class AgentPromptBuilder
 
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "what-review-task-is-heading"));
+            prompt.AppendLine(Fragment(file, "what-review-task-is-heading"));
             prompt.AppendLine();
             prompt.AppendLine(task.Objective);
             prompt.AppendLine();
@@ -1846,7 +1920,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
             if (task.AcceptanceCriteria.Count > 0)
             {
-                prompt.AppendLine(PromptTemplates.Load(file, "review-task-acceptance-criteria-heading"));
+                prompt.AppendLine(Fragment(file, "review-task-acceptance-criteria-heading"));
                 foreach (string criterion in task.AcceptanceCriteria)
                 {
                     prompt.AppendLine($"- {criterion}");
@@ -1857,11 +1931,11 @@ public static class AgentPromptBuilder
         }
         else
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "what-diff-supposed-to-do-heading"));
+            prompt.AppendLine(Fragment(file, "what-diff-supposed-to-do-heading"));
             prompt.AppendLine();
             prompt.AppendLine(task.Objective);
             prompt.AppendLine();
-            prompt.AppendLine(PromptTemplates.Load(file, "acceptance-criteria-heading"));
+            prompt.AppendLine(Fragment(file, "acceptance-criteria-heading"));
             foreach (string criterion in task.AcceptanceCriteria)
             {
                 prompt.AppendLine($"- {criterion}");
@@ -1877,7 +1951,7 @@ public static class AgentPromptBuilder
         // vision" clause says this branch does not touch (cycle-1 conformance finding).
         if (mechanicsOverride is { DiffIsForeignPullRequest: true } && task.AgentContext.IsNotBlank())
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "context-heading"));
+            prompt.AppendLine(Fragment(file, "context-heading"));
             prompt.AppendLine();
             prompt.AppendLine(task.AgentContext);
             prompt.AppendLine();
@@ -1886,7 +1960,7 @@ public static class AgentPromptBuilder
         AppendSettledRulings(
             prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals,
             priorHumanFixes);
-        prompt.AppendLine(PromptTemplates.Load(file, "how-to-review-heading"));
+        prompt.AppendLine(Fragment(file, "how-to-review-heading"));
         prompt.AppendLine();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
@@ -1965,14 +2039,14 @@ public static class AgentPromptBuilder
         StringBuilder prompt = new();
         if (mechanicsOverride is { DiffIsForeignPullRequest: true })
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "heading-foreign"));
+            prompt.AppendLine(Fragment(file, "heading-foreign"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "intro-foreign");
             prompt.AppendLine();
         }
         else
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "heading-own"));
+            prompt.AppendLine(Fragment(file, "heading-own"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "intro-own");
             prompt.AppendLine();
@@ -1980,7 +2054,7 @@ public static class AgentPromptBuilder
 
         AppendFragment(prompt, file, "assume-broken");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "where-defects-hide-heading"));
+        prompt.AppendLine(Fragment(file, "where-defects-hide-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "defect-classes");
         prompt.AppendLine();
@@ -1989,7 +2063,7 @@ public static class AgentPromptBuilder
         AppendSettledRulings(
             prompt, priorRulings, priorHumanDirectedInteractions, mechanicsOverride, priorBoundaryApprovals,
             priorHumanFixes);
-        prompt.AppendLine(PromptTemplates.Load(file, "how-to-review-heading"));
+        prompt.AppendLine(Fragment(file, "how-to-review-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "read-in-surroundings");
         AppendReviewMechanics(
@@ -2094,7 +2168,7 @@ public static class AgentPromptBuilder
         const string file = $"{TemplateDirectory}/settled-rulings.md";
         if (priorRulings is { Count: > 0 })
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "rulings-heading"));
+            prompt.AppendLine(Fragment(file, "rulings-heading"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "rulings-intro");
             prompt.AppendLine();
@@ -2121,7 +2195,7 @@ public static class AgentPromptBuilder
             : [.. priorHumanDirectedInteractions.Where(interaction => interaction.HumanDirected)];
         if (humanDirectedOnly.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "human-directives-heading"));
+            prompt.AppendLine(Fragment(file, "human-directives-heading"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "human-directives-intro");
             prompt.AppendLine();
@@ -2149,7 +2223,7 @@ public static class AgentPromptBuilder
         // (independent pre-PR review, cycle 1, adversarial lens).
         if (priorBoundaryApprovals is { Count: > 0 })
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "boundary-approvals-heading"));
+            prompt.AppendLine(Fragment(file, "boundary-approvals-heading"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "boundary-approvals-intro");
             prompt.AppendLine();
@@ -2173,7 +2247,7 @@ public static class AgentPromptBuilder
         // same class of fact a --merge-ready --reason ruling records and is read the same way.
         if (priorHumanFixes is { Count: > 0 })
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "human-fixes-heading"));
+            prompt.AppendLine(Fragment(file, "human-fixes-heading"));
             prompt.AppendLine();
             AppendFragment(prompt, file, "human-fixes-intro");
             prompt.AppendLine();
@@ -2206,7 +2280,7 @@ public static class AgentPromptBuilder
     private static string PrintedReason(ReviewParkResolution ruling) =>
         ruling.Reason.IsNotBlank()
             ? RelayedText.Truncate(RelayedText.OneLine(ruling.Reason).Trim(), MaxRulingReasonLength)
-            : PromptTemplates.Load($"{TemplateDirectory}/settled-rulings.md", "no-reason-recorded");
+            : Fragment($"{TemplateDirectory}/settled-rulings.md", "no-reason-recorded");
 
     /// <summary>
     /// The prior-ruling reason text this prompt actually prints (the newest
@@ -2263,7 +2337,7 @@ public static class AgentPromptBuilder
     private static string PrintedInteractionReason(ExternalInteractionRecord interaction) =>
         interaction.Reason.IsNotBlank()
             ? RelayedText.Truncate(RelayedText.OneLine(interaction.Reason).Trim(), MaxRulingReasonLength)
-            : PromptTemplates.Load($"{TemplateDirectory}/settled-rulings.md", "no-reason-recorded");
+            : Fragment($"{TemplateDirectory}/settled-rulings.md", "no-reason-recorded");
 
     /// <summary>
     /// The <c>--summary</c> text exactly as <see cref="AppendSettledRulings"/> prints it for a
@@ -2377,16 +2451,21 @@ public static class AgentPromptBuilder
         // work is, or a stacked child's reviewer tags the parent's rewritten-away delta in-scope.
         string scopeBoundary = mechanicsOverride?.ForkPointCommit ?? $"origin/{baseBranch}";
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
         AppendFragment(
             prompt, file, "header-shape",
             ("FindingMarker", ReviewResultParser.FindingMarker),
-            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder));
+            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder),
+            ("SeverityTagKey", ReviewResultParser.SeverityTagKey),
+            ("ScopeTagKey", ReviewResultParser.ScopeTagKey),
+            ("AtTagKey", ReviewResultParser.AtTagKey),
+            ("DefectLabel", "Defect:"),
+            ("ScenarioLabel", "Scenario:"));
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "severity-heading"));
+        prompt.AppendLine(Fragment(file, "severity-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "severity-anchors");
         prompt.AppendLine();
@@ -2420,7 +2499,7 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "scope-heading"));
+        prompt.AppendLine(Fragment(file, "scope-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "scope-anchors", ("BaseBranch", baseBranch), ("ScopeBoundary", scopeBoundary));
         prompt.AppendLine();
@@ -2509,7 +2588,7 @@ public static class AgentPromptBuilder
                 ("MergeReadyWord", "merge-ready"));
             if (forkPoint is not null)
             {
-                AppendStackedScopeBoundaryReason(prompt, baseBranch, PromptTemplates.Load($"{TemplateDirectory}/stacked-scope-boundary.md", "lead-in-mid-sentence"));
+                AppendStackedScopeBoundaryReason(prompt, baseBranch, Fragment($"{TemplateDirectory}/stacked-scope-boundary.md", "lead-in-mid-sentence"));
             }
             else
             {
@@ -2529,7 +2608,7 @@ public static class AgentPromptBuilder
             if (forkPoint is not null)
             {
                 AppendFragment(prompt, file, "discovery-lap-fork-point-lead");
-                AppendStackedScopeBoundaryReason(prompt, baseBranch, PromptTemplates.Load($"{TemplateDirectory}/stacked-scope-boundary.md", "lead-in-mid-sentence"));
+                AppendStackedScopeBoundaryReason(prompt, baseBranch, Fragment($"{TemplateDirectory}/stacked-scope-boundary.md", "lead-in-mid-sentence"));
             }
             else
             {
@@ -2539,7 +2618,7 @@ public static class AgentPromptBuilder
         else if (forkPoint is not null)
         {
             AppendFragment(prompt, file, "stacked-diff-range", ("ScopeBoundary", scopeBoundary));
-            AppendStackedScopeBoundaryReason(prompt, baseBranch, PromptTemplates.Load($"{TemplateDirectory}/stacked-scope-boundary.md", "lead-in-sentence-head"));
+            AppendStackedScopeBoundaryReason(prompt, baseBranch, Fragment($"{TemplateDirectory}/stacked-scope-boundary.md", "lead-in-sentence-head"));
         }
         else
         {
@@ -2628,7 +2707,7 @@ public static class AgentPromptBuilder
     {
         const string file = $"{TemplateDirectory}/verdict-contract.md";
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
@@ -2871,7 +2950,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "no-findings-no-gates");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "session-ends-note");
         AppendForegroundGatesRule(
@@ -2921,11 +3000,11 @@ public static class AgentPromptBuilder
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "original-objective-heading"));
+        prompt.AppendLine(Fragment(file, "original-objective-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
@@ -2933,7 +3012,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(findings);
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
         AppendFragment(prompt, file, "verify-and-fix");
@@ -2957,7 +3036,7 @@ public static class AgentPromptBuilder
             prompt, file, "pr-summary-refresh",
             ("PrSummaryMarker", PrSummaryParser.Marker), ("PrSummaryTitlePrefix", PrSummaryParser.TitlePrefix));
         AppendWritingConventions(
-            prompt, "  ", project.WritingConventions, PromptTemplates.Load(file, "writing-conventions-lead-in"));
+            prompt, "  ", project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
         AppendReviewFixSelfCheckPhaseRules(
             prompt, project, effectiveBaseBranch,
             commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout,
@@ -2974,15 +3053,15 @@ public static class AgentPromptBuilder
         }
 
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "resolution-heading"));
+        prompt.AppendLine(Fragment(file, "resolution-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "resolution-intro");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "resolution-fixed-line", ("ResolutionMarker", "RESOLUTION:")));
+        prompt.AppendLine(Fragment(file, "resolution-fixed-line", ("ResolvedMarker", ResolvedMarker)));
         prompt.AppendLine();
         AppendFragment(prompt, file, "resolution-fixed-condition");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "resolution-disputed-line", ("ResolutionMarker", "RESOLUTION:")));
+        prompt.AppendLine(Fragment(file, "resolution-disputed-line", ("DisputeMarker", DisputeMarker)));
         prompt.AppendLine();
         AppendFragment(prompt, file, "resolution-disputed-condition");
 
@@ -3196,17 +3275,17 @@ public static class AgentPromptBuilder
     {
         const string file = $"{TemplateDirectory}/context-synthesis.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro", ("BlockerCount", blockerCount.ToString(CultureInfo.InvariantCulture)));
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "task-heading"));
+        prompt.AppendLine(Fragment(file, "task-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
         if (task.AcceptanceCriteria.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "acceptance-criteria-heading"));
+            prompt.AppendLine(Fragment(file, "acceptance-criteria-heading"));
             foreach (string criterion in task.AcceptanceCriteria)
             {
                 prompt.AppendLine($"- {criterion}");
@@ -3215,11 +3294,11 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "handoffs-heading"));
+        prompt.AppendLine(Fragment(file, "handoffs-heading"));
         prompt.AppendLine();
         prompt.AppendLine(blockerContext);
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "how-to-condense-heading"));
+        prompt.AppendLine(Fragment(file, "how-to-condense-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "merge-overlaps");
         AppendFragment(prompt, file, "keep-gotchas");
@@ -3231,7 +3310,7 @@ public static class AgentPromptBuilder
             prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "output-heading"));
+        prompt.AppendLine(Fragment(file, "output-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "output-body", ("BlockerContextHeading", BlockerContextDocument.Heading));
 
@@ -3271,19 +3350,19 @@ public static class AgentPromptBuilder
     {
         const string file = $"{TemplateDirectory}/card-publication.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro", ("Site", site));
         prompt.AppendLine();
 
-        prompt.AppendLine(PromptTemplates.Load(file, "work-heading"));
+        prompt.AppendLine(Fragment(file, "work-heading"));
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
 
         if (task.AcceptanceCriteria.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "acceptance-criteria-heading"));
+            prompt.AppendLine(Fragment(file, "acceptance-criteria-heading"));
             prompt.AppendLine();
             foreach (string criterion in task.AcceptanceCriteria)
             {
@@ -3295,13 +3374,13 @@ public static class AgentPromptBuilder
 
         if (task.AgentContext.IsNotBlank())
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "context-heading"));
+            prompt.AppendLine(Fragment(file, "context-heading"));
             prompt.AppendLine();
             prompt.AppendLine(task.AgentContext);
             prompt.AppendLine();
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "where-it-goes-heading"));
+        prompt.AppendLine(Fragment(file, "where-it-goes-heading"));
         prompt.AppendLine();
         prompt.AppendLine(board.HasValue
             ? Fragment(file, "bound-to-board", ("ProjectName", project.Name), ("Board", board.Value))
@@ -3324,7 +3403,7 @@ public static class AgentPromptBuilder
         IReadOnlyList<RepoSkill> skills = DiscoverRepoSkills(workingDirectory);
         if (skills.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "repo-skills-heading"));
+            prompt.AppendLine(Fragment(file, "repo-skills-heading"));
             foreach (RepoSkill skill in skills)
             {
                 prompt.AppendLine(skill.Description is null
@@ -3355,7 +3434,7 @@ public static class AgentPromptBuilder
 
         if (project.ContextLinks.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "project-links-heading"));
+            prompt.AppendLine(Fragment(file, "project-links-heading"));
             prompt.AppendLine();
             foreach (ContextLink link in project.ContextLinks)
             {
@@ -3365,7 +3444,7 @@ public static class AgentPromptBuilder
             prompt.AppendLine();
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "reporting-back-heading"));
+        prompt.AppendLine(Fragment(file, "reporting-back-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "payload-shape-intro");
         prompt.AppendLine();
@@ -3380,7 +3459,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "run-in-foreground");
         prompt.AppendLine();
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("WorkingDirectory", workingDirectory));
         AppendFragment(prompt, file, "compose-once");

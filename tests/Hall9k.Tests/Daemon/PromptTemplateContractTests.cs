@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Review;
+using Hall9k.Domain.Infrastructure.Storage;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -25,7 +26,7 @@ public sealed class PromptTemplateContractTests
         List<string> violations = [];
         foreach (string file in Directory.EnumerateFiles(templatesDirectory, "*.md", SearchOption.AllDirectories))
         {
-            string text = File.ReadAllText(file);
+            string text = ProseOnly(File.ReadAllText(file));
             foreach (string token in PromptContractTokens.All)
             {
                 if (ContainsToken(text, token))
@@ -39,6 +40,20 @@ public sealed class PromptTemplateContractTests
             "a contract token belongs in the builder that injects it as a parameter, never typed into a "
             + "template an operator can freely edit");
     }
+
+    /// <summary>
+    /// A template's own <c>===name===</c> fragment markers dropped before the token scan runs
+    /// (independent pre-PR review, cycle 1, conformance finding): a hyphenated fragment name
+    /// routinely carries a tag key as one of its own segments (<c>===discovery-lap-scope===</c>,
+    /// <c>===no-findings-in-review===</c>, <c>===fix-disposition===</c>), which is a real, wanted
+    /// section name, not a template author typing the literal `scope=`/`review=`/`disposition=`
+    /// grammar. A marker line is never rendered into an assembled prompt either way — see
+    /// <see cref="PromptTemplates.IsFragmentMarker"/> — so excluding it from the scan matches what
+    /// this guard actually cares about: literal text that would reach a reviewing agent.
+    /// </summary>
+    private static string ProseOnly(string text) =>
+        string.Join('\n', text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')
+            .Where(line => !PromptTemplates.IsFragmentMarker(line)));
 
     /// <summary>
     /// An ordinary substring match for a token that already carries its own punctuation (a colon,

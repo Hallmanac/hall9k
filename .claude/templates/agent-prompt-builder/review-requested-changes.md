@@ -26,7 +26,7 @@ Why this follow-up was dispatched: {{Reason}}
 ===resolve-skill===
 - Use the resolve-review-threads skill for the mechanics of replying inside a thread
   and resolving it (the thread ids are already given above, as each finding's
-  `thread=`). Its triage judgment does not apply here and it says so itself: a
+  `{{ThreadTagKey}}=`). Its triage judgment does not apply here and it says so itself: a
   human's finding you disagree with is not settled in the thread, it is parked per the
   section above.
 ===closing-summary===
@@ -40,12 +40,12 @@ read the pull request's own reviews yourself: `gh pr view --json reviews`.
 ===findings-intro===
 Closeout already read the review, so it is quoted here rather than left for you to
 find. Each finding opens with the same `{{FindingMarker}}` header a platform review pass uses,
-with two tags deliberately missing: no `severity=` and no `scope=`, because the
+with two tags deliberately missing: no `{{SeverityTagKey}}=` and no `{{ScopeTagKey}}=`, because the
 reviewer graded neither and neither is yours to invent. Their standing is simpler —
 a person requested changes, so every one of these is a point they want answered.
 
-`thread=` names the review thread a reply would land inside. A finding with no
-`thread=` is the review's own BODY, which GitHub makes unthreadable: there is nothing
+`{{ThreadTagKey}}=` names the review thread a reply would land inside. A finding with no
+`{{ThreadTagKey}}=` is the review's own BODY, which GitHub makes unthreadable: there is nothing
 to reply inside, so an answer to it can only be a top-level comment on the pull
 request.
 ===time-not-reported===
@@ -102,7 +102,7 @@ Fix everything you honestly agree with first — those replies land immediately,
 they are the right thing to post. Then, for the finding you cannot accept, close your
 summary with a block of exactly this shape:
 ===block-header===
-    {{DisagreementMarker}} at={{ExampleLocationPlaceholder}}; thread=THE-FINDINGS-OWN-THREAD; review=THE-REVIEWS-URL
+    {{DisagreementMarker}} {{AtTagKey}}={{ExampleLocationPlaceholder}}; {{ThreadTagKey}}=THE-FINDINGS-OWN-THREAD; {{ReviewTagKey}}=THE-REVIEWS-URL
 ===reviewer-asked-line===
     {{ReviewerAskedMarker}} what they asked for, in your own words, fairly.
 ===reasoning-line===
@@ -117,8 +117,8 @@ Then a final line reading exactly `{{DisputeMarker}}` (the last line of the summ
 above the HANDOFF block the section below asks for).
 ===fill-in-instructions===
 Fill in every part of that header from the finding's own one above — the block is
-dropped as an echoed example if you leave `at={{ExampleLocationPlaceholder}}`
-in it, which would park a run over a file this repository does not have. Drop `thread=`
+dropped as an echoed example if you leave `{{AtTagKey}}={{ExampleLocationPlaceholder}}`
+in it, which would park a run over a file this repository does not have. Drop `{{ThreadTagKey}}=`
 entirely when the finding you dispute is the review's own body, which has no thread.
 Write the proposed reply as prose addressed to the reviewer, not as a note to the
 implementer — it is what they may send verbatim under their own name.
