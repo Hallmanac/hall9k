@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Project.Projections;
 using Marten;
@@ -8,14 +9,23 @@ namespace Hall9k.Cli.Commands;
 
 public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.Settings>
 {
-    public sealed class Settings : CommandSettings;
+    public sealed class Settings : CommandSettings
+    {
+        [CommandOption("--include-archived")]
+        [Description("Show archived projects (h9k project remove) alongside live ones, marked archived with the date")]
+        public bool IncludeArchived { get; init; }
+    }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         using var store = CliStore.Open();
         await using IQuerySession session = store.QuerySession();
 
-        IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        IReadOnlyList<ProjectDetails> all = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        int archivedHidden = settings.IncludeArchived ? 0 : all.Count(project => project.IsArchived);
+        IReadOnlyList<ProjectDetails> projects = settings.IncludeArchived
+            ? all
+            : [.. all.Where(project => !project.IsArchived)];
         if (projects.Count == 0)
         {
             AnsiConsole.MarkupLine(
@@ -42,7 +52,10 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
 
         foreach ((ProjectDetails project, TaskRollup rollup) in listed)
         {
-            table.AddRow([project.Name.EscapeMarkup(), .. rollup.Cells]);
+            string name = project.IsArchived
+                ? $"{project.Name.EscapeMarkup()} [yellow](archived {project.ArchivedAt:yyyy-MM-dd})[/]"
+                : project.Name.EscapeMarkup();
+            table.AddRow([name, .. rollup.Cells]);
         }
 
         AnsiConsole.Write(table);
@@ -63,6 +76,13 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
         if (rows.Any(row => row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
         {
             AnsiConsole.MarkupLine("[dim]Something is waiting on you — see it with:[/] h9k status");
+        }
+
+        if (archivedHidden > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]{archivedHidden} archived project{(archivedHidden == 1 ? string.Empty : "s")} hidden — "
+                + "see them:[/] h9k project list --include-archived");
         }
 
         return ExitCodes.Ok;
