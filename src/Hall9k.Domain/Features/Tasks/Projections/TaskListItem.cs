@@ -132,11 +132,17 @@ public sealed class TaskListItem
     public string? PrReviewAuthorActivitySummary { get; set; }
     /// <summary>The registered interactive session the most recent author-response line was addressed to, or null when none was registered.</summary>
     public string? PrReviewAuthorActivitySessionAddress { get; set; }
-    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionCommentId"/> — the needs-you line for a mention names the pull request, who tagged the owner, and the first line of their comment (idea 2f079bcd).</summary>
+    /// <summary>
+    /// Mirrors <see cref="TaskAggregate.LatestMentionCommentId"/> — provenance only, exactly like
+    /// the aggregate's own copy. The needs-you line a mention earns is composed by
+    /// <c>PrReviewEngine</c> off the run's own <c>ParkedReason</c>, from <c>TaskDetails</c> and the
+    /// <c>ObservedReviewMention</c> row a task was minted from, never from this field — nothing in
+    /// this build reads it back (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
     public string? LatestMentionCommentId { get; set; }
-    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionAuthorLogin"/> — who tagged the owner.</summary>
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionAuthorLogin"/> — provenance only; see <see cref="LatestMentionCommentId"/>.</summary>
     public string? LatestMentionAuthorLogin { get; set; }
-    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionBody"/> — the mentioning comment's own text, verbatim.</summary>
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionBody"/> — provenance only; see <see cref="LatestMentionCommentId"/>.</summary>
     public string? LatestMentionBody { get; set; }
     /// <summary>
     /// The <c>owner/repo#42</c> this task adopted, or null when its reference names something else

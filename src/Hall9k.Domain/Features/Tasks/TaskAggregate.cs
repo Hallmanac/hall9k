@@ -1160,9 +1160,11 @@ public sealed class TaskAggregate
         // --merge-ready, no verdict posted) reaches Done with the flag still true, and h9k task
         // show would report an open lap on a finished task.
         EndAnyOpenReviewLap();
-        // Done is where every follow-through ends: every thread the reviewer opened resolved, or
-        // the pull request merged or closed. Leaving the flag standing would keep the closeout
-        // watcher spending a gh read per interval on a task nothing will act on again.
+        // Done is where every follow-through ends: only the pull request merging or closing, or a
+        // human's own h9k task abandon, ends the wait now (Decisions Log #178 removed the
+        // thread-resolution ending, so a task with nothing left to watch stays open for a later
+        // mention to attach to). Leaving the flag standing would keep the closeout watcher
+        // spending a gh read per interval on a task nothing will act on again.
         EndAnyPrReviewFollowThrough();
     }
 
