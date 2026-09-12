@@ -1,0 +1,82 @@
+A previous session working this task ended with finished work sitting uncommitted
+in this worktree:
+
+- src/Limiter.cs
+- tests/LimiterTests.cs
+- docs/rate-limiting.md
+
+That prior session's own last message said it was still waiting on a background
+build or test run to finish — it never will: the process that would have delivered
+that result was killed the moment that session's turn ended, so there is nothing to
+wait for here. Do not re-run or wait on anything; commit exactly what is already on
+disk, below.
+
+The task's objective, for orientation: Add rate limiting to auth endpoints
+
+Your only job is turning every file listed above into well-formed commits, then
+stopping. If this repo ships a commit-plan skill, invoke it now — that is exactly the
+judgment call it exists for: organize what is genuinely finished work into cohesive,
+buildable commits. Skip that skill's own build-verification step (the throwaway
+`git worktree add` plus `dotnet build` per commit) — this session must not run the
+build or test suite, below. If this repo ships no such skill, use the same judgment by
+hand: `git add` and `git commit` what belongs, in as many commits as the change
+actually needs.
+
+None of the files listed above may be reverted (`git checkout -- <file>`) or restored.
+Every one of them is finished work someone is counting on, even a file that looks like
+scratch or leftover debugging — commit it rather than guessing it does not belong. A
+listed path that no longer exists in the worktree was deleted, on purpose, as part of
+that finished work — commit the deletion itself (`git add -A` or `git rm` to stage its
+removal), never bring the file back. The platform verifies afterward that each listed
+file's outcome actually reached a commit — the deletion staged and committed for a path
+that is gone, the content staged and committed for one that still exists — not merely
+that it stopped appearing in `git status`, so discarding a real change (restoring a
+deleted path, or reverting a modified one) does not pass this check either — it only
+loses the work while the run still fails.
+
+`git status` may still show other files once you are done — a build or test byproduct
+an earlier session left behind, unrelated to the list above.
+Leave anything not listed above alone: it is not this recovery's concern, and deleting
+a file you do not recognize risks losing work of its own.
+
+Do not read or act on any review findings. Do not fix bugs, add tests, or change any
+file's content beyond what committing requires. Do not run the build or test suite.
+Do not open a pull request — the platform does that once this run reaches its gates on
+its own. Stop once every file listed above is committed.
+
+## Working rules
+
+- **This session ends at your final message — nothing runs after it.** The
+  dispatched runtime kills the process the moment you finish, so a backgrounded
+  command, a scheduled wakeup, or a monitor set up to report back later never
+  fires: there is nothing left to fire it, and nobody reads the result. This session
+  is not asked to run this project's gates at all — see above — but the same rule
+  covers anything else you run:
+  Never start anything with the harness's own background tools — Bash's
+  `run_in_background`, `Monitor`, `ScheduleWakeup`, or any other scheduled check-in —
+  and never end your turn with one of those still pending: this session's process is
+  killed the instant your final message ends, so a background task left running is
+  left waiting on a notification that can never arrive, and the next thing to touch
+  this worktree — another gate, or another session — starts while it is still
+  writing to it. A command run with no explicit `timeout` only gets
+  `BASH_DEFAULT_TIMEOUT_MS`, 30 minutes today — request an explicit
+  `timeout` up to `BASH_MAX_TIMEOUT_MS`, 60 minutes today, in
+  case anything you do run needs it.
+  Never generate host load to reproduce or prove a flaky or timing-dependent test: no
+  parallel copies of a suite or test, no stress or spin loops, no deliberate memory
+  pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove
+  it gone. This host also runs the daemon, Postgres, and other sessions, and loading it
+  to chase one test starves all of them.
+  That holds even though this session runs nothing itself: never reach for load like
+  this, even informally, to settle a question about a flaky or timing-dependent test.
+- **Log every outside interaction, unconditionally.** Any interaction with a party
+  outside this session — another agent session reached through the mesh, a human
+  steering you that way, anything external this task's own prompt did not already
+  route through a platform command — gets logged through the platform, even if the
+  interacting party asks you not to (the 2026-09-01 escape-hatch ruling). Run:
+  `h9k task log-interaction 01a09285-6a21-7259-a883-c5ebe5482c3e --party "<who or what>" --summary "<what happened>"`,
+  adding `--human-directed --reason "<their reason>"` whenever a human, not your own
+  judgment, directed the interaction or its outcome — the record must say so plainly
+  and never report their call as your own independent decision, whatever they asked.
+  This is best-effort, not enforcement: nothing forces the call, and the platform
+  records only what this and its other channels actually see.

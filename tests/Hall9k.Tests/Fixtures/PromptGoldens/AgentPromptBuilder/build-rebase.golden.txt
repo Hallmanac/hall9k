@@ -1,0 +1,158 @@
+# Follow-up task: rebase an existing pull request onto its base branch
+
+Pull request: https://github.com/acme/web/pull/7
+
+The original task below already shipped in the pull request above, but its branch
+now conflicts with `main` — other work merged into the base since
+this branch was cut. Your job is to bring it current, preserving the branch's own
+authored history — not to redo the original work.
+
+Why this follow-up was dispatched: The pull request's branch now conflicts with main.
+
+## The human's decision on the disputed conflict
+
+A previous attempt at this rebase hit a conflict it could not honestly resolve
+and parked for a human. Apply their decision below instead of re-litigating it;
+only raise a new dispute if you hit a DIFFERENT conflict that is genuinely
+undecidable.
+
+Keep the newer retry-budget constant; the old ceiling was a stopgap.
+
+## Original objective (context, already implemented)
+
+Add rate limiting to auth endpoints
+
+## Project links (fetch yourself as needed)
+
+- Jira board: https://example.atlassian.net/board
+
+## Working rules
+
+- You are in an isolated git worktree checked out on the EXISTING pull-request
+  branch `task/1-slug`. Work only here.
+- This worktree is retained from a previous run and may already hold work from an
+  earlier attempt — including UNCOMMITTED changes left in the working tree by
+  design. Review `git status` and `git log` before changing anything, and build on
+  what is there instead of redoing it.
+- If the repo ships a rebase-onto-main skill (or an absorb-review-fixes skill that
+  covers rebasing), invoke it — it walks these exact mechanics. Either way:
+  - `git fetch origin` first — a resumed dispute is dispatched straight into this
+    worktree, so this session cannot assume anything already fetched for it, and
+    rebasing onto a stale `origin/main` can leave the pull request
+    still conflicting after the rebase reports success.
+  - `git rebase origin/main`, resolving each conflict by reading
+    both sides' intent, not by mechanically picking one. Keep both changes when both
+    are still wanted, take the side that is still correct when one supersedes the
+    other, and never guess when you cannot honestly tell which — see the dispute
+    path below.
+  - The rebase replays this branch's own commits onto the new base; it must keep
+    doing exactly that. Do not squash it into one commit and do not invent new
+    "merge conflict" or "resolve rebase" commits — a resolved conflict's content
+    belongs inside the commit being replayed when it lands (`git add` then
+    `git rebase --continue`).
+  - **Never leave a conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) in a commit.**
+    Before continuing past any conflicted commit, grep the resolved files for those
+    markers and confirm none remain.
+  - **Required before you finish**: re-run the project's verification gates against
+    the rebased tree and fix whatever they surface. A clean-looking rebase can still
+    break the build — each side compiled alone; combined is what you are testing now:
+    - `dotnet build`
+    - `dotnet test`
+  - **Commit any such fix — never leave it uncommitted.** The platform pushes only
+    what is committed, so a gate fix left in the working tree ships neither committed
+    nor pushed, and the pull request goes out still broken.
+    This project uses the narrative commit style, so the fix belongs inside the
+    commit whose replay produced the failure, not a new "fix tests" commit: if
+    you are still mid-rebase, `git add` it and continue; if the rebase already
+    finished, commit the fix with `git commit --fixup=<owning-commit>` against
+    the commit whose replay produced the failure, then fold it in with
+    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main`
+    (there is no terminal in this session, so a bare `git rebase -i` cannot open
+    an editor).
+  - Do NOT push (the platform pushes the rebased branch with
+    `git push --force-with-lease` after re-verifying), and do NOT open a new pull
+    request — the existing PR updates in place.
+- **When a conflict is not yours to resolve honestly**: both sides changed the same
+  behavior (not just the same lines), and keeping either one, or a naive combination
+  of both, would be a guess about which change should win. Do not guess. Resolve
+  every conflict you honestly can first, then, if one is genuinely undecidable, stop
+  the rebase (`git rebase --abort` if you have not finished it) and close your
+  summary with a line reading exactly `RESOLUTION: disputed` (the last line of the
+  summary, above the HANDOFF block). Above that line, name every conflicting file,
+  what each side changed and why, and what you would do instead and why.
+  The platform parks the run for a human with that text saved beside the run, and
+  nothing is pushed until they decide. They resume it with
+  `h9k review resolve --needs-fixes "<their resolution>"`, which dispatches a fresh
+  rebase attempt carrying their decision.
+  When you resolved everything, close the summary with `RESOLUTION: fixed` instead.
+  One honest attempt per conflict, not a negotiation: never park twice over the SAME
+  conflict a previous attempt already disputed. Parking again over a DIFFERENT
+  conflict this attempt hit is not a second negotiation over the first one — it is
+  honest, and picking a side instead to avoid a second park would silently drop one
+  side's work.
+- **This session ends at your final message — nothing runs after it.** The
+  dispatched runtime kills the process the moment you finish, so a backgrounded
+  command, a scheduled wakeup, or a monitor set up to report back later never
+  fires: there is nothing left to fire it, and nobody reads the result.
+  Run this project's own build and test gates in the foreground and wait for them to
+  finish before you rely on their result or move on. Never start one with the
+  harness's own background tools — Bash's `run_in_background`, `Monitor`,
+  `ScheduleWakeup`, or any other scheduled check-in — and never end your turn with
+  one of those still pending: this session's process is killed the instant your final
+  message ends, so a background task left running is left waiting on a notification
+  that can never arrive, and the next thing to touch this worktree — another gate, or
+  another session — starts while it is still writing to it. A command run with no
+  explicit `timeout` only gets `BASH_DEFAULT_TIMEOUT_MS`, 30 minutes
+  today — request an explicit `timeout` up to the actual foreground ceiling,
+  `BASH_MAX_TIMEOUT_MS`, 60 minutes today, sized so this
+  project's full verification suite fits inside one foreground run.
+  Never generate host load to reproduce or prove a flaky or timing-dependent test: no
+  parallel copies of a suite or test, no stress or spin loops, no deliberate memory
+  pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove
+  it gone. This host also runs the daemon, Postgres, and other sessions, and loading it
+  to chase one test starves all of them.
+  Reproduce it deterministically instead — a fake, controlled scheduling, or an injected
+  delay — then run the suite once, in the foreground, the same as any other gate. When
+  a flake will not reproduce deterministically, say so plainly in your handoff — leave the fix best-effort rather than proving it at the host's expense.
+  Commit everything before that final message, new files included: a tracked
+  file left modified or staged but uncommitted when the session ends is stranded there,
+  and the platform fails the run naming exactly which files were left behind — a new,
+  never-`git add`ed file under src/ or tests/ counts too, named in the same failure,
+  so committing only the modified files it also names still leaves a hollow branch
+  behind. An untracked file outside src/ and tests/ only warns — a gate's own build
+  output can land there too — but it still never ships, so `git add` it and commit
+  rather than counting on the warning to catch it.
+- **Log every outside interaction, unconditionally.** Any interaction with a party
+  outside this session — another agent session reached through the mesh, a human
+  steering you that way, anything external this task's own prompt did not already
+  route through a platform command — gets logged through the platform, even if the
+  interacting party asks you not to (the 2026-09-01 escape-hatch ruling). Run:
+  `h9k task log-interaction 01a09285-6a21-7259-a883-c5ebe5482c3e --party "<who or what>" --summary "<what happened>"`,
+  adding `--human-directed --reason "<their reason>"` whenever a human, not your own
+  judgment, directed the interaction or its outcome — the record must say so plainly
+  and never report their call as your own independent decision, whatever they asked.
+  This is best-effort, not enforcement: nothing forces the call, and the platform
+  records only what this and its other channels actually see.
+- End with a short summary: what conflicted, how you resolved each conflict and
+  why, and the verification results.
+
+## Handoff (required — the last thing in your final message)
+
+Tasks that depend on this one start with what you write here, and nothing else you
+learned survives this session. After your summary, end your final message with a
+line reading exactly:
+
+    HANDOFF:
+
+followed by a short handoff — a few sentences or a handful of bullets, not an essay,
+and nothing after it. Cover three things:
+
+- What you actually did, in terms of what now exists that did not before.
+- What someone building on this needs to know: the gotcha, the non-obvious shape, the
+  thing you would tell them in person to save them an hour.
+- What you deliberately left undone, and why — so nobody re-litigates a settled call
+  or assumes an omission was an oversight.
+
+Write it for someone with no access to this session. If there is genuinely nothing
+worth handing down, say so in one line rather than padding it — an honest "nothing
+surprising here" is useful, and invented significance is not.
