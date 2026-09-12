@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Epic;
@@ -24,6 +25,9 @@ namespace Hall9k.Cli.Commands;
 
 public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Settings>
 {
+    /// <summary>The mentioning comment's own body is externally authored and unbounded; this is what the "Tagged by" row quotes of it.</summary>
+    private const int MentionBodyMaxLength = 200;
+
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "<ID>")]
@@ -242,7 +246,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 + $"[dim](comment {mentionCommentId.EscapeMarkup()}{replyIdSuffix.EscapeMarkup()})[/]");
             if (mentionBody.IsNotBlank())
             {
-                header.AddRow(string.Empty, $"[dim]{ExternalText.OneLineMarkup(mentionBody)}[/]");
+                // Bounded, unlike ExternalText.OneLineMarkup alone: a mentioning comment is
+                // externally authored and free to carry no newline at all, and this row's own
+                // sibling in PrReviewEngine's own park-reason quoting was found unbounded for the
+                // identical reason (independent pre-PR review, cycle 1, adversarial lens) — the
+                // class sweep for that finding, since this row quotes the same untrusted comment
+                // body and was introduced by this same branch.
+                string bounded = RelayedText.Truncate(mentionBody, MentionBodyMaxLength);
+                header.AddRow(string.Empty, $"[dim]{ExternalText.OneLineMarkup(bounded)}[/]");
             }
         }
 
