@@ -481,12 +481,27 @@ reaches the reviewer.
 
 ### Projects, owners, connections
 
-`h9k project add | init | list | show | set` · `h9k owner show | set` ·
+`h9k project add | init | list | show | set | remove | reactivate | rename` · `h9k owner show | set` ·
 `h9k connection add jira | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
 recipe for a project that has none yet, and the repair path for one that is incomplete. See
 [the project home](#the-project-home) below.
+
+`project remove` archives a project on this install: reversible, and nothing is deleted. The
+dispatcher stops claiming its tasks, the project-home render and auto-pr-review sweeps skip it,
+`project list` hides it by default (`--include-archived` shows it, marked archived with the date),
+and `project show` names it archived with the date. It refuses while any of the project's tasks
+sits in a state the daemon may still act on — anything other than Draft, Published (always
+unassigned), Done, or Abandoned — naming those tasks; drafts and unassigned published tasks stay
+exactly as they are, hidden with the project. `project reactivate` ends the archive in place: same
+id, settings, tasks, ideas, and home, and every sweep resumes for it immediately. `project rename`
+changes a project's name and nothing else — no task, run, or idea references a project by name, so
+only the display and the duplicate-name check change, and the home directory on disk keeps its old
+folder name. Registering under an archived project's name (`project add`) offers to reactivate it
+in place or to rename the archive and free the name, with `--reactivate-archived` and
+`--rename-archived-to <NAME>` answering that non-interactively. All three commands act on this
+install's own database only; a registration of the same repository on another node is unaffected.
 
 `project set` is where the verification gates, the agent model, parallelism, commit style,
 context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog

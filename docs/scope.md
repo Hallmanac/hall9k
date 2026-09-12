@@ -718,6 +718,29 @@ in a non-interactive session without an explicit `--yes`.
 
 See [PLAN.md Decisions Log #78, #83, #85](../PLAN.md).
 
+### Archiving, reactivating, and renaming a project
+
+`h9k project remove <project>` archives a project on this install: an event on its own stream,
+reversible, and nothing is deleted — a different "archive" from the task-directory one described
+below, which only moves a finished task's files inside a project's home. Once archived, the
+dispatcher never claims the project's tasks, the project-home render and auto-pr-review sweeps
+skip it, `h9k project list` hides it by default (`--include-archived` shows it, marked archived
+with the date), and `h9k project show` names it archived with the date. It is refused while any of
+the project's tasks sits in a state the daemon may still act on — anything other than Draft,
+Published (always unassigned, Decisions Log #34), Done, or Abandoned — naming those tasks and the
+fix; drafts and unassigned published tasks stay exactly as they are, hidden with the project.
+`h9k project reactivate <project>` ends the archive in place: same id, settings, tasks, ideas, and
+recorded home, and every sweep resumes for it immediately, reporting whether the home directory is
+still intact on this machine. `h9k project rename <project> <new-name>` changes a project's name
+and nothing else — no task, run, or idea references a project by name (verified 2026-09-12), so
+only display and the duplicate-name check are affected, and the home directory on disk keeps its
+old folder name. Registering under an archived project's name (`h9k project add`) offers to
+reactivate it in place, or to rename the archive and free the name for the new registration;
+`--reactivate-archived` and `--rename-archived-to <NAME>` answer that non-interactively, refusing
+with the three choices named when neither is given and there is no terminal to ask. All three
+commands act on this install's own database only — a registration of the same repository on
+another node is unaffected. See [PLAN.md Decisions Log #PLACEHOLDER-7228d4c7](../PLAN.md).
+
 ### The project home
 
 Every project owns a directory in one shape on every machine: a generated `AGENTS.md`, `repo/`
