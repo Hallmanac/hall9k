@@ -1,0 +1,129 @@
+# Fix the mandatory gate failure this branch's rebase left behind
+
+Pull request: https://github.com/acme/web/pull/7
+
+This branch was rebased onto its base (from aaaaaaaaaa to bbbbbbbbbb), which needed a narrow recovery session's own judgment to resolve a real conflict, immediately before the platform's own
+mandatory final gate — and that gate then failed. Your job is to make it pass again.
+Nobody has separated whether the rebase itself is what broke it, from a coincident
+commit, from a changed verify command: read the failure yourself and fix what is
+actually broken, not to redo the original work.
+
+## A human's guidance on this repair
+
+An earlier repair round could not make the gate pass, and a human weighed in
+before this round was dispatched. Apply their guidance below.
+
+The failure is a real regression from the rebase; fix it, do not revert.
+
+## The gate's own failure output
+
+```
+dotnet test failed: 3 tests failed in Hall9k.Tests.
+```
+
+## Original objective (context, already implemented)
+
+Add rate limiting to auth endpoints
+
+## Project links (fetch yourself as needed)
+
+- Jira board: https://example.atlassian.net/board
+
+## Working rules
+
+- You are in this run's own git worktree, checked out on its own in-progress
+  branch `task/1-slug` — already pushed and open as the pull request above. Work only here.
+- Reproduce the gate's own failure locally, find the real cause, and fix it. Fold the
+  fix into the branch's own history per the commit style below rather than leaving it
+  as a separate "fix" commit.
+- Land your fixes as authored history (this project uses the narrative commit
+  style): the PR branch must read as a natural progression of the whole change,
+  so fold each fix into the commit that owns it instead of appending
+  review-feedback commits. If the repo ships an absorb-review-fixes skill, invoke
+  it — it walks these exact mechanics. Either way:
+  - Map each fix to the most recent branch commit that touches the same file and
+    land it with `git commit --fixup=<owning-commit>`. A fix spanning files owned
+    by different commits splits into one fixup per owning commit. Genuinely new
+    scope (a new file no commit owns) may be a new, properly-titled commit —
+    never "review fixes" or "address feedback".
+  - With every fix committed, record the pre-rebase tip (`git rev-parse HEAD`),
+    then fold the fixups into their owning commits:
+    `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main`.
+  - REQUIRED before you finish: verify tree identity — `git diff <old-tip> HEAD`
+    must print nothing. A non-empty diff means the rebase changed the content and
+    the verification results no longer describe this tree; reconcile until the
+    diff is empty. Only a tree identical to the tested one may be force-pushed.
+  - Do NOT push (the platform pushes the rewritten branch with
+    `git push --force-with-lease` after re-verifying), and do NOT open a new pull
+    request — the existing PR updates in place.
+- You do not need to run the gate yourself before finishing — the platform runs it
+  again, in full, immediately after this session ends, and judges the repair by
+  whether that run passes, not by anything you write here. Still worth confirming
+  your own fix locally before you stop, so you are not guessing.
+- Do NOT push (the platform pushes after re-verifying), and do NOT open a new
+  pull request — the existing PR updates in place.
+- **This session ends at your final message — nothing runs after it.** The
+  dispatched runtime kills the process the moment you finish, so a backgrounded
+  command, a scheduled wakeup, or a monitor set up to report back later never
+  fires: there is nothing left to fire it, and nobody reads the result.
+  Run this project's own build and test gates in the foreground and wait for them to
+  finish before you rely on their result or move on. Never start one with the
+  harness's own background tools — Bash's `run_in_background`, `Monitor`,
+  `ScheduleWakeup`, or any other scheduled check-in — and never end your turn with
+  one of those still pending: this session's process is killed the instant your final
+  message ends, so a background task left running is left waiting on a notification
+  that can never arrive, and the next thing to touch this worktree — another gate, or
+  another session — starts while it is still writing to it. A command run with no
+  explicit `timeout` only gets `BASH_DEFAULT_TIMEOUT_MS`, 30 minutes
+  today — request an explicit `timeout` up to the actual foreground ceiling,
+  `BASH_MAX_TIMEOUT_MS`, 60 minutes today, sized so this
+  project's full verification suite fits inside one foreground run.
+  Never generate host load to reproduce or prove a flaky or timing-dependent test: no
+  parallel copies of a suite or test, no stress or spin loops, no deliberate memory
+  pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove
+  it gone. This host also runs the daemon, Postgres, and other sessions, and loading it
+  to chase one test starves all of them.
+  Reproduce it deterministically instead — a fake, controlled scheduling, or an injected
+  delay — then run the suite once, in the foreground, the same as any other gate. When
+  a flake will not reproduce deterministically, say so plainly in your handoff — leave the fix best-effort rather than proving it at the host's expense.
+  Commit everything before that final message, new files included: a tracked
+  file left modified or staged but uncommitted when the session ends is stranded there,
+  and the platform fails the run naming exactly which files were left behind — a new,
+  never-`git add`ed file under src/ or tests/ counts too, named in the same failure,
+  so committing only the modified files it also names still leaves a hollow branch
+  behind. An untracked file outside src/ and tests/ only warns — a gate's own build
+  output can land there too — but it still never ships, so `git add` it and commit
+  rather than counting on the warning to catch it.
+- **Log every outside interaction, unconditionally.** Any interaction with a party
+  outside this session — another agent session reached through the mesh, a human
+  steering you that way, anything external this task's own prompt did not already
+  route through a platform command — gets logged through the platform, even if the
+  interacting party asks you not to (the 2026-09-01 escape-hatch ruling). Run:
+  `h9k task log-interaction 01a09285-6a21-7259-a883-c5ebe5482c3e --party "<who or what>" --summary "<what happened>"`,
+  adding `--human-directed --reason "<their reason>"` whenever a human, not your own
+  judgment, directed the interaction or its outcome — the record must say so plainly
+  and never report their call as your own independent decision, whatever they asked.
+  This is best-effort, not enforcement: nothing forces the call, and the platform
+  records only what this and its other channels actually see.
+- End with a short summary: what was actually broken, why, and what you changed.
+
+## Handoff (required — the last thing in your final message)
+
+Tasks that depend on this one start with what you write here, and nothing else you
+learned survives this session. After your summary, end your final message with a
+line reading exactly:
+
+    HANDOFF:
+
+followed by a short handoff — a few sentences or a handful of bullets, not an essay,
+and nothing after it. Cover three things:
+
+- What you actually did, in terms of what now exists that did not before.
+- What someone building on this needs to know: the gotcha, the non-obvious shape, the
+  thing you would tell them in person to save them an hour.
+- What you deliberately left undone, and why — so nobody re-litigates a settled call
+  or assumes an omission was an oversight.
+
+Write it for someone with no access to this session. If there is genuinely nothing
+worth handing down, say so in one line rather than padding it — an honest "nothing
+surprising here" is useful, and invented significance is not.

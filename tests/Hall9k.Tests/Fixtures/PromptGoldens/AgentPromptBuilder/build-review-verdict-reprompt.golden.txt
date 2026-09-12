@@ -1,0 +1,66 @@
+Your review session ended without the required VERDICT line, or with a
+needs-fixes verdict naming nothing the platform could read as a finding — either
+way, the platform could not read your judgment. This does not mean a finding you
+stated was wrong: it means the platform's automatic reader could not recognize a
+location and a defect in how you wrote it. Conclude now:
+
+- If any checks or commands are still unfinished, wait for them and fold the
+  results into your judgment.
+- If you still believe a finding stands, restate it in full and in the header
+  contract below, as plainly as you can — the platform reads this message in place
+  of your earlier one, so a finding restated without its FINDING header arrives
+  ungraded and unplaced, and its severity and scope are lost. Only return
+  merge-ready if, on reconsideration, you no longer believe any defect stands —
+  not merely because restating it once more feels repetitive.
+- A needs-fixes verdict must name at least one finding: a stated location (a file,
+  or a file and line) and a description of the defect there, graded medium or high —
+  a low-only or ungraded finding still belongs in your answer, attached under a
+  merge-ready verdict rather than a needs-fixes one.
+- End your final message with exactly one verdict line, nothing after it:
+  `VERDICT: merge-ready` or `VERDICT: needs-fixes`.
+
+## How to report each finding (the platform parses this)
+
+Open every finding with a header line of exactly this shape, then write the finding
+underneath it in prose:
+
+    FINDING: severity=high; scope=in-scope; at=src/Some/File.cs:123
+    Defect: one sentence saying what is wrong.
+    Scenario: the input or state that makes it misbehave, and what goes wrong.
+
+**severity** — grade against these anchors, not against your own sense of importance:
+
+- `high` — a correctness, security, or data-integrity defect reachable in realistic use.
+- `medium` — a real defect with bounded or unlikely impact.
+- `low` — polish: phrasing, comment or doc-string wording, a doctrine or prose violation
+  that misleads a reader without corrupting anything, a stale reference whether or not
+  it misleads, or a style nit.
+
+An unmet acceptance criterion, or work that solves a different problem than the one
+stated, is never `low` and never left ungraded: grade it `medium` at minimum. It
+always meets the fix bar and must never be demoted into a ride-along.
+
+Use one of those three words exactly. A grade in any other word is one the platform
+cannot read, and it counts as no grade at all rather than as the nearest word to it —
+grade every finding you report; do not leave the tag off.
+
+**The bar for needs-fixes:** if every finding you have is graded low, or a grade you
+could not confidently make, return merge-ready and attach the finding anyway — do not
+manufacture a needs-fixes verdict to make sure it gets read. The platform still records
+it and decides on its own whether it is worth a session; a needs-fixes verdict costs a
+whole fix-and-re-review cycle and is reserved for at least one medium or high finding.
+
+**scope** — decide it against the diff, not against your judgment of whose problem it is:
+
+- `in-scope` — the defective line lives in code this branch added or changed.
+- `out-of-scope` — the defect is pre-existing on `main`; this diff only
+  sits next to it. Check before you tag: the line is out of scope only if it is
+  absent from `git diff origin/main...HEAD`.
+
+Report out-of-scope defects — they are worth knowing about, and the platform routes the
+smaller ones to their own bug tasks instead of growing this pull request. Do not stretch
+a tag either way: an in-scope defect tagged out-of-scope leaves this branch broken, and
+an out-of-scope one tagged in-scope drags unrelated work into the diff.
+
+This is the only re-prompt this review cycle receives; ending without a verdict
+again hands the run to a human. This is still review cycle 2 for this run.

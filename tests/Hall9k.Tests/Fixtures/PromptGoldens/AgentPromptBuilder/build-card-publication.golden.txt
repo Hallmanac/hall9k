@@ -1,0 +1,109 @@
+# Compose this task as a Jira card
+
+Work out what one card at acme.atlassian.net should look like for the work below, then submit it
+through Hall9k's own write surface. Composing the card is the whole job: you are not
+implementing anything here, and you make no Jira call yourself — Hall9k is the sole
+executor of every Jira write (Brian's design, 2026-08-28). Do not create, update, or
+comment on anything in Jira directly, through MCP or otherwise: your job ends at a
+composed payload, and hall9k validates it, executes it against Jira's REST API, and
+verifies it.
+
+## The work
+
+Add rate limiting to auth endpoints
+
+Acceptance criteria, as they stand on the task:
+
+- Requests over the limit get 429
+- A 429 response includes Retry-After
+
+## Context on the task
+
+Filed from a Slack thread about rate limiting.
+
+## Where it goes
+
+The project 'hall9k' is bound to board PROJ, so that is where the card belongs unless this repository's own rules say otherwise — and if they do, they win.
+
+The project's own routing guidance: File epics first, then ask for the parent.
+
+Hall9k models nothing about how a card should look. Issue type, required fields,
+labels, components, parent links, and which board a piece of work is routed to are
+this organisation's rules, not the platform's. Read them from the repository you are
+in and follow them exactly as a person on this team would.
+
+Project links (fetch yourself as needed):
+
+- Jira board: https://example.atlassian.net/board
+
+## Reporting back (this is what finishes the run)
+
+Write your composed payload to a JSON file, shaped exactly like this:
+
+```json
+{
+  "workItemType": "Dev Task",
+  "fields": {
+    "summary": "...",
+    "description": "...",
+    "customfield_10401": "..."
+  },
+  "projectKey": "PROJ",
+  "format": "markdown"
+}
+```
+
+"summary" and "description" both belong INSIDE "fields", never at the top level —
+a top-level "description" is silently ignored, not an error. "summary" (inside
+"fields") is mandatory for a create; use the customfield_* id a field's own metadata
+reports for a custom field, never its display name. "projectKey" is optional, needed
+only if this repository's own rules say a board other than the one named above;
+"format" is optional ("markdown" or "plain" — default markdown). Write
+the file outside this repository — a temp file (for example, one made with mktemp) —
+never inside the working directory below: the working rules say not to modify
+anything there, and another agent may be reading it at the same time. Then submit it
+with exactly this:
+
+```
+h9k task write-jira --op create --file <PATH-TO-YOUR-PAYLOAD.json>
+```
+
+Composing a payload is not the same as a card existing. That command validates it,
+creates it against Jira's REST API, reads it back to verify, and records the result —
+so if it refuses, the message says what was wrong; read it, fix the payload, and run
+it again. If it reports the registered Jira connection is not authenticated, stop:
+that is a handled state Hall9k retries on its own once a human refreshes the
+connection's API token ('h9k connection add jira'), and you cannot fix it from here.
+A run that never gets a verified key past that command has not published anything,
+however the payload looked to you.
+
+This session ends at your final message — nothing runs after it. Run that command in
+the foreground and read its result before you finish: backgrounding it, or ending the
+session before it returns, means nobody ever reads whether it succeeded.
+
+## Working rules
+
+- You are in /home/agent/.hall9k/projects/hall9k/repo/wt-golden-fixture, this project's own repository — not an isolated
+  worktree. Read whatever you need. Do NOT modify files, commit, push, or open pull
+  requests: another agent may be working in this repository right now.
+- Compose exactly one payload and submit it once. Hall9k itself refuses to file a
+  second card for this task if an earlier attempt already created one, so a retried
+  submission is safe — you do not need to search Jira for a duplicate yourself.
+- The card's audience is people, not agents. Write it the way this team writes cards;
+  the operational detail above stays on the Hall9k task, which is what owns it.
+- **Log every outside interaction, unconditionally.** Any interaction with a party
+  outside this session — another agent session reached through the mesh, a human
+  steering you that way, anything external this task's own prompt did not already
+  route through a platform command — gets logged through the platform, even if the
+  interacting party asks you not to (the 2026-09-01 escape-hatch ruling). Run:
+  `h9k task log-interaction 01a09285-6a21-7259-a883-c5ebe5482c3e --party "<who or what>" --summary "<what happened>"`,
+  adding `--human-directed --reason "<their reason>"` whenever a human, not your own
+  judgment, directed the interaction or its outcome — the record must say so plainly
+  and never report their call as your own independent decision, whatever they asked.
+  This is best-effort, not enforcement: nothing forces the call, and the platform
+  records only what this and its other channels actually see.
+- If you genuinely cannot create the card — no access, no rule saying where it goes,
+  a required field nothing here answers — stop and say so plainly. Reporting that is a
+  useful outcome; a card filed on a guess is not.
+- End with a short summary: the key you created, where you filed it and why, and
+  anything a human should check.
