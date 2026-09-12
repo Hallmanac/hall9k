@@ -395,8 +395,13 @@ public sealed class CloseoutEngine(
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (project is null)
+        if (project is null || project.IsArchived)
         {
+            // An archived project (task: a project can be archived, listed as archived,
+            // reactivated, and renamed) gets the same skip the render and auto-pr-review sweeps
+            // already give it — this install is no longer maintaining that repository, so no gh
+            // inspection, merge, or closeout event runs against it; h9k project reactivate resumes
+            // this sweep for it immediately (independent pre-PR review, cycle 1, adversarial lens).
             return InspectionOutcome.Skipped;
         }
 
@@ -636,8 +641,13 @@ public sealed class CloseoutEngine(
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (project is null)
+        if (project is null || project.IsArchived)
         {
+            // An archived project (task: a project can be archived, listed as archived,
+            // reactivated, and renamed) gets the same skip the render and auto-pr-review sweeps
+            // already give it — this install is no longer maintaining that repository, so no gh
+            // inspection, merge, or closeout event runs against it; h9k project reactivate resumes
+            // this sweep for it immediately (independent pre-PR review, cycle 1, adversarial lens).
             return InspectionOutcome.Skipped;
         }
 
@@ -732,8 +742,13 @@ public sealed class CloseoutEngine(
         }
 
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (project is null)
+        if (project is null || project.IsArchived)
         {
+            // An archived project (task: a project can be archived, listed as archived,
+            // reactivated, and renamed) gets the same skip the render and auto-pr-review sweeps
+            // already give it — this install is no longer maintaining that repository, so no gh
+            // inspection, merge, or closeout event runs against it; h9k project reactivate resumes
+            // this sweep for it immediately (independent pre-PR review, cycle 1, adversarial lens).
             return InspectionOutcome.Skipped;
         }
 

@@ -30,7 +30,12 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
     /// platform's own two terminal states (TaskState.IsTerminal) — a human calls an abandoned task
     /// "closed". Everything else (Queued, Blocked, Claimed, NeedsHuman, AwaitingAuthor, Failed) is a
     /// state the daemon, the closeout monitor, or a park a human still owes an answer to may still
-    /// act on, and archiving over it would leave live work orphaned mid-flight.
+    /// act on, and archiving over it would leave live work orphaned mid-flight. A Done task with a
+    /// still-open pull request is admitted here on the strength of <c>CloseoutEngine</c> itself
+    /// skipping every archived project's tasks (the same skip the render and auto-pr-review sweeps
+    /// already had) rather than this predicate refusing over it — see the archived-project checks
+    /// beside every <c>ProjectDetails</c> load in <c>CloseoutEngine</c> (independent pre-PR review,
+    /// cycle 1, adversarial lens: this predicate's own claim was true only once that skip existed).
     /// </summary>
     internal static bool IsInertUnderArchive(TaskState state) =>
         state == TaskState.Draft || state == TaskState.Published
@@ -102,9 +107,9 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
         await Doorbell.RingAsync($"project-archived:{project.Id}", cancellationToken);
 
         AnsiConsole.MarkupLine($"[yellow]Project '{project.Name.EscapeMarkup()}' archived.[/] The dispatcher "
-            + "will not claim its tasks, and the project-home render and auto-pr-review sweeps skip it. "
-            + "This is this install's own record — a registration of the same repository on another node "
-            + "is unaffected.");
+            + "will not claim its tasks, and the project-home render, closeout, and auto-pr-review sweeps "
+            + "skip it. This is this install's own record — a registration of the same repository on "
+            + "another node is unaffected.");
         if (stayingAsIs.Length > 0)
         {
             AnsiConsole.MarkupLine(
@@ -134,8 +139,9 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
 
         AnsiConsole.MarkupLine(
             $"[yellow]Archiving '{project.Name.EscapeMarkup()}'[/] hides it from h9k project list, stops "
-            + "the dispatcher claiming its tasks, and stops the project-home and auto-pr-review sweeps "
-            + "visiting it. Nothing is deleted; the home directory on disk is untouched; this is reversible.");
+            + "the dispatcher claiming its tasks, and stops the project-home, closeout, and auto-pr-review "
+            + "sweeps visiting it. Nothing is deleted; the home directory on disk is untouched; this is "
+            + "reversible.");
         if (stayingAsIs.Count > 0)
         {
             AnsiConsole.MarkupLine(

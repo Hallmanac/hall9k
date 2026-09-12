@@ -489,7 +489,7 @@ recipe for a project that has none yet, and the repair path for one that is inco
 [the project home](#the-project-home) below.
 
 `project remove` archives a project on this install: reversible, and nothing is deleted. The
-dispatcher stops claiming its tasks, the project-home render and auto-pr-review sweeps skip it,
+dispatcher stops claiming its tasks, the project-home render, closeout, and auto-pr-review sweeps skip it,
 `project list` hides it by default (`--include-archived` shows it, marked archived with the date),
 and `project show` names it archived with the date. It refuses while any of the project's tasks
 sits in a state the daemon may still act on — anything other than Draft, Published (always
