@@ -136,10 +136,21 @@ public sealed partial class VerificationRunner(
         // not TaskState.IsTerminal: a Done task can still own a live follow-up run addressing
         // further feedback under the same task (its own objective was already met by an earlier
         // run), and that follow-up's own gates must still run.
+        //
+        // This refusal must also retire the run itself, not just decline to run the gates
+        // (independent pre-PR review, cycle 1, both lenses): AgentSessionCompleted (appended
+        // unconditionally when the agent process exits, regardless of what happened to the task
+        // meanwhile) moves RunDetails back to RunState.Verifying, and this method's own false is
+        // `&&`-short-circuited ahead of ReviewEngine.ReviewAsync — the only other caller in this
+        // chain that would otherwise retire the run with RunSuperseded. Left unretired, the run
+        // would sit in the live Verifying state forever: counted against NodeLoad's concurrency
+        // slots, re-adopted by ResumeStrandedPipelinesAsync and AdoptOrphansAsync on every cycle,
+        // and never archived by ProjectHomeRenderEngine, which waits on the run going non-live.
         if (task.State == TaskState.Abandoned)
         {
             logger.LogInformation(
                 "Run {RunId}: task {TaskId} is Abandoned - skipping verification", runId, taskId);
+            await RetireAbandonedRunAsync(runId, taskId, cancellationToken);
             return new SettlingVerificationResult(false, null, null);
         }
 
@@ -1416,6 +1427,36 @@ public sealed partial class VerificationRunner(
         await process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
         return (process.ExitCode, output);
+    }
+
+    /// <summary>
+    /// Retires an abandoned task's run with <see cref="RunSuperseded"/> (independent pre-PR
+    /// review, cycle 1, both lenses) — the same retirement <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s own
+    /// generation-fence rejection performs, needed here for the identical reason: refusing to
+    /// verify alone leaves the run sitting live in <see cref="RunState.Verifying"/> with nothing
+    /// left downstream in the chain to ever move it. A run already retired by the time this
+    /// lands (no stream, or already terminal) is left alone rather than double-appended.
+    /// </summary>
+    private async Task RetireAbandonedRunAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is null)
+        {
+            return;
+        }
+
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is null || run.State.IsTerminal)
+        {
+            return;
+        }
+
+        TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        session.Events.Append(runId, new RunSuperseded(
+            runId, task?.LeaseGeneration ?? run.LeaseGeneration, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: retired as superseded — task {TaskId} is Abandoned", runId, taskId);
     }
 
     private async Task FailBeforeGatesAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)

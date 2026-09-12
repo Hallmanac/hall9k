@@ -166,6 +166,13 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             "no gate ran, so neither a pass nor a failure is recorded against the run");
 
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Abandoned);
+
+        // The refusal above must retire the run, not just decline to gate it (independent pre-PR
+        // review, cycle 1, both lenses): left in a live state, this run would keep pinning a
+        // NodeLoad concurrency slot and getting rediscovered by ResumeStrandedPipelinesAsync and
+        // AdoptOrphansAsync forever, since nothing downstream of a false VerifyAsync ever runs.
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Superseded, "the run must reach a terminal, non-live state or nothing ever stops rediscovering it");
     }
 
     /// <summary>
