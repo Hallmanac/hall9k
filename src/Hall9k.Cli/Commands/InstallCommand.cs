@@ -526,8 +526,16 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // every review, fix, rebase, and recovery prompt now needs it — but as a literal name rather
         // than AgentPromptBuilder.TemplateDirectory: AgentPromptBuilder lives in Hall9k.Daemon, which
         // this project never references (Cli → Domain + Connectors only).
+        // MentionFollowUpPromptBuilder.TemplateDirectory itself is likewise named as a literal, not
+        // imported, because that builder lives in Hall9k.Daemon.Execution — the CLI's own
+        // reference graph (AGENTS.md: "Cli → Domain + Connectors") never reaches the daemon
+        // project, so both of these package names have no importable constant to check
+        // against (independent pre-PR review, cycle 3, adversarial lens).
         foreach (string templateDirectory in new[]
-            { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory, "agent-prompt-builder" })
+        {
+            ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
+            "agent-prompt-builder", "mention-followup-prompt-builder",
+        })
         {
             string requiredTemplatePackage = Path.Combine(fromRelease, "templates", templateDirectory);
             if (!Directory.Exists(requiredTemplatePackage) || !Directory.EnumerateFiles(requiredTemplatePackage, "*.md").Any())

@@ -325,7 +325,10 @@ public sealed class InstallCommandTests : IDisposable
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
         foreach (string templateDirectory in new[]
-            { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory, AgentPromptBuilder.TemplateDirectory })
+        {
+            ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
+            AgentPromptBuilder.TemplateDirectory, MentionFollowUpPromptBuilder.TemplateDirectory,
+        })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);
             Directory.CreateDirectory(templatePackage);
@@ -360,6 +363,7 @@ public sealed class InstallCommandTests : IDisposable
         problem.Should().Contain(ReviewLapPromptBuilder.TemplateDirectory);
         problem.Should().Contain(WorkPromptBuilder.TemplateDirectory);
         problem.Should().Contain(AgentPromptBuilder.TemplateDirectory);
+        problem.Should().Contain(MentionFollowUpPromptBuilder.TemplateDirectory);
     }
 
     [Fact]
@@ -368,7 +372,11 @@ public sealed class InstallCommandTests : IDisposable
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
-        foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, AgentPromptBuilder.TemplateDirectory })
+        foreach (string templateDirectory in new[]
+        {
+            ReviewLapPromptBuilder.TemplateDirectory, AgentPromptBuilder.TemplateDirectory,
+            MentionFollowUpPromptBuilder.TemplateDirectory,
+        })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);
             Directory.CreateDirectory(templatePackage);
@@ -386,7 +394,11 @@ public sealed class InstallCommandTests : IDisposable
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
-        foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory })
+        foreach (string templateDirectory in new[]
+        {
+            ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
+            MentionFollowUpPromptBuilder.TemplateDirectory,
+        })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);
             Directory.CreateDirectory(templatePackage);
@@ -396,6 +408,28 @@ public sealed class InstallCommandTests : IDisposable
         string? problem = InstallCommand.ValidateReleasePayload(directory);
 
         problem.Should().Contain(AgentPromptBuilder.TemplateDirectory);
+    }
+
+    [Fact]
+    public void A_release_payload_missing_only_the_mention_followup_prompt_builder_package_is_refused()
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+        foreach (string templateDirectory in new[]
+        {
+            ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
+            AgentPromptBuilder.TemplateDirectory,
+        })
+        {
+            string templatePackage = Path.Combine(directory, "templates", templateDirectory);
+            Directory.CreateDirectory(templatePackage);
+            File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+        }
+
+        string? problem = InstallCommand.ValidateReleasePayload(directory);
+
+        problem.Should().Contain(MentionFollowUpPromptBuilder.TemplateDirectory);
     }
 
     [Fact]
