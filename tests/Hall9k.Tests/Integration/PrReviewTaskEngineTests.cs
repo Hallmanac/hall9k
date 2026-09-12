@@ -1755,6 +1755,42 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// The same fence, opted into refusing an Abandoned task specifically (task: abandoning a
+    /// task halts its in-flight run entirely) — a pr-review task can be abandoned mid-lap the
+    /// same honest way a headless build task can (<c>PrReviewSentinelClaim</c>'s own IsLive
+    /// branch names it), and <c>DispatchConformanceAsync</c> must refuse the second lens rather
+    /// than spend it on work nobody is coming back to. <c>CurrentRunId</c> is left untouched by
+    /// abandon, so this is not the identity mismatch the sibling test above exercises — it is the
+    /// task's own terminal state that must stop the dispatch.
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_task_retires_the_run_instead_of_dispatching_the_conformance_lens()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Abandon(task, "walked away", PrReviewNow, task.AddedByOwnerId));
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PrReviewEngine engine = NewPrReviewEngine(store, new RefusingExecutor("An abandoned task must retire before dispatching anything."), new FakeProcessManager(), new NoOpWorktreeManager());
+        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+        run!.State.Should().Be(RunState.Superseded, "the fence must retire the run rather than let it dispatch on abandoned work");
+    }
+
+    /// <summary>
     /// The conformance lens reads the same foreign pull-request checkout the adversarial lens
     /// already read (adversarial review cycle-3 ride-along, `PrReviewEngine.cs:271`): its own
     /// spawn request must carry <see cref="AgentSpawnRequest.UntrustedWorkingDirectory"/> the
@@ -1825,6 +1861,53 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         await using IQuerySession query = store.QuerySession();
         RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
         run!.State.Should().Be(RunState.Superseded, "both lenses finished, but the reclaim must still win over parking");
+    }
+
+    /// <summary>
+    /// The same fence, opted into refusing an Abandoned task (task: abandoning a task halts its
+    /// in-flight run entirely): both lenses finished their real work, but a park can never be
+    /// created for a terminal task's run — the human who would receive it already pulled the one
+    /// lever a park offers (origin incident 2026-08-27, task ab484e89, in the headless lane this
+    /// mirrors).
+    /// </summary>
+    [Fact]
+    public async Task An_abandoned_task_retires_the_run_instead_of_parking_the_findings_report()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+        Guid conformanceSessionId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId,
+                new AgentSessionCompleted(runId, PrReviewNow),
+                new PrReviewConformanceDispatched(runId, conformanceSessionId, 5_001, PrReviewNow, PrReviewNow, AgentModel.Sonnet),
+                new PrReviewConformanceCompleted(runId, conformanceSessionId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PrReviewEngine engine = NewPrReviewEngine(store, new RefusingExecutor("An abandoned task's park never dispatches."), new FakeProcessManager(), new NoOpWorktreeManager());
+        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        Directory.CreateDirectory(runDirectory);
+        await File.WriteAllTextAsync(
+            RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),
+            "Conformance: nothing found.", cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Abandon(task, "walked away", PrReviewNow, task.AddedByOwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+        run!.State.Should().Be(RunState.Superseded, "both lenses finished, but the abandonment must still win over parking");
     }
 
     /// <summary>

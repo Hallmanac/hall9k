@@ -331,7 +331,8 @@ public sealed class PrReviewEngine(
         await using (IDocumentSession fenceSession = store.LightweightSession())
         {
             if (!await GenerationFence.AllowsAsync(
-                fenceSession, logger, taskId, runId, run.LeaseGeneration, nameof(PrReviewConformanceDispatched), cancellationToken))
+                fenceSession, logger, taskId, runId, run.LeaseGeneration, nameof(PrReviewConformanceDispatched), cancellationToken,
+                refuseAbandonedTask: true))
             {
                 // Mirrors ReviewEngine.ParkAsync's own fence-rejection (Copilot review, PR
                 // #30's RunSuperseded fix): retiring the run here, rather than just returning
@@ -602,7 +603,8 @@ public sealed class PrReviewEngine(
 
         await using IDocumentSession session = store.LightweightSession();
         if (!await GenerationFence.AllowsAsync(
-            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken))
+            session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken,
+            refuseAbandonedTask: true))
         {
             if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
             {
@@ -722,7 +724,8 @@ public sealed class PrReviewEngine(
         // fresh generation already claimed the task, stranding this run non-terminal in
         // ReviewParked with no monitor and no RunSuperseded (adversarial review, cycle 1).
         if (!await GenerationFence.AllowsAsync(
-            session, logger, taskId, runId, leaseGeneration, nameof(ReviewParked), cancellationToken))
+            session, logger, taskId, runId, leaseGeneration, nameof(ReviewParked), cancellationToken,
+            refuseAbandonedTask: true))
         {
             if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
             {
