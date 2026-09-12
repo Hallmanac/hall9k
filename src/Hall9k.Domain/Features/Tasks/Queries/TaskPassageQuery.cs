@@ -110,8 +110,19 @@ public static class TaskPassageQuery
         List<(DateTimeOffset CompletedAt, Guid RunId, string? PullRequestUrl)> completions = [.. TaskCompletions(taskEvents)];
         List<DateTimeOffset> completedWithPr = [.. completions.Where(c => c.PullRequestUrl.IsNotBlank()).Select(c => c.CompletedAt)];
         PassagePhase delivery = FoldDelivery(completions, foldsByRun);
-        PassagePhase mergeWait = FoldMergeWait(completedWithPr, folds, taskConcluded, now);
-        PassagePhase claimToMerge = FoldClaimToMerge(taskEvents, folds, taskConcluded, now);
+        // A pr-review task carries no pull request of its own to merge — PrReviewFollowThroughEngine
+        // completes it with the reviewed pull request's own URL (a task: h9k task show tells a
+        // task's passage in time discrepancy an independent pre-PR review, cycle 1, both lenses,
+        // caught), which otherwise reads as an applicable-but-unobserved merge to both folds below
+        // and renders "unknown" for a boundary that was never this task's to watch in the first
+        // place. NotApplicable says so honestly; the pending-external-review wait a few lines down
+        // is this task type's real equivalent of "waiting on the other side".
+        PassagePhase mergeWait = taskType == TaskType.PrReview
+            ? PassagePhase.NotApplicable
+            : FoldMergeWait(completedWithPr, folds, taskConcluded, now);
+        PassagePhase claimToMerge = taskType == TaskType.PrReview
+            ? PassagePhase.NotApplicable
+            : FoldClaimToMerge(taskEvents, folds, taskConcluded, now);
 
         List<HumanWaitPassage> humanWaits = [];
         AddIfPresent(humanWaits, HumanWaitKind.ReviewPark, SumOpenIntervals(
@@ -122,7 +133,8 @@ public static class TaskPassageQuery
             folds.SelectMany(fold => fold.CloseoutParkIntervals),
             folds.Where(fold => fold.IsLast).Select(fold => fold.OpenCloseoutParkSince).OfType<DateTimeOffset>(),
             lastRunStillLive, now));
-        AddIfPresent(humanWaits, HumanWaitKind.Question, FoldQuestions(taskEvents, lastRunStillLive, now));
+        Guid? lastRunId = folds.Count > 0 ? folds[^1].RunId : null;
+        AddIfPresent(humanWaits, HumanWaitKind.Question, FoldQuestions(taskEvents, lastRunId, lastRunStillLive, now));
         if (taskType == TaskType.PrReview)
         {
             AddIfPresent(humanWaits, HumanWaitKind.PendingExternalReview,
@@ -186,6 +198,23 @@ public static class TaskPassageQuery
                 case TaskReopened reopened:
                     everStarted = true;
                     segmentStart = reopened.ReopenedAt;
+                    blockedDeduction = TimeSpan.Zero;
+                    blockedSince = null;
+                    break;
+                case TaskRetried retried:
+                    // h9k task retry appends only TaskRetried — no TaskRequeued alongside it — so
+                    // a failed task's own wait for the next dispatcher pass would otherwise be
+                    // dropped from the queued total entirely (independent pre-PR review, cycle 1,
+                    // adversarial lens): both this and TaskHandedBack below carry their own
+                    // timestamp for exactly the segment TaskRequeued/TaskReopened already open.
+                    everStarted = true;
+                    segmentStart = retried.RetriedAt;
+                    blockedDeduction = TimeSpan.Zero;
+                    blockedSince = null;
+                    break;
+                case TaskHandedBack handedBack:
+                    everStarted = true;
+                    segmentStart = handedBack.HandedBackAt;
                     blockedDeduction = TimeSpan.Zero;
                     blockedSince = null;
                     break;
@@ -386,30 +415,64 @@ public static class TaskPassageQuery
         }
 
         TimeSpan total = TimeSpan.Zero;
-        foreach (RunFold fold in folds)
+        bool open = false;
+        for (int i = 0; i < folds.Count; i++)
         {
+            RunFold fold = folds[i];
             if (fold.BuildEnd is { } end)
             {
                 total += Clamp(end - fold.DispatchedAt);
                 continue;
             }
 
-            // Only the newest run can still be building with no BuildEnd recorded yet — an
-            // older run with none is impossible by construction (FoldRun's own fallback sets
-            // BuildEnd to the run's FinishedAt the moment the run ends).
-            return PassagePhase.Open(total + Clamp(now - fold.DispatchedAt));
+            if (i == folds.Count - 1)
+            {
+                // Only the newest run can still be building with no BuildEnd recorded yet.
+                total += Clamp(now - fold.DispatchedAt);
+                open = true;
+                continue;
+            }
+
+            // An older run can also have no BuildEnd: DispatchEngine.RequeueExpiredLeasesAsync
+            // reclaims a task whose lease expired on another node and deliberately leaves that
+            // node's own run alone — no RunSuperseded, no RunFailed — so its FinishedAt (and
+            // therefore FoldRun's own BuildEnd fallback) never fires (independent pre-PR review,
+            // cycle 1, both lenses). That run's build segment was never observed to close and
+            // nothing will ever close it now that a later run has superseded it, so it is dropped
+            // here — an honest undercount, the same trade-off Compute's own doc already accepts
+            // for a dangling review cycle or park — rather than marking the whole phase open on a
+            // run nothing further will ever happen to.
         }
 
-        return PassagePhase.Closed(total);
+        return open ? PassagePhase.Open(total) : PassagePhase.Closed(total);
     }
 
     // --- Delivery: the final review verdict before a push, to that push's own TaskCompleted ---
 
+    /// <summary>
+    /// One <see cref="TaskCompleted"/> per run, even though a Blocked task's own merge-observation
+    /// closeout can append a second one on the identical run id: the daemon's closeout engine
+    /// re-appends <c>TaskDecider.Complete</c> for a task a reopen left Blocked behind a still-open
+    /// dependency with <c>CurrentRunId</c> still pointing at the run whose pull request it kept
+    /// watching ("finalizing the task to Done here... closes that door", that method's own doc),
+    /// dated to the moment the merge was <em>observed</em> rather than to the earlier push that
+    /// already recorded a <see cref="TaskCompleted"/> for the same run when the pull request first
+    /// opened. Left undeduplicated, that second entry made <see cref="FoldDelivery"/> count the
+    /// same run's own delivery window twice and made <see cref="FoldMergeWait"/>/
+    /// <see cref="FoldClaimToMerge"/> anchor on the observation time — which can trail the actual
+    /// merge by as long as the orphan sweep's own poll interval — rather than the push that
+    /// actually opened the window being measured, occasionally inverting the sign of both
+    /// (independent pre-PR review, cycle 1, both lenses). Keeping the earliest completion per run
+    /// id is the honest fix: it is the one that actually recorded the push, and every ordinary
+    /// run — one push, one <see cref="TaskCompleted"/> — is untouched by the dedup.
+    /// </summary>
     private static IEnumerable<(DateTimeOffset CompletedAt, Guid RunId, string? PullRequestUrl)> TaskCompletions(
         IReadOnlyList<IEvent> taskEvents) => taskEvents
         .Select(recorded => recorded.Data)
         .OfType<TaskCompleted>()
-        .Select(completed => (completed.CompletedAt, completed.RunId, completed.PullRequestUrl));
+        .Select(completed => (completed.CompletedAt, completed.RunId, completed.PullRequestUrl))
+        .GroupBy(completion => completion.RunId)
+        .Select(group => group.OrderBy(completion => completion.CompletedAt).First());
 
     private static PassagePhase FoldDelivery(
         IReadOnlyList<(DateTimeOffset CompletedAt, Guid RunId, string? PullRequestUrl)> completions,
@@ -483,7 +546,13 @@ public static class TaskPassageQuery
         DateTimeOffset? merged = folds.Select(fold => fold.PullRequestMergedAt).FirstOrDefault(value => value is not null);
         if (merged is { } mergedAt)
         {
-            return PassagePhase.Closed(mergedAt - anchor);
+            // Clamped like every other closed phase: mergedAt is GitHub's own merge timestamp,
+            // not this node's observation time, and the orphan sweep can observe a merge days
+            // after it happened (that method's own doc says so); ordinary clock skew can invert
+            // the sign even on a normally-watched pre-approved auto-merge. A negative span here
+            // would otherwise render as a raw negative-seconds count (independent pre-PR review,
+            // cycle 1, both lenses).
+            return PassagePhase.Closed(Clamp(mergedAt - anchor));
         }
 
         return taskConcluded ? PassagePhase.Unknown() : PassagePhase.Open(now - anchor);
@@ -503,18 +572,32 @@ public static class TaskPassageQuery
         }
 
         TimeSpan total = closed.Aggregate(TimeSpan.Zero, (sum, interval) => sum + (interval.End - interval.Start));
-        if (open.Count > 0 && leaveOpen)
+        if (open.Count > 0)
         {
-            DateTimeOffset since = open.Min();
-            return PassagePhase.Open(total + (now - since));
+            if (leaveOpen)
+            {
+                DateTimeOffset since = open.Min();
+                return PassagePhase.Open(total + (now - since));
+            }
+
+            // A start with nothing left to close it, and nothing further that ever will (the run
+            // that raised it has ended): a genuinely unresolved wait, not the zero-length one
+            // Closed(TimeSpan.Zero) would otherwise claim when nothing closed ever landed either
+            // (independent pre-PR review, cycle 1, adversarial lens; PassagePhase's own doc names
+            // exactly this case for Unknown()).
+            if (closed.Count == 0)
+            {
+                return PassagePhase.Unknown();
+            }
         }
 
         return PassagePhase.Closed(total);
     }
 
-    private static PassagePhase FoldQuestions(IReadOnlyList<IEvent> taskEvents, bool leaveOpen, DateTimeOffset now)
+    private static PassagePhase FoldQuestions(
+        IReadOnlyList<IEvent> taskEvents, Guid? lastRunId, bool lastRunStillLive, DateTimeOffset now)
     {
-        Dictionary<Guid, DateTimeOffset> asked = [];
+        Dictionary<Guid, (DateTimeOffset AskedAt, Guid RunId)> asked = [];
         List<(DateTimeOffset Start, DateTimeOffset End)> answered = [];
 
         foreach (IEvent recorded in taskEvents)
@@ -522,15 +605,26 @@ public static class TaskPassageQuery
             switch (recorded.Data)
             {
                 case QuestionAsked question:
-                    asked[question.QuestionId] = question.AskedAt;
+                    asked[question.QuestionId] = (question.AskedAt, question.RunId);
                     break;
-                case AnswerProvided answer when asked.Remove(answer.QuestionId, out DateTimeOffset askedAt):
-                    answered.Add((askedAt, answer.AnsweredAt));
+                case AnswerProvided answer
+                    when asked.Remove(answer.QuestionId, out (DateTimeOffset AskedAt, Guid RunId) askedEntry):
+                    answered.Add((askedEntry.AskedAt, answer.AnsweredAt));
                     break;
             }
         }
 
-        return SumOpenIntervals(answered, asked.Values, leaveOpen, now);
+        // Only a question the task's own newest run itself asked, and only while that run has
+        // not itself ended, can plausibly still be waiting on an answer — the same "newest run,
+        // still live" rule FoldRun already applies to a review or closeout park (above). A
+        // question a superseded run asked and never got answered (the owner released or retried
+        // past it) is dropped here rather than reported as still growing against a later,
+        // unrelated live run (independent pre-PR review, cycle 1, adversarial lens).
+        IEnumerable<DateTimeOffset> openStarts = lastRunId is { } id
+            ? asked.Values.Where(entry => entry.RunId == id).Select(entry => entry.AskedAt)
+            : [];
+
+        return SumOpenIntervals(answered, openStarts, lastRunStillLive, now);
     }
 
     private static PassagePhase FoldPendingExternalReview(

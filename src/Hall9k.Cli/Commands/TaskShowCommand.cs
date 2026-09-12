@@ -55,13 +55,28 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // "why am I looking at this" is the same answer on both screens.
         TaskStatusRow? row = await TaskStatusComposer.ComposeOneAsync(session, details, now, cancellationToken);
 
+        // Whether the task has truly closed out — the merge observed, or a task that never
+        // pushed anything closed by hand — the same bar the header's own Draft/pre-approval row
+        // below reads. Raw TaskState.IsTerminal is the wrong test for this: TaskCompleted sets
+        // TaskState.Done the moment a pull request opens, so it already reads true for the whole
+        // window the closeout monitor still watches the merge (independent pre-PR review, cycle 1,
+        // both lenses: passing IsTerminal to TaskPassageQuery.ReadAsync below made every Delivered
+        // task's merge wait and claim-to-merge render "unknown" instead of the live counter).
+        bool trueCloseout = row is not null && row.State == LifecycleState.Done;
+
+        // Whether the passage's merge-anchored rows have truly concluded — nothing further will
+        // ever close an open merge wait. trueCloseout is the bar for an ordinary merge; Abandoned
+        // is concluded too, since a walked-away task with an open pull request has nothing further
+        // that will ever merge it.
+        bool taskConcluded = trueCloseout || details.State == TaskState.Abandoned;
+
         // A task's passage in time (task: h9k task show tells a task's passage in time), read
         // from the same task and run streams h9k status and h9k project show can fold the
         // identical way through TaskPassageQuery.ReadAsync — no flag, and no gate on the task's
         // own state: an assigned-but-unclaimed task still has a queued phase worth showing, and
         // WritePassage below says nothing at all when nothing on the task has happened yet.
         TaskPassage passage = await TaskPassageQuery.ReadAsync(
-            session, details.Id, details.Type, details.State.IsTerminal, now, cancellationToken);
+            session, details.Id, details.Type, taskConcluded, now, cancellationToken);
         WriteStanding(row, details, passage);
 
         Table header = new Table().Border(TableBorder.None).HideHeaders();
@@ -108,8 +123,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // abandonment must not go on claiming a merge the platform will never attempt (independent
         // pre-PR review, cycle 1, adversarial lens). A row that could not be composed carries no
         // closeout answer to gate on, so it falls back to the raw state's own Abandoned check
-        // rather than guessing.
-        bool trueCloseout = row is not null && row.State == LifecycleState.Done;
+        // rather than guessing. (trueCloseout itself is computed once, above, alongside
+        // taskConcluded — the passage section's own merge-anchored rows need the identical bar.)
         if (details.EffectivePreApproval.MergesAutomatically
             && details.State != TaskState.Abandoned
             && !trueCloseout)
@@ -643,8 +658,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </summary>
     internal static List<string> ComposePassageLines(TaskPassage passage)
     {
+        bool reviewHasAnything = passage.Review.Cycles > 0 || passage.Review.FixSessions > 0
+            || passage.Review.StillOpen || passage.Review.FixStillOpen;
         bool hasAnything = passage.Queued.Applicable || passage.Building.Applicable || passage.Gates > TimeSpan.Zero
-            || passage.Review.Cycles > 0 || passage.Review.FixSessions > 0 || passage.Delivery.Applicable
+            || reviewHasAnything || passage.Delivery.Applicable
             || passage.MergeWait.Applicable || passage.HumanWaits.Count > 0 || passage.ClaimToMerge.Applicable
             || passage.Laps.Count > 0 || passage.Sessions > 0;
         if (!hasAnything)
@@ -661,11 +678,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         List<string> review = [];
-        if (passage.Review.Cycles > 0 || passage.Review.FixSessions > 0)
+        if (reviewHasAnything)
         {
             string cycles = $"review {passage.Review.Cycles} cycle{(passage.Review.Cycles == 1 ? "" : "s")} "
                 + $"{FormatDuration(passage.Review.Elapsed)}{(passage.Review.StillOpen ? " so far" : string.Empty)}";
-            string fix = passage.Review.FixSessions > 0
+            // FixStillOpen alongside the completed count, the same reasoning reviewHasAnything
+            // above already applies: a fix session mid-flight before its first
+            // ReviewFixCompleted has FixSessions still 0, and gating on the count alone would
+            // silently drop its own elapsed-so-far from this clause (class sweep off the
+            // Cycles/StillOpen finding above — independent pre-PR review, cycle 1, both lenses).
+            string fix = passage.Review.FixSessions > 0 || passage.Review.FixStillOpen
                 ? $" ({passage.Review.FixSessions} fix session{(passage.Review.FixSessions == 1 ? "" : "s")} "
                   + $"{FormatDuration(passage.Review.FixElapsed)}{(passage.Review.FixStillOpen ? " so far" : string.Empty)})"
                 : string.Empty;
