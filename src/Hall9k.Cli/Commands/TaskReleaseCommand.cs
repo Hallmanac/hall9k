@@ -33,6 +33,17 @@ namespace Hall9k.Cli.Commands;
 /// ruling R6, amended 2026-09-05). --keep-interactive is the stated exception, for an operator who
 /// wants the next headless run to keep parking at each boundary for a recorded go.
 /// </para>
+/// <para>
+/// --unassign takes the same untouched claim straight to Published instead of back to the queue,
+/// in the single <see cref="Hall9k.Domain.Features.Tasks.Events.TaskInteractiveClaimUnassigned"/>
+/// event rather than release's own <see cref="Hall9k.Domain.Features.Tasks.Events.TaskRequeued"/>
+/// followed by a separate h9k task unassign — so the Queued/Blocked state the two-step path would
+/// pass through is never written to the stream at all, and the dispatcher can never claim the
+/// task in the gap between them (this task's own origin: the dispatcher claimed a released task
+/// within seconds at ceiling 4, cd7e0202, 2026-09-04). Every other refusal above still applies
+/// unchanged — --unassign only changes which event this decider produces once the claim is found
+/// releasable.
+/// </para>
 /// </summary>
 public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.Settings>
 {
@@ -49,6 +60,10 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         [CommandOption("--keep-interactive")]
         [Description("Preserve the task's interactive-mode flag across this release, instead of the default of clearing it — the next headless run still parks at each phase boundary for a recorded h9k review proceed")]
         public bool KeepInteractive { get; init; }
+
+        [CommandOption("--unassign")]
+        [Description("Take the claim straight to Published (unassigned) instead of back to the dispatch queue, in one atomic act — the dispatcher never sees this task claimable in between, closing the race a separate release then h9k task unassign cannot avoid")]
+        public bool Unassign { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -125,8 +140,21 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
             }
         }
 
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseInteractiveClaim(
-            task, DateTimeOffset.UtcNow, settings.KeepInteractive));
+        // --unassign appends the one TaskInteractiveClaimUnassigned event instead of
+        // TaskRequeued: the task goes straight from Claimed to Published on this single append,
+        // so the Queued/Blocked state a plain release then h9k task unassign would pass through
+        // is never written to the stream at all — nothing for the dispatcher to ever see and
+        // claim in between (this task's own acceptance criteria; cd7e0202, 2026-09-04).
+        if (settings.Unassign)
+        {
+            session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseInteractiveClaimUnassigned(
+                task, DateTimeOffset.UtcNow, settings.KeepInteractive));
+        }
+        else
+        {
+            session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseInteractiveClaim(
+                task, DateTimeOffset.UtcNow, settings.KeepInteractive));
+        }
 
         if (supersedeRun && releasedRunId is { } supersededRunId && releasedRun is { } supersededRun)
         {
@@ -155,22 +183,36 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         }
 
         await Doorbell.RingAsync($"task-released:{taskId}", cancellationToken);
-        // Requeue (TaskAggregate.Apply(TaskRequeued)) clears the claim but never touches
-        // _unmetDependencies, only Assign does — so a claim released from a deliberate
-        // start-it-mine override (h9k task start --acknowledge-unmet-dependencies) still names
-        // an open blocker here and lands Blocked, not Queued; the daemon will not claim it until
-        // that blocker closes out (conformance review, cycle 4).
-        int unmetDependencyCount = task.UnmetDependencies.Count;
-        if (unmetDependencyCount == 0)
+        if (settings.Unassign)
         {
-            AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Task {taskId} released back to the queue — the daemon claims it as it would any other queued task.[/]");
+            // TaskInteractiveClaimUnassigned always lands Published, unconditionally — the same
+            // "there is no unmet set left to matter to" reasoning
+            // TaskAggregate.Apply(TaskUnassigned) already carries, since the task is leaving
+            // assignment altogether rather than requeuing back into it.
+            AnsiConsole.MarkupLine(
+                $"[blue]Task {taskId} released and unassigned[/] — published again, and no node will claim it.");
+            AnsiConsole.MarkupLine(
+                $"[dim]To edit it:[/] h9k task draft {taskId} [dim]· to start it again:[/] h9k task assign {taskId}");
         }
         else
         {
-            string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
-            AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Task {taskId} released back, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — it will not dispatch until those close out.[/]");
+            // Requeue (TaskAggregate.Apply(TaskRequeued)) clears the claim but never touches
+            // _unmetDependencies, only Assign does — so a claim released from a deliberate
+            // start-it-mine override (h9k task start --acknowledge-unmet-dependencies) still names
+            // an open blocker here and lands Blocked, not Queued; the daemon will not claim it until
+            // that blocker closes out (conformance review, cycle 4).
+            int unmetDependencyCount = task.UnmetDependencies.Count;
+            if (unmetDependencyCount == 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Task {taskId} released back to the queue — the daemon claims it as it would any other queued task.[/]");
+            }
+            else
+            {
+                string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Task {taskId} released back, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — it will not dispatch until those close out.[/]");
+            }
         }
 
         // The one fact that separates this invocation from --keep-interactive (adversarial
