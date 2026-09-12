@@ -104,7 +104,7 @@ public static class WorkPromptBuilder
         TimeSpan effectiveCommandTimeout = commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout;
         const string file = $"{TemplateDirectory}/build.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(PromptTemplates.Load(file, "title"));
+        AppendFragment(prompt, file, "title");
         prompt.AppendLine();
         prompt.AppendLine(task.Objective);
         prompt.AppendLine();
@@ -119,13 +119,13 @@ public static class WorkPromptBuilder
             // is set only from TaskHandedBack, so this run is dispatching because a human's own
             // h9k task work claim was handed back (h9k task handback) — an observed fact, not the
             // ambiguity the causeless wording exists to avoid asserting past.
-            prompt.AppendLine(PromptTemplates.Load(file, "handback-heading"));
+            AppendFragment(prompt, file, "handback-heading");
             prompt.AppendLine();
-            prompt.AppendLine(PromptTemplates.Load(file, "handback-body"));
+            AppendFragment(prompt, file, "handback-body");
             if (resumeReason.IsNotBlank())
             {
                 prompt.AppendLine();
-                prompt.AppendLine(Fragment(file, "handback-reason", ("ResumeReason", resumeReason)));
+                AppendFragment(prompt, file, "handback-reason", ("ResumeReason", resumeReason));
             }
 
             prompt.AppendLine();
@@ -142,9 +142,9 @@ public static class WorkPromptBuilder
             // would be exactly the unobserved-fact guess AGENTS.md forbids on the feature's
             // own headline path (adversarial review, cycle 1). A handback (h9k task handback)
             // is known rather than guessed, so it gets the more specific branch above instead.
-            prompt.AppendLine(PromptTemplates.Load(file, "resume-causeless-heading"));
+            AppendFragment(prompt, file, "resume-causeless-heading");
             prompt.AppendLine();
-            prompt.AppendLine(PromptTemplates.Load(file, "resume-causeless-body"));
+            AppendFragment(prompt, file, "resume-causeless-body");
             prompt.AppendLine();
         }
 
@@ -173,7 +173,7 @@ public static class WorkPromptBuilder
                 // words, not a retry instruction, so it keeps the same causeless wording that
                 // branch would have used rather than being mislabeled as operator guidance
                 // (independent pre-PR review, cycle 1, both lenses).
-                prompt.AppendLine(Fragment(file, "retry-reason-is-handback-causeless", ("RetryReason", task.RetryReason)));
+                AppendFragment(prompt, file, "retry-reason-is-handback-causeless", ("RetryReason", task.RetryReason));
                 prompt.AppendLine();
             }
             else
@@ -182,7 +182,7 @@ public static class WorkPromptBuilder
             }
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "acceptance-criteria-heading"));
+        AppendFragment(prompt, file, "acceptance-criteria-heading");
         prompt.AppendLine();
         foreach (string criterion in task.AcceptanceCriteria)
         {
@@ -193,7 +193,7 @@ public static class WorkPromptBuilder
 
         if (task.AgentContext.IsNotBlank())
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "context-heading"));
+            AppendFragment(prompt, file, "context-heading");
             prompt.AppendLine();
             prompt.AppendLine(task.AgentContext);
             prompt.AppendLine();
@@ -210,11 +210,11 @@ public static class WorkPromptBuilder
 
         if (project.ContextLinks.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "project-links-heading"));
+            AppendFragment(prompt, file, "project-links-heading");
             prompt.AppendLine();
             foreach (var link in project.ContextLinks)
             {
-                prompt.AppendLine(Fragment(file, "project-links-line", ("Name", link.Name), ("Url", link.Url.ToString())));
+                AppendFragment(prompt, file, "project-links-line", ("Name", link.Name), ("Url", link.Url.ToString()));
             }
 
             prompt.AppendLine();
@@ -222,7 +222,7 @@ public static class WorkPromptBuilder
 
         AppendProjectHome(prompt, project);
 
-        prompt.AppendLine(PromptTemplates.Load(file, "working-rules-heading"));
+        AppendFragment(prompt, file, "working-rules-heading");
         prompt.AppendLine();
         if (requiresSelfRegistration)
         {
@@ -232,19 +232,19 @@ public static class WorkPromptBuilder
             // anywhere") gives no guarantee this session's cwd is the worktree at all — asserting
             // "you are in" it here would be a false claim about a location this session was never
             // actually placed in (independent pre-PR review, cycle 1, both lenses).
-            prompt.AppendLine(Fragment(file, "worktree-self-registration",
-                ("WorktreePath", worktreePath), ("Branch", branch)));
+            AppendFragment(prompt, file, "worktree-self-registration",
+                ("WorktreePath", worktreePath), ("Branch", branch));
         }
         else
         {
-            prompt.AppendLine(Fragment(file, "worktree-plain", ("Branch", branch)));
+            AppendFragment(prompt, file, "worktree-plain", ("Branch", branch));
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "implement-objective"));
-        prompt.AppendLine(PromptTemplates.Load(file, "commit-clear-messages"));
+        AppendFragment(prompt, file, "implement-objective");
+        AppendFragment(prompt, file, "commit-clear-messages");
         if (isInteractive)
         {
-            prompt.AppendLine(Fragment(file, "interactive-delivery-line", ("Deliver", DeliverWord)));
+            AppendFragment(prompt, file, "interactive-delivery-line", ("Deliver", DeliverWord));
             AppendCommitDisciplineRuleForInteractiveSession(prompt);
             AppendSelfDeliveryRule(prompt);
             // The take-the-wheel session composes no pull request body of its own — that is why it
@@ -272,7 +272,7 @@ public static class WorkPromptBuilder
             // resets to the branch's fork point against origin/{baseBranch} — which would treat
             // those commits as fair game to rewrite right alongside this contractor's own, the
             // opposite of "respect what is already here by default" two sections up.
-            prompt.AppendLine(Fragment(file, "delegated-contractor-intro", ("Deliver", DeliverWord)));
+            AppendFragment(prompt, file, "delegated-contractor-intro", ("Deliver", DeliverWord));
             AppendDelegatedContractorCommitRules(
                 prompt, project, worktreePath, delegationBaseCommit, effectiveBaseBranch,
                 stackedForkPointCommit);
@@ -293,14 +293,14 @@ public static class WorkPromptBuilder
             // HALL9K_INTERACTIVE_RUN_ID, which HeadlessLaunch.SpawnDetached never sets), so an
             // instruction telling this session to run either itself describes a command that always
             // fails (conformance and adversarial review, cycle 4).
-            prompt.AppendLine(Fragment(file, "deliberate-headless-start-intro", ("Deliver", DeliverWord)));
+            AppendFragment(prompt, file, "deliberate-headless-start-intro", ("Deliver", DeliverWord));
             AppendCheckpointCommitRules(
                 prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
             AppendSessionEndsAtFinalMessageRule(prompt, effectiveCommandTimeout);
         }
         else
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "headless-dispatch-line"));
+            AppendFragment(prompt, file, "headless-dispatch-line");
             AppendCheckpointCommitRules(
                 prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
             AppendSessionEndsAtFinalMessageRule(prompt, effectiveCommandTimeout);
@@ -309,7 +309,7 @@ public static class WorkPromptBuilder
         IReadOnlyList<RepoSkill> skills = DiscoverRepoSkills(worktreePath);
         if (skills.Count > 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "skills-heading"));
+            AppendFragment(prompt, file, "skills-heading");
             foreach (RepoSkill skill in skills)
             {
                 AppendSkillLine(prompt, skill);
@@ -321,9 +321,9 @@ public static class WorkPromptBuilder
 
         AppendAdoptedContextRule(prompt, task);
         AppendBlockerContextRule(prompt, blockerContext);
-        prompt.AppendLine(PromptTemplates.Load(file, isInteractive ? "ambiguous-interactive" : "ambiguous-headless"));
+        AppendFragment(prompt, file, isInteractive ? "ambiguous-interactive" : "ambiguous-headless");
 
-        prompt.AppendLine(PromptTemplates.Load(file, "end-summary"));
+        AppendFragment(prompt, file, "end-summary");
 
         // Last, not immediately after AppendExternalInteractionLoggingRule (independent pre-PR
         // review, cycle 1, both lenses): this method opens its own "##" heading, so calling it
@@ -410,9 +410,9 @@ public static class WorkPromptBuilder
         }
 
         const string file = $"{TemplateDirectory}/operator-guidance.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        AppendFragment(prompt, file, "heading");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "lead"));
+        AppendFragment(prompt, file, "lead");
         prompt.AppendLine();
         prompt.AppendLine(task.RetryReason);
         prompt.AppendLine();
@@ -440,16 +440,16 @@ public static class WorkPromptBuilder
     private static void AppendDelegatedContractorSection(StringBuilder prompt, bool resumesPreviousWork, string? delegationNote)
     {
         const string file = $"{TemplateDirectory}/delegated-contractor-section.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        AppendFragment(prompt, file, "heading");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "lead"));
+        AppendFragment(prompt, file, "lead");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, resumesPreviousWork ? "resuming" : "virgin"));
+        AppendFragment(prompt, file, resumesPreviousWork ? "resuming" : "virgin");
 
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "respect-existing-work"));
+        AppendFragment(prompt, file, "respect-existing-work");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "handoff-note-lead"));
+        AppendFragment(prompt, file, "handoff-note-lead");
         prompt.AppendLine();
         foreach (string line in (delegationNote ?? string.Empty).Split('\n'))
         {
@@ -493,7 +493,7 @@ public static class WorkPromptBuilder
         }
 
         const string file = $"{TemplateDirectory}/adopted-context-rule.md";
-        prompt.AppendLine(Fragment(file, "rule", ("ExternalReference", task.ExternalReference)));
+        AppendFragment(prompt, file, "rule", ("ExternalReference", task.ExternalReference));
     }
 
     /// <summary>
@@ -525,7 +525,7 @@ public static class WorkPromptBuilder
         }
 
         const string file = $"{TemplateDirectory}/blocker-context-rule.md";
-        prompt.AppendLine(Fragment(file, "rule", ("Heading", BlockerContextDocument.Heading.TrimStart('#', ' '))));
+        AppendFragment(prompt, file, "rule", ("Heading", BlockerContextDocument.Heading.TrimStart('#', ' ')));
     }
 
     /// <summary>
@@ -552,13 +552,13 @@ public static class WorkPromptBuilder
     {
         const string file = $"{TemplateDirectory}/handoff-rules.md";
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        AppendFragment(prompt, file, "heading");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "body"));
+        AppendFragment(prompt, file, "body");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "marker", ("HandoffMarker", HandoffParser.Marker)));
+        AppendFragment(prompt, file, "marker", ("HandoffMarker", HandoffParser.Marker));
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "tail"));
+        AppendFragment(prompt, file, "tail");
     }
 
     /// <summary>
@@ -626,28 +626,33 @@ public static class WorkPromptBuilder
         const string file = $"{TemplateDirectory}/self-review-phase.md";
         string tipFile = Path.Combine(Path.GetTempPath(), $"self-review-round-one-tip-{Path.GetFileName(worktreePath)}")
             .Replace('\\', '/');
-        prompt.AppendLine((project.VerifyCommands.Count == 0, recomposeFollows) switch
+        AppendFragment(prompt, file, (project.VerifyCommands.Count == 0, recomposeFollows) switch
         {
-            (true, true) => PromptTemplates.Load(file, "opening-no-gates-recompose"),
-            (true, false) => PromptTemplates.Load(file, "opening-no-gates-no-recompose"),
-            (false, true) => PromptTemplates.Load(file, "opening-gates-recompose"),
-            (false, false) => PromptTemplates.Load(file, "opening-gates-no-recompose"),
+            (true, true) => "opening-no-gates-recompose",
+            (true, false) => "opening-no-gates-no-recompose",
+            (false, true) => "opening-gates-recompose",
+            (false, false) => "opening-gates-no-recompose",
         });
-        prompt.AppendLine(PromptTemplates.Load(file, "hats-and-cap"));
-        prompt.AppendLine(stackedForkPointCommit is not null
-            ? Fragment(file, "round-one-stacked",
-                ("StackedForkPointCommit", stackedForkPointCommit), ("EffectiveBaseBranch", effectiveBaseBranch))
-            : Fragment(file, "round-one-unstacked", ("EffectiveBaseBranch", effectiveBaseBranch)));
+        AppendFragment(prompt, file, "hats-and-cap");
+        if (stackedForkPointCommit is not null)
+        {
+            AppendFragment(prompt, file, "round-one-stacked",
+                ("StackedForkPointCommit", stackedForkPointCommit), ("EffectiveBaseBranch", effectiveBaseBranch));
+        }
+        else
+        {
+            AppendFragment(prompt, file, "round-one-unstacked", ("EffectiveBaseBranch", effectiveBaseBranch));
+        }
 
-        prompt.AppendLine(Fragment(file, "tip-file-and-hunts", ("TipFile", tipFile)));
-        prompt.AppendLine((project.VerifyCommands.Count == 0, recomposeFollows) switch
+        AppendFragment(prompt, file, "tip-file-and-hunts", ("TipFile", tipFile));
+        AppendFragment(prompt, file, (project.VerifyCommands.Count == 0, recomposeFollows) switch
         {
-            (true, true) => PromptTemplates.Load(file, "rerun-no-gates-recompose"),
-            (true, false) => PromptTemplates.Load(file, "rerun-no-gates-no-recompose"),
-            (false, true) => PromptTemplates.Load(file, "rerun-gates-recompose"),
-            (false, false) => PromptTemplates.Load(file, "rerun-gates-no-recompose"),
+            (true, true) => "rerun-no-gates-recompose",
+            (true, false) => "rerun-no-gates-no-recompose",
+            (false, true) => "rerun-gates-recompose",
+            (false, false) => "rerun-gates-no-recompose",
         });
-        prompt.AppendLine(Fragment(file, "round-two-and-cap", ("TipFile", tipFile)));
+        AppendFragment(prompt, file, "round-two-and-cap", ("TipFile", tipFile));
     }
 
     /// <summary>
@@ -713,35 +718,40 @@ public static class WorkPromptBuilder
     {
         const string file = $"{TemplateDirectory}/checkpoint-commit-rules.md";
         string baseBranch = baseBranchOverride ?? project.BaseBranch;
-        prompt.AppendLine(PromptTemplates.Load(file, "commit-as-you-go"));
+        AppendFragment(prompt, file, "commit-as-you-go");
         AppendSelfReviewPhaseRules(
             prompt, project, worktreePath, baseBranch: baseBranch,
             stackedForkPointCommit: stackedForkPointCommit);
-        prompt.AppendLine(PromptTemplates.Load(file, "recompose-heading"));
+        AppendFragment(prompt, file, "recompose-heading");
         if (project.VerifyCommands.Count == 0)
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "no-gates"));
+            AppendFragment(prompt, file, "no-gates");
         }
         else
         {
-            prompt.AppendLine(PromptTemplates.Load(file, "gates-heading"));
+            AppendFragment(prompt, file, "gates-heading");
             AppendGateLines(prompt, project);
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "step0"));
-        prompt.AppendLine(stackedForkPointCommit is not null
-            // A stacked session never computes its own fork point (independent pre-PR review,
-            // cycle 1, adversarial lens): the platform recorded it at the cut, and no command this
-            // session can run recovers it once the parent has been force-pushed.
-            ? Fragment(file, "step1-stacked",
-                ("StackedForkPointCommit", stackedForkPointCommit), ("BaseBranch", baseBranch))
-            : Fragment(file, "step1-unstacked", ("BaseBranch", baseBranch)));
+        AppendFragment(prompt, file, "step0");
+        // A stacked session never computes its own fork point (independent pre-PR review,
+        // cycle 1, adversarial lens): the platform recorded it at the cut, and no command this
+        // session can run recovers it once the parent has been force-pushed.
+        if (stackedForkPointCommit is not null)
+        {
+            AppendFragment(prompt, file, "step1-stacked",
+                ("StackedForkPointCommit", stackedForkPointCommit), ("BaseBranch", baseBranch));
+        }
+        else
+        {
+            AppendFragment(prompt, file, "step1-unstacked", ("BaseBranch", baseBranch));
+        }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "step2"));
-        prompt.AppendLine(PromptTemplates.Load(file, "step3"));
+        AppendFragment(prompt, file, "step2");
+        AppendFragment(prompt, file, "step3");
         AppendPullRequestSummaryStep(prompt, project, asNumberedStep: true);
-        prompt.AppendLine(PromptTemplates.Load(file, "between-steps"));
-        prompt.AppendLine(PromptTemplates.Load(file, "final-clean-tree-rule"));
+        AppendFragment(prompt, file, "between-steps");
+        AppendFragment(prompt, file, "final-clean-tree-rule");
     }
 
     private static void AppendGateLines(StringBuilder prompt, ProjectDetails project)
@@ -749,7 +759,7 @@ public static class WorkPromptBuilder
         const string file = $"{TemplateDirectory}/gate-line.md";
         foreach (VerifyCommand gate in project.VerifyCommands)
         {
-            prompt.AppendLine(Fragment(file, "line", ("Command", gate.Command)));
+            AppendFragment(prompt, file, "line", ("Command", gate.Command));
         }
     }
 
@@ -791,22 +801,27 @@ public static class WorkPromptBuilder
     {
         const string file = $"{TemplateDirectory}/pull-request-summary-step.md";
         string indent = asNumberedStep ? "     " : "  ";
-        prompt.AppendLine(PromptTemplates.Load(file, asNumberedStep ? "step-numbered" : "step-bulleted"));
-        prompt.AppendLine(Fragment(file, "made-line", ("Indent", indent)));
-        prompt.AppendLine(Fragment(
-            file, asNumberedStep ? "worktree-numbered" : "worktree-bulleted", ("Indent", indent)));
-        prompt.AppendLine(Fragment(file, "whose-voice", ("Indent", indent)));
-        prompt.AppendLine(project.HomeDirectory.HasValue
-            ? Fragment(file, "installs-at-home", ("Indent", indent), ("SkillPath",
-                Path.Combine(ProjectHomePaths.SkillsDirectory(project.HomeDirectory.Value), "pr-summary", "SKILL.md")))
-            : Fragment(file, "installs-at-default", ("Indent", indent)));
-        prompt.AppendLine(Fragment(file, "where-it-goes",
+        AppendFragment(prompt, file, asNumberedStep ? "step-numbered" : "step-bulleted");
+        AppendFragment(prompt, file, "made-line", ("Indent", indent));
+        AppendFragment(prompt, 
+            file, asNumberedStep ? "worktree-numbered" : "worktree-bulleted", ("Indent", indent));
+        AppendFragment(prompt, file, "whose-voice", ("Indent", indent));
+        if (project.HomeDirectory.HasValue)
+        {
+            AppendFragment(prompt, file, "installs-at-home", ("Indent", indent), ("SkillPath",
+                Path.Combine(ProjectHomePaths.SkillsDirectory(project.HomeDirectory.Value), "pr-summary", "SKILL.md")));
+        }
+        else
+        {
+            AppendFragment(prompt, file, "installs-at-default", ("Indent", indent));
+        }
+        AppendFragment(prompt, file, "where-it-goes",
             ("Indent", indent), ("PrSummaryMarker", PrSummaryParser.Marker),
-            ("HandoffMarker", HandoffParser.Marker), ("PrSummaryTitlePrefix", PrSummaryParser.TitlePrefix)));
-        prompt.AppendLine(Fragment(file, "what-to-leave-out", ("Indent", indent)));
+            ("HandoffMarker", HandoffParser.Marker), ("PrSummaryTitlePrefix", PrSummaryParser.TitlePrefix));
+        AppendFragment(prompt, file, "what-to-leave-out", ("Indent", indent));
         AppendWritingConventions(
             prompt, indent, project.WritingConventions, PromptTemplates.Load(file, "writing-conventions-lead-in"));
-        prompt.AppendLine(Fragment(file, "do-not-run-gh", ("Indent", indent)));
+        AppendFragment(prompt, file, "do-not-run-gh", ("Indent", indent));
     }
 
     /// <summary>
@@ -864,7 +879,7 @@ public static class WorkPromptBuilder
         string baseBranch, string? stackedForkPointCommit)
     {
         const string file = $"{TemplateDirectory}/delegated-contractor-commit-rules.md";
-        prompt.AppendLine(PromptTemplates.Load($"{TemplateDirectory}/checkpoint-commit-rules.md", "commit-as-you-go"));
+        AppendFragment(prompt, $"{TemplateDirectory}/checkpoint-commit-rules.md", "commit-as-you-go");
         AppendSelfReviewPhaseRules(
             prompt, project, worktreePath, recomposeFollows: delegationBaseCommit is not null,
             baseBranch: baseBranch, stackedForkPointCommit: stackedForkPointCommit);
@@ -873,33 +888,31 @@ public static class WorkPromptBuilder
         {
             if (project.VerifyCommands.Count > 0)
             {
-                prompt.AppendLine(PromptTemplates.Load(file, "no-base-suite-heading"));
+                AppendFragment(prompt, file, "no-base-suite-heading");
                 AppendGateLines(prompt, project);
             }
 
-            prompt.AppendLine(PromptTemplates.Load(file, "no-base-reset-rule"));
+            AppendFragment(prompt, file, "no-base-reset-rule");
             AppendPullRequestSummaryStep(prompt, project, asNumberedStep: false);
-            prompt.AppendLine(PromptTemplates.Load(file, "no-base-final-clean-tree-rule"));
+            AppendFragment(prompt, file, "no-base-final-clean-tree-rule");
             return;
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "recompose-heading"));
-        prompt.AppendLine(project.VerifyCommands.Count == 0
-            ? PromptTemplates.Load(file, "no-gates")
-            : PromptTemplates.Load(file, "gates-heading"));
+        AppendFragment(prompt, file, "recompose-heading");
+        AppendFragment(prompt, file, project.VerifyCommands.Count == 0 ? "no-gates" : "gates-heading");
         if (project.VerifyCommands.Count > 0)
         {
             AppendGateLines(prompt, project);
         }
 
-        prompt.AppendLine(PromptTemplates.Load(file, "step0"));
-        prompt.AppendLine(Fragment(file, "step1",
-            ("DelegationBaseCommit", delegationBaseCommit), ("BaseBranch", baseBranch)));
-        prompt.AppendLine(PromptTemplates.Load(file, "step2"));
-        prompt.AppendLine(PromptTemplates.Load(file, "step3"));
+        AppendFragment(prompt, file, "step0");
+        AppendFragment(prompt, file, "step1",
+            ("DelegationBaseCommit", delegationBaseCommit), ("BaseBranch", baseBranch));
+        AppendFragment(prompt, file, "step2");
+        AppendFragment(prompt, file, "step3");
         AppendPullRequestSummaryStep(prompt, project, asNumberedStep: true);
-        prompt.AppendLine(PromptTemplates.Load(file, "between-steps"));
-        prompt.AppendLine(PromptTemplates.Load(file, "final-clean-tree-rule"));
+        AppendFragment(prompt, file, "between-steps");
+        AppendFragment(prompt, file, "final-clean-tree-rule");
     }
 
     /// <summary>
@@ -949,9 +962,9 @@ public static class WorkPromptBuilder
     public static void AppendSessionEndsAtFinalMessageRule(StringBuilder prompt, TimeSpan commandTimeout)
     {
         const string file = $"{TemplateDirectory}/session-ends-at-final-message.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "head"));
+        AppendFragment(prompt, file, "head");
         AppendForegroundGatesRule(prompt, commandTimeout);
-        prompt.AppendLine(PromptTemplates.Load(file, "tail"));
+        AppendFragment(prompt, file, "tail");
     }
 
     /// <summary>
@@ -1011,10 +1024,10 @@ public static class WorkPromptBuilder
         int defaultCeilingMinutes = (int)Math.Ceiling(commandTimeout.TotalMinutes);
         int foregroundCeilingMinutes = ForegroundCeilingMinutes(commandTimeout);
         const string file = $"{TemplateDirectory}/foreground-gates.md";
-        prompt.AppendLine(Fragment(
+        AppendFragment(prompt, 
             file, sessionRunsGates ? "session-runs-gates" : "session-does-not-run-gates",
             ("DefaultCeilingMinutes", defaultCeilingMinutes.ToString(CultureInfo.InvariantCulture)),
-            ("ForegroundCeilingMinutes", foregroundCeilingMinutes.ToString(CultureInfo.InvariantCulture))));
+            ("ForegroundCeilingMinutes", foregroundCeilingMinutes.ToString(CultureInfo.InvariantCulture)));
 
         AppendNoHostLoadForFlakeReproductionRule(prompt, "  ", sessionRunsGates);
     }
@@ -1062,9 +1075,9 @@ public static class WorkPromptBuilder
         StringBuilder prompt, string indent = "", bool sessionRunsGates = true)
     {
         const string file = $"{TemplateDirectory}/no-host-load.md";
-        prompt.AppendLine(Fragment(file, "head", ("Indent", indent)));
-        prompt.AppendLine(Fragment(
-            file, sessionRunsGates ? "session-runs-gates" : "session-does-not-run-gates", ("Indent", indent)));
+        AppendFragment(prompt, file, "head", ("Indent", indent));
+        AppendFragment(prompt, 
+            file, sessionRunsGates ? "session-runs-gates" : "session-does-not-run-gates", ("Indent", indent));
     }
 
     /// <summary>
@@ -1099,7 +1112,7 @@ public static class WorkPromptBuilder
     public static void AppendCommitDisciplineRuleForInteractiveSession(StringBuilder prompt)
     {
         const string file = $"{TemplateDirectory}/interactive-commit-discipline.md";
-        prompt.AppendLine(Fragment(file, "rule", ("Deliver", DeliverWord)));
+        AppendFragment(prompt, file, "rule", ("Deliver", DeliverWord));
     }
 
     /// <summary>
@@ -1129,7 +1142,7 @@ public static class WorkPromptBuilder
     public static void AppendSelfDeliveryRule(StringBuilder prompt)
     {
         const string file = $"{TemplateDirectory}/self-delivery.md";
-        prompt.AppendLine(Fragment(file, "rule", ("Deliver", DeliverWord)));
+        AppendFragment(prompt, file, "rule", ("Deliver", DeliverWord));
     }
 
     /// <summary>
@@ -1147,9 +1160,9 @@ public static class WorkPromptBuilder
     public static void AppendSelfRegistrationRule(StringBuilder prompt, Guid taskId)
     {
         const string file = $"{TemplateDirectory}/self-registration.md";
-        prompt.AppendLine(Fragment(
+        AppendFragment(prompt, 
             file, "rule", ("RegisterSession", RegisterSessionWord), ("TaskId", taskId.ToString()),
-            ("Deliver", DeliverWord)));
+            ("Deliver", DeliverWord));
     }
 
     /// <summary>
@@ -1164,7 +1177,7 @@ public static class WorkPromptBuilder
     public static void AppendFindLiveAgentsRule(StringBuilder prompt, Guid taskId)
     {
         const string file = $"{TemplateDirectory}/find-live-agents.md";
-        prompt.AppendLine(Fragment(file, "rule", ("TaskId", taskId.ToString())));
+        AppendFragment(prompt, file, "rule", ("TaskId", taskId.ToString()));
     }
 
     /// <summary>
@@ -1182,11 +1195,16 @@ public static class WorkPromptBuilder
     public static void AppendPlatformSettingsReminderRule(StringBuilder prompt, ProjectDetails project)
     {
         const string file = $"{TemplateDirectory}/platform-settings-reminder.md";
-        prompt.AppendLine(PromptTemplates.Load(file, "lead"));
-        prompt.AppendLine(project.VerifyCommands.Count == 0
-            ? PromptTemplates.Load(file, "no-gates")
-            : Fragment(file, "with-gates", ("Gates", string.Join(", ",
-                project.VerifyCommands.Select(gate => $"`{gate.Command}`")))));
+        AppendFragment(prompt, file, "lead");
+        if (project.VerifyCommands.Count == 0)
+        {
+            AppendFragment(prompt, file, "no-gates");
+        }
+        else
+        {
+            AppendFragment(prompt, file, "with-gates", ("Gates", string.Join(", ",
+                project.VerifyCommands.Select(gate => $"`{gate.Command}`"))));
+        }
     }
 
     /// <summary>
@@ -1215,7 +1233,7 @@ public static class WorkPromptBuilder
     public static void AppendExternalInteractionLoggingRule(StringBuilder prompt, Guid taskId)
     {
         const string file = $"{TemplateDirectory}/external-interaction-logging.md";
-        prompt.AppendLine(Fragment(file, "rule", ("TaskId", taskId.ToString())));
+        AppendFragment(prompt, file, "rule", ("TaskId", taskId.ToString()));
     }
 
     /// <summary>
@@ -1313,55 +1331,59 @@ public static class WorkPromptBuilder
     {
         const string file = $"{TemplateDirectory}/outbound-milestones.md";
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        AppendFragment(prompt, file, "heading");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "lead",
+        AppendFragment(prompt, file, "lead",
             ("Count", milestones.Count.ToString(CultureInfo.InvariantCulture)),
             ("MessageWord", milestones.Count == 1 ? "message" : "messages"),
-            ("PhaseLabel", phaseLabel)));
+            ("PhaseLabel", phaseLabel));
         prompt.AppendLine();
         for (int i = 0; i < milestones.Count; i++)
         {
             bool isFinal = i == milestones.Count - 1;
-            prompt.AppendLine(isFinal
-                ? Fragment(file, "milestone-final-head", ("Milestone", milestones[i]))
-                : Fragment(file, "milestone", ("Milestone", milestones[i])));
+            AppendFragment(prompt, file, isFinal ? "milestone-final-head" : "milestone", ("Milestone", milestones[i]));
             if (isFinal)
             {
-                prompt.AppendLine(PromptTemplates.Load(file, "milestone-final-body"));
-                string sendCaveat = address.IsNotBlank()
-                    ? ", whether or not the send below actually lands"
-                    : " — see below for why there is no send to make on this run";
-                prompt.AppendLine(parksAtBoundaryAfterward
-                    ? Fragment(file, "parks-at-boundary", ("SendCaveat", sendCaveat))
-                    : Fragment(file, "does-not-park", ("SendCaveat", sendCaveat), ("Deliver", DeliverWord)));
+                AppendFragment(prompt, file, "milestone-final-body");
+                bool sendsToAddress = address.IsNotBlank();
+                if (parksAtBoundaryAfterward)
+                {
+                    AppendFragment(prompt, file,
+                        sendsToAddress ? "parks-at-boundary-address-present" : "parks-at-boundary-no-address");
+                }
+                else
+                {
+                    AppendFragment(prompt, file,
+                        sendsToAddress ? "does-not-park-address-present" : "does-not-park-no-address",
+                        ("Deliver", DeliverWord));
+                }
             }
         }
 
         prompt.AppendLine();
-        string skipMilestones = Fragment(file, parksAtBoundaryAfterward
-            ? "skip-milestones-parks" : "skip-milestones-does-not-park", ("Deliver", DeliverWord));
+        string skipMilestonesFragment = parksAtBoundaryAfterward
+            ? "skip-milestones-parks" : "skip-milestones-does-not-park";
         if (address.IsNotBlank())
         {
-            prompt.AppendLine(Fragment(file, "address-present", ("Address", address)));
+            AppendFragment(prompt, file, "address-present", ("Address", address));
         }
         else if (address is null && isDelegatedContractor)
         {
-            prompt.AppendLine(Fragment(file, "no-address-delegated", ("RegisterSession", RegisterSessionWord)));
-            prompt.AppendLine(skipMilestones);
-            prompt.AppendLine(PromptTemplates.Load(file, "log-once"));
+            AppendFragment(prompt, file, "no-address-delegated", ("RegisterSession", RegisterSessionWord));
+            AppendFragment(prompt, file, skipMilestonesFragment, ("Deliver", DeliverWord));
+            AppendFragment(prompt, file, "log-once");
         }
         else if (address is null)
         {
-            prompt.AppendLine(Fragment(file, "no-address-ordinary", ("RegisterSession", RegisterSessionWord)));
-            prompt.AppendLine(skipMilestones);
-            prompt.AppendLine(PromptTemplates.Load(file, "log-once"));
+            AppendFragment(prompt, file, "no-address-ordinary", ("RegisterSession", RegisterSessionWord));
+            AppendFragment(prompt, file, skipMilestonesFragment, ("Deliver", DeliverWord));
+            AppendFragment(prompt, file, "log-once");
         }
         else
         {
-            prompt.AppendLine(Fragment(file, "blank-address", ("RegisterSession", RegisterSessionWord)));
-            prompt.AppendLine(skipMilestones);
-            prompt.AppendLine(PromptTemplates.Load(file, "log-once"));
+            AppendFragment(prompt, file, "blank-address", ("RegisterSession", RegisterSessionWord));
+            AppendFragment(prompt, file, skipMilestonesFragment, ("Deliver", DeliverWord));
+            AppendFragment(prompt, file, "log-once");
         }
 
         if (verdictBoundaryChoicesTaskId is { } choicesTaskId)
@@ -1394,19 +1416,19 @@ public static class WorkPromptBuilder
     {
         const string file = $"{TemplateDirectory}/verdict-boundary-choices.md";
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        AppendFragment(prompt, file, "heading");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "lead"));
+        AppendFragment(prompt, file, "lead");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "findings-need-fixes-intro", ("NeedsFixes", NeedsFixesWord)));
+        AppendFragment(prompt, file, "findings-need-fixes-intro", ("NeedsFixes", NeedsFixesWord));
         prompt.AppendLine();
         AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.ReviewVerdictToFix, taskId);
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "ready-to-merge-intro", ("MergeReady", MergeReadyWord)));
+        AppendFragment(prompt, file, "ready-to-merge-intro", ("MergeReady", MergeReadyWord));
         prompt.AppendLine();
         AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.ProceedOrRedirect, taskId);
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "settle-intro"));
+        AppendFragment(prompt, file, "settle-intro");
         prompt.AppendLine();
         AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.GatesToPullRequest, taskId);
     }
@@ -1445,23 +1467,23 @@ public static class WorkPromptBuilder
     {
         const string file = $"{TemplateDirectory}/interactive-boundary-choices.md";
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        AppendFragment(prompt, file, "heading");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "lead"));
+        AppendFragment(prompt, file, "lead");
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "build-done-to-review"));
+        AppendFragment(prompt, file, "build-done-to-review");
         prompt.AppendLine();
         AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.ProceedOrRedirect, taskId);
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "review-verdict-to-fix-intro"));
+        AppendFragment(prompt, file, "review-verdict-to-fix-intro");
         prompt.AppendLine();
         AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.ReviewVerdictToFix, taskId);
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "gates-to-pull-request-intro", ("MergeReady", MergeReadyWord)));
+        AppendFragment(prompt, file, "gates-to-pull-request-intro", ("MergeReady", MergeReadyWord));
         prompt.AppendLine();
         AppendBoundaryChoiceBullets(prompt, InteractiveBoundaryLevers.GatesToPullRequest, taskId);
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "tail"));
+        AppendFragment(prompt, file, "tail");
     }
 
     /// <summary>
@@ -1479,20 +1501,20 @@ public static class WorkPromptBuilder
 
         const string file = $"{TemplateDirectory}/project-home.md";
         string home = project.HomeDirectory.Value;
-        prompt.AppendLine(PromptTemplates.Load(file, "heading"));
+        AppendFragment(prompt, file, "heading");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "home-line", ("Home", home)));
+        AppendFragment(prompt, file, "home-line", ("Home", home));
         prompt.AppendLine();
 
         string agents = ProjectHomePaths.AgentsFile(home);
         if (File.Exists(agents))
         {
-            prompt.AppendLine(Fragment(file, "agents-file-lines", ("AgentsFile", agents)));
+            AppendFragment(prompt, file, "agents-file-lines", ("AgentsFile", agents));
         }
 
-        prompt.AppendLine(Fragment(file, "skills-line", ("SkillsDirectory", ProjectHomePaths.SkillsDirectory(home))));
-        prompt.AppendLine(Fragment(file, "tasks-line", ("TasksDirectory", ProjectHomePaths.TasksDirectory(home))));
-        prompt.AppendLine(Fragment(file, "ideas-line", ("IdeasDirectory", ProjectHomePaths.IdeasDirectory(home))));
+        AppendFragment(prompt, file, "skills-line", ("SkillsDirectory", ProjectHomePaths.SkillsDirectory(home)));
+        AppendFragment(prompt, file, "tasks-line", ("TasksDirectory", ProjectHomePaths.TasksDirectory(home)));
+        AppendFragment(prompt, file, "ideas-line", ("IdeasDirectory", ProjectHomePaths.IdeasDirectory(home)));
 
         // Whether repo/ is actually populated is a filesystem fact, not a fact about RepositoryPath
         // alone (same test ProjectAgentsDocument.Render uses): `h9k project init --keep-repo-path`
@@ -1504,15 +1526,17 @@ public static class WorkPromptBuilder
         bool repoMaterialised = Directory.Exists(dev);
         bool dispatchesFromHome = ProjectHomePaths.SameDirectory(project.RepositoryPath, bare);
         string repoDirectory = ProjectHomePaths.RepoDirectory(home);
-        prompt.AppendLine(dispatchesFromHome
-            ? Fragment(file, "repo-dispatches-from-home", ("RepoDirectory", repoDirectory))
-            : repoMaterialised
-                ? Fragment(file, "repo-materialised-elsewhere",
-                    ("RepoDirectory", repoDirectory), ("RepositoryPath", project.RepositoryPath))
-                : Fragment(file, "repo-empty-elsewhere",
-                    ("RepoDirectory", repoDirectory), ("RepositoryPath", project.RepositoryPath)));
+        if (dispatchesFromHome)
+        {
+            AppendFragment(prompt, file, "repo-dispatches-from-home", ("RepoDirectory", repoDirectory));
+        }
+        else
+        {
+            AppendFragment(prompt, file, repoMaterialised ? "repo-materialised-elsewhere" : "repo-empty-elsewhere",
+                ("RepoDirectory", repoDirectory), ("RepositoryPath", project.RepositoryPath));
+        }
         prompt.AppendLine();
-        prompt.AppendLine(PromptTemplates.Load(file, "tail"));
+        AppendFragment(prompt, file, "tail");
         prompt.AppendLine();
     }
 
@@ -1533,8 +1557,8 @@ public static class WorkPromptBuilder
         }
 
         string directory = ProjectHomePaths.SkillsDirectory(project.HomeDirectory.Value);
-        prompt.AppendLine(Fragment(
-            $"{TemplateDirectory}/home-skill-rule.md", "lead", ("SkillsDirectory", directory)));
+        AppendFragment(prompt, 
+            $"{TemplateDirectory}/home-skill-rule.md", "lead", ("SkillsDirectory", directory));
         foreach (RepoSkill skill in homeSkills)
         {
             AppendSkillLine(prompt, skill);
@@ -1544,9 +1568,14 @@ public static class WorkPromptBuilder
     private static void AppendSkillLine(StringBuilder prompt, RepoSkill skill)
     {
         const string file = $"{TemplateDirectory}/skill-line.md";
-        prompt.AppendLine(skill.Description is null
-            ? Fragment(file, "without-description", ("Name", skill.Name))
-            : Fragment(file, "with-description", ("Name", skill.Name), ("Description", skill.Description)));
+        if (skill.Description is null)
+        {
+            AppendFragment(prompt, file, "without-description", ("Name", skill.Name));
+        }
+        else
+        {
+            AppendFragment(prompt, file, "with-description", ("Name", skill.Name), ("Description", skill.Description));
+        }
     }
 
     public static IReadOnlyList<RepoSkill> DiscoverHomeSkills(ProjectDetails project) =>
@@ -1611,10 +1640,20 @@ public static class WorkPromptBuilder
         return null;
     }
 
-    /// <summary>A named fragment out of a template file, substituted. The <c>params</c> tuple
-    /// array is this call site's whole parameter dictionary, spelled without one to build.</summary>
-    private static string Fragment(string file, string name, params (string Key, string Value)[] values) =>
-        PromptTemplates.Load(file, name, values.ToDictionary(value => value.Key, value => value.Value));
+    /// <summary>
+    /// A named fragment out of a template file, substituted and appended through
+    /// <see cref="PromptTemplates.AppendTemplate"/> rather than a bare <c>AppendLine</c> over the
+    /// loaded text — a multi-line fragment's own internal line breaks otherwise never go through
+    /// <see cref="StringBuilder.AppendLine()"/> at all, so they stay whatever this checkout's
+    /// <c>.gitattributes</c> normalized them to (a bare <c>\n</c>) instead of
+    /// <see cref="Environment.NewLine"/>, and a Windows-run session's rendered prompt ends up with
+    /// mixed line endings (independent pre-PR review, cycle 1, both lenses). The <c>params</c>
+    /// tuple array is this call site's whole parameter dictionary, spelled without one to build.
+    /// </summary>
+    private static void AppendFragment(
+        StringBuilder prompt, string file, string name, params (string Key, string Value)[] values) =>
+        PromptTemplates.AppendTemplate(
+            prompt, file, name, values.Length == 0 ? null : values.ToDictionary(value => value.Key, value => value.Value));
 }
 
 public sealed record RepoSkill(string Name, string? Description);
