@@ -238,7 +238,7 @@ public sealed class RepoMaterialiserTests : IDisposable
     public async Task A_remote_that_is_not_there_fails_with_the_command_that_fixes_it()
     {
         IReadOnlyList<ProjectHomeStep> steps = await RepoMaterialiser.MaterialiseAsync(
-            _home, "hall9k", new Uri(Path.Combine(_root, "nothing-here.git")), "main", _cancellation.Token);
+            _home, "hall9k", null, new Uri(Path.Combine(_root, "nothing-here.git")), "main", _cancellation.Token);
 
         steps.Should().ContainSingle(step => step.Outcome == ProjectHomeOutcome.Failed);
         steps[^1].Message.Should().Contain("could not clone");
@@ -250,14 +250,14 @@ public sealed class RepoMaterialiserTests : IDisposable
     public async Task A_project_with_no_remote_is_reported_rather_than_failed()
     {
         IReadOnlyList<ProjectHomeStep> steps = await RepoMaterialiser.MaterialiseAsync(
-            _home, "hall9k", remote: null, "main", _cancellation.Token);
+            _home, "hall9k", null, remote: null, "main", _cancellation.Token);
 
         steps.Should().ContainSingle(step => step.Outcome == ProjectHomeOutcome.Skipped);
         steps.Should().NotContain(step => step.Outcome == ProjectHomeOutcome.Failed);
     }
 
     private Task<IReadOnlyList<ProjectHomeStep>> MaterialiseAsync() =>
-        RepoMaterialiser.MaterialiseAsync(_home, "hall9k", _remote, "main", _cancellation.Token);
+        RepoMaterialiser.MaterialiseAsync(_home, "hall9k", null, _remote, "main", _cancellation.Token);
 
     /// <summary>Moves the remote's primary branch on, the way anybody else's merge would.</summary>
     private void PushToMain(string fileName, string content, string message)

@@ -70,7 +70,7 @@ public sealed class ProjectInitCommand : Hall9kAsyncCommand<ProjectInitCommand.S
             session,
             project.Id,
             home.Value,
-            ProjectHomePaths.BareRepository(home.Value, project.Name),
+            ProjectHomePaths.ResolveBareRepository(home.Value, project.Name, project.RepositoryPath),
             cancellationToken);
 
         if (home.Value != project.HomeDirectory.Value)
@@ -115,7 +115,7 @@ public sealed class ProjectInitCommand : Hall9kAsyncCommand<ProjectInitCommand.S
         Settings settings,
         CancellationToken cancellationToken)
     {
-        string bare = ProjectHomePaths.BareRepository(home.Value, project.Name);
+        string bare = ProjectHomePaths.ResolveBareRepository(home.Value, project.Name, project.RepositoryPath);
         if (project.RepositoryPath == bare || !Directory.Exists(Path.Combine(bare, "objects")))
         {
             return project;

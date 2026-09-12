@@ -54,6 +54,32 @@ public static class ProjectHomePaths
     public static string BareRepository(string home, string projectName) =>
         Path.Combine(RepoDirectory(home), $"{DirectoryName(projectName)}.git");
 
+    /// <summary>
+    /// Whether <paramref name="repositoryPath"/> is a bare clone living inside this home's own
+    /// <c>repo/</c> directory. Matched by directory rather than by comparing against
+    /// <see cref="BareRepository"/>'s own name-derived filename, because a project rename changes
+    /// the name without ever moving the clone on disk: the clone keeps whatever filename it was
+    /// given when first made, and recomputing that filename from the project's current name would
+    /// desync from it the moment the name changes (independent pre-PR review, cycle 1, adversarial
+    /// lens).
+    /// </summary>
+    public static bool IsWithinRepoDirectory(string home, string? repositoryPath) =>
+        !string.IsNullOrWhiteSpace(repositoryPath)
+        && SameDirectory(Path.GetDirectoryName(repositoryPath), RepoDirectory(home));
+
+    /// <summary>
+    /// The bare-clone path this project's home should treat as its own: <paramref
+    /// name="repositoryPath"/> itself when it already sits inside this home's <c>repo/</c>
+    /// directory (<see cref="IsWithinRepoDirectory"/>) — the clone that is actually there, whatever
+    /// it is named — and <see cref="BareRepository"/>'s name-derived default otherwise, for a
+    /// project with no clone of its own here yet. Renaming a project never moves that clone, so a
+    /// caller that recomputed the filename from the current name instead of calling this would stop
+    /// recognising its own repository the moment the name changed (independent pre-PR review, cycle
+    /// 1, adversarial lens).
+    /// </summary>
+    public static string ResolveBareRepository(string home, string projectName, string? repositoryPath) =>
+        IsWithinRepoDirectory(home, repositoryPath) ? repositoryPath! : BareRepository(home, projectName);
+
     /// <summary>The always-there worktree on the project's primary branch — where a human reads code.</summary>
     public static string DevWorktree(string home) => Path.Combine(RepoDirectory(home), "dev");
 

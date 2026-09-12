@@ -64,7 +64,7 @@ public static class ProjectHomeRecipe
         if (materialiseRepository)
         {
             steps.AddRange(await RepoMaterialiser.MaterialiseAsync(
-                home, project.Name, project.RepositoryUrl, project.BaseBranch, cancellationToken));
+                home, project.Name, project.RepositoryPath, project.RepositoryUrl, project.BaseBranch, cancellationToken));
         }
         else
         {
