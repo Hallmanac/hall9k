@@ -55,6 +55,15 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddColumns("k", "v");
         table.AddRow("[bold]Project[/]", $"[bold]{project.Name.EscapeMarkup()}[/]");
         table.AddRow("Id", $"[dim]{project.Id}[/]");
+        if (project.IsArchived)
+        {
+            table.AddRow("Status", project.ArchivedAt is { } archivedAt
+                ? $"[yellow]archived since {archivedAt.ToLocalTime():g}[/] [dim]"
+                  + (project.ArchivedReason.IsNotBlank() ? $"({project.ArchivedReason.EscapeMarkup()}) " : string.Empty)
+                  + $"— reactivate: h9k project reactivate {project.Name.EscapeMarkup()}[/]"
+                : "[yellow]archived[/]");
+        }
+
         // The home leads, because it is the answer to "where do I go to work on this" — the
         // repository path is one thing inside it. A project with none says so and names the
         // command that ends that state, rather than leaving a blank row to interpret.
