@@ -323,9 +323,12 @@ public sealed class InstallCommandTests : IDisposable
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
-        string templatePackage = Path.Combine(directory, "templates", ReviewLapPromptBuilder.TemplateDirectory);
-        Directory.CreateDirectory(templatePackage);
-        File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+        foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory })
+        {
+            string templatePackage = Path.Combine(directory, "templates", templateDirectory);
+            Directory.CreateDirectory(templatePackage);
+            File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+        }
 
         InstallCommand.ValidateReleasePayload(directory).Should().BeNull();
     }
@@ -353,6 +356,22 @@ public sealed class InstallCommandTests : IDisposable
         string? problem = InstallCommand.ValidateReleasePayload(directory);
 
         problem.Should().Contain(ReviewLapPromptBuilder.TemplateDirectory);
+        problem.Should().Contain(WorkPromptBuilder.TemplateDirectory);
+    }
+
+    [Fact]
+    public void A_release_payload_missing_only_the_work_prompt_builder_package_is_refused()
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+        string templatePackage = Path.Combine(directory, "templates", ReviewLapPromptBuilder.TemplateDirectory);
+        Directory.CreateDirectory(templatePackage);
+        File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+
+        string? problem = InstallCommand.ValidateReleasePayload(directory);
+
+        problem.Should().Contain(WorkPromptBuilder.TemplateDirectory);
     }
 
     [Fact]

@@ -517,12 +517,19 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // itself (its own doc comment explains why: an --repo checkout genuinely may not have moved
         // its prose into templates yet, which is not an error). Checking the directory alone would
         // pass an empty or unrelated templates/ tree too, leaving PublishTemplates with nothing to
-        // publish and ReviewLapPromptBuilder failing later when it tries to load its own package —
-        // so this checks for that package by name (independent pre-PR review, cycle 1).
-        string requiredTemplatePackage = Path.Combine(fromRelease, "templates", ReviewLapPromptBuilder.TemplateDirectory);
-        if (!Directory.Exists(requiredTemplatePackage) || !Directory.EnumerateFiles(requiredTemplatePackage, "*.md").Any())
+        // publish and a builder failing later when it tries to load its own package — so this checks
+        // for each builder's package by name (independent pre-PR review, cycle 1; WorkPromptBuilder's
+        // own package added alongside it once that builder moved onto the same mechanism —
+        // independent pre-PR review, cycle 1, conformance lens — since every build dispatch and every
+        // h9k task work claim now needs it too, the same way ReviewLapPromptBuilder's needs h9k pr
+        // review).
+        foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory })
         {
-            missing.Add($"the templates/{ReviewLapPromptBuilder.TemplateDirectory} package");
+            string requiredTemplatePackage = Path.Combine(fromRelease, "templates", templateDirectory);
+            if (!Directory.Exists(requiredTemplatePackage) || !Directory.EnumerateFiles(requiredTemplatePackage, "*.md").Any())
+            {
+                missing.Add($"the templates/{templateDirectory} package");
+            }
         }
 
         return missing.Count == 0

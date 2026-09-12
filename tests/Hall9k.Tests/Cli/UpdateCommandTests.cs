@@ -304,13 +304,16 @@ public sealed class UpdateCommandTests : IDisposable
             string rid = ReleasePlatform.CurrentRid()!;
             string payload = Path.Combine(workspace, "payload");
             Directory.CreateDirectory(Path.Combine(payload, "skills", skillName));
-            // ValidateReleasePayload requires the review-lap-prompt-builder templates package in
-            // every payload it accepts (release.yml bundles templates/ beside skills/) — a single
-            // file in that package is enough to satisfy the gate, since this fixture is not
-            // exercising template publication itself.
-            string templatePackage = Path.Combine(payload, "templates", ReviewLapPromptBuilder.TemplateDirectory);
-            Directory.CreateDirectory(templatePackage);
-            File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+            // ValidateReleasePayload requires both the review-lap-prompt-builder and
+            // work-prompt-builder templates packages in every payload it accepts (release.yml
+            // bundles templates/ beside skills/) — a single file in each package is enough to
+            // satisfy the gate, since this fixture is not exercising template publication itself.
+            foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory })
+            {
+                string templatePackage = Path.Combine(payload, "templates", templateDirectory);
+                Directory.CreateDirectory(templatePackage);
+                File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+            }
             File.WriteAllText(Path.Combine(payload, InstallCommand.BinaryFileName("h9k")), cliContent);
             File.WriteAllText(Path.Combine(payload, InstallCommand.BinaryFileName("h9kd")), daemonContent);
             File.WriteAllText(Path.Combine(payload, "VERSION"), version);
