@@ -252,7 +252,11 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         string path = GoldenPath(name);
         if (Environment.GetEnvironmentVariable("UPDATE_GOLDENS") == "1")
         {
-            File.WriteAllText(path, actual);
+            // Written already normalized, not the raw string: the self-review tip file embeds
+            // Path.GetTempPath() literally, which is not just machine- and OS-specific but can
+            // change across sessions on the very same machine, so a checked-in fixture holding the
+            // raw resolved value would go stale the moment this capture ran again here.
+            File.WriteAllText(path, Normalize(actual));
             return;
         }
 
@@ -261,7 +265,21 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         Normalize(actual).Should().Be(Normalize(expected));
     }
 
-    private static string Normalize(string text) => text.Replace("\r\n", "\n", StringComparison.Ordinal);
+    /// <summary>
+    /// Line-ending normalization, plus this suite's own extra:
+    /// <c>WorkPromptBuilder.AppendSelfReviewPhaseRules</c>'s self-review round-one tip file
+    /// (reached through <see cref="AgentPromptBuilder"/>) embeds
+    /// <see cref="Path.GetTempPath"/> literally, which is a different absolute path on every
+    /// machine and OS — <c>/tmp</c> on ubuntu, <c>/var/folders/...</c> on macOS,
+    /// <c>C:\Users\...\AppData\Local\Temp\</c> on windows — so a fixture captured on one machine
+    /// would never byte-match another's CI run without this substitution, regardless of whether
+    /// the builder's own output actually changed.
+    /// </summary>
+    private static string Normalize(string text) =>
+        text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace(Path.GetTempPath().Replace('\\', '/').TrimEnd('/'), "<TEMP>", StringComparison.Ordinal)
+            .Replace(Path.GetTempPath().TrimEnd('\\', '/'), "<TEMP>", StringComparison.Ordinal);
 
     private static string GoldenPath(string name) =>
         Path.Combine(RepositoryRoot(), "tests", "Hall9k.Tests", "Fixtures", "PromptGoldens",

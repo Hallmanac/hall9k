@@ -1221,10 +1221,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "close-with-blocks");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(
-            file, "block-shape",
+        AppendFragment(
+            prompt, file, "block-shape",
             ("ThreadDispositionMarker", ThreadDispositionMarker),
-            ("ThreadIdPlaceholder", ReviewResultParser.ThreadIdPlaceholder)));
+            ("ThreadIdPlaceholder", ReviewResultParser.ThreadIdPlaceholder));
         prompt.AppendLine();
         // Split rather than substituted whole, to match main's own accidental mid-word line
         // wrap exactly (an existing test asserts the first half as its own substring) while
@@ -1652,9 +1652,14 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro", ("PriorCycleDescription", priorCycleDescription));
         prompt.AppendLine();
-        prompt.AppendLine(tracks.Count > 1
-            ? PromptTemplates.Load(file, "tracks-both")
-            : PromptTemplates.Load(file, "tracks-single"));
+        if (tracks.Count > 1)
+        {
+            AppendFragment(prompt, file, "tracks-both");
+        }
+        else
+        {
+            AppendFragment(prompt, file, "tracks-single");
+        }
         foreach (ReviewLens track in tracks)
         {
             prompt.AppendLine(track == ReviewLens.Adversarial
@@ -2376,10 +2381,10 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "intro");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(
-            file, "header-shape",
+        AppendFragment(
+            prompt, file, "header-shape",
             ("FindingMarker", ReviewResultParser.FindingMarker),
-            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder)));
+            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(file, "severity-heading"));
         prompt.AppendLine();
@@ -3368,7 +3373,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "payload-fields-explained");
         prompt.AppendLine();
-        prompt.AppendLine(Fragment(file, "submit-command", ("WriteCommand", writeCommand)));
+        AppendFragment(prompt, file, "submit-command", ("WriteCommand", writeCommand));
         prompt.AppendLine();
         AppendFragment(prompt, file, "payload-not-existence");
         prompt.AppendLine();
