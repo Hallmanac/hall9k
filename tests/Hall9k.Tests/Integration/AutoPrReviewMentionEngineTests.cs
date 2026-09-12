@@ -570,7 +570,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
-        observed.Outcome.Should().Be(ReviewMentionOutcome.Attached);
+        observed.Outcome.Should().Be(ReviewMentionOutcome.AttachedNoFollowUp);
         observed.TaskId.Should().Be(watchedTaskId);
     }
 
@@ -609,7 +609,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
-        observed.Outcome.Should().Be(ReviewMentionOutcome.Attached);
+        observed.Outcome.Should().Be(ReviewMentionOutcome.AttachedNoFollowUp);
         observed.TaskId.Should().Be(watchedTaskId);
     }
 
@@ -887,7 +887,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
 
         ObservedReviewMention observed = (await query.LoadAsync<ObservedReviewMention>(
             ObservedReviewMention.ComputeId(node.NodeId, projectId, repository, number, "brian", "IC_1"), cts.Token))!;
-        observed.Outcome.Should().Be(ReviewMentionOutcome.Attached, "the mention is still recorded, just without a claim");
+        observed.Outcome.Should().Be(
+            ReviewMentionOutcome.AttachedNoFollowUp, "the mention is still recorded, just without a claim");
         observed.TaskId.Should().Be(watchedTaskId);
     }
 

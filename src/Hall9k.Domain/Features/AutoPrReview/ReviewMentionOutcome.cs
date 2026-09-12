@@ -21,8 +21,20 @@ public sealed record ReviewMentionOutcome
     /// <summary>No live task covered this pull request (or its only task was Done): a fresh pr-review task was minted, published and assigned for this mention.</summary>
     public static readonly ReviewMentionOutcome TaskCreated = new("TaskCreated");
 
-    /// <summary>A live pr-review task already covered this pull request: the mention was recorded on its own stream instead of minting a second task.</summary>
+    /// <summary>A live pr-review task already covered this pull request, and a bounded follow-up lap was dispatched to answer this exact comment.</summary>
     public static readonly ReviewMentionOutcome Attached = new("Attached");
+
+    /// <summary>
+    /// A live pr-review task already covered this pull request, but no follow-up lap was
+    /// dispatched to answer this exact comment — the task was not currently eligible for one, the
+    /// comment predates this project's own cutoff, the setting is off here, or this sweep's own
+    /// launch ceiling or a node-wide hold stood in the way. The mention is recorded on the task's
+    /// own stream so it is not lost from the record, but nothing ever re-decides it (the identical
+    /// one-shot dedupe every other outcome gets), so this is the one shape that must stay visible
+    /// somewhere or the tagged comment is silently lost with no run ever answering it (independent
+    /// pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    public static readonly ReviewMentionOutcome AttachedNoFollowUp = new("AttachedNoFollowUp");
 
     /// <summary>Nothing was minted: this project explicitly recorded <c>--auto-pr-review off</c>.</summary>
     public static readonly ReviewMentionOutcome HeldSettingOff = new("HeldSettingOff");
@@ -47,6 +59,7 @@ public sealed record ReviewMentionOutcome
     {
         "taskcreated" => TaskCreated,
         "attached" => Attached,
+        "attachednofollowup" => AttachedNoFollowUp,
         "heldsettingoff" => HeldSettingOff,
         "heldbeforecutoff" => HeldBeforeCutoff,
         "mintfailed" => MintFailed,
