@@ -28,9 +28,21 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             : [.. all.Where(project => !project.IsArchived)];
         if (projects.Count == 0)
         {
-            AnsiConsole.MarkupLine(
-                "[dim]No projects registered. Register one:[/] "
-                + "h9k project add --name <name> --repo <path> [dim][[--base-branch <branch>]][/]");
+            if (archivedHidden > 0)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[dim]No live projects registered — {archivedHidden} archived project"
+                    + $"{(archivedHidden == 1 ? string.Empty : "s")} hidden. See "
+                    + "them:[/] h9k project list --include-archived [dim]· reactivate one:[/] "
+                    + "h9k project reactivate <project>");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine(
+                    "[dim]No projects registered. Register one:[/] "
+                    + "h9k project add --name <name> --repo <path> [dim][[--base-branch <branch>]][/]");
+            }
+
             return ExitCodes.Ok;
         }
 
@@ -73,7 +85,14 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             $"[dim]Settings and recent tasks:[/] h9k project show {first} [dim]· "
             + $"browse its tasks:[/] h9k task list --project {first} --include-archived");
 
-        if (rows.Any(row => row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
+        // rows covers every task on this install, but the table above only ever shows projects
+        // is filtered to (review comment, PR #336): without --include-archived, an archived
+        // project's own needs-you or stalled task must not trigger this footer — the table just
+        // told the operator that project is hidden, and h9k status would show the identical row
+        // with nothing to act on until it is reactivated.
+        HashSet<Guid> listedProjectIds = [.. projects.Select(project => project.Id)];
+        if (rows.Any(row => listedProjectIds.Contains(row.ProjectId)
+            && row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
         {
             AnsiConsole.MarkupLine("[dim]Something is waiting on you — see it with:[/] h9k status");
         }
