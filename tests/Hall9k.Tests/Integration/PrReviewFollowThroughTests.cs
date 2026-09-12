@@ -447,8 +447,16 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
         task.PrReviewAuthorActivitySummary.Should().Contain("2 new commits");
     }
 
+    /// <summary>
+    /// Every review thread resolved, with nothing else outstanding, no longer ends the wait by
+    /// itself (Decisions Log PLACEHOLDER-ed6044a5, amending #160): one pr-review task per pull
+    /// request per install stays waiting until the pull request itself merges or closes, so a
+    /// later GitHub mention of the install's own login always has a live task to attach to
+    /// instead of minting a redundant second one. This used to reach Done on this very look; now
+    /// it is recorded exactly like any other quiet observation and the wait stays open.
+    /// </summary>
     [Fact]
-    public async Task Every_thread_resolved_reaches_done()
+    public async Task Every_thread_resolved_no_longer_concludes_the_follow_through_by_itself()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
@@ -462,11 +470,10 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
 
         PrReviewFollowThroughResult sweep = await Engine(node, conversations).FollowThroughOnceAsync(taskId, cts.Token);
 
-        sweep.Concluded.Should().Be(1);
+        sweep.Concluded.Should().Be(0, "thread resolution alone never ends the wait now — only a merge, a close, or an abandon does");
         TaskDetails task = await ReadTaskAsync(taskId, cts.Token);
-        task.State.Should().Be(TaskState.Done);
-        task.PrReviewFollowThroughOpen.Should().BeFalse("nothing keeps polling a review that is over");
-        task.PullRequestUrl.Should().Be(PullRequestUrl, "the completion records which pull request it was");
+        task.State.Should().Be(TaskState.AwaitingAuthor);
+        task.PrReviewFollowThroughOpen.Should().BeTrue("the task keeps watching so a later mention has a live task to attach to");
     }
 
     /// <summary>
@@ -632,7 +639,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
     }
 
     [Fact]
-    public async Task Another_reviewers_unresolved_thread_never_holds_the_task_open()
+    public async Task Another_reviewers_unresolved_thread_never_surfaces_or_holds_the_task_open()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
@@ -651,10 +658,14 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
             },
         };
 
-        await Engine(node, conversations).FollowThroughOnceAsync(taskId, cts.Token);
+        PrReviewFollowThroughResult sweep = await Engine(node, conversations).FollowThroughOnceAsync(taskId, cts.Token);
 
-        (await ReadTaskAsync(taskId, cts.Token)).State.Should().Be(
-            TaskState.Done, "somebody else's unresolved conversation is not this review's follow-through");
+        sweep.Surfaced.Should().Be(0, "somebody else's own thread is not this reviewer's follow-through to be woken by");
+        TaskDetails task = await ReadTaskAsync(taskId, cts.Token);
+        task.State.Should().Be(
+            TaskState.AwaitingAuthor,
+            "the reviewer's own single thread being resolved no longer concludes the wait by itself");
+        task.PrReviewFollowThroughOpen.Should().BeTrue();
     }
 
     [Fact]
@@ -700,7 +711,7 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
     }
 
     [Fact]
-    public async Task A_needs_you_follow_through_still_reaches_done_when_the_conversation_ends()
+    public async Task A_needs_you_follow_through_still_reaches_done_when_the_pull_request_ends()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         (NodeContext node, Guid taskId, _) = await SeedWaitingReviewAsync(cts.Token);
@@ -715,14 +726,18 @@ public sealed class PrReviewFollowThroughTests(PostgresFixture postgres) : IClas
         await engine.FollowThroughOnceAsync(taskId, cts.Token);
         (await ReadTaskAsync(taskId, cts.Token)).State.Should().Be(TaskState.NeedsHuman);
 
+        // Resolving the thread alone no longer ends the watch (Decisions Log
+        // PLACEHOLDER-ed6044a5) — the watch keeps running through needs-you, and only the pull
+        // request itself merging or closing does.
         conversations.Conversation = conversations.Conversation with
         {
             Threads = [FakeConversations.ReviewerThread("src/One.cs", 12, "t1", resolved: true, replies: 1)],
+            IsOpen = false,
+            IsMerged = true,
         };
         PrReviewFollowThroughResult sweep = await engine.FollowThroughOnceAsync(taskId, cts.Token);
 
-        sweep.Concluded.Should().Be(
-            1, "the watch keeps running through needs-you; resolving the thread is what ends it");
+        sweep.Concluded.Should().Be(1, "the pull request merging is what ends it, not the thread resolving");
         (await ReadTaskAsync(taskId, cts.Token)).State.Should().Be(TaskState.Done);
     }
 }
