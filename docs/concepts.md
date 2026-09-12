@@ -68,9 +68,10 @@ seeded into a project home's `skills/` or `.claude/skills` adapter, never carrie
 never appears in the skill list a work prompt renders — publishing one anywhere a harness enumerates
 skills would add its description to every session's first turn, which is out of bounds (PLAN.md §16
 #175). `PromptTemplates` (`Hall9k.Domain.Infrastructure.Storage`) is the one
-mechanism a builder, the CLI, and the test suite all use to find one: this checkout's own source
-copy first, the install's own canonical copy otherwise — the CLI assembles the prompt from
-templates itself and hands a session the finished string, never a path into either copy.
+mechanism a builder, the CLI, the daemon, and the test suite all use to find one: this checkout's own
+source copy first, the install's own canonical copy otherwise — the builder assembles the prompt
+from templates itself, whichever process hosts it, and hands a session the finished string, never a
+path into either copy.
 
 ## Ideas and tasks
 
