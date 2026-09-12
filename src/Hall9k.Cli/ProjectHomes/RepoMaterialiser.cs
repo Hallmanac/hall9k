@@ -36,12 +36,13 @@ public static class RepoMaterialiser
     public static async Task<IReadOnlyList<ProjectHomeStep>> MaterialiseAsync(
         string home,
         string projectName,
+        string? recordedRepositoryPath,
         Uri? remote,
         string baseBranch,
         CancellationToken cancellationToken)
     {
         List<ProjectHomeStep> steps = [];
-        string bare = ProjectHomePaths.BareRepository(home, projectName);
+        string bare = ProjectHomePaths.ResolveBareRepository(home, projectName, recordedRepositoryPath);
         string dev = ProjectHomePaths.DevWorktree(home);
         bool cloned = false;
 

@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -13,11 +14,20 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>
 /// Changes a project's name and nothing else (task: a project can be archived, listed as archived,
-/// reactivated, and renamed). NAME IS NOT AN IDENTIFIER — the id, the recorded home path, the
-/// repository, and every task, run, and idea are untouched, and the home directory on disk keeps
-/// its old folder name. Its main use is freeing an archived project's name for a fresh
-/// registration (h9k project add offers this same rename inline on a name collision), but nothing
-/// here requires the project to be archived — a live project may be renamed too.
+/// reactivated, and renamed). NAME IS NOT AN IDENTIFIER for anything this platform persists — the
+/// id, the recorded home path, the repository, and every task, run, and idea are untouched, and
+/// the home directory on disk keeps its old folder name. A handful of call sites (rendered
+/// AGENTS.md, the dispatched work prompt, <c>h9k project init</c>'s repair path) still need a bare
+/// clone's filename and derive it from the name when nothing is recorded yet to prefer instead —
+/// but they go through <see cref="ProjectHomePaths.ResolveBareRepository"/>, which always prefers
+/// the recorded <c>RepositoryPath</c> once it already lives inside the home's own <c>repo/</c>
+/// directory, so a rename never desyncs the two (independent pre-PR review, cycle 1, adversarial
+/// lens — the earlier version of this comment claimed no name-keyed lookup existed at all, which
+/// was false: <c>ProjectHomePaths.BareRepository(home, project.Name)</c> was one, called directly
+/// at four sites, and every one of them stopped recognising its own clone the moment a project was
+/// renamed). Its main use is freeing an archived project's name for a fresh registration
+/// (h9k project add offers this same rename inline on a name collision), but nothing here requires
+/// the project to be archived — a live project may be renamed too.
 /// </summary>
 public sealed class ProjectRenameCommand : Hall9kAsyncCommand<ProjectRenameCommand.Settings>
 {

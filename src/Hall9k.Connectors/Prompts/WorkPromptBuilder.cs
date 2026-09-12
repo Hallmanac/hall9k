@@ -1521,7 +1521,7 @@ public static class WorkPromptBuilder
         // materialises the bare clone and dev/ worktree without repointing the project at them, so
         // repo/ can be populated even while this session's own worktree — cut from wherever dispatch
         // actually reads project.RepositoryPath from — came from somewhere else.
-        string bare = ProjectHomePaths.BareRepository(home, project.Name);
+        string bare = ProjectHomePaths.ResolveBareRepository(home, project.Name, project.RepositoryPath);
         string dev = ProjectHomePaths.DevWorktree(home);
         bool repoMaterialised = Directory.Exists(dev);
         bool dispatchesFromHome = ProjectHomePaths.SameDirectory(project.RepositoryPath, bare);

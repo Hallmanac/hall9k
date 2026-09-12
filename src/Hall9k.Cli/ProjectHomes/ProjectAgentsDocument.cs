@@ -104,7 +104,7 @@ public static class ProjectAgentsDocument
     /// <summary>The document itself, separated from the write so it can be rendered and read in a test.</summary>
     public static string Render(string home, ProjectDetails project)
     {
-        string bare = ProjectHomePaths.BareRepository(home, project.Name);
+        string bare = ProjectHomePaths.ResolveBareRepository(home, project.Name, project.RepositoryPath);
         string dev = ProjectHomePaths.DevWorktree(home);
 
         // Whether repo/ is actually populated is a filesystem fact, not a fact about the recorded

@@ -96,6 +96,43 @@ public sealed class ProjectHomeTests : IDisposable
         Path.GetDirectoryName(ProjectHomePaths.DevWorktree(home)).Should().Be(ProjectHomePaths.RepoDirectory(home));
     }
 
+    /// <summary>
+    /// A project rename changes <c>Name</c> without ever moving the clone on disk, so a caller
+    /// that recomputed the bare-clone filename from the current name (<see cref="ProjectHomePaths.BareRepository"/>)
+    /// would stop recognising its own clone the moment the name changed —
+    /// <see cref="ProjectHomePaths.ResolveBareRepository"/> is the check that survives it, by
+    /// preferring whatever is actually recorded once that path already lives inside the home's
+    /// own <c>repo/</c> directory (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void Resolving_the_bare_repository_prefers_the_recorded_path_once_it_lives_in_repo()
+    {
+        string home = ProjectHomePaths.DefaultFor("hall9k");
+        string registeredAsHall9k = ProjectHomePaths.BareRepository(home, "hall9k");
+
+        // Renamed to "hall9k-platform" — the recorded path never moved, and it is still the
+        // clone actually on disk, so resolving it under the new name must still find it rather
+        // than computing a filename nothing was ever cloned into.
+        ProjectHomePaths.IsWithinRepoDirectory(home, registeredAsHall9k).Should().BeTrue();
+        ProjectHomePaths.ResolveBareRepository(home, "hall9k-platform", registeredAsHall9k)
+            .Should().Be(registeredAsHall9k, "the clone on disk keeps its original filename across a rename");
+    }
+
+    [Fact]
+    public void Resolving_the_bare_repository_falls_back_to_the_current_name_with_no_clone_of_its_own_yet()
+    {
+        string home = ProjectHomePaths.DefaultFor("hall9k");
+
+        ProjectHomePaths.IsWithinRepoDirectory(home, repositoryPath: null).Should().BeFalse();
+        ProjectHomePaths.IsWithinRepoDirectory(home, "/registered/against/an/external/checkout").Should().BeFalse(
+            "a --repo registration points outside this home's own repo/ directory entirely");
+
+        ProjectHomePaths.ResolveBareRepository(home, "hall9k", repositoryPath: null)
+            .Should().Be(ProjectHomePaths.BareRepository(home, "hall9k"));
+        ProjectHomePaths.ResolveBareRepository(home, "hall9k", "/registered/against/an/external/checkout")
+            .Should().Be(ProjectHomePaths.BareRepository(home, "hall9k"));
+    }
+
     [Fact]
     public void Registration_carries_the_home_and_a_stream_written_before_homes_existed_reads_as_none()
     {
