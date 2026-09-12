@@ -49,6 +49,29 @@ public sealed class PullRequestOpener(
             return;
         }
 
+        // Checked before PushBranchAsync/CreatePullRequestAsync below, not only at the
+        // AllowsAsync identity check further down (Copilot review, PR #334): that check runs
+        // AFTER the branch is pushed and the pull request opened, and it never opts into
+        // refuseAbandonedTask, so identity alone (CurrentRunId still names this run — abandon
+        // never clears it) would still let an abandoned run push real history and open or
+        // update a live pull request, only declining TaskCompleted afterward. This is the one
+        // call site that publishes to GitHub, so the check has to come before those side
+        // effects, not after them.
+        if (task.State == TaskState.Abandoned)
+        {
+            logger.LogInformation(
+                "Run {RunId}: task {TaskId} is Abandoned - skipping pull-request opening", runId, taskId);
+            await using IDocumentSession abandonedSession = store.LightweightSession();
+            if (await abandonedSession.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+            {
+                abandonedSession.Events.Append(
+                    runId, new RunSuperseded(runId, task.LeaseGeneration, DateTimeOffset.UtcNow));
+                await abandonedSession.SaveChangesAsync(cancellationToken);
+            }
+
+            return;
+        }
+
         try
         {
             // Follow-up-ness is recorded on the run at dispatch (RunDispatched.IsFollowUp) —
