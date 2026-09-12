@@ -33,7 +33,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         public string Project { get; init; } = string.Empty;
 
         [CommandOption("--skip-permissions <BOOL>")]
-        [Description("Agents run with --dangerously-skip-permissions (log #9, log #179); "
+        [Description("Agents run with --dangerously-skip-permissions (log #9, log #181); "
             + "every new registration already records true, so this is how you turn it off")]
         public bool? SkipPermissions { get; init; }
 
