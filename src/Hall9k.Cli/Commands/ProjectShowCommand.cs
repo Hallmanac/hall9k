@@ -217,8 +217,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// <para>
     /// "yes" used to say nothing about origin, because it could not be anything but a choice: only
     /// <c>h9k project set</c> ever recorded it. Registration became a second, silent way to reach
-    /// "yes" (task: a newly registered project skips permission prompts by default, recorded at
-    /// registration) — every project <c>h9k project add</c> creates records it on
+    /// "yes" (Decisions Log #181) — every project <c>h9k project add</c> creates records it on
     /// <c>ProjectRegistered</c> itself, with no <c>h9k project set</c> step in between — so "yes"
     /// now names which of the two it is: <c>recorded</c> tells this row a later <c>project set</c>
     /// touched the field at all; when it has not, and the value still reads true, the only place

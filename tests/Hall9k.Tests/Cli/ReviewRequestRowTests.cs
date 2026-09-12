@@ -539,9 +539,8 @@ public sealed class ReviewRequestRowTests
     /// A value that can only have been recorded says nothing about origin: there is no default it
     /// could be confused with, and a parenthetical on every row is how the ones that need it stop
     /// being read. SkipPermissions no longer belongs to this group — registration is a second way
-    /// to reach "yes" now (task: a newly registered project skips permission prompts by default,
-    /// recorded at registration), so its "yes" row does name an origin; that behaviour has its own
-    /// test below.
+    /// to reach "yes" now (Decisions Log #181), so its "yes" row does name an origin; that
+    /// behaviour has its own test below.
     /// </summary>
     [Fact]
     public void A_row_whose_value_could_only_have_been_chosen_says_nothing_about_origin()
@@ -555,11 +554,11 @@ public sealed class ReviewRequestRowTests
     }
 
     /// <summary>
-    /// "yes" now has two possible origins (task: a newly registered project skips permission
-    /// prompts by default, recorded at registration): a project <c>h9k project add</c> registered,
-    /// which never went through <c>h9k project set</c> at all, and a project whose operator typed
-    /// <c>--skip-permissions true</c> explicitly. The row names which one it is instead of
-    /// collapsing them into a bare "yes" the way it did before registration could produce one.
+    /// "yes" now has two possible origins (Decisions Log #181): a project <c>h9k project add</c>
+    /// registered, which never went through <c>h9k project set</c> at all, and a project whose
+    /// operator typed <c>--skip-permissions true</c> explicitly. The row names which one it is
+    /// instead of collapsing them into a bare "yes" the way it did before registration could
+    /// produce one.
     /// </summary>
     [Theory]
     [InlineData(true, "explicit")]

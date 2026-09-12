@@ -418,6 +418,11 @@ First use also registers your owner record (from `git config user.name` / `user.
 machine as a node, and a GitHub connection pointing at your `gh` login. Nothing to configure; it
 is idempotent.
 
+Registration also turns on `--dangerously-skip-permissions` for every agent this project ever
+dispatches (Decisions Log #181): a project left with prompts live cannot answer one headless, so
+there is deliberately no flag to register with prompts left live. Revert it per project after the
+fact with `h9k project set <name> --skip-permissions false`.
+
 `project add` also creates the project's **home directory**, `~/.hall9k/projects/<name>`, which
 is the same shape on every machine: a generated `AGENTS.md`, `repo/` (a bare clone with a `dev/`
 worktree on the primary branch, and the task worktrees dispatch cuts beside it), `ideas/`,

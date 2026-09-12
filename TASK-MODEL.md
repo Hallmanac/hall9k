@@ -1305,7 +1305,9 @@ public sealed record ProjectRegistered(
 public sealed record ProjectSettingsChanged(   // Optional<T> pattern: absent ≠ null
     Guid Id,
     Optional<IReadOnlyList<VerifyCommand>> VerifyCommands,
-    Optional<bool> SkipPermissions,            // log #9: per-project opt-in
+    Optional<bool> SkipPermissions,            // log #9, amended log #181: h9k project add now
+                                                // records this true at registration; project set
+                                                // still overrides it either way afterward
     Optional<int> MaxParallelAgents,           // RETIRED (log #140): session-denominated, never enforced.
                                                // Still on the event so old streams replay; nothing writes it.
     Optional<IReadOnlyList<ContextLink>> ContextLinks,
