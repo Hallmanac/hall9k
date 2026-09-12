@@ -39,13 +39,18 @@ public sealed record PrReviewFollowThroughResult(
 /// cadence a pull request actually moves on and there is no doorbell from GitHub in a local-first
 /// design.
 /// <para>
-/// Every waiting review gets one <c>gh</c> read per tick, and that read answers three questions in
+/// Every waiting review gets one <c>gh</c> read per tick, and that read answers two questions in
 /// order:
 /// </para>
 /// <list type="number">
 /// <item>
 /// Has the pull request ended? A merge or a close ends the follow-through outright: whatever the
-/// author did or did not answer, there is nothing left to wait for.
+/// author did or did not answer, there is nothing left to wait for. This, and a human's own
+/// <c>h9k task abandon</c>, are the only two ways this watch ever ends (Decisions Log
+/// PLACEHOLDER-ed6044a5: one pr-review task per pull request per install, so the wait stays open
+/// even when nothing is outstanding — a task that reached Done because it had nothing left to
+/// watch would leave a later GitHub mention of the install's own login with no live task to attach
+/// to, and would mint a redundant second one instead).
 /// </item>
 /// <item>
 /// Has the pull request moved? Replies in the reviewer's own threads — comments they did not write
@@ -54,24 +59,20 @@ public sealed record PrReviewFollowThroughResult(
 /// the one explicit ask of the reviewer in the set: an author who resolves the threads themselves
 /// and re-requests review without a word or a push is asking them back, and holding that as a
 /// quiet wait left the author waiting on the reviewer while the reviewer's board said the reverse
-/// (independent pre-PR review, cycle 1, adversarial lens).
-/// </item>
-/// <item>
-/// Is the conversation over? Every thread the reviewer opened resolved, with no re-review
-/// requested of them, reaches Done — unless the provider's own thread page was capped, in which
-/// case "every thread" is only "every thread that could be read" and the wait stays open.
+/// (independent pre-PR review, cycle 1, adversarial lens). Every review thread of the reviewer's
+/// own being resolved, with nothing else outstanding, no longer ends the wait by itself — it is
+/// recorded as a quiet observation exactly like an unremarkable tick, and the task stays waiting
+/// until the pull request itself ends.
 /// </item>
 /// </list>
 /// <para>
-/// The order matters and is deliberate. A pull request that merged while carrying unanswered
-/// replies is over — surfacing needs-you on it would ask the reviewer to go and read a
-/// conversation nobody can act on. And "has it moved" is asked before "is the conversation over"
-/// so a push or a reply that also resolved every thread still wakes the reviewer once, rather than
-/// closing the task out silently on the strength of resolutions the author made themselves. That
-/// holds on the FIRST look as well as every later one, which is why replies are counted from a
-/// thread's own comments rather than gated on a previous watermark: an author who answered and
-/// resolved everything inside the first poll interval would otherwise reach Done with the reviewer
-/// never told a word of it (independent pre-PR review, cycle 1, adversarial lens).
+/// The order matters and is deliberate: a pull request that merged while carrying unanswered
+/// replies is over, and surfacing needs-you on it would ask the reviewer to go and read a
+/// conversation nobody can act on. Replies are counted from a thread's own comments rather than
+/// gated on a previous watermark, which is what lets the FIRST look count them too: an author who
+/// answers inside the first poll interval still wakes the reviewer once, rather than the reply
+/// going unremarked because nothing had been observed yet to compare it against (independent
+/// pre-PR review, cycle 1, adversarial lens).
 /// </para>
 /// <para>
 /// Deliberately a sweep of its own rather than a fourth arm inside
@@ -329,69 +330,14 @@ public sealed class PrReviewFollowThroughEngine(
             || task.PrReviewObservedCommitCount != conversation.CommitCount
             || task.PrReviewReviewerLogin != reviewerLogin;
 
-        // !reReviewRequested is the STANDING request and stays here beside activity.Any, which
-        // carries only the transition: a request that woke the reviewer on an earlier tick has
-        // been baselined out of the transition by now, and a conversation the author is still
-        // asking them back into is not over however quiet it has gone since.
-        bool settled = !activity.Any
-            && !reReviewRequested
-            && watermark.All(thread => thread.IsResolved);
-
-        // A capped thread page is never read as a finished conversation. GitHub's own 100-thread
-        // cap leaves real threads unread, and "every thread the reviewer opened is resolved" read
-        // off a truncated page means only "the first hundred happened to be" — so concluding on it
-        // would close a follow-through with unresolved threads of theirs still standing, which is
-        // precisely the silent miss this whole watch exists to prevent. The same reading
-        // CloseoutEngine makes of its own ReviewThreadsTruncated, and the reason
-        // ReviewConversation carries the flag at all (independent pre-PR review, cycle 2). It only
-        // ever holds the wait OPEN: replies, pushes and a re-review request still surface as
-        // needs-you below, the pull request merging or closing still ends it Done, and
-        // h9k task abandon still walks away from it. What does NOT end it is h9k task resolve —
-        // the attestation exit from Failed alone (TaskDecider.Resolve, Decisions Log #27), so it is
-        // refused outright from here — nor a fresh verdict off a scoped lap, which re-parks the
-        // task in AwaitingAuthor against a re-baselined watermark rather than concluding it. An
-        // earlier cut of this comment and of the warning below advised both (independent pre-PR
-        // review, cycle 1, both lenses: never advise a lever the platform will refuse).
-        bool over = settled && !conversation.ThreadsTruncated;
-        if (settled && conversation.ThreadsTruncated && observationIsNews)
-        {
-            // Only when the look actually saw something new, for the reason the quiet-poll branch
-            // below gives about events: a pull request past the cap is past it forever, and a
-            // warning every few minutes for a week would bury the sweep's own log.
-            logger.LogWarning(
-                "Task {TaskId}: every review thread of {Reviewer}'s that could be read on "
-                + "{Repository}#{Number} is resolved, but the provider's own 100-thread page cap left more "
-                + "unread, so the follow-through stays open rather than claiming a conversation it cannot "
-                + "see the end of. Read the threads on GitHub: it reaches Done when the pull request merges "
-                + "or closes, and h9k task abandon is the one lever that ends the watch before then. "
-                + "h9k task resolve is refused here — it is the attestation exit from a FAILED task alone",
-                row.Id, reviewerLogin, repository, number);
-        }
-
-        if (over)
-        {
-            // The observation is appended alongside the completion, not skipped, so the task's own
-            // stream says WHY it closed — "these threads, all resolved, at this head" — rather than
-            // leaving a bare TaskCompleted for a reader to take on trust.
-            session.Events.Append(
-                row.Id,
-                expectedVersion: fence.Version + 2,
-                TaskDecider.ObservePrReviewFollowThrough(
-                    task, reviewerLogin, watermark, reReviewRequested, conversation.HeadSha,
-                    conversation.CommitCount, now),
-                TaskDecider.Complete(task, RunIdFor(task), pullRequestUrl, now));
-            if (!await SaveOrLoseTheRaceAsync(session, row.Id, cancellationToken))
-            {
-                return FollowThroughOutcome.Skipped;
-            }
-
-            logger.LogInformation(
-                "Task {TaskId}: every review thread the reviewer opened on {Repository}#{Number} is resolved "
-                + "({Count} in total) — the follow-through is over",
-                row.Id, repository, number, watermark.Count);
-            return FollowThroughOutcome.Concluded;
-        }
-
+        // Thread resolution alone no longer ends the follow-through (Decisions Log
+        // PLACEHOLDER-ed6044a5: one pr-review task per pull request per install, and later mentions
+        // attach to it rather than mint a second one — a task that reached Done the moment its
+        // threads happened to be quiet would let a mention arriving after that leave nothing live
+        // to attach to). Every review thread resolved, with nothing outstanding, used to reach Done
+        // on this very look; now it is recorded exactly like any other quiet observation below and
+        // the wait stays open. Only the merge/close branch above, or a human's own
+        // <c>h9k task abandon</c>, ever ends it from here on.
         if (!activity.Any)
         {
             if (!observationIsNews)
