@@ -50,7 +50,7 @@ Add rate limiting to auth endpoints
   this worktree instead, where it survives the gap. The filename is suffixed
   with this worktree's own directory name so a concurrent session in a sibling
   worktree on the same node never clobbers this one's tip:
-  `git rev-parse HEAD > "/var/folders/11/ymwtgwnx14n5wgkz3jltjrnh0000gn/T/self-review-round-one-tip-wt-golden-fixture"`. Remove that file once this phase
+  `git rev-parse HEAD > "<TEMP>/self-review-round-one-tip-wt-golden-fixture"`. Remove that file once this phase
   ends, whichever round it ends on — like the hunt-3 scratch directory below,
   it is scratch state for this phase alone and does not belong on the node
   afterward.
@@ -118,7 +118,7 @@ Add rate limiting to auth endpoints
   failure the tip-file mechanic exists to prevent. Only when round one actually
   fixed something above the behavior-or-correctness bar does a round two run,
   scoped to only the diff of those fixes —
-  `git diff "$(cat "/var/folders/11/ymwtgwnx14n5wgkz3jltjrnh0000gn/T/self-review-round-one-tip-wt-golden-fixture")" HEAD` — rather than the whole
+  `git diff "$(cat "<TEMP>/self-review-round-one-tip-wt-golden-fixture")" HEAD` — rather than the whole
   branch again, with the same three hunts scoped to it. A round that fixes
   nothing above that bar — including round one — ends the loop right there.
   After round two the loop ends unconditionally either way: no third round —
