@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Text;
 
@@ -31,6 +32,18 @@ public sealed record GitHubLoginRead(string? Login, string? Error, bool Authenti
 /// read as one.
 /// </summary>
 public sealed record ReviewRequestActor(bool Found, string? Login, DateTimeOffset? RequestedAt);
+
+/// <summary>
+/// One comment <see cref="GitHubReviewAssignments.FindMentionCommentsAsync"/> found mentioning the
+/// install's own login on a pull request (idea 2f079bcd, auto-pr-review's second trigger) — an
+/// issue comment, a review-comment thread reply, or a review's own top-level body, whichever
+/// carried the <c>@login</c> text. <see cref="AuthorLogin"/> is what the caller filters the
+/// install's own comments out with (a comment the install itself wrote never counts), and
+/// <see cref="CommentId"/> is the dedupe key a later sweep tick compares against so the same
+/// comment never fires twice.
+/// </summary>
+public sealed record PullRequestMentionComment(
+    string CommentId, string AuthorLogin, string Body, string Url, DateTimeOffset CreatedAt);
 
 /// <summary>
 /// Which half of a login's reviewer-request history <see cref="GitHubReviewAssignments.FindMostRecentRequestActorAsync"/>
@@ -222,6 +235,185 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         }
 
         return found;
+    }
+
+    // first: 100 on every leg — a generous cap in the TimelineQuery's own spirit (that field's own
+    // doc explains the choice): a pull request carrying more comments, review threads, or reviews
+    // than this has left the range this feature reads, and reading past it silently risks missing
+    // the very mention this poll exists to find rather than the oldest one. Nested per-thread
+    // comments are capped lower (last: 20) because a thread with more replies than that is rare
+    // and the query's own cost is threads times comments.
+    private const string MentionQuery =
+        """
+        query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              comments(last: 100) {
+                nodes { id author { login } body url createdAt }
+              }
+              reviewThreads(last: 100) {
+                nodes {
+                  comments(last: 20) {
+                    nodes { id author { login } body url createdAt }
+                  }
+                }
+              }
+              reviews(last: 100) {
+                nodes { id author { login } body url submittedAt }
+              }
+            }
+          }
+        }
+        """;
+
+    /// <summary>
+    /// Every open pull request in <paramref name="repository"/> currently mentioning
+    /// <paramref name="login"/> anywhere GitHub's own <c>mentions:</c> search qualifier looks — a
+    /// direct <c>@login</c> mention, never a team handle, which is a different qualifier the
+    /// search never matches (idea 2f079bcd, decision 1). Read fresh every call, exactly like
+    /// <see cref="ListReviewRequestedAsync"/>, and for the identical reason: this is the
+    /// discovery half, never a diffed snapshot.
+    /// </summary>
+    public async Task<IReadOnlyList<ReviewRequestedPullRequest>> ListMentionedAsync(
+        string repository, string login, string workingDirectory, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner(
+            "gh",
+            [
+                "pr", "list", "--repo", repository, "--state", "open", "--limit", "500",
+                "--search", $"mentions:{login}", "--json", "number,url,title,body",
+            ],
+            workingDirectory, cancellationToken);
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"gh pr list --repo {repository} --search \"mentions:{login}\" exited "
+                + $"{result.ExitCode}: {result.StandardError.Trim()}");
+        }
+
+        return ParseReviewRequested(result.StandardOutput);
+    }
+
+    /// <summary>
+    /// Every comment on one pull request whose text actually names <paramref name="login"/> as an
+    /// <c>@mention</c> — issue comments, review-comment thread replies, and a review's own
+    /// top-level body, all three read in one query and merged, oldest first. The
+    /// <c>mentions:</c> search above says a pull request carries one somewhere; this is what finds
+    /// which comment it actually is, since the search itself names no comment id.
+    /// <para>
+    /// A comment authored by <paramref name="login"/> itself is excluded here, at the source,
+    /// rather than left to the caller: the install's own comments never count as a trigger (idea
+    /// 2f079bcd, decision 2), and a caller that forgot the filter would otherwise see its own
+    /// replies as fresh mentions forever.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<PullRequestMentionComment>> FindMentionCommentsAsync(
+        string owner, string name, int number, string login, string workingDirectory, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner(
+            "gh",
+            [
+                "api", "graphql",
+                "-f", $"query={MentionQuery}",
+                "-f", $"owner={owner}",
+                "-f", $"name={name}",
+                "-F", $"number={number}",
+            ],
+            workingDirectory, cancellationToken);
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"gh api graphql (mentions on {owner}/{name}#{number}) exited {result.ExitCode}: "
+                + $"{result.StandardError.Trim()}");
+        }
+
+        return ParseMentionComments(result.StandardOutput, login);
+    }
+
+    /// <summary>Split from the gh call so the mapping is testable against recorded gh output.</summary>
+    internal static IReadOnlyList<PullRequestMentionComment> ParseMentionComments(string json, string login)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("data", out JsonElement data)
+            || !data.TryGetProperty("repository", out JsonElement repository)
+            || repository.ValueKind != JsonValueKind.Object
+            || !repository.TryGetProperty("pullRequest", out JsonElement pullRequest)
+            || pullRequest.ValueKind != JsonValueKind.Object)
+        {
+            // "pullRequest": null — a stale number in a repository that has moved or renamed.
+            // Honestly nothing found rather than a guess (AGENTS.md).
+            return [];
+        }
+
+        List<PullRequestMentionComment> found = [];
+        AddMatching(pullRequest, "comments", found, login);
+        if (pullRequest.TryGetProperty("reviewThreads", out JsonElement threads)
+            && threads.TryGetProperty("nodes", out JsonElement threadNodes)
+            && threadNodes.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement thread in threadNodes.EnumerateArray())
+            {
+                AddMatching(thread, "comments", found, login);
+            }
+        }
+
+        AddMatching(pullRequest, "reviews", found, login, timestampProperty: "submittedAt");
+
+        return [.. found.OrderBy(comment => comment.CreatedAt)];
+    }
+
+    /// <summary>
+    /// One <c>{ nodes: [...] }</c> collection's own mentioning comments, appended to
+    /// <paramref name="found"/> — the shared walk <see cref="ParseMentionComments"/> runs over
+    /// issue comments, each review thread's own replies, and review bodies alike, since all three
+    /// share the identical <c>id</c>/<c>author</c>/<c>body</c>/<c>url</c> shape and differ only in
+    /// which timestamp field GitHub names it (a review's own <c>submittedAt</c> rather than every
+    /// comment shape's <c>createdAt</c>).
+    /// </summary>
+    private static void AddMatching(
+        JsonElement parent, string collectionProperty, List<PullRequestMentionComment> found, string login,
+        string timestampProperty = "createdAt")
+    {
+        if (!parent.TryGetProperty(collectionProperty, out JsonElement collection)
+            || !collection.TryGetProperty("nodes", out JsonElement nodes)
+            || nodes.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        // Bounded on the far side only: a GitHub username is [A-Za-z0-9-], so "@brian" must not be
+        // read as a mention of "brian" when the text actually says "@brianhall99" or "@brian-2" —
+        // a plain Contains check matches both as a false positive (independent pre-PR review,
+        // cycle 1, adversarial lens). The near side needs no boundary of its own: GitHub reads
+        // "@login" as a mention regardless of what character precedes the "@" (mid-word "cc@login"
+        // included), so anchoring there would silently drop genuine mentions instead.
+        Regex mentionPattern = new(
+            $@"@{Regex.Escape(login)}(?![A-Za-z0-9-])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        foreach (JsonElement node in nodes.EnumerateArray())
+        {
+            string? id = ReadString(node, "id");
+            string? body = ReadString(node, "body");
+            string? authorLogin = node.TryGetProperty("author", out JsonElement author) && author.ValueKind == JsonValueKind.Object
+                ? ReadString(author, "login")
+                : null;
+            if (id.IsBlank() || body.IsBlank() || authorLogin.IsBlank()
+                || string.Equals(authorLogin, login, StringComparison.OrdinalIgnoreCase)
+                || !mentionPattern.IsMatch(body))
+            {
+                continue;
+            }
+
+            string url = ReadString(node, "url") ?? string.Empty;
+            DateTimeOffset createdAt =
+                ReadString(node, timestampProperty) is { } stamp
+                && DateTimeOffset.TryParse(
+                    stamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset parsed)
+                    ? parsed
+                    : DateTimeOffset.MinValue;
+            found.Add(new PullRequestMentionComment(id, authorLogin, body, url, createdAt));
+        }
     }
 
     /// <summary>
