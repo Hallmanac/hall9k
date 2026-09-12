@@ -37,7 +37,7 @@ public static class AgentPromptBuilder
 {
     /// <summary>The package name this builder's own prose ships under in <c>.claude/templates</c>
     /// (and the canonical/release-payload equivalents), copying <c>ReviewLapPromptBuilder</c>'s own
-    /// shape exactly (Decisions Log #PLACEHOLDER-6bb76ddf): one package per builder, published
+    /// shape exactly (Decisions Log #177): one package per builder, published
     /// beside the canonical skills, never inside them.</summary>
     public const string TemplateDirectory = "agent-prompt-builder";
 
