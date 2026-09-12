@@ -1,6 +1,6 @@
 ---
 name: walk-pr-review-findings
-description: Walk a pr-review task's findings report with the owner, finding by finding, and post exactly what they direct — a batched GitHub review or a plain comment — only on their explicit go. Use when a pr-review task (h9k task add --type pr-review --from-pr) is parked NeedsHuman with a findings report.
+description: Walk a pr-review task's findings report (or a mention follow-up's addendum) with the owner, finding by finding, and post exactly what they direct — a batched GitHub review, a plain comment, or a reply to a tagged comment — only on their explicit go. Use when a pr-review task (h9k task add --type pr-review --from-pr, or one auto-pr-review minted from a review request or a GitHub mention) is parked NeedsHuman with a report or addendum.
 ---
 
 # Walk pr-review findings
@@ -20,8 +20,12 @@ so posting a review under their login as their review is exactly what this skill
 ## Before you start
 
 1. **Find the report.** `h9k task show <id>` on the parked task prints the run's park reason,
-   which names the findings-report path directly (`review-1-findings.md` under the run's
-   directory). Read it.
+   which names the file directly: `review-1-findings.md` under the run's directory for the
+   original review, or `mention-followup-addendum.md` under a later run's own directory when this
+   park is a mention follow-up's addendum (idea 2f079bcd — a GitHub comment tagged the install's
+   own login after the original review, and this run answers it against the review already done).
+   Read the file the park reason names. An addendum carries only a "You were asked" section (see
+   "Answering a tagged comment" below); it never repeats the original findings.
 2. **Confirm nothing has been posted.** The run wrote only local files — no comment, no review,
    no reaction exists on the pull request yet. Nothing here assumes otherwise.
 3. **Know the target.** The task's external reference (`h9k task show`) names the pull request:
@@ -82,17 +86,50 @@ so posting a review under their login as their review is exactly what this skill
    Post nothing else. No reactions, no thread replies beyond what this step just created, no
    second pass "while I'm here" comment.
 
-5. **Close the task.** Once every finding has a directive and everything the owner wanted posted
-   is posted, resolve the park:
+5. **Answer a tagged comment, when the report ends with one.** A findings report or an addendum
+   the task was minted or extended by a mention (idea 2f079bcd) ends with a "You were asked"
+   section: the tagged comment verbatim with its author and time, the question in one sentence,
+   the analysis citing the review's own files and lines, what could not be determined, and a
+   drafted reply under its own "Drafted reply" heading. Everything above the drafted reply is
+   context for the owner; only the drafted reply, or the owner's own edit of it, is ever a
+   candidate for posting.
+   - **Show the owner the full section**, drafted reply included, before asking anything.
+   - **Ask for a directive**, the same three shapes a dismissed finding takes:
+     - **Not mine to answer.** The comment was not genuinely addressed to the owner, or answering
+       it is someone else's call. Nothing posted; record it and move on.
+     - **Answered by hand already.** The owner has already replied outside this session. Nothing
+       posted; record it and move on.
+     - **Post it on my behalf.** Take the owner's edits to the drafted reply, if any, and show the
+       final text back to them exactly as it will be posted before sending anything.
+   - **Post only on explicit go**, as a reply in the *exact* thread the mention came from — a
+     review-comment thread reply when the comment was one, a plain issue comment otherwise —
+     never a new thread, and never anywhere else on the pull request:
+
+     ```bash
+     # A review-comment thread reply (the mention was an inline review comment):
+     gh api "repos/$REPO/pulls/$NUMBER/comments" -f body="The drafted reply, as the owner approved it." \
+       -F in_reply_to=<the mentioning comment's own id>
+
+     # An issue comment (the mention was a plain PR/issue comment):
+     gh pr comment "$NUMBER" --repo "$REPO" --body "The drafted reply, as the owner approved it."
+     ```
+
+     Post nothing else about it — no reaction, no second comment, no note that a session answered.
+
+6. **Close the task.** Once every finding and every tagged comment has a directive, and everything
+   the owner wanted posted is posted, resolve the park:
 
    ```bash
    h9k review resolve <task-id> --merge-ready
    ```
 
    This is the only verdict a pr-review task's park takes (`--needs-fixes` is refused — there is
-   no diff of this task's own for a fix session to apply). It closes the task without opening or
-   merging anything; the deliverable was the delivered review, not a diff, and closeout's
-   merge-watch never applied to this task in the first place.
+   no diff of this task's own for a fix session to apply). It never opens or merges anything —
+   the deliverable was the delivered review, or the delivered answer, not a diff — and it parks
+   the task waiting on the pull request (`AwaitingAuthor`) rather than completing it outright: one
+   pr-review task per pull request per install stays open until the pull request itself merges or
+   closes, so a later mention on the same pull request has a live task to attach to instead of
+   minting a second one. `h9k task abandon <task-id>` is the only early exit.
 
 ## What never happens here
 
@@ -105,3 +142,6 @@ so posting a review under their login as their review is exactly what this skill
   one formal submission rather than a scatter of individually-posted comments.
 - **No approval or request-changes without the owner naming it.** The event type is always asked,
   never inferred from finding severity.
+- **No reply to a tagged comment without the owner's explicit go**, in the exact thread it came
+  from and nowhere else — the identical rule step 4's batched review already follows, applied to a
+  single reply instead of a batch.

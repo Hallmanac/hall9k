@@ -232,6 +232,25 @@ the default for every project, new and existing (Decisions Log #161 — it defau
 2026-09-08, when the feature was found to have been installed and silent on both nodes for three
 days). `off` is an explicit opt-out, honoured for as long as it stands.
 
+A second, independent search runs on the same sweep: GitHub's own `mentions:` qualifier for the
+install's login, over the same registered repositories, read fresh every time. A direct `@login`
+mention fires; a team-handle mention never does. A mention on a pull request no live pr-review task
+watches mints the identical task type a review request does — never a new one — at the project's
+own effective speed; a mention on a pull request a live task already covers attaches to it instead,
+and when that task's report is already parked or it is waiting on the pull request, the daemon
+dispatches a bounded follow-up lap that reads the tagged comment against the review already done
+and parks an addendum beside the report — walked with the `walk-pr-review-findings` skill exactly
+like the original report, including its own new step: show the drafted reply, take edits, and post
+it only on the owner's explicit go, under their own login, in the exact thread the mention came
+from. A comment id already handled never fires again, and a comment the install's own login wrote
+never counts. `--auto-pr-review off` silences mentions too; there is no separate switch.
+
+One pr-review task per pull request per install stays waiting on it until it merges or closes,
+whether or not anything was ever posted to it (Decisions Log PLACEHOLDER-ed6044a5, amending #160):
+every review thread being resolved no longer ends the wait by itself, since a task that closed out
+the moment it had nothing left to watch would leave a later mention with no live task to attach to.
+`h9k task abandon` remains the one early exit.
+
 Three things make that default safe to leave on:
 
 - **Its state is always printed.** `h9kd` logs one line per project at start naming whether auto
