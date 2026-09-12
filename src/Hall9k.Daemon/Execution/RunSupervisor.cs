@@ -974,7 +974,18 @@ public sealed class RunSupervisor(
         {
             if (!result.IsError)
             {
-                await prReview.RecordAdversarialResultAsync(runDirectory, result.Summary ?? string.Empty, cancellationToken);
+                // A mention follow-up's own single session is never the adversarial lens (idea
+                // 2f079bcd): recording it there would leave a file DriveMentionFollowUpAsync never
+                // reads sitting beside the addendum it actually writes, naming nothing real.
+                if (await IsPrReviewMentionFollowUpAsync(runId, cancellationToken))
+                {
+                    await prReview.RecordMentionFollowUpResultAsync(runDirectory, result.Summary ?? string.Empty, cancellationToken);
+                }
+                else
+                {
+                    await prReview.RecordAdversarialResultAsync(runDirectory, result.Summary ?? string.Empty, cancellationToken);
+                }
+
                 await prReview.ReviewAsync(runId, taskId, cancellationToken);
             }
 
@@ -2044,6 +2055,19 @@ public sealed class RunSupervisor(
         await using IQuerySession query = store.QuerySession();
         TaskDetails? task = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
         return task?.Type == TaskType.PrReview;
+    }
+
+    /// <summary>
+    /// Whether this run is a bounded mention follow-up lap (idea 2f079bcd) rather than an ordinary
+    /// pr-review run — the discriminator that keeps its single completed session from being
+    /// recorded as the adversarial lens, which is a file <c>PrReviewEngine.DriveMentionFollowUpAsync</c>
+    /// never reads and would otherwise leave stranded beside the addendum it actually writes.
+    /// </summary>
+    private async Task<bool> IsPrReviewMentionFollowUpAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        RunDetails? run = await query.LoadAsync<RunDetails>(runId, cancellationToken);
+        return run?.PrReviewMentionCommentId is not null;
     }
 
     private async Task<(long Cursor, bool SawResult, DateTimeOffset? ResultSeenAt)> LoadMonitorStateAsync(Guid runId, CancellationToken cancellationToken)
