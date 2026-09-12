@@ -76,7 +76,10 @@ public static class CliCommandTree
                     + "bare-cloned from the remote with a dev/ worktree on the primary branch, ideas/, "
                     + "tasks/, skills/ seeded from the install's canonical set, and the .claude/ adapter. "
                     + "Platform code end to end — no agent, nothing to review, the same shape on every "
-                    + "machine. The location is yours (--home); the shape is the platform's.")
+                    + "machine. The location is yours (--home); the shape is the platform's. Registration "
+                    + "also records agents on this project running with --dangerously-skip-permissions "
+                    + "(log #9, log #PLACEHOLDER-f4cce412) — there is no flag to leave prompts live at "
+                    + "registration; revert it after with h9k project set <name> --skip-permissions false.")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url", "https://github.com/Hallmanac/hall9k")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url", "https://github.com/Hallmanac/hall9k",
                     "--home", "~/work/hall9k", "--base-branch", "main");
