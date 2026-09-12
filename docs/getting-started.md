@@ -9,7 +9,7 @@ machine and project, not a step to run as typed: several of these settings are n
 to every project sharing this machine, and some have no `default` word to clear them back once
 set. Read each item's own reasoning before deciding whether, and to what value, to run it.
 
-Last reconciled against the tree on 2026-09-11.
+Last reconciled against the tree on 2026-09-12.
 
 Assumes `h9k doctor` and `h9k daemon status` both read clean, and a project has been registered
 against the user's own repository (never this one):
@@ -20,14 +20,11 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 
 ## The first hour after install
 
-- **Register a project.** Shown above. Everything else in this section is a follow-up
-  `h9k project set` on that same project.
-- **`--skip-permissions true`.** A headless build session cannot answer a permission prompt.
-
-  ```bash
-  h9k project set <name> --skip-permissions true
-  ```
-
+- **Register a project.** Shown above. `h9k project add` records permission skipping on by
+  default, so a headless build session never stalls on a permission prompt it has no way to
+  answer; turn it back off with `h9k project set <name> --skip-permissions false` if the
+  project's own risk profile calls for prompts left live. Everything else in this section is a
+  follow-up `h9k project set` on that same project.
 - **`--backlog none|github-issues|jira`.** Under `github-issues` or `jira`, `h9k task publish`
   refuses a draft with no linked external item unless it is published `--no-existing-item` (mint
   one) or `--untracked` (deliberately skip tracking); leave `none` (the default) for a project
