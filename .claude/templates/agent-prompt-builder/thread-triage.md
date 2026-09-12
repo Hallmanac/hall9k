@@ -25,7 +25,7 @@ the reply or the resolve you make in the thread itself (the section below covers
 those):
 ===block-shape===
 ```
-{{ThreadDispositionMarker}} thread={{ThreadIdPlaceholder}}; disposition=fix|decline|route; kind=human|bot; author=<login>
+{{ThreadDispositionMarker}} {{ThreadTagKey}}={{ThreadIdPlaceholder}}; {{DispositionTagKey}}=fix|decline|route; {{KindTagKey}}=human|bot; {{AuthorTagKey}}=<login>
 <why: the fix's brief restatement, the decline's evidence, or the route's scope reason>
 ```
 ===no-placeholder-echo-part1===
@@ -39,15 +39,15 @@ RESOLUTION line (if any) and the HANDOFF block. Put a line reading exactly
 text, open questions, or dispute narrative — otherwise that prose is read as the
 last thread's own evidence.
 ===kind-classification===
-`kind=` reads the thread-starter the same way the closeout inspector's own
+`{{KindTagKey}}=` reads the thread-starter the same way the closeout inspector's own
 reviewer-kind classification does, off the GraphQL `__typename` the thread-fetch
 already returns — `Bot` reads as `bot`; a `Mannequin` (GitHub's unclaimed-identity
-placeholder — nobody is behind one) is neither, so leave `kind=` off rather than
+placeholder — nobody is behind one) is neither, so leave `{{KindTagKey}}=` off rather than
 counting it as human; every other type (`User`, an enterprise account) reads as
 `human` — UNLESS the login is one of Copilot's own known accounts (`copilot` or
 `copilot-pull-request-reviewer`, with or without a `[bot]` suffix), which reads
 `bot` regardless of typename: the unified Copilot app has surfaced under both actor
 types, and misreading it as a person would leave nobody to answer a thread you left
 open for a human to close. That login check is the one named exception — never guess
-`bot` from a login otherwise. Leave `kind=` off rather than guess if you never
+`bot` from a login otherwise. Leave `{{KindTagKey}}=` off rather than guess if you never
 fetched the typename at all.

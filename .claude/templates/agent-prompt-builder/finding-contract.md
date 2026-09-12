@@ -4,9 +4,9 @@
 Open every finding with a header line of exactly this shape, then write the finding
 underneath it in prose:
 ===header-shape===
-    {{FindingMarker}} severity=high; scope=in-scope; at={{ExampleLocationPlaceholder}}
-    Defect: one sentence saying what is wrong.
-    Scenario: the input or state that makes it misbehave, and what goes wrong.
+    {{FindingMarker}} {{SeverityTagKey}}=high; {{ScopeTagKey}}=in-scope; {{AtTagKey}}={{ExampleLocationPlaceholder}}
+    {{DefectLabel}} one sentence saying what is wrong.
+    {{ScenarioLabel}} the input or state that makes it misbehave, and what goes wrong.
 ===severity-heading===
 **severity** — grade against these anchors, not against your own sense of importance:
 ===severity-anchors===

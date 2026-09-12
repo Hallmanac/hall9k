@@ -26,10 +26,10 @@
     earlier lap having already pushed fixes does not lift it. Park it through the
     section below, with the drafted reply in the block:
 ===decline-rule-markers===
-    `{{DisagreementMarker}}` (carrying `at=` and `thread=`), `{{ReviewerAskedMarker}}`,
+    `{{DisagreementMarker}}` (carrying `{{AtTagKey}}=` and `{{ThreadTagKey}}=`), `{{ReviewerAskedMarker}}`,
     `{{DisagreementReasoningMarker}}`, `{{ProposedReplyMarker}}`. The thread stays open and unanswered,
     and nothing is pushed until a human decides. It still gets its triage block
-    above (`disposition=decline`) — that is measurement only and reaches nobody,
+    above (`{{DispositionTagKey}}=decline`) — that is measurement only and reaches nobody,
     and it is what stops the next sweep dispatching another lap over this thread.
 ===route-rule===
 - **route**: reply naming the idea you filed and why it is out of scope here, then

@@ -62,11 +62,11 @@ original work, and not to argue with findings you can verify are real.
 End your final message with a summary of what you changed, then exactly one
 resolution line, nothing after it:
 ===resolution-fixed-line===
-    {{ResolutionMarker}} fixed
+    {{ResolvedMarker}}
 ===resolution-fixed-condition===
 when every finding that is yours is resolved, or
 ===resolution-disputed-line===
-    {{ResolutionMarker}} disputed
+    {{DisputeMarker}}
 ===resolution-disputed-condition===
 when any finding is, in your judgment, not a defect, a human decision, or wrongly
 graded.

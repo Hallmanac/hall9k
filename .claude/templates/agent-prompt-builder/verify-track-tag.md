@@ -2,9 +2,9 @@
 **track** — one more tag on every finding's header line, naming which review lens it
 belongs to:
 ===example===
-    {{FindingMarker}} severity=high; scope=in-scope; track=conformance; at={{ExampleLocationPlaceholder}}
+    {{FindingMarker}} {{SeverityTagKey}}=high; {{ScopeTagKey}}=in-scope; {{TrackTagKey}}=conformance; {{AtTagKey}}={{ExampleLocationPlaceholder}}
 ===body===
-Use `track=conformance` or `track=adversarial` exactly. For a finding that reconfirms
+Use `{{TrackTagKey}}=conformance` or `{{TrackTagKey}}=adversarial` exactly. For a finding that reconfirms
 or disputes a fix from the prior cycle's findings above, restate whichever track that
 finding was already reported under. For a genuinely new finding — one the prior
 findings never named — tag it by which question it answers: conformance if it is
