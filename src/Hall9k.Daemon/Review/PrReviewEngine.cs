@@ -862,7 +862,7 @@ public sealed class PrReviewEngine(
         // the pull request's review threads are unresolved): the task parks on the pull request
         // and the closeout watcher's own follow-through sweep decides when it is actually over —
         // only the pull request itself merging or closing, or a human's own h9k task abandon
-        // (Decisions Log #177: every thread the reviewer opened resolving no longer ends the wait
+        // (Decisions Log #178: every thread the reviewer opened resolving no longer ends the wait
         // by itself, because a task that closed out just because it had nothing left to watch
         // would leave a later mention with no live task to attach to). Which of the three delivery
         // routes got here (h9k pr approve, h9k pr request-changes, or a review the owner posted by

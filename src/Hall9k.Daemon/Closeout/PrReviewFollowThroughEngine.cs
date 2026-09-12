@@ -47,7 +47,7 @@ public sealed record PrReviewFollowThroughResult(
 /// Has the pull request ended? A merge or a close ends the follow-through outright: whatever the
 /// author did or did not answer, there is nothing left to wait for. This, and a human's own
 /// <c>h9k task abandon</c>, are the only two ways this watch ever ends (Decisions Log
-/// PLACEHOLDER-ed6044a5: one pr-review task per pull request per install, so the wait stays open
+/// #178: one pr-review task per pull request per install, so the wait stays open
 /// even when nothing is outstanding — a task that reached Done because it had nothing left to
 /// watch would leave a later GitHub mention of the install's own login with no live task to attach
 /// to, and would mint a redundant second one instead).
@@ -331,7 +331,7 @@ public sealed class PrReviewFollowThroughEngine(
             || task.PrReviewReviewerLogin != reviewerLogin;
 
         // Thread resolution alone no longer ends the follow-through (Decisions Log
-        // PLACEHOLDER-ed6044a5: one pr-review task per pull request per install, and later mentions
+        // #178: one pr-review task per pull request per install, and later mentions
         // attach to it rather than mint a second one — a task that reached Done the moment its
         // threads happened to be quiet would let a mention arriving after that leave nothing live
         // to attach to). Every review thread resolved, with nothing outstanding, used to reach Done

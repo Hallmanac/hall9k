@@ -31,7 +31,7 @@ public sealed record TaskState
     /// The follow-through poll moves it on: to NeedsHuman when the author replies, pushes, or
     /// re-requests the review — the last of those being the one explicit ask of the reviewer in
     /// the set — and to <see cref="Done"/> only when the pull request itself merges or closes
-    /// (Decisions Log PLACEHOLDER-ed6044a5: every review thread being resolved no longer ends the
+    /// (Decisions Log #178: every review thread being resolved no longer ends the
     /// wait by itself, so a task stays live for a later GitHub mention of the install's own login
     /// to attach to instead of minting a second one). <c>h9k task abandon</c> remains the one
     /// early exit.
