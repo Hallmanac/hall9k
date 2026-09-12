@@ -42,50 +42,49 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
         session.Events.Append(taskId, TaskDecider.Abandon(task, settings.Reason, DateTimeOffset.UtcNow, context.OwnerId));
         session.Delete<TaskLease>(taskId);
 
-        // Otherwise an abandoned claim's run reads Running (or Dispatched) forever from this
-        // command's own point of view: an interactive claim holds no TaskLease (it writes none)
-        // and its NodeId is the Guid.Empty sentinel, so neither AdoptOrphansAsync's NodeId filter
-        // nor SweepExpiredLeasesAsync's lease scan will ever retire it — mirrors
-        // TaskReleaseCommand and TaskHandbackCommand's own retirement of the run they displace
-        // (conformance review, cycle 4). A daemon-dispatched headless claim does not have that
-        // specific orphaning gap, but leaving it live here still cost several million tokens of
-        // Opus review on abandoned work in one afternoon (origin incident 2026-08-27, task
-        // ab484e89): the review engine's own GenerationFence check retires it eventually, on its
-        // very next dispatch attempt, but this stamps the conclusion immediately instead of
-        // waiting on that next poll. Scoped to a claim still sitting exactly where the run was
-        // last dispatched or actively running: once the review loop has moved a headless run past
-        // that (into Verifying, UnderReview, and beyond), the fence above is what retires it —
-        // this command has no business racing that pipeline for a run already past Dispatched or
-        // Running. Excludes a pr-review task outright, unlike the state check above:
-        // PrReviewSentinelClaim's own IsLive branch names "h9k task abandon" as the honest way
-        // out of a live sentinel run, so abandon must keep working there, but that run is
-        // launched through RunLauncher and monitored by RunSupervisor exactly like an ordinary
-        // headless dispatch — RunSupervisor.CompleteRunAsync appends its own TokensRecorded from
-        // the identical stream.jsonl the moment the agent's result line lands, and its own
+        // Otherwise an abandoned interactive claim's run reads Running (or Dispatched) forever:
+        // it holds no TaskLease (an interactive claim writes none) and its NodeId is the
+        // Guid.Empty sentinel, so neither AdoptOrphansAsync's NodeId filter nor
+        // SweepExpiredLeasesAsync's lease scan will ever retire it — mirrors TaskReleaseCommand
+        // and TaskHandbackCommand's own retirement of the run they displace (conformance review,
+        // cycle 4). Deliberately scoped to an interactive claim, not every headless one too
+        // (independent pre-PR review, cycle 1, adversarial lens): a daemon-dispatched headless
+        // run in Dispatched or Running is a live agent process RunSupervisor's own in-memory
+        // Monitor is actively watching, with the stream.jsonl file handle held open by that
+        // child process — stamping RunSuperseded on it here races that supervision instead of
+        // deferring to it: ProjectHomeRenderEngine's archive sweep would move the task directory
+        // out from under the still-running agent (its own Abandoned branch waits on run
+        // liveness specifically to avoid that), and AdoptOrphansAsync's AdoptableRunStates
+        // excludes Superseded, so a daemon restart before the agent exits would leave an orphan
+        // process nothing ever adopts or terminates. A headless run past that point still gets
+        // stopped: the terminal-task check every dispatch site now runs (task: abandoning a task
+        // halts its in-flight run entirely) refuses the next verification, review, fix, or park
+        // attempt and retires the run there instead, on its very next dispatch attempt — the
+        // same fix already applied for the origin incident (2026-08-27, task ab484e89) that
+        // motivated stamping the conclusion early for the interactive lane below. Excludes a
+        // pr-review task outright, unlike the state check above: PrReviewSentinelClaim's own
+        // IsLive branch names "h9k task abandon" as the honest way out of a live sentinel run,
+        // so abandon must keep working there, but that run is launched through RunLauncher and
+        // monitored by RunSupervisor exactly like an ordinary headless dispatch —
+        // RunSupervisor.CompleteRunAsync appends its own TokensRecorded from the identical
+        // stream.jsonl the moment the agent's result line lands, and its own
         // AgentSessionCompleted append later resurrects a run this command marked Superseded
-        // (RunDetails.Apply unconditionally sets RunState.Verifying) — a cosmetic bounce the
-        // terminal-task check every dispatch site now runs (task: abandoning a task halts its
-        // in-flight run entirely) makes harmless, but recovering tokens twice for the same session
-        // would still double-book them, so that stays scoped to the interactive lane below.
-        if (task.State == TaskState.Claimed && task.Type != TaskType.PrReview
+        // (RunDetails.Apply unconditionally sets RunState.Verifying), the exact hazard
+        // TaskDeliverCommand's own re-check exists to catch. Recovering tokens or superseding the
+        // run here would double-book the former and race the latter against the daemon's own
+        // supervisor (independent pre-PR review, cycle 1, both lenses).
+        if (task.State == TaskState.Claimed && task.IsInteractiveClaim && task.Type != TaskType.PrReview
             && task.CurrentRunId is { } currentRunId)
         {
             RunDetails? run = await session.LoadAsync<RunDetails>(currentRunId, cancellationToken);
             if (run is not null && (run.State == RunState.Dispatched || run.State == RunState.Running))
             {
                 DateTimeOffset supersededAt = DateTimeOffset.UtcNow;
-                if (task.IsInteractiveClaim)
-                {
-                    // A start-it-mine claim abandoned mid-run had already spent tokens its own
-                    // stream.jsonl is the only record of — otherwise never read back once this
-                    // run is retired (conformance review, cycle 1, on h9k task start). A
-                    // daemon-dispatched headless run's tokens are instead recorded normally by
-                    // RunSupervisor.CompleteRunAsync's own TokensRecorded append once the agent
-                    // process actually exits, so recovering them here too would double-book them.
-                    HeadlessTokenRecovery.AppendIfRecorded(session, run, supersededAt);
-                    HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, run, supersededAt);
-                }
-
+                // A start-it-mine claim abandoned mid-run had already spent tokens its own
+                // stream.jsonl is the only record of — otherwise never read back once this run
+                // is retired (conformance review, cycle 1, on h9k task start).
+                HeadlessTokenRecovery.AppendIfRecorded(session, run, supersededAt);
+                HeadlessTokenRecovery.AppendDelegatedPhaseTokens(session, run, supersededAt);
                 session.Events.Append(currentRunId, new RunSuperseded(currentRunId, task.LeaseGeneration, supersededAt));
             }
         }
