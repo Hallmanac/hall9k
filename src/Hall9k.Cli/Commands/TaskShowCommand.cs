@@ -203,10 +203,19 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             string when = details.LatestMentionCreatedAt is { } createdAt
                 ? createdAt.ToLocalTime().ToString("g")
                 : "an unrecorded time";
+            // The reply id is shown only when the tagged comment was an inline review-comment-thread
+            // reply — the one shape the REST reply endpoint's own in_reply_to accepts. Its absence is
+            // itself the signal walk-pr-review-findings reads to know a plain issue comment (or the
+            // pull request's own description) needs an ordinary comment instead (independent pre-PR
+            // review, cycle 1, conformance lens: sending the comment id shown here to that endpoint
+            // 404s, since it is the GraphQL node id, not the numeric REST id).
+            string replyIdSuffix = details.LatestMentionCommentDatabaseId is { } databaseId
+                ? $", reply id {databaseId}"
+                : string.Empty;
             header.AddRow(
                 "Tagged by",
                 $"{(details.LatestMentionAuthorLogin ?? "unknown").EscapeMarkup()} at {when} "
-                + $"[dim](comment {details.LatestMentionCommentId.EscapeMarkup()})[/]");
+                + $"[dim](comment {details.LatestMentionCommentId.EscapeMarkup()}{replyIdSuffix.EscapeMarkup()})[/]");
             if (details.LatestMentionBody.IsNotBlank())
             {
                 header.AddRow(string.Empty, $"[dim]{ExternalText.OneLineMarkup(details.LatestMentionBody)}[/]");

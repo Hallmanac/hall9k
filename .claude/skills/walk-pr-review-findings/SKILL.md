@@ -103,14 +103,21 @@ so posting a review under their login as their review is exactly what this skill
        final text back to them exactly as it will be posted before sending anything.
    - **Post only on explicit go**, as a reply in the *exact* thread the mention came from — a
      review-comment thread reply when the comment was one, a plain issue comment otherwise —
-     never a new thread, and never anywhere else on the pull request:
+     never a new thread, and never anywhere else on the pull request. `h9k task show` tells you
+     which: its "Tagged by" row names a **reply id** only when the tagged comment was an inline
+     review-comment-thread reply — that numeric id is what the REST reply endpoint's own
+     `in_reply_to` takes. The comment id shown beside it is GraphQL's own node id (`PRRC_…`),
+     never REST's — sending it to `in_reply_to` 404s (`resolve-review-threads`'s own doc carries
+     the identical warning). No reply id shown means the mention was a plain issue comment, a
+     review's own top-level body, or the pull request's own description — none of those is a
+     thread the REST endpoint can reply into, so post an ordinary comment instead:
 
      ```bash
-     # A review-comment thread reply (the mention was an inline review comment):
+     # A review-comment thread reply (h9k task show names a reply id):
      gh api "repos/$REPO/pulls/$NUMBER/comments" -f body="The drafted reply, as the owner approved it." \
-       -F in_reply_to=<the mentioning comment's own id>
+       -F in_reply_to=<the reply id h9k task show showed, NOT the comment id>
 
-     # An issue comment (the mention was a plain PR/issue comment):
+     # An issue comment, a review body, or the pull request's own description (no reply id shown):
      gh pr comment "$NUMBER" --repo "$REPO" --body "The drafted reply, as the owner approved it."
      ```
 

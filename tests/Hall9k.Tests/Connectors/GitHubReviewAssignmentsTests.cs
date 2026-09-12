@@ -437,4 +437,84 @@ public sealed class GitHubReviewAssignmentsTests
 
         GitHubReviewAssignments.ParseMentionComments(nullPullRequestJson, "brian").Should().BeEmpty();
     }
+
+    [Fact]
+    public void ParseMentionComments_finds_a_mention_in_the_pull_requests_own_description()
+    {
+        // GitHub's own mentions: search matches a description just as it matches a comment — a
+        // description-only mention would otherwise be found by ListMentionedAsync's search and then
+        // never matched by any node here, repeating every sweep with nothing ever recorded
+        // (independent pre-PR review, cycle 1, conformance lens, low).
+        const string descriptionMentionJson = """
+            {
+              "data": {
+                "repository": {
+                  "pullRequest": {
+                    "id": "PR_kwABC",
+                    "author": { "login": "carol" },
+                    "body": "@brian can you check the retry logic?",
+                    "url": "https://github.com/acme/widgets/pull/42",
+                    "createdAt": "2026-09-07T07:00:00Z",
+                    "comments": { "nodes": [] },
+                    "reviewThreads": { "nodes": [] },
+                    "reviews": { "nodes": [] }
+                  }
+                }
+              }
+            }
+            """;
+
+        IReadOnlyList<PullRequestMentionComment> found =
+            GitHubReviewAssignments.ParseMentionComments(descriptionMentionJson, "brian");
+
+        PullRequestMentionComment match = found.Should().ContainSingle().Subject;
+        match.CommentId.Should().Be("PR_kwABC");
+        match.AuthorLogin.Should().Be("carol");
+        match.DatabaseId.Should().BeNull("a description is not a thread the REST reply endpoint can reply into");
+    }
+
+    [Fact]
+    public void ParseMentionComments_never_counts_a_description_the_mentioned_login_wrote_itself()
+    {
+        const string ownDescriptionJson = """
+            {
+              "data": {
+                "repository": {
+                  "pullRequest": {
+                    "id": "PR_kwABC",
+                    "author": { "login": "brian" },
+                    "body": "@brian's own pull request, mentioning themselves in the description",
+                    "url": "https://github.com/acme/widgets/pull/42",
+                    "createdAt": "2026-09-07T07:00:00Z",
+                    "comments": { "nodes": [] },
+                    "reviewThreads": { "nodes": [] },
+                    "reviews": { "nodes": [] }
+                  }
+                }
+              }
+            }
+            """;
+
+        GitHubReviewAssignments.ParseMentionComments(ownDescriptionJson, "brian").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ParseMentionComments_reads_the_review_thread_comments_own_numeric_database_id()
+    {
+        // The REST reply endpoint's in_reply_to takes the numeric databaseId, never the GraphQL
+        // node id (resolve-review-threads' own doc: "Sending a node id to the REST endpoint
+        // 404s") — read only for a review-comment-thread reply, the one shape that endpoint
+        // actually accepts.
+        IReadOnlyList<PullRequestMentionComment> found =
+            GitHubReviewAssignments.ParseMentionComments(
+                MentionCommentsJson.Replace(
+                    "\"id\": \"PRRC_1\",", "\"id\": \"PRRC_1\", \"databaseId\": 123456,"),
+                "brian");
+
+        PullRequestMentionComment threadComment = found.Should().ContainSingle(comment => comment.CommentId == "PRRC_1").Subject;
+        threadComment.DatabaseId.Should().Be(123456);
+
+        found.Where(comment => comment.CommentId != "PRRC_1").Should().OnlyContain(
+            comment => comment.DatabaseId == null, "only a review-comment-thread reply carries a reply-capable numeric id");
+    }
 }

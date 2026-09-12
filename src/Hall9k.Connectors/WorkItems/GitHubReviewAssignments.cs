@@ -36,14 +36,22 @@ public sealed record ReviewRequestActor(bool Found, string? Login, DateTimeOffse
 /// <summary>
 /// One comment <see cref="GitHubReviewAssignments.FindMentionCommentsAsync"/> found mentioning the
 /// install's own login on a pull request (idea 2f079bcd, auto-pr-review's second trigger) — an
-/// issue comment, a review-comment thread reply, or a review's own top-level body, whichever
-/// carried the <c>@login</c> text. <see cref="AuthorLogin"/> is what the caller filters the
-/// install's own comments out with (a comment the install itself wrote never counts), and
-/// <see cref="CommentId"/> is the dedupe key a later sweep tick compares against so the same
-/// comment never fires twice.
+/// issue comment, a review-comment thread reply, a review's own top-level body, or the pull
+/// request's own description, whichever carried the <c>@login</c> text.
+/// <see cref="AuthorLogin"/> is what the caller filters the install's own comments out with (a
+/// comment the install itself wrote never counts), and <see cref="CommentId"/> — GitHub's GraphQL
+/// node id — is the dedupe key a later sweep tick compares against so the same comment never fires
+/// twice.
+/// <see cref="DatabaseId"/> is the numeric REST id, set only when this comment is an inline
+/// review-comment-thread reply — the one shape the REST reply endpoint's <c>in_reply_to</c>
+/// parameter actually accepts (<c>resolve-review-threads</c>'s own doc: "Sending a node id to the
+/// REST endpoint 404s"). Null for an issue comment, a review body, or the pull request's own
+/// description — none of those is a thread the REST endpoint can reply into, so a caller reading
+/// null already knows to post an ordinary comment instead of attempting <c>in_reply_to</c>.
 /// </summary>
 public sealed record PullRequestMentionComment(
-    string CommentId, string AuthorLogin, string Body, string Url, DateTimeOffset CreatedAt);
+    string CommentId, string AuthorLogin, string Body, string Url, DateTimeOffset CreatedAt,
+    long? DatabaseId = null);
 
 /// <summary>
 /// Which half of a login's reviewer-request history <see cref="GitHubReviewAssignments.FindMostRecentRequestActorAsync"/>
@@ -248,13 +256,14 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) {
             pullRequest(number: $number) {
+              id author { login } body url createdAt
               comments(last: 100) {
                 nodes { id author { login } body url createdAt }
               }
               reviewThreads(last: 100) {
                 nodes {
                   comments(last: 20) {
-                    nodes { id author { login } body url createdAt }
+                    nodes { id databaseId author { login } body url createdAt }
                   }
                 }
               }
@@ -347,22 +356,52 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
             return [];
         }
 
+        Regex mentionPattern = MentionPattern(login);
         List<PullRequestMentionComment> found = [];
-        AddMatching(pullRequest, "comments", found, login);
+        AddMatching(pullRequest, "comments", found, login, mentionPattern);
         if (pullRequest.TryGetProperty("reviewThreads", out JsonElement threads)
             && threads.TryGetProperty("nodes", out JsonElement threadNodes)
             && threadNodes.ValueKind == JsonValueKind.Array)
         {
             foreach (JsonElement thread in threadNodes.EnumerateArray())
             {
-                AddMatching(thread, "comments", found, login);
+                // The one shape whose comments the REST reply endpoint's own in_reply_to actually
+                // accepts (an inline review-comment-thread reply) — databaseId is read here alone,
+                // never for an issue comment or a review body, so a caller reading a non-null
+                // DatabaseId already knows which reply mechanism applies (PullRequestMentionComment's
+                // own doc).
+                AddMatching(thread, "comments", found, login, mentionPattern, includeDatabaseId: true);
             }
         }
 
-        AddMatching(pullRequest, "reviews", found, login, timestampProperty: "submittedAt");
+        AddMatching(pullRequest, "reviews", found, login, mentionPattern, timestampProperty: "submittedAt");
+
+        // The pull request's own description mentions the login just as validly as a comment does —
+        // GitHub's mentions: search matches it too (idea 2f079bcd's own search qualifier) — but it is
+        // not a node inside any of the three collections above, so ParseMentionComments would
+        // otherwise find the pull request through the search and then find nothing to act on every
+        // single sweep (independent pre-PR review, cycle 1, conformance lens, low). Read directly off
+        // the pull request object itself; there is no reply-capable thread and no numeric REST id for
+        // a description, so DatabaseId stays null exactly as it does for an issue comment or a review
+        // body — a caller replies with an ordinary PR comment.
+        if (TryBuildMatch(pullRequest, login, mentionPattern, "createdAt", includeDatabaseId: false) is { } description)
+        {
+            found.Add(description);
+        }
 
         return [.. found.OrderBy(comment => comment.CreatedAt)];
     }
+
+    /// <summary>
+    /// Bounded on the far side only: a GitHub username is [A-Za-z0-9-], so "@brian" must not be
+    /// read as a mention of "brian" when the text actually says "@brianhall99" or "@brian-2" — a
+    /// plain Contains check matches both as a false positive (independent pre-PR review, cycle 1,
+    /// adversarial lens). The near side needs no boundary of its own: GitHub reads "@login" as a
+    /// mention regardless of what character precedes the "@" (mid-word "cc@login" included), so
+    /// anchoring there would silently drop genuine mentions instead.
+    /// </summary>
+    private static Regex MentionPattern(string login) => new(
+        $@"@{Regex.Escape(login)}(?![A-Za-z0-9-])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// One <c>{ nodes: [...] }</c> collection's own mentioning comments, appended to
@@ -374,7 +413,7 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
     /// </summary>
     private static void AddMatching(
         JsonElement parent, string collectionProperty, List<PullRequestMentionComment> found, string login,
-        string timestampProperty = "createdAt")
+        Regex mentionPattern, string timestampProperty = "createdAt", bool includeDatabaseId = false)
     {
         if (!parent.TryGetProperty(collectionProperty, out JsonElement collection)
             || !collection.TryGetProperty("nodes", out JsonElement nodes)
@@ -383,37 +422,43 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
             return;
         }
 
-        // Bounded on the far side only: a GitHub username is [A-Za-z0-9-], so "@brian" must not be
-        // read as a mention of "brian" when the text actually says "@brianhall99" or "@brian-2" —
-        // a plain Contains check matches both as a false positive (independent pre-PR review,
-        // cycle 1, adversarial lens). The near side needs no boundary of its own: GitHub reads
-        // "@login" as a mention regardless of what character precedes the "@" (mid-word "cc@login"
-        // included), so anchoring there would silently drop genuine mentions instead.
-        Regex mentionPattern = new(
-            $@"@{Regex.Escape(login)}(?![A-Za-z0-9-])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         foreach (JsonElement node in nodes.EnumerateArray())
         {
-            string? id = ReadString(node, "id");
-            string? body = ReadString(node, "body");
-            string? authorLogin = node.TryGetProperty("author", out JsonElement author) && author.ValueKind == JsonValueKind.Object
-                ? ReadString(author, "login")
-                : null;
-            if (id.IsBlank() || body.IsBlank() || authorLogin.IsBlank()
-                || string.Equals(authorLogin, login, StringComparison.OrdinalIgnoreCase)
-                || !mentionPattern.IsMatch(body))
+            if (TryBuildMatch(node, login, mentionPattern, timestampProperty, includeDatabaseId) is { } match)
             {
-                continue;
+                found.Add(match);
             }
-
-            string url = ReadString(node, "url") ?? string.Empty;
-            DateTimeOffset createdAt =
-                ReadString(node, timestampProperty) is { } stamp
-                && DateTimeOffset.TryParse(
-                    stamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset parsed)
-                    ? parsed
-                    : DateTimeOffset.MinValue;
-            found.Add(new PullRequestMentionComment(id, authorLogin, body, url, createdAt));
         }
+    }
+
+    /// <summary>One node's own mention match, shared by every caller of <see cref="AddMatching"/> and the pull request's own description — null when it does not mention <paramref name="login"/> at all, is blank, or was written by the login itself.</summary>
+    private static PullRequestMentionComment? TryBuildMatch(
+        JsonElement node, string login, Regex mentionPattern, string timestampProperty, bool includeDatabaseId)
+    {
+        string? id = ReadString(node, "id");
+        string? body = ReadString(node, "body");
+        string? authorLogin = node.TryGetProperty("author", out JsonElement author) && author.ValueKind == JsonValueKind.Object
+            ? ReadString(author, "login")
+            : null;
+        if (id.IsBlank() || body.IsBlank() || authorLogin.IsBlank()
+            || string.Equals(authorLogin, login, StringComparison.OrdinalIgnoreCase)
+            || !mentionPattern.IsMatch(body))
+        {
+            return null;
+        }
+
+        string url = ReadString(node, "url") ?? string.Empty;
+        DateTimeOffset createdAt =
+            ReadString(node, timestampProperty) is { } stamp
+            && DateTimeOffset.TryParse(
+                stamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out DateTimeOffset parsed)
+                ? parsed
+                : DateTimeOffset.MinValue;
+        long? databaseId = includeDatabaseId && node.TryGetProperty("databaseId", out JsonElement databaseIdElement)
+            && databaseIdElement.ValueKind == JsonValueKind.Number && databaseIdElement.TryGetInt64(out long parsedDatabaseId)
+                ? parsedDatabaseId
+                : null;
+        return new PullRequestMentionComment(id, authorLogin, body, url, createdAt, databaseId);
     }
 
     /// <summary>

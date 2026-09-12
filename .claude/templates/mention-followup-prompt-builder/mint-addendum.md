@@ -11,7 +11,7 @@ Beside reviewing this pull request, this task also exists because a GitHub comme
 ### What to add for the tagged comment
 
 ===what-to-produce-body===
-Write a file named `mention-answer.md` in this run's own directory (the same directory your findings files already live in) containing exactly the following, under a top-level heading `# You were asked`:
+Write a file at this exact absolute path — `{{MentionAnswerPath}}` — containing exactly the following, under a top-level heading `# You were asked`:
 
 1. **The tagged comment, verbatim** — quote it in full, with its author and the time it was posted.
 2. **The question, in one sentence** — your own restatement of what is actually being asked.

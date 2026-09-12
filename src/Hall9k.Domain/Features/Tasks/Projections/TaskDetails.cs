@@ -382,6 +382,8 @@ public sealed class TaskDetails
     public string? LatestMentionUrl { get; set; }
     /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionCreatedAt"/> — GitHub's own timestamp for the mentioning comment.</summary>
     public DateTimeOffset? LatestMentionCreatedAt { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.LatestMentionCommentDatabaseId"/> — the numeric REST id, set only for an inline review-comment-thread reply.</summary>
+    public long? LatestMentionCommentDatabaseId { get; set; }
 }
 
 public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, Guid>
@@ -1095,6 +1097,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.LatestMentionBody = @event.Data.CommentBody;
         view.LatestMentionUrl = @event.Data.CommentUrl;
         view.LatestMentionCreatedAt = @event.Data.CommentCreatedAt;
+        view.LatestMentionCommentDatabaseId = @event.Data.CommentDatabaseId;
     }
 
     /// <summary>

@@ -91,7 +91,7 @@ public sealed class PullRequestReviewMentionTests
         TaskAggregate task = WaitingPrReviewTask();
         Guid runId = DomainId.New();
 
-        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, Owner, runId, Now);
+        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, Owner, runId, Now, reportParkedAwaitingWalk: false);
 
         claimed.RunId.Should().Be(runId);
         claimed.InteractiveMode.Should().BeFalse("a GitHub mention is the daemon's own go signal, not a human at a terminal");
@@ -108,9 +108,37 @@ public sealed class PullRequestReviewMentionTests
             interactiveSessionAddress: null, Now));
         task.State.Should().Be(TaskState.NeedsHuman);
 
-        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, Owner, DomainId.New(), Now);
+        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, Owner, DomainId.New(), Now, reportParkedAwaitingWalk: false);
 
         claimed.InteractiveMode.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ClaimForMentionFollowUp_claims_from_Claimed_when_the_report_is_parked_and_unresolved()
+    {
+        // The state PrReviewEngine.ComposeReportAndParkAsync's own doc names: a report parked and
+        // not yet walked leaves the TASK Claimed, since the park lives on the run stream
+        // (RunState.ReviewParked), never the task's own. AwaitsPrReviewFollowThrough alone cannot
+        // see this — reportParkedAwaitingWalk is the daemon's own observation of the run stream,
+        // handed in as a fact (independent pre-PR review, cycle 1, both lenses).
+        TaskAggregate task = QueuedPrReviewTask();
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.State.Should().Be(TaskState.Claimed);
+
+        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, Owner, DomainId.New(), Now, reportParkedAwaitingWalk: true);
+
+        claimed.InteractiveMode.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ClaimForMentionFollowUp_refuses_a_Claimed_task_when_the_report_is_not_actually_parked()
+    {
+        TaskAggregate task = QueuedPrReviewTask();
+        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+
+        Action act = () => TaskDecider.ClaimForMentionFollowUp(task, Owner, DomainId.New(), Now, reportParkedAwaitingWalk: false);
+
+        act.Should().Throw<DomainConflictException>();
     }
 
     [Fact]
@@ -118,7 +146,7 @@ public sealed class PullRequestReviewMentionTests
     {
         TaskAggregate task = QueuedPrReviewTask();
 
-        Action act = () => TaskDecider.ClaimForMentionFollowUp(task, Owner, DomainId.New(), Now);
+        Action act = () => TaskDecider.ClaimForMentionFollowUp(task, Owner, DomainId.New(), Now, reportParkedAwaitingWalk: false);
 
         act.Should().Throw<DomainConflictException>();
     }
