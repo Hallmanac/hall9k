@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
@@ -5212,20 +5213,12 @@ public sealed class ReviewEngine(
         IReadOnlyList<ReviewTrackPlan> plans, IReadOnlyList<RoutedFinding> routed, bool fixSessionWillDispatch,
         CancellationToken cancellationToken)
     {
+        const string file = $"{AgentPromptBuilder.TemplateDirectory}/review-engine-preamble.md";
         StringBuilder merged = new();
-        merged.AppendLine($"# Independent pre-PR review — cycle {cycle}");
+        merged.AppendLine(PromptTemplates.Load(
+            file, "heading", new Dictionary<string, string> { ["Cycle"] = cycle.ToString(CultureInfo.InvariantCulture) }));
         merged.AppendLine();
-        if (mode == ReviewMode.Verify)
-        {
-            merged.AppendLine("This cycle dispatched one reviewer standing in for every still-active track,");
-            merged.AppendLine("reading the delta since the prior cycle rather than the whole diff. A finding");
-            merged.AppendLine("belongs to whichever track its own tag names, not to the section heading below.");
-        }
-        else
-        {
-            merged.AppendLine("Each section below is one independent pass over the same diff, with its own fresh");
-            merged.AppendLine("context. A finding belongs to the lens whose section it appears under.");
-        }
+        PromptTemplates.AppendTemplate(merged, file, mode == ReviewMode.Verify ? "verify-mode-preamble" : "discovery-mode-preamble");
         foreach (ReviewPassResult pass in passes)
         {
             string path = LensFindingsFile(runDirectory, cycle, pass.Lens);
@@ -5233,9 +5226,15 @@ public sealed class ReviewEngine(
                 ? await File.ReadAllTextAsync(path, cancellationToken)
                 : string.Empty;
             merged.AppendLine();
-            merged.AppendLine($"## {LensHeading(pass.Lens)} — verdict: {VerdictLabel(pass.Verdict, text, mode)}");
+            merged.AppendLine(PromptTemplates.Load(
+                file, "pass-heading",
+                new Dictionary<string, string>
+                {
+                    ["LensHeading"] = LensHeading(pass.Lens),
+                    ["VerdictLabel"] = VerdictLabel(pass.Verdict, text, mode),
+                }));
             merged.AppendLine();
-            merged.AppendLine(text.IsBlank() ? "(this pass recorded no output)" : text.Trim());
+            merged.AppendLine(text.IsBlank() ? PromptTemplates.Load(file, "no-output") : text.Trim());
         }
 
         AppendDispositions(merged, cycle, plans, routed, fixSessionWillDispatch);
