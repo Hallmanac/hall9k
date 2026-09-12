@@ -174,6 +174,33 @@ public sealed class HomeEnvironmentIsolationTests
         "PromptTemplates.Load(",
         "PromptTemplates.AppendTemplate(",
         "ReviewLapPromptBuilder.Build(",
+        // WorkPromptBuilder moved its own prose onto the same mechanism (task: WorkPromptBuilder's
+        // prose lives in templates), but unlike ReviewLapPromptBuilder it exposes its Append* rules
+        // as public members of their own — Hall9k.Daemon.Execution.AgentPromptBuilder calls each one
+        // directly through a `using static` import, and a test can just as easily call one of them
+        // directly without ever going through Build — so every one of them carries the same risk
+        // Build itself does, and each needs its own entry rather than Build alone standing in for
+        // the whole surface (independent pre-PR review, cycle 1, conformance lens).
+        "WorkPromptBuilder.Build(",
+        "WorkPromptBuilder.AppendOperatorGuidanceSection(",
+        "WorkPromptBuilder.AppendAdoptedContextRule(",
+        "WorkPromptBuilder.AppendBlockerContextRule(",
+        "WorkPromptBuilder.AppendHandoffRules(",
+        "WorkPromptBuilder.AppendSelfReviewPhaseRules(",
+        "WorkPromptBuilder.AppendCheckpointCommitRules(",
+        "WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(",
+        "WorkPromptBuilder.AppendForegroundGatesRule(",
+        "WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(",
+        "WorkPromptBuilder.AppendCommitDisciplineRuleForInteractiveSession(",
+        "WorkPromptBuilder.AppendSelfDeliveryRule(",
+        "WorkPromptBuilder.AppendSelfRegistrationRule(",
+        "WorkPromptBuilder.AppendFindLiveAgentsRule(",
+        "WorkPromptBuilder.AppendPlatformSettingsReminderRule(",
+        "WorkPromptBuilder.AppendExternalInteractionLoggingRule(",
+        "WorkPromptBuilder.AppendOutboundMilestoneRules(",
+        "WorkPromptBuilder.AppendInteractiveBoundaryChoices(",
+        "WorkPromptBuilder.AppendProjectHome(",
+        "WorkPromptBuilder.AppendHomeSkillRule(",
     ];
 
     private static readonly Regex ClassDeclaration = new(
