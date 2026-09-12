@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
@@ -15,6 +16,7 @@ using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
+using Marten.Linq.MatchesSql;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -193,14 +195,36 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Close linked issue", CloseLinkedIssueMarkup(details, project));
         }
 
-        if (details.LatestMentionCommentId is not null)
+        // The mention the task's currently parked run actually answers, when one exists — never
+        // details.LatestMention*, which always names the most recently OBSERVED mention, whatever
+        // run it landed against. A second mention attaching while an earlier one's own follow-up
+        // lap (or mint) is still running moves every LatestMention* field to itself
+        // (TaskDetailsProjection.Apply(PullRequestReviewMentionObserved)), so a walker using this
+        // row to correlate a reply's in_reply_to would post into the wrong thread — the exact hole
+        // PrReviewEngine's own park reason already closes by reading ObservedReviewMention keyed on
+        // run.PrReviewMentionCommentId (or, for a mint, the TaskCreated row) instead of task.Latest*
+        // (independent pre-PR review, cycle 3, both lenses). Falls back to LatestMention* only when
+        // no currently-parked run answers a mention at all, so a mention merely observed for the
+        // record still shows here.
+        ObservedReviewMention? answeredMention = await AnsweredMentionAsync(session, details, cancellationToken);
+        string? mentionCommentId = answeredMention?.CommentId ?? details.LatestMentionCommentId;
+        if (mentionCommentId is not null)
         {
+            string? mentionAuthorLogin = answeredMention?.CommentAuthorLogin ?? details.LatestMentionAuthorLogin;
+            string? mentionBody = answeredMention?.CommentBody ?? details.LatestMentionBody;
+            DateTimeOffset? mentionCreatedAt = answeredMention is not null
+                ? answeredMention.CommentCreatedAt
+                : details.LatestMentionCreatedAt;
+            long? mentionCommentDatabaseId = answeredMention is not null
+                ? answeredMention.CommentDatabaseId
+                : details.LatestMentionCommentDatabaseId;
+
             // idea 2f079bcd, auto-pr-review's second trigger: the triggering comment's own id,
             // author and time, exactly what a review request's own PullRequestReviewAssignmentObserved
             // lets the External row above name for a request — this is the mention's equivalent,
             // always shown once any mention has ever been observed on this task, even after a later
             // one has replaced it as the "latest".
-            string when = details.LatestMentionCreatedAt is { } createdAt
+            string when = mentionCreatedAt is { } createdAt
                 ? createdAt.ToLocalTime().ToString("g")
                 : "an unrecorded time";
             // The reply id is shown only when the tagged comment was an inline review-comment-thread
@@ -209,16 +233,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // pull request's own description) needs an ordinary comment instead (independent pre-PR
             // review, cycle 1, conformance lens: sending the comment id shown here to that endpoint
             // 404s, since it is the GraphQL node id, not the numeric REST id).
-            string replyIdSuffix = details.LatestMentionCommentDatabaseId is { } databaseId
+            string replyIdSuffix = mentionCommentDatabaseId is { } databaseId
                 ? $", reply id {databaseId}"
                 : string.Empty;
             header.AddRow(
                 "Tagged by",
-                $"{(details.LatestMentionAuthorLogin ?? "unknown").EscapeMarkup()} at {when} "
-                + $"[dim](comment {details.LatestMentionCommentId.EscapeMarkup()}{replyIdSuffix.EscapeMarkup()})[/]");
-            if (details.LatestMentionBody.IsNotBlank())
+                $"{(mentionAuthorLogin ?? "unknown").EscapeMarkup()} at {when} "
+                + $"[dim](comment {mentionCommentId.EscapeMarkup()}{replyIdSuffix.EscapeMarkup()})[/]");
+            if (mentionBody.IsNotBlank())
             {
-                header.AddRow(string.Empty, $"[dim]{ExternalText.OneLineMarkup(details.LatestMentionBody)}[/]");
+                header.AddRow(string.Empty, $"[dim]{ExternalText.OneLineMarkup(mentionBody)}[/]");
             }
         }
 
@@ -1757,6 +1781,52 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken);
         return owner is null ? $"[dim]{ownerId}[/]" : owner.Name.EscapeMarkup();
+    }
+
+    /// <summary>
+    /// The mention the task's currently parked run actually answers, when its park came from one
+    /// (idea 2f079bcd): a follow-up lap's own frozen comment id (<see cref="RunDetails.PrReviewMentionCommentId"/>,
+    /// set at dispatch and never moved by a later mention), or — for a mint whose own first run
+    /// carries the answer instead — the row that minted this task in the first place. Null when the
+    /// currently parked run (if any) answers no mention at all, in which case the caller falls back
+    /// to <c>TaskDetails.LatestMention*</c> as a purely informational "a mention was observed" line.
+    /// </summary>
+    private static async Task<ObservedReviewMention?> AnsweredMentionAsync(
+        IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
+    {
+        if (details.CurrentRunId is not { } runId)
+        {
+            return null;
+        }
+
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is null || run.State != RunState.ReviewParked)
+        {
+            return null;
+        }
+
+        if (run.PrReviewMentionCommentId is { } answeredCommentId)
+        {
+            return await session.Query<ObservedReviewMention>()
+                .Where(mention => mention.CommentId == answeredCommentId)
+                .FirstOrDefaultAsync(cancellationToken);
+        }
+
+        // Only the task's very first run ever carries a mint's own "You were asked" section
+        // (RunLauncher's own isPrReview branch writes mention-answer.md only there — the identical
+        // RunIds[0]-is-the-original-review invariant AutoPrReviewEngine.AttachMentionAsync's own
+        // priorReviewRunId comment states) — a later re-review's own ReviewParked run answers no
+        // mention at all, and must not resurrect an already-answered one just because this task
+        // happens to have been minted from a mention once.
+        if (details.RunIds.Count == 0 || details.RunIds[0] != runId)
+        {
+            return null;
+        }
+
+        return await session.Query<ObservedReviewMention>()
+            .Where(mention => mention.TaskId == details.Id)
+            .Where(mention => mention.MatchesSql("d.data ->> 'outcome' = ?", ReviewMentionOutcome.TaskCreated.Value))
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     /// <summary>
