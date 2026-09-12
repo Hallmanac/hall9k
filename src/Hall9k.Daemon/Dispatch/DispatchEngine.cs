@@ -508,7 +508,7 @@ public sealed class DispatchEngine(
             // leaving it in would spin the loop on the same task until the capacity ran out.
             waiting.Remove(slot.Candidate);
 
-            if (await TryClaimAsync(slot.Candidate.TaskId, archivedProjects, cancellationToken) is { } work)
+            if (await TryClaimAsync(slot.Candidate.TaskId, cancellationToken) is { } work)
             {
                 claimed.Add(work);
                 claimedByProject[slot.Candidate.ProjectId] =
@@ -1056,8 +1056,7 @@ public sealed class DispatchEngine(
         _deferredByProjectCap.UnionWith(deferred.Select(candidate => candidate.TaskId));
     }
 
-    private async Task<ClaimedWork?> TryClaimAsync(
-        Guid taskId, IReadOnlySet<Guid> archivedProjects, CancellationToken cancellationToken)
+    private async Task<ClaimedWork?> TryClaimAsync(Guid taskId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
@@ -1069,11 +1068,18 @@ public sealed class DispatchEngine(
         }
 
         // Belt and suspenders (the same re-validate-right-before-claiming discipline this method
-        // already gives the task's own state above): ReadQueueAsync's own filter is what actually
-        // keeps an archived project's tasks off this sweep's candidate list, so reaching here means
-        // the project was archived between that read and this claim — a narrow race this closes
-        // rather than a path this sweep expects to take.
-        if (archivedProjects.Contains(task.ProjectId))
+        // already gives the task's own state above): a fresh load on this method's own session,
+        // not the archived-project set ReadQueueAsync already filtered the candidate list against
+        // — passing that same already-materialized set here (an earlier version of this method
+        // did) could never catch a project archived after the queue was read, since a task's own
+        // ProjectId never changes and the set was read before this call, making that branch dead
+        // code the moment it was written (independent pre-PR review, cycle 1, adversarial lens).
+        // This read is against the current database instead, so a project archived between the
+        // queue read and this claim is the one case this actually closes. A project with no
+        // document at all is a different, pre-existing shape (A_task_whose_project_has_no_document_is_uncapped_rather_than_stuck)
+        // and stays uncapped rather than refused here — only an actually-archived project refuses.
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (project is { IsArchived: true })
         {
             logger.LogWarning(
                 "Task {TaskId} is queued under project {ProjectId}, which is now archived — claim refused",
