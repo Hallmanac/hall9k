@@ -244,4 +244,197 @@ public sealed class GitHubReviewAssignmentsTests
         actor.Login.Should().BeNull();
         actor.RequestedAt.Should().BeNull();
     }
+
+    // -------------------------------------------------------------------------------------
+    // Mentions (idea 2f079bcd, auto-pr-review's second trigger): the second search, and the
+    // per-comment read that finds which comment actually carried the mention.
+    // -------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ListMentionedAsync_searches_gh_for_a_direct_mention_of_the_login()
+    {
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("[]");
+
+        await new GitHubReviewAssignments(gh.Runner).ListMentionedAsync(
+            "acme/widgets", "brian", "/repos/acme-widgets", CancellationToken.None);
+
+        gh.Calls.Single().Arguments.Should().ContainInOrder("--search", "mentions:brian");
+    }
+
+    private const string MentionCommentsJson = """
+        {
+          "data": {
+            "repository": {
+              "pullRequest": {
+                "comments": {
+                  "nodes": [
+                    {
+                      "id": "IC_1",
+                      "author": { "login": "ryan" },
+                      "body": "@brian what do you think about this approach?",
+                      "url": "https://github.com/acme/widgets/pull/42#issuecomment-1",
+                      "createdAt": "2026-09-10T10:00:00Z"
+                    },
+                    {
+                      "id": "IC_2",
+                      "author": { "login": "carol" },
+                      "body": "no mention here at all",
+                      "url": "https://github.com/acme/widgets/pull/42#issuecomment-2",
+                      "createdAt": "2026-09-10T11:00:00Z"
+                    },
+                    {
+                      "id": "IC_3",
+                      "author": { "login": "brian" },
+                      "body": "replying to my own thread, @brian noted for the record",
+                      "url": "https://github.com/acme/widgets/pull/42#issuecomment-3",
+                      "createdAt": "2026-09-10T12:00:00Z"
+                    }
+                  ]
+                },
+                "reviewThreads": {
+                  "nodes": [
+                    {
+                      "comments": {
+                        "nodes": [
+                          {
+                            "id": "PRRC_1",
+                            "author": { "login": "alice" },
+                            "body": "cc @brian, is this thread-safe?",
+                            "url": "https://github.com/acme/widgets/pull/42#discussion_r1",
+                            "createdAt": "2026-09-09T09:00:00Z"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "reviews": {
+                  "nodes": [
+                    {
+                      "id": "PRR_1",
+                      "author": { "login": "dana" },
+                      "body": "Overall fine, but @brian should weigh in on the migration.",
+                      "url": "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
+                      "submittedAt": "2026-09-08T08:00:00Z"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+        """;
+
+    [Fact]
+    public void ParseMentionComments_finds_every_direct_mention_across_comments_threads_and_reviews()
+    {
+        IReadOnlyList<PullRequestMentionComment> found =
+            GitHubReviewAssignments.ParseMentionComments(MentionCommentsJson, "brian");
+
+        found.Should().HaveCount(3, "one issue comment, one review-thread comment, and one review body — the fourth carries no mention and the fifth is the login's own");
+        found.Select(comment => comment.CommentId).Should().Contain(["IC_1", "PRRC_1", "PRR_1"]);
+    }
+
+    [Fact]
+    public void ParseMentionComments_never_counts_a_comment_the_mentioned_login_wrote_itself()
+    {
+        IReadOnlyList<PullRequestMentionComment> found =
+            GitHubReviewAssignments.ParseMentionComments(MentionCommentsJson, "brian");
+
+        found.Should().NotContain(comment => comment.CommentId == "IC_3", "the install's own comment never counts as a trigger");
+    }
+
+    [Fact]
+    public void ParseMentionComments_orders_findings_oldest_first()
+    {
+        IReadOnlyList<PullRequestMentionComment> found =
+            GitHubReviewAssignments.ParseMentionComments(MentionCommentsJson, "brian");
+
+        found.Select(comment => comment.CommentId).Should().ContainInOrder("PRR_1", "PRRC_1", "IC_1");
+    }
+
+    [Fact]
+    public void ParseMentionComments_never_matches_a_team_handle_mention()
+    {
+        const string teamMentionJson = """
+            {
+              "data": {
+                "repository": {
+                  "pullRequest": {
+                    "comments": {
+                      "nodes": [
+                        {
+                          "id": "IC_1",
+                          "author": { "login": "ryan" },
+                          "body": "cc @acme/reviewers, can someone take a look?",
+                          "url": "https://github.com/acme/widgets/pull/42#issuecomment-1",
+                          "createdAt": "2026-09-10T10:00:00Z"
+                        }
+                      ]
+                    },
+                    "reviewThreads": { "nodes": [] },
+                    "reviews": { "nodes": [] }
+                  }
+                }
+              }
+            }
+            """;
+
+        GitHubReviewAssignments.ParseMentionComments(teamMentionJson, "reviewers").Should().BeEmpty(
+            "@acme/reviewers is a team handle, a different string entirely from @reviewers");
+    }
+
+    /// <summary>
+    /// A plain substring check would read "@brianhall99" or "@brian-two" as a mention of "brian" —
+    /// a real GitHub username sharing a prefix, not a mention of the shorter one at all
+    /// (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public void ParseMentionComments_never_matches_a_longer_username_sharing_the_same_prefix()
+    {
+        const string longerUsernameJson = """
+            {
+              "data": {
+                "repository": {
+                  "pullRequest": {
+                    "comments": {
+                      "nodes": [
+                        {
+                          "id": "IC_1",
+                          "author": { "login": "ryan" },
+                          "body": "@brianhall99, does this look right to you?",
+                          "url": "https://github.com/acme/widgets/pull/42#issuecomment-1",
+                          "createdAt": "2026-09-10T10:00:00Z"
+                        },
+                        {
+                          "id": "IC_2",
+                          "author": { "login": "ryan" },
+                          "body": "@brian, does this look right to you?",
+                          "url": "https://github.com/acme/widgets/pull/42#issuecomment-2",
+                          "createdAt": "2026-09-10T11:00:00Z"
+                        }
+                      ]
+                    },
+                    "reviewThreads": { "nodes": [] },
+                    "reviews": { "nodes": [] }
+                  }
+                }
+              }
+            }
+            """;
+
+        IReadOnlyList<PullRequestMentionComment> found =
+            GitHubReviewAssignments.ParseMentionComments(longerUsernameJson, "brian");
+
+        found.Select(comment => comment.CommentId).Should().ContainSingle().Which.Should().Be(
+            "IC_2", "@brianhall99 is a different, real username — never a mention of the shorter \"brian\"");
+    }
+
+    [Fact]
+    public void ParseMentionComments_reads_a_pull_request_GraphQL_cannot_resolve_as_no_matches()
+    {
+        const string nullPullRequestJson = """{"data":{"repository":{"pullRequest":null}}}""";
+
+        GitHubReviewAssignments.ParseMentionComments(nullPullRequestJson, "brian").Should().BeEmpty();
+    }
 }
