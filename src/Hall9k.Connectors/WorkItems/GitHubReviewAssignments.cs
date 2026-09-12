@@ -245,7 +245,7 @@ public sealed class GitHubReviewAssignments(ProcessRunner? runner = null)
         return found;
     }
 
-    // first: 100 on every leg — a generous cap in the TimelineQuery's own spirit (that field's own
+    // last: 100 on every leg — a generous cap in the TimelineQuery's own spirit (that field's own
     // doc explains the choice): a pull request carrying more comments, review threads, or reviews
     // than this has left the range this feature reads, and reading past it silently risks missing
     // the very mention this poll exists to find rather than the oldest one. Nested per-thread
