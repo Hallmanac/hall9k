@@ -162,13 +162,13 @@ says the pull request moved rather than naming an author, since the counts do no
 them. A re-review request is the one part that names you, because GitHub records who a review
 request is addressed to — and it wakes you on its own, since an author who resolves your threads
 themselves and asks you back without a word or a push is still asking. Only the moment it arrives
-wakes you; a request left standing holds the wait open without re-announcing itself. It reaches Done
-when every thread you opened is resolved with no re-review requested of you, or when the pull
-request merges or closes. `h9k task abandon <id>` is how you stop watching early — and it is the
-only lever that does, since `h9k task resolve` is the attestation exit from a Failed task alone. A review with nothing outstanding on it (an approval with no threads, a
-report you dismissed without posting) sits in Waiting for one poll interval and then closes out —
-and an answer that arrives *before* that first poll is caught by it rather than lost, which is the
-whole point of counting replies instead of comments.
+wakes you; a request left standing holds the wait open without re-announcing itself. Every thread
+you opened being resolved no longer ends the wait by itself (Decisions Log PLACEHOLDER-ed6044a5,
+amending #160): the task stays Waiting until the pull request itself merges or closes, whatever the
+threads say, since a task that closed the moment it had nothing left to watch would leave a later
+`@login` mention on the same pull request with no live task to attach to and mint a redundant
+second one instead. `h9k task abandon <id>` is how you stop watching early — and it is the only
+lever that does, since `h9k task resolve` is the attestation exit from a Failed task alone.
 
 **Reading only what changed**: `h9k pr review <number-or-url> --since-my-review` opens a scoped lap
 over the deltas alone — the replies on threads you opened, verbatim, plus the commits pushed since

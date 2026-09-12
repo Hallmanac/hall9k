@@ -78,10 +78,18 @@ internal static class ReviewRequestPane
                       + $"'{project.Project.EscapeMarkup()}' ({project.Setting.Speed.Value.ToLowerInvariant()}, "
                       + $"{project.Setting.Origin}) — a review GitHub requests of this install's own login, or "
                       + "a comment that mentions it, here mints a pr-review task[/]"
+                    // Turning the setting back on only retries a held REQUEST — a standing request
+                    // is re-graded every sweep, so the lever named here genuinely clears it. A held
+                    // MENTION is a one-shot dedupe (ObservedReviewMention's own class doc: a comment
+                    // id already decided is never re-decided, whatever its outcome), so this lever
+                    // does nothing for one already seen while off — it stays yours to take by hand
+                    // from the comment itself (independent pre-PR review, cycle 1, adversarial
+                    // lens, low: the line used to promise this lever cleared both).
                     : $"[dim]auto pr-review: [/][yellow]off[/][dim] for project "
                       + $"'{project.Project.EscapeMarkup()}' ({project.Setting.Speed.Value.ToLowerInvariant()}, "
-                      + $"{project.Setting.Origin}) — a review request or a mention here waits for you:[/] "
-                      + $"h9k project set {project.Project.EscapeMarkup()} --auto-pr-review normal"),
+                      + $"{project.Setting.Origin}) — a review request here waits for you:[/] "
+                      + $"h9k project set {project.Project.EscapeMarkup()} --auto-pr-review normal"
+                      + "[dim] (a mention seen while off is not retried by this — answer it by hand)[/]"),
         ];
 
     /// <summary>
