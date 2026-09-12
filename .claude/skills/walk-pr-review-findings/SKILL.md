@@ -24,8 +24,12 @@ so posting a review under their login as their review is exactly what this skill
    original review, or `mention-followup-addendum.md` under a later run's own directory when this
    park is a mention follow-up's addendum (idea 2f079bcd — a GitHub comment tagged the install's
    own login after the original review, and this run answers it against the review already done).
-   Read the file the park reason names. An addendum carries only a "You were asked" section (see
-   "Answering a tagged comment" below); it never repeats the original findings.
+   Read every file the park reason names — a follow-up dispatched while an earlier report was
+   still parked and unwalked names both: its own addendum, and that earlier report's own path
+   ("Its own findings report is also still parked and unwalked: …"), since the follow-up never
+   repeats or replaces those findings. An addendum on its own carries only a "You were asked"
+   section (see "Answering a tagged comment" below); walk any earlier report's own findings first
+   (the "Process" steps below), then the addendum's tagged comment.
 2. **Confirm nothing has been posted.** The run wrote only local files — no comment, no review,
    no reaction exists on the pull request yet. Nothing here assumes otherwise.
 3. **Know the target.** The task's external reference (`h9k task show`) names the pull request:

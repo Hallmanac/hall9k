@@ -638,11 +638,34 @@ public sealed class PrReviewEngine(
             ? ExternalReference.Parse(task.ExternalReference).Reference
             : "this pull request";
         string firstCommentLine = FirstLine(answeredMention?.CommentBody ?? string.Empty);
+
+        // This follow-up is one of two things AwaitsPrReviewMentionFollowUp admits (idea 2f079bcd,
+        // decision 2 and 3), and only one of them leaves an earlier report stranded: when the
+        // claim moved CurrentRunId here because an earlier run's own findings report was still
+        // parked and unwalked, that run's own ReviewParked state is untouched by the claim — its
+        // report sits exactly where ComposeReportAndParkAsync left it, but this park reason is now
+        // the only thing the board or h9k task show surfaces, and it used to say nothing about that
+        // report at all (independent pre-PR review, cycle 3, conformance lens). The other admitted
+        // case (AwaitsPrReviewFollowThrough: the review was already delivered and resolved, and the
+        // task is only waiting on the pull request or the author) has no such report left behind —
+        // the previous run there is Done or AwaitingAuthor-parked, never ReviewParked — so the note
+        // is empty and this addendum is the only thing outstanding, exactly as before.
+        Guid previousRunId = task.RunIds.LastOrDefault(id => id != runId);
+        RunDetails? previousRun = previousRunId != Guid.Empty
+            ? await session.LoadAsync<RunDetails>(previousRunId, cancellationToken)
+            : null;
+        string unwalkedReportNote = previousRun is { State: var previousState } && previousState == RunState.ReviewParked
+            ? $" Its own findings report is also still parked and unwalked: "
+              + $"{RunPaths.ReviewFindingsFile(RunPaths.ResolveCurrentDirectory(previousRun.RunDirectory), 1)}."
+            : string.Empty;
+
         session.Events.Append(runId, new ReviewParked(
             runId,
             $"{pullRequestName}: {answeredMention?.CommentAuthorLogin ?? "someone"} tagged you"
             + (firstCommentLine.IsNotBlank() ? $" — \"{firstCommentLine}\"" : string.Empty)
-            + $". Addendum: {addendumPath}. Walk it with walk-pr-review-findings — show the drafted reply, "
+            + $". Addendum: {addendumPath}."
+            + unwalkedReportNote
+            + " Walk it with walk-pr-review-findings — show the drafted reply, "
             + "take any edits, and post it only on the owner's explicit go — then resolve with "
             + "h9k review resolve --merge-ready.",
             DateTimeOffset.UtcNow));
@@ -838,15 +861,18 @@ public sealed class PrReviewEngine(
         // The posted review is not the ending any more (task: a pr-review task stays open while
         // the pull request's review threads are unresolved): the task parks on the pull request
         // and the closeout watcher's own follow-through sweep decides when it is actually over —
-        // every thread the reviewer opened resolved, or the pull request merged or closed. Which
-        // of the three delivery routes got here (h9k pr approve, h9k pr request-changes, or a
-        // review the owner posted by hand and then closed with h9k review resolve --merge-ready)
-        // is deliberately not re-derived: what the follow-through watches is the pull request, and
-        // it says the same thing whoever typed the review. A review with nothing outstanding on it
-        // — an approval with no threads, a findings report dismissed without posting anything —
-        // reaches Done on the very first poll, which is one poll interval later than the immediate
-        // Done this used to take and is the cost of not spending an irreversible-adjacent gh read
-        // here, where nothing would retry it.
+        // only the pull request itself merging or closing, or a human's own h9k task abandon
+        // (Decisions Log #177: every thread the reviewer opened resolving no longer ends the wait
+        // by itself, because a task that closed out just because it had nothing left to watch
+        // would leave a later mention with no live task to attach to). Which of the three delivery
+        // routes got here (h9k pr approve, h9k pr request-changes, or a review the owner posted by
+        // hand and then closed with h9k review resolve --merge-ready) is deliberately not
+        // re-derived: what the follow-through watches is the pull request, and it says the same
+        // thing whoever typed the review. A review with nothing outstanding on it — an approval
+        // with no threads, a findings report dismissed without posting anything — waits exactly as
+        // long as one that posted plenty: one pr-review task per pull request per install stays
+        // open until the pull request itself merges or closes, so a later mention on the same pull
+        // request always has a live task to attach to instead of minting a second one.
         //
         // Done stays the answer for a pr-review task whose own reference cannot be read: there is
         // genuinely nothing to poll, so waiting would park it forever on a watch nothing performs.
