@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -1217,16 +1218,55 @@ public sealed class AutoPrReviewEngine(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            IReadOnlyList<PullRequestMentionComment> comments = await reviewAssignments.FindMentionCommentsAsync(
-                OwnerFrom(repository), NameFrom(repository), candidate.Number, login, project.RepositoryPath,
-                cancellationToken);
+            IReadOnlyList<PullRequestMentionComment> comments;
+            try
+            {
+                comments = await reviewAssignments.FindMentionCommentsAsync(
+                    OwnerFrom(repository), NameFrom(repository), candidate.Number, login, project.RepositoryPath,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                // One unreadable pull request's own trouble (a rate limit, a transient network or
+                // GraphQL error) must not widen the whole project's sweep failure — the identical
+                // per-item isolation ConcludeWithdrawnAsync's own loop already gives the review-
+                // request half (independent pre-PR review, cycle 3, conformance lens).
+                logger.LogWarning(
+                    exception,
+                    "Auto-pr-review could not read mention comments for {Repository}#{Number}; skipping "
+                    + "this poll", repository, candidate.Number);
+                continue;
+            }
 
             foreach (PullRequestMentionComment comment in comments)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (await ProcessMentionAsync(project, setting, repository, login, cutoff, candidate, comment, cancellationToken))
+                try
                 {
-                    created++;
+                    if (await ProcessMentionAsync(project, setting, repository, login, cutoff, candidate, comment, cancellationToken))
+                    {
+                        created++;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    // Covers a lost optimistic-concurrency race too (a concurrent
+                    // PrReviewFollowThroughEngine tick appending to the same task): the comment is
+                    // not recorded as observed, so the next sweep's own fresh read decides instead,
+                    // the same recovery ConcludeOneAsync's own EventStreamUnexpectedMaxEventIdException
+                    // catch gives the request side.
+                    logger.LogWarning(
+                        exception,
+                        "Auto-pr-review could not process mention comment {CommentId} on {Repository}#{Number}; "
+                        + "skipping this poll", comment.CommentId, repository, candidate.Number);
                 }
             }
         }
@@ -1483,6 +1523,17 @@ public sealed class AutoPrReviewEngine(
         Guid? priorReviewRunId = task.RunIds.Count > 0 ? task.RunIds[0] : null;
         TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, node.OwnerId, runId, now, reportParkedAwaitingWalk);
         session.Events.Append(existing.Id, expectedVersion: fence.Version + 2, observed, claimed);
+        // This claim uses the ceiling-exempt sentinel (NodeId == Guid.Empty), exactly as a mint's
+        // own deliberate claim does, and RunSupervisor.RefreshAdoptedLeaseAsync's own doc states
+        // the invariant that shape depends on: "a sentinel-claimed run never had a TaskLease
+        // written for it in the first place". Unlike a mint's claim, this one takes over a task
+        // that may already be Claimed with a live TaskLease still on file from its original
+        // dispatch (a park refreshes that lease rather than deleting it) — left in place, that
+        // stale lease would name the wrong node and generation the moment adoption or the expiry
+        // sweep reads it (independent pre-PR review, cycle 3, adversarial lens). Deleting it here,
+        // in the same transaction as the claim, keeps the invariant true regardless of whether a
+        // lease existed to delete.
+        session.Delete<TaskLease>(existing.Id);
         long claimedVersion = fence.Version + 2;
         await session.SaveChangesAsync(cancellationToken);
 
