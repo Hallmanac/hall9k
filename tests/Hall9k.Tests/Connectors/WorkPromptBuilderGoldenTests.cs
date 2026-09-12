@@ -508,12 +508,24 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         AssertMatchesGolden(name, SubstitutePaths(actual, home, worktree));
     }
 
+    /// <summary>
+    /// The final <c>Replace('\\', '/')</c> is not redundant with the two path prefixes it already
+    /// normalizes above: <c>ProjectHomePaths</c>' own accessors (<c>AgentsFile</c>,
+    /// <c>SkillsDirectory</c>, <c>TasksDirectory</c>, <c>IdeasDirectory</c>, <c>RepoDirectory</c>)
+    /// build the REST of the path with <see cref="Path.Combine"/>, which keeps Windows'
+    /// backslash past the point <c>&lt;HOME&gt;</c> or <c>&lt;WORKTREE&gt;</c> replaces the
+    /// machine-specific prefix — so <c>&lt;HOME&gt;\AGENTS.md</c> reached this method's return
+    /// unconverted while the fixtures, captured on macOS, hold <c>&lt;HOME&gt;/AGENTS.md</c>
+    /// (independent pre-PR review, cycle 1, adversarial lens: this went uncaught locally because
+    /// this repo's own gates only ever ran on macOS, and would have failed the Windows CI leg).
+    /// </summary>
     private static string SubstitutePaths(string text, string home, string worktree) =>
         text
             .Replace(home.Replace('\\', '/'), "<HOME>", StringComparison.Ordinal)
             .Replace(home, "<HOME>", StringComparison.Ordinal)
             .Replace(worktree.Replace('\\', '/'), "<WORKTREE>", StringComparison.Ordinal)
-            .Replace(worktree, "<WORKTREE>", StringComparison.Ordinal);
+            .Replace(worktree, "<WORKTREE>", StringComparison.Ordinal)
+            .Replace('\\', '/');
 
     /// <summary>
     /// Line-ending normalization, the same as <c>ReviewLapPromptBuilderGoldenTests</c>, plus this
