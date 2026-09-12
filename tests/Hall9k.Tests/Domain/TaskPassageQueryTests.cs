@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx.Events;
 using Xunit;
@@ -106,6 +107,86 @@ public sealed class TaskPassageQueryTests
     }
 
     [Fact]
+    public void Queued_closes_when_a_task_is_unassigned_before_being_claimed()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        DateTimeOffset assignedAt = Now.AddDays(-5);
+        DateTimeOffset unassignedAt = Now.AddDays(-4);
+        DateTimeOffset reassignedAt = Now.AddHours(-2);
+        DateTimeOffset claimedAt = Now.AddHours(-1);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskAssigned(taskId, ownerId, [], assignedAt, ownerId)),
+            Ev(new TaskUnassigned(taskId, null, unassignedAt, ownerId)),
+            Ev(new TaskAssigned(taskId, ownerId, [], reassignedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, DomainId.New(), claimedAt)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, []);
+
+        // The first assign-to-unassign day is real queued time and must neither vanish when the
+        // second TaskAssigned overwrites segmentStart, nor keep growing after the task left the
+        // queue entirely (independent pre-PR review, cycle 3, adversarial finding).
+        passage.Queued.StillOpen.Should().BeFalse();
+        passage.Queued.Elapsed.Should().Be(TimeSpan.FromDays(1) + TimeSpan.FromHours(1));
+    }
+
+    [Fact]
+    public void Queued_closes_when_a_task_is_abandoned_before_being_claimed()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        DateTimeOffset assignedAt = Now.AddDays(-12);
+        DateTimeOffset abandonedAt = Now.AddDays(-5);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskAssigned(taskId, ownerId, [], assignedAt, ownerId)),
+            Ev(new TaskAbandoned(taskId, "no longer needed", abandonedAt, ownerId)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, []);
+
+        // Without a close on TaskAbandoned this kept reading "queued so far", growing on every
+        // read of an archived task (independent pre-PR review, cycle 3, adversarial finding).
+        passage.Queued.StillOpen.Should().BeFalse();
+        passage.Queued.Elapsed.Should().Be(TimeSpan.FromDays(7));
+    }
+
+    [Fact]
+    public void Queued_excludes_a_dependency_hold_that_carries_through_a_reopen_after_a_deliberate_claim()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid dependencyId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset assignedAt = Now.AddDays(-3);
+        DateTimeOffset claimedAt = assignedAt.AddMinutes(10);
+        DateTimeOffset reopenedAt = Now.AddHours(-2);
+        DateTimeOffset reclaimedAt = Now.AddHours(-1);
+
+        // The dependency never actually clears — no TaskDependencyCompleted ever lands — the
+        // human simply claimed past it (h9k task start --acknowledge-unmet-dependencies), and
+        // the task later reaches Done and is reopened for a follow-up lap while the dependency
+        // is still genuinely unmet. TaskDetailsProjection.Apply(TaskReopened) would land this at
+        // Blocked, not Queued, for exactly that reason (independent pre-PR review, cycle 3,
+        // conformance finding).
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskAssigned(taskId, ownerId, [dependencyId], assignedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, runId, claimedAt)),
+            Ev(new TaskReopened(taskId, runId, "task/x", null, reopenedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 2, runId, reclaimedAt)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, []);
+
+        passage.Queued.Elapsed.Should().Be(TimeSpan.Zero);
+    }
+
+    [Fact]
     public void Building_runs_from_dispatch_to_the_first_verification()
     {
         Guid runId = DomainId.New();
@@ -134,6 +215,53 @@ public sealed class TaskPassageQueryTests
 
         passage.Building.StillOpen.Should().BeTrue();
         passage.Building.Elapsed.Should().Be(TimeSpan.FromMinutes(10));
+    }
+
+    [Fact]
+    public void Building_closes_on_review_parked_for_a_pr_review_run_that_never_verifies_or_dispatches_review()
+    {
+        // RunSupervisor.HandleResultAsync routes a pr-review task's run to PrReviewEngine
+        // entirely — it never appends VerificationPassed/Failed or ReviewDispatched, so
+        // ReviewParked is the only boundary that closes what would otherwise read as "build"
+        // forever, double-counted against the ReviewPark human wait below (independent pre-PR
+        // review, cycle 3, both lenses).
+        Guid runId = DomainId.New();
+        Guid sessionId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddDays(-3);
+        DateTimeOffset conformanceDispatchedAt = dispatchedAt.AddMinutes(10);
+        DateTimeOffset parkedAt = dispatchedAt.AddMinutes(25);
+
+        RunEventSet run = new(runId, dispatchedAt, null,
+        [
+            Ev(new PrReviewConformanceDispatched(runId, sessionId, 123, conformanceDispatchedAt, conformanceDispatchedAt, AgentModel.Unknown)),
+            Ev(new ReviewParked(runId, "findings ready", parkedAt)),
+        ]);
+
+        TaskPassage passage = Compute([], [run], TaskType.PrReview);
+
+        passage.Building.StillOpen.Should().BeFalse();
+        passage.Building.Elapsed.Should().Be(TimeSpan.FromMinutes(25));
+
+        HumanWaitPassage wait = passage.HumanWaits.Should().ContainSingle(w => w.Kind == HumanWaitKind.ReviewPark).Subject;
+        wait.Elapsed.StillOpen.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Building_closes_on_review_parked_for_a_mention_follow_up_run_with_no_dispatch_recorded_at_all()
+    {
+        // DriveMentionFollowUpAsync appends only ReviewParked — no PrReviewConformanceDispatched,
+        // no verification, nothing else — so that single event has to be the boundary on its own
+        // (independent pre-PR review, cycle 3, conformance finding).
+        Guid runId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddHours(-1);
+        DateTimeOffset parkedAt = Now.AddMinutes(-45);
+
+        RunEventSet run = new(runId, dispatchedAt, null, [Ev(new ReviewParked(runId, "addendum ready", parkedAt))]);
+
+        TaskPassage passage = Compute([], [run], TaskType.PrReview);
+
+        passage.Building.StillOpen.Should().BeFalse();
+        passage.Building.Elapsed.Should().Be(TimeSpan.FromMinutes(15));
     }
 
     [Fact]
@@ -274,6 +402,28 @@ public sealed class TaskPassageQueryTests
     }
 
     [Fact]
+    public void Merge_wait_is_unknown_when_the_pull_request_closed_without_a_merge_even_though_the_task_is_not_marked_concluded()
+    {
+        // CloseoutEngine.PollOnceAsync's own orphaned-run query permanently excludes a run once
+        // it carries PullRequestClosed — nothing will ever watch this pull request again, so this
+        // must read Unknown() regardless of the caller's own taskConcluded flag (independent
+        // pre-PR review, cycle 3, conformance finding).
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset completedAt = Now.AddHours(-3);
+        DateTimeOffset closedAt = Now.AddHours(-1);
+
+        RunEventSet run = new(runId, Now.AddHours(-4), closedAt,
+            [Ev(new PullRequestClosed(runId, closedAt, closedAt))]);
+        List<IEvent> taskEvents = [Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/1", completedAt))];
+
+        TaskPassage passage = Compute(taskEvents, [run], taskConcluded: false);
+
+        passage.MergeWait.Applicable.Should().BeTrue();
+        passage.MergeWait.IsUnknown.Should().BeTrue();
+    }
+
+    [Fact]
     public void Claim_to_merge_runs_from_the_first_claim_to_the_merge()
     {
         Guid taskId = DomainId.New();
@@ -405,6 +555,57 @@ public sealed class TaskPassageQueryTests
         HumanWaitPassage wait = prReview.HumanWaits.Should()
             .ContainSingle(w => w.Kind == HumanWaitKind.PendingExternalReview).Subject;
         wait.Elapsed.Elapsed.Should().Be(TimeSpan.FromHours(1));
+    }
+
+    [Fact]
+    public void Pending_external_review_closes_on_a_concluded_recall_rather_than_reporting_unknown()
+    {
+        // AutoPrReviewEngine.ConcludeOneAsync appends PullRequestReviewAssignmentRecalled with
+        // Concluded true when the request is withdrawn before the run ever dispatches — the
+        // stream records exactly when the wait ended, and this must read it rather than falling
+        // back to Unknown() (independent pre-PR review, cycle 3, adversarial finding).
+        Guid taskId = DomainId.New();
+        DateTimeOffset requestedAt = Now.AddHours(-2);
+        DateTimeOffset recalledAt = Now.AddHours(-1);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new PullRequestReviewAssignmentObserved(taskId, "https://github.com/o/r/pull/9", "alice", "bob", requestedAt, requestedAt)),
+            Ev(new PullRequestReviewAssignmentRecalled(taskId, "https://github.com/o/r/pull/9", "alice", recalledAt, Concluded: true)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, [], TaskType.PrReview);
+
+        HumanWaitPassage wait = passage.HumanWaits.Should()
+            .ContainSingle(w => w.Kind == HumanWaitKind.PendingExternalReview).Subject;
+        wait.Elapsed.IsUnknown.Should().BeFalse();
+        wait.Elapsed.Elapsed.Should().Be(TimeSpan.FromHours(1));
+    }
+
+    [Fact]
+    public void Pending_external_review_stays_open_on_an_unconcluded_recall_since_the_work_continues()
+    {
+        // Concluded false means the removal landed after the run already dispatched —
+        // AutoPrReviewEngine's own comment: "recorded as an observation; the work continues" —
+        // so the real close is still whatever PrReviewDelivered eventually lands, not this
+        // recall. The run this dispatched is still live, the same as the production shape.
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset requestedAt = Now.AddHours(-2);
+        DateTimeOffset recalledAt = Now.AddHours(-1);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new PullRequestReviewAssignmentObserved(taskId, "https://github.com/o/r/pull/9", "alice", "bob", requestedAt, requestedAt)),
+            Ev(new PullRequestReviewAssignmentRecalled(taskId, "https://github.com/o/r/pull/9", "alice", recalledAt, Concluded: false)),
+        ];
+        RunEventSet run = new(runId, requestedAt, null, []);
+
+        TaskPassage passage = Compute(taskEvents, [run], TaskType.PrReview);
+
+        HumanWaitPassage wait = passage.HumanWaits.Should()
+            .ContainSingle(w => w.Kind == HumanWaitKind.PendingExternalReview).Subject;
+        wait.Elapsed.StillOpen.Should().BeTrue();
     }
 
     [Fact]

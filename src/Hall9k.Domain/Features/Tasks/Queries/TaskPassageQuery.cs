@@ -178,6 +178,38 @@ public static class TaskPassageQuery
         DateTimeOffset? blockedSince = null;
         TimeSpan blockedDeduction = TimeSpan.Zero;
         bool everStarted = false;
+        // The last-known answer to "does this task still have an unmet dependency", frozen
+        // exactly the way TaskDetailsProjection.Apply(TaskDependencyCompleted) freezes
+        // UnmetDependencies while the task is not currently Blocked: a dependency completion
+        // landing while the task is Claimed (a deliberate --acknowledge-unmet-dependencies
+        // claim) or Done never clears it, so a later TaskRequeued/TaskReopened/TaskRetried/
+        // TaskHandedBack that reads it can still land Blocked (independent pre-PR review,
+        // cycle 3, conformance finding).
+        bool dependenciesUnresolved = false;
+
+        // Closes whatever queued/blocked segment is currently open, deducting any still-open
+        // blocked window along the way — shared by every event that can end that segment
+        // without the task ever being claimed: TaskClaimed, and every terminal-or-departing
+        // event below it (independent pre-PR review, cycle 3, adversarial finding: a task
+        // unassigned, abandoned, or resolved while still queued left segmentStart open forever).
+        void Close(DateTimeOffset at)
+        {
+            if (segmentStart is not { } start)
+            {
+                return;
+            }
+
+            TimeSpan segment = at - start;
+            if (blockedSince is { } stillBlockedSince)
+            {
+                blockedDeduction += at - stillBlockedSince;
+                blockedSince = null;
+            }
+
+            total += Clamp(segment - blockedDeduction);
+            segmentStart = null;
+            blockedDeduction = TimeSpan.Zero;
+        }
 
         foreach (IEvent recorded in taskEvents)
         {
@@ -187,19 +219,20 @@ public static class TaskPassageQuery
                     everStarted = true;
                     segmentStart = assigned.AssignedAt;
                     blockedDeduction = TimeSpan.Zero;
-                    blockedSince = assigned.UnmetDependencies.Count > 0 ? assigned.AssignedAt : null;
+                    dependenciesUnresolved = assigned.UnmetDependencies.Count > 0;
+                    blockedSince = dependenciesUnresolved ? assigned.AssignedAt : null;
                     break;
                 case TaskRequeued requeued:
                     everStarted = true;
                     segmentStart = requeued.RequeuedAt;
                     blockedDeduction = TimeSpan.Zero;
-                    blockedSince = null;
+                    blockedSince = dependenciesUnresolved ? requeued.RequeuedAt : null;
                     break;
                 case TaskReopened reopened:
                     everStarted = true;
                     segmentStart = reopened.ReopenedAt;
                     blockedDeduction = TimeSpan.Zero;
-                    blockedSince = null;
+                    blockedSince = dependenciesUnresolved ? reopened.ReopenedAt : null;
                     break;
                 case TaskRetried retried:
                     // h9k task retry appends only TaskRetried — no TaskRequeued alongside it — so
@@ -210,28 +243,36 @@ public static class TaskPassageQuery
                     everStarted = true;
                     segmentStart = retried.RetriedAt;
                     blockedDeduction = TimeSpan.Zero;
-                    blockedSince = null;
+                    blockedSince = dependenciesUnresolved ? retried.RetriedAt : null;
                     break;
                 case TaskHandedBack handedBack:
                     everStarted = true;
                     segmentStart = handedBack.HandedBackAt;
                     blockedDeduction = TimeSpan.Zero;
-                    blockedSince = null;
+                    blockedSince = dependenciesUnresolved ? handedBack.HandedBackAt : null;
                     break;
                 case TaskDependencyCompleted completed when blockedSince is { } since && completed.RemainingDependencies.Count == 0:
                     blockedDeduction += completed.CompletedAt - since;
                     blockedSince = null;
+                    dependenciesUnresolved = false;
                     break;
-                case TaskClaimed claimed when segmentStart is { } start:
-                    TimeSpan segment = claimed.ClaimedAt - start;
-                    if (blockedSince is { } stillBlockedSince)
-                    {
-                        blockedDeduction += claimed.ClaimedAt - stillBlockedSince;
-                        blockedSince = null;
-                    }
-
-                    total += Clamp(segment - blockedDeduction);
-                    segmentStart = null;
+                case TaskClaimed claimed:
+                    Close(claimed.ClaimedAt);
+                    break;
+                case TaskUnassigned unassigned:
+                    Close(unassigned.UnassignedAt);
+                    break;
+                case TaskInteractiveClaimUnassigned interactiveUnassigned:
+                    Close(interactiveUnassigned.UnassignedAt);
+                    break;
+                case TaskAbandoned abandoned:
+                    Close(abandoned.AbandonedAt);
+                    break;
+                case TaskResolved resolved:
+                    Close(resolved.ResolvedAt);
+                    break;
+                case TaskReturnedToDraft returned:
+                    Close(returned.ReturnedAt);
                     break;
             }
         }
@@ -277,6 +318,7 @@ public static class TaskPassageQuery
         public List<DateTimeOffset> ReviewCompletedTimes { get; } = [];
         public List<DateTimeOffset> PrReviewDeliveredTimes { get; } = [];
         public DateTimeOffset? PullRequestMergedAt { get; set; }
+        public bool PullRequestClosedWithoutMerge { get; set; }
         public int SessionCount { get; set; }
     }
 
@@ -331,6 +373,18 @@ public static class TaskPassageQuery
 
                     break;
                 case ReviewParked parked:
+                    // A pr-review task's own run never appends VerificationPassed/Failed or
+                    // ReviewDispatched — RunSupervisor.HandleResultAsync routes it to
+                    // PrReviewEngine entirely, whether the run is the initial conformance-lens
+                    // dispatch or a bare mention follow-up that dispatches no lens session at
+                    // all — so ReviewParked is the only boundary either shape ever records
+                    // before parking. Closing BuildEnd here too (harmless no-op via ??= on an
+                    // ordinary FullPipeline run, whose BuildEnd is already closed well before any
+                    // review park) stops that whole session-plus-park window from reading as
+                    // "build", which double-counted it against the ReviewPark human wait below
+                    // and kept growing "so far" while the run sat parked (independent pre-PR
+                    // review, cycle 3, both lenses).
+                    fold.BuildEnd ??= parked.ParkedAt;
                     reviewParkedSince ??= parked.ParkedAt;
                     break;
                 case ReviewParkResolved resolved when reviewParkedSince is { } parkedSince:
@@ -357,6 +411,14 @@ public static class TaskPassageQuery
                     break;
                 case PullRequestMerged merged:
                     fold.PullRequestMergedAt = merged.MergedAt ?? merged.ObservedAt;
+                    break;
+                case PullRequestClosed:
+                    // CloseoutEngine.PollOnceAsync's own orphaned-run query permanently excludes
+                    // a run once it carries this fact ("that run already recorded the one thing
+                    // an inspection here could tell it") — nothing will ever watch this pull
+                    // request again, so FoldUntilMerged below treats it the same as a concluded
+                    // task rather than counting up a merge wait nothing will ever close.
+                    fold.PullRequestClosedWithoutMerge = true;
                     break;
             }
         }
@@ -555,7 +617,13 @@ public static class TaskPassageQuery
             return PassagePhase.Closed(Clamp(mergedAt - anchor));
         }
 
-        return taskConcluded ? PassagePhase.Unknown() : PassagePhase.Open(now - anchor);
+        // A pull request the closeout monitor observed closed without a merge is permanently
+        // outside every sweep that could otherwise still complete this closeout — treated as
+        // concluded regardless of the caller's own taskConcluded reading (independent pre-PR
+        // review, cycle 3, conformance finding: a Delivered-composed row with a closed,
+        // unmerged pull request read taskConcluded false and grew this figure forever).
+        bool neverWillMerge = taskConcluded || folds.Any(fold => fold.PullRequestClosedWithoutMerge);
+        return neverWillMerge ? PassagePhase.Unknown() : PassagePhase.Open(now - anchor);
     }
 
     // --- Human waits: pairs of start/end markers, FIFO, with the newest only ever open on the newest run ---
@@ -635,18 +703,31 @@ public static class TaskPassageQuery
             .OfType<PullRequestReviewAssignmentObserved>()
             .Select(observed => observed.RequestedAt ?? observed.ObservedAt)
             .OrderBy(at => at)];
-        List<DateTimeOffset> delivered = [.. folds.SelectMany(fold => fold.PrReviewDeliveredTimes).OrderBy(at => at)];
+        List<DateTimeOffset> delivered = [.. folds.SelectMany(fold => fold.PrReviewDeliveredTimes)];
+        // A withdrawn review request ends the wait exactly as a delivered review does — but
+        // only when the recall itself concluded the task (AutoPrReviewEngine.ConcludeOneAsync's
+        // own Concluded flag): a recall observed after the run already dispatched is recorded as
+        // "the work continues", so the wait's real close is still the PrReviewDelivered that
+        // follows it, not this recall (independent pre-PR review, cycle 3, adversarial finding:
+        // the recalled-before-dispatch shape read Unknown() for a boundary the stream had
+        // actually recorded).
+        List<DateTimeOffset> ended = [.. delivered.Concat(taskEvents
+            .Select(recorded => recorded.Data)
+            .OfType<PullRequestReviewAssignmentRecalled>()
+            .Where(recalled => recalled.Concluded)
+            .Select(recalled => recalled.ObservedAt))
+            .OrderBy(at => at)];
 
         List<(DateTimeOffset Start, DateTimeOffset End)> closed = [];
         int used = 0;
-        foreach (DateTimeOffset deliveredAt in delivered)
+        foreach (DateTimeOffset endedAt in ended)
         {
             if (used >= requested.Count)
             {
                 break;
             }
 
-            closed.Add((requested[used], deliveredAt));
+            closed.Add((requested[used], endedAt));
             used++;
         }
 

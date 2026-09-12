@@ -68,13 +68,25 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         // ever close an open merge wait. trueCloseout is the bar for an ordinary merge; Abandoned
         // is concluded too, since a walked-away task with an open pull request has nothing further
         // that will ever merge it.
+        //
+        // Deliberately NOT widened to every Done task whose composed row still reads Delivered
+        // (independent pre-PR review, cycle 3, conformance finding): a pull request closed
+        // without merging is exactly that shape, and TaskPassageQuery.FoldUntilMerged now reads
+        // it directly off the owning run's own PullRequestClosed event rather than through this
+        // flag, so it renders Unknown() regardless of what this bool says. A hand-resolved task
+        // (h9k task resolve --pr <url> on a Failed run) is the other Done-but-Delivered shape
+        // and is deliberately left reading Open "so far" here: CloseoutEngine.PollOnceAsync's own
+        // orphaned-run sweep keeps polling that exact run (PullRequestRecordedOnFailedRun set its
+        // PullRequestNumber, and its FailureReason is not PullRequestClosedWithoutMerge), so a
+        // real merge can still land and close it — growing "so far" is the honest answer, not a
+        // defect, for as long as that stays true.
         bool taskConcluded = trueCloseout || details.State == TaskState.Abandoned;
 
         // A task's passage in time (task: h9k task show tells a task's passage in time), read
         // from the same task and run streams h9k status and h9k project show can fold the
         // identical way through TaskPassageQuery.ReadAsync — no flag, and no gate on the task's
         // own state: an assigned-but-unclaimed task still has a queued phase worth showing, and
-        // WritePassage below says nothing at all when nothing on the task has happened yet.
+        // AppendPassage below says nothing at all when nothing on the task has happened yet.
         TaskPassage passage = await TaskPassageQuery.ReadAsync(
             session, details.Id, details.Type, taskConcluded, now, cancellationToken);
         WriteStanding(row, details, passage);
