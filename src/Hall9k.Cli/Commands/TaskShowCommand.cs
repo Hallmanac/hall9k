@@ -498,6 +498,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
             WriteReviewScopeSeed(newestRun);
             WriteReviewOutcome(newestRun);
+            WriteReviewEndedByMerge(newestRun);
             WriteUnfixedFindings(newestRun);
             WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
@@ -713,6 +714,29 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         };
 
         AnsiConsole.MarkupLine($"\n[bold]Pre-PR review[/]  {outcome}");
+    }
+
+    /// <summary>
+    /// Whether the newest run's review loop ended not by settling but because its own pull
+    /// request merged mid-review (task: a post-PR follow-up's review loop checks the pull
+    /// request's merge state between passes) — a human merging under a live follow-up. Shown
+    /// instead of <see cref="WriteReviewOutcome"/>'s line, never alongside it: a run that ended
+    /// this way never reached <see cref="ReviewVerdict.MergeReady"/> on its own, so
+    /// <see cref="WriteReviewOutcome"/>'s own guard already stays silent for it.
+    /// </summary>
+    private static void WriteReviewEndedByMerge(RunDetails? run)
+    {
+        if (run is not { ReviewEndedByMergeAtCycle: { } cycle })
+        {
+            return;
+        }
+
+        string reLand = run.ReLandDraftTaskId is { } draftId
+            ? $" [dim]— stranded commits saved and routed to draft task {draftId}[/]"
+            : string.Empty;
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Pre-PR review[/]  [yellow]ended — the pull request merged mid-review[/] "
+            + $"[dim](cycle {cycle}, no further passes dispatched){reLand}[/]");
     }
 
     /// <summary>
