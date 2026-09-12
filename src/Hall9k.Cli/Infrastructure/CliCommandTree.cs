@@ -79,10 +79,17 @@ public static class CliCommandTree
                     + "machine. The location is yours (--home); the shape is the platform's. Registration "
                     + "also records agents on this project running with --dangerously-skip-permissions "
                     + "(log #9, log #181) — there is no flag to leave prompts live at "
-                    + "registration; revert it after with h9k project set <name> --skip-permissions false.")
+                    + "registration; revert it after with h9k project set <name> --skip-permissions false. "
+                    + "A name that collides with an archived project (h9k project remove) offers to "
+                    + "reactivate it instead, or asks to rename the archive to free the name — "
+                    + "--reactivate-archived and --rename-archived-to <NAME> answer that non-interactively.")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url", "https://github.com/Hallmanac/hall9k")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url", "https://github.com/Hallmanac/hall9k",
-                    "--home", "~/work/hall9k", "--base-branch", "main");
+                    "--home", "~/work/hall9k", "--base-branch", "main")
+                .WithExample("project", "add", "--name", "hall9k", "--repo-url",
+                    "https://github.com/Hallmanac/hall9k", "--reactivate-archived")
+                .WithExample("project", "add", "--name", "hall9k", "--repo-url",
+                    "https://github.com/Hallmanac/hall9k", "--rename-archived-to", "hall9k-old");
             project.AddCommand<ProjectInitCommand>("init")
                 .WithDescription(
                     "Create (or repair) a registered project's home directory. The adopt path for a "
@@ -98,8 +105,11 @@ public static class CliCommandTree
                     "Every registered project, one row each, with its tasks counted by attention bucket "
                     + "(needs you, stalled, active, in review, queued, done, closed). The counts are "
                     + "single-assignment, so a row sums to the project's task count — this is where you look "
-                    + "to see which project is asking for something.")
-                .WithExample("project", "list");
+                    + "to see which project is asking for something. An archived project (h9k project "
+                    + "remove) is hidden by default; --include-archived shows it too, marked archived with "
+                    + "the date.")
+                .WithExample("project", "list")
+                .WithExample("project", "list", "--include-archived");
             project.AddCommand<ProjectShowCommand>("show")
                 .WithDescription(
                     "One project in one pane: how it is registered (repository, base branch, connection binding, "
@@ -140,6 +150,34 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--never-close-labels", "epic,adr")
                 .WithExample(
                     "project", "set", "hall9k", "--review-stage-composition", "none", "--accept-reduced-review");
+            project.AddCommand<ProjectRemoveCommand>("remove")
+                .WithDescription(
+                    "Archive a project on this install: reversible, and nothing is deleted. The "
+                    + "dispatcher stops claiming its tasks, the project-home render and auto-pr-review "
+                    + "sweeps skip it, h9k project list hides it by default, and h9k project show names "
+                    + "it archived with the date. Refused while any of its tasks sits in a state the "
+                    + "daemon may still act on (anything other than Draft, Published, Done, or "
+                    + "Abandoned), naming those tasks and the fix. Neither the home directory on disk "
+                    + "nor a registration of the same repository on another node is touched. "
+                    + "h9k project reactivate undoes it in place.")
+                .WithExample("project", "remove", "hall9k", "--reason", "\"Accidentally registered during an install\"")
+                .WithExample("project", "remove", "hall9k", "--yes");
+            project.AddCommand<ProjectReactivateCommand>("reactivate")
+                .WithDescription(
+                    "End an archive in place (h9k project remove's inverse): same id, settings, tasks, "
+                    + "ideas, and recorded home; the dispatcher's claim sweep and both daemon sweeps "
+                    + "resume for it immediately. Reports whether the home directory is still intact on "
+                    + "this machine, pointing at h9k project init if not.")
+                .WithExample("project", "reactivate", "hall9k");
+            project.AddCommand<ProjectRenameCommand>("rename")
+                .WithDescription(
+                    "Change a project's name and nothing else — the id, the recorded home path, the "
+                    + "repository, and every task, run, and idea are untouched, since none of them ever "
+                    + "reference a project by name. The home directory on disk keeps its old folder "
+                    + "name. Mainly for freeing an archived project's name for a fresh registration "
+                    + "(h9k project add offers this same rename inline on a name collision), but works "
+                    + "on a live project too.")
+                .WithExample("project", "rename", "hall9k", "hall9k-old");
         });
 
         config.AddBranch("owner", owner =>
