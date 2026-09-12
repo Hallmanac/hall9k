@@ -43,6 +43,28 @@ public sealed class ProjectDetailsProjectionTests
     }
 
     /// <summary>
+    /// The projection's <c>Create</c> reads <see cref="ProjectRegistered.SkipPermissions"/> the
+    /// same way it already reads <see cref="ProjectRegistered.HomeDirectory"/>, so a project
+    /// <c>h9k project add</c> registers with skip-permissions on reads that way with no
+    /// <c>h9k project set</c> step in between — and a stream from before this field existed still
+    /// reads false, the parameter's own default.
+    /// </summary>
+    [Fact]
+    public void Create_reads_skip_permissions_straight_off_registration()
+    {
+        ProjectDetailsProjection projection = new();
+
+        ProjectDetails registeredOn = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            DomainId.New(), DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git",
+            null, "main", Now, HomeDirectory: null, SkipPermissions: true)));
+        registeredOn.SkipPermissions.Should().BeTrue();
+
+        ProjectDetails beforeThisChange = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            DomainId.New(), DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+        beforeThisChange.SkipPermissions.Should().BeFalse();
+    }
+
+    /// <summary>
     /// The writing conventions read the platform default on a document nobody set one on, and an
     /// operator's own text survives a later change that leaves the field absent (task 412afe6c) —
     /// the same absent-means-left-alone contract every other setting on this event holds.

@@ -17,7 +17,8 @@ public static class ProjectDecider
         Uri? repositoryUrl,
         string? baseBranch,
         DateTimeOffset registeredAt,
-        ProjectHome? homeDirectory = null)
+        ProjectHome? homeDirectory = null,
+        bool skipPermissions = false)
     {
         if (name.IsBlank())
         {
@@ -45,7 +46,8 @@ public static class ProjectDecider
             repositoryUrl,
             baseBranch.IsBlank() ? "main" : baseBranch,
             registeredAt,
-            homeDirectory ?? ProjectHome.None);
+            homeDirectory ?? ProjectHome.None,
+            skipPermissions);
     }
 
     public static ProjectSettingsChanged ChangeSettings(

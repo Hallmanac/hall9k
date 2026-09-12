@@ -139,6 +139,7 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         RepositoryUrl = @event.Data.RepositoryUrl,
         BaseBranch = @event.Data.BaseBranch,
         HomeDirectory = @event.Data.HomeDirectory ?? ProjectHome.None,
+        SkipPermissions = @event.Data.SkipPermissions,
         RegisteredAt = @event.Data.RegisteredAt,
     };
 

@@ -142,6 +142,7 @@ public sealed class ProjectAggregate
         RepositoryUrl = @event.RepositoryUrl;
         BaseBranch = @event.BaseBranch;
         HomeDirectory = @event.HomeDirectory ?? ProjectHome.None;
+        SkipPermissions = @event.SkipPermissions;
         RegisteredAt = @event.RegisteredAt;
     }
 
