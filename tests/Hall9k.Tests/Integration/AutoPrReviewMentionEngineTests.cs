@@ -307,6 +307,16 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        // Every run this factory's ReviewEngine drives is a fresh, non-follow-up run, so its own
+        // already-merged guard (RunAggregate.IsFollowUp) always returns before ever reaching
+        // either dependency below — both exist solely to satisfy the constructor, the same
+        // RefusingInspector NewLauncher's own RunLauncher already uses for the identical reason.
+        RefusingInspector reviewInspector = new();
+        CloseoutEngine unusedCloseout = new(
+            store, node, new DaemonConnection("unused"), reviewInspector, new RefusingWorktreeManager(),
+            new StackedParentWatch(new RefusingWorktreeManager(), NullLogger<StackedParentWatch>.Instance),
+            RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
+            Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
@@ -314,7 +324,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             new StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
                 NullLogger<StackedParentWatch>.Instance),
-            launchHold);
+            launchHold, reviewInspector, unusedCloseout);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,

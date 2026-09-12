@@ -96,6 +96,13 @@ public sealed class NodeBootstrapConventionGuardTests
             [Path.Combine("tests", "Hall9k.Tests", "Fakes", "NodeBootstrapSeed.cs")] = 1,
             [Path.Combine("tests", "Hall9k.Tests", "Integration", "RenderSweepTests.cs")] = 1,
             [Path.Combine("tests", "Hall9k.Tests", "Integration", "PrReviewTaskEngineTests.cs")] = 1,
+            // NewUnusedCloseoutEngine's own stand-in: ReviewEngine's constructor requires a
+            // CloseoutEngine, which requires a NodeContext, but every test in that file except the
+            // already-merged ones drives a run whose guard clause returns before either is ever
+            // touched — and nothing there calls InitializeAsync on it, which is the one thing this
+            // guard exists to keep away from the real gh. The already-merged tests, which do run a
+            // real closeout, take their node from NodeBootstrapSeed like everything else.
+            [Path.Combine("tests", "Hall9k.Tests", "Integration", "ReviewEngineTests.cs")] = 1,
         };
 
         string[] files =
