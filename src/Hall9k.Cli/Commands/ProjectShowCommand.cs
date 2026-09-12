@@ -213,17 +213,31 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// default and what <c>--skip-permissions false</c> records, and the two are different facts:
     /// a project nobody has configured is one command away from running unattended, while one
     /// that chose "no" has an operator's answer standing behind every prompt a detached run
-    /// cannot answer. "yes" says nothing about origin, because it cannot be anything but a
-    /// choice: nothing but <c>h9k project set</c> ever records it.
+    /// cannot answer.
+    /// <para>
+    /// "yes" used to say nothing about origin, because it could not be anything but a choice: only
+    /// <c>h9k project set</c> ever recorded it. Registration became a second, silent way to reach
+    /// "yes" (task: a newly registered project skips permission prompts by default, recorded at
+    /// registration) — every project <c>h9k project add</c> creates records it on
+    /// <c>ProjectRegistered</c> itself, with no <c>h9k project set</c> step in between — so "yes"
+    /// now names which of the two it is: <c>recorded</c> tells this row a later <c>project set</c>
+    /// touched the field at all; when it has not, and the value still reads true, the only place
+    /// that could have come from is registration.
+    /// </para>
     /// </summary>
     internal static string SkipPermissionsRow(ProjectDetails project, bool recorded)
     {
         string name = project.Name.EscapeMarkup();
-        return project.SkipPermissions
-            ? "[yellow]yes[/] [dim]— agents run with --dangerously-skip-permissions (log #9)[/]"
-            : $"[dim]no ({OriginNote(recorded)}) — agents stop for every permission prompt, which a "
-              + $"detached run cannot answer (log #9). Let them run unattended: h9k project set {name} "
-              + "--skip-permissions true[/]";
+        if (project.SkipPermissions)
+        {
+            string origin = recorded ? "explicit" : "recorded at registration";
+            return $"[yellow]yes[/] [dim]({origin}) — agents run with --dangerously-skip-permissions "
+                + "(log #9, log #PLACEHOLDER-f4cce412)[/]";
+        }
+
+        return $"[dim]no ({OriginNote(recorded)}) — agents stop for every permission prompt, which a "
+            + $"detached run cannot answer (log #9). Let them run unattended: h9k project set {name} "
+            + "--skip-permissions true[/]";
     }
 
     /// <summary>

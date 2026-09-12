@@ -110,6 +110,13 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             session, projectId: Guid.Empty, home.Value, repositoryPath, cancellationToken);
 
         Guid projectId = DomainId.New();
+
+        // Every newly registered project skips permission prompts from its very first run (Windows
+        // field report, 2026-08-31: a project that started with prompts live killed every headless
+        // dispatch on it, diagnosable only from the transcript). There is deliberately no flag to
+        // register with prompts left live — an operator who wants that reverts it the normal way,
+        // h9k project set <name> --skip-permissions false, after registration. Amends Decisions Log
+        // #9's per-project opt-in to a per-project opt-out at registration (log #PLACEHOLDER-f4cce412).
         ProjectRegistered registered = ProjectDecider.Register(
             projectId,
             context.OwnerId,
@@ -119,7 +126,8 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             settings.RepositoryUrl.IsBlank() ? null : GitRemoteUrl.Parse(settings.RepositoryUrl),
             settings.BaseBranch,
             DateTimeOffset.UtcNow,
-            home);
+            home,
+            skipPermissions: true);
         session.Events.StartStream<ProjectAggregate>(projectId, registered);
 
         await session.SaveChangesAsync(cancellationToken);

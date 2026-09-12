@@ -491,6 +491,12 @@ public sealed class ReviewRequestRowTests
         {
             Ansi = AnsiSupport.No,
             ColorSystem = ColorSystemSupport.NoColors,
+            Interactive = InteractionSupport.No,
+            // Spectre's default profile enrichers turn ANSI back on whenever they recognise the
+            // host CI (GitHub Actions among them), whatever AnsiSupport.No asked for. Left on, the
+            // styling Spectre itself emits would put escape sequences in the rendered string and
+            // these assertions would be reading the harness rather than the value.
+            Enrichment = new ProfileEnrichment { UseDefaultEnrichers = false },
             Out = new AnsiConsoleOutput(writer),
         });
         console.Profile.Width = 400;
@@ -532,19 +538,38 @@ public sealed class ReviewRequestRowTests
     /// <summary>
     /// A value that can only have been recorded says nothing about origin: there is no default it
     /// could be confused with, and a parenthetical on every row is how the ones that need it stop
-    /// being read.
+    /// being read. SkipPermissions no longer belongs to this group — registration is a second way
+    /// to reach "yes" now (task: a newly registered project skips permission prompts by default,
+    /// recorded at registration), so its "yes" row does name an origin; that behaviour has its own
+    /// test below.
     /// </summary>
     [Fact]
     public void A_row_whose_value_could_only_have_been_chosen_says_nothing_about_origin()
     {
         ProjectDetails project = Project();
-        project.SkipPermissions = true;
         project.BacklogPolicy = BacklogPolicy.Jira;
         project.CloseLinkedIssue = CloseLinkedIssueRule.Never;
 
         ProjectShowCommand.BacklogPolicyRow(project, recorded: true).Should().NotContain("explicit");
         ProjectShowCommand.CloseLinkedIssueRow(project, recorded: true).Should().NotContain("explicit");
-        ProjectShowCommand.SkipPermissionsRow(project, recorded: true).Should().NotContain("explicit");
+    }
+
+    /// <summary>
+    /// "yes" now has two possible origins (task: a newly registered project skips permission
+    /// prompts by default, recorded at registration): a project <c>h9k project add</c> registered,
+    /// which never went through <c>h9k project set</c> at all, and a project whose operator typed
+    /// <c>--skip-permissions true</c> explicitly. The row names which one it is instead of
+    /// collapsing them into a bare "yes" the way it did before registration could produce one.
+    /// </summary>
+    [Theory]
+    [InlineData(true, "explicit")]
+    [InlineData(false, "recorded at registration")]
+    public void The_skip_permissions_row_names_which_of_two_origins_produced_yes(bool recorded, string expectedOrigin)
+    {
+        ProjectDetails project = Project();
+        project.SkipPermissions = true;
+
+        Rendered(ProjectShowCommand.SkipPermissionsRow(project, recorded)).Should().Contain($"yes ({expectedOrigin})");
     }
 
     [Fact]
