@@ -8,7 +8,11 @@ namespace Hall9k.Domain.Features.Tasks.Queries;
 /// </summary>
 public enum HumanWaitKind
 {
-    /// <summary>ReviewParked to whichever of ReviewParkResolved/ReviewBoundaryApproved/ReviewHumanFixApplied closed it first.</summary>
+    /// <summary>
+    /// ReviewParked to whichever of ReviewParkResolved/ReviewBoundaryApproved/ReviewHumanFixApplied
+    /// closed it first — or, on a pr-review task's own run, to PrReviewDelivered, the only one of
+    /// the four its run ever appends.
+    /// </summary>
     ReviewPark,
     /// <summary>CloseoutParked to CloseoutBudgetGranted.</summary>
     CloseoutPark,
@@ -72,22 +76,29 @@ public sealed record HumanWaitPassage(HumanWaitKind Kind, PassagePhase Elapsed);
 /// dispatched (task: h9k task show tells a task's passage in time) — how long it queued, built,
 /// sat in gates, cycled through review, waited on a human, and waited for its merge, plus the
 /// lap, cycle, and session counts. Every figure whose own boundary event can go missing — every
-/// field here except <see cref="Gates"/> and <see cref="Review"/>'s own — is
-/// <see cref="PassagePhase"/> rather than a bare <see cref="TimeSpan"/>, so a reader can never
-/// mistake "never happened", "still running", and "happened, but this stream does not say how
-/// long it took" for the same zero. <see cref="Gates"/> and <see cref="ReviewCyclePassage"/>'s own
-/// fields stay bare <see cref="TimeSpan"/>s because their own fold never has an unobserved case to
-/// report: <c>TaskPassageQuery.SumGateDurations</c> maps a null <c>VerificationPassed.GateDurations</c>
-/// to zero honestly, the same "unobserved reads as zero" a run predating that field already
-/// carries on <c>RunListItem.GateDurations</c> itself, and a review cycle or fix session either
-/// completed (its own duration is exact) or is still running (folded into
-/// <see cref="ReviewCyclePassage.StillOpen"/>/<see cref="ReviewCyclePassage.FixStillOpen"/>) —
-/// there is no third, silently-missing case for either to hide behind a bare zero.
+/// field here except <see cref="Review"/>'s own — is <see cref="PassagePhase"/> rather than a bare
+/// <see cref="TimeSpan"/>, so a reader can never mistake "never happened", "still running", and
+/// "happened, but this stream does not say how long it took" for the same zero. <see cref="Gates"/>
+/// is <see cref="PassagePhase.Unknown"/> the moment any recorded <c>VerificationPassed</c>/
+/// <c>VerificationFailed</c> on the task carries a null <c>GateDurations</c> — that field's own doc
+/// is explicit that null means unobserved, never a claimed zero, the same distinction
+/// <c>RunListItem.GateDurations</c> and <c>TaskShowCommand.FormatGateDurations</c> already draw for
+/// the identical field (Copilot review, PR #335: an earlier draft of this type summed a null
+/// <c>GateDurations</c> as zero, silently undercounting a task that mixes an old stream missing the
+/// field with a newer one that has it). <see cref="ReviewCyclePassage"/>'s own fields stay bare
+/// <see cref="TimeSpan"/>s because their own fold never has an unobserved case to report: a review
+/// cycle or fix session either completed (its own duration is exact) or is still running (folded
+/// into <see cref="ReviewCyclePassage.StillOpen"/>/<see cref="ReviewCyclePassage.FixStillOpen"/>) —
+/// a cycle dispatched but never completed on a run that has itself ended is neither of those; it is
+/// excluded from both the count and the elapsed total by <c>Cycles</c>' and <c>FixSessions</c>' own
+/// definition ("every cycle from <c>ReviewDispatched</c> to <c>ReviewCompleted</c>"), the same
+/// deliberate drop-rather-than-guess <c>TaskPassageQuery.Compute</c>'s own doc already accepts for a
+/// dangling review cycle or park.
 /// </summary>
 public sealed record TaskPassage(
     PassagePhase Queued,
     PassagePhase Building,
-    TimeSpan Gates,
+    PassagePhase Gates,
     ReviewCyclePassage Review,
     PassagePhase Delivery,
     PassagePhase MergeWait,

@@ -408,6 +408,22 @@ public static class TaskPassageQuery
                     break;
                 case PrReviewDelivered delivered:
                     fold.PrReviewDeliveredTimes.Add(delivered.ResolvedAt);
+                    // ResolvePrReviewAsync's own verdict shape appends only this event — never
+                    // ReviewParkResolved/ReviewBoundaryApproved/ReviewHumanFixApplied, which a
+                    // pr-review run's own RunSupervisor routing (ReviewParked's own doc, above)
+                    // never gives it a path to append either. Left unhandled here, a completed
+                    // pr-review run's still-open reviewParkedSince fell through every closing
+                    // arm and every "still open" arm alike (isLast && FinishedAt is null, just
+                    // below, is false once the run has finished) — discarded rather than
+                    // surfaced, so the multi-day owner wait a completed pr-review task actually
+                    // sat through disappeared from the passage entirely (independent pre-PR
+                    // review, cycle 4, conformance finding).
+                    if (reviewParkedSince is { } openSince)
+                    {
+                        fold.ReviewParkIntervals.Add((openSince, delivered.ResolvedAt));
+                        reviewParkedSince = null;
+                    }
+
                     break;
                 case PullRequestMerged merged:
                     fold.PullRequestMergedAt = merged.MergedAt ?? merged.ObservedAt;
