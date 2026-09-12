@@ -44,7 +44,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         public string? Repo { get; init; }
 
         [CommandOption("--from-release <DIR>")]
-        [Description("Install from an already-downloaded, already-extracted release payload (h9k/h9kd binaries, a skills/ directory, a VERSION file) instead of building from --repo — what the bootstrap scripts and h9k update use, so a bare machine needs neither a repo checkout nor the .NET SDK")]
+        [Description("Install from an already-downloaded, already-extracted release payload (h9k/h9kd binaries, a skills/ directory, a templates/ directory, a VERSION file) instead of building from --repo — what the bootstrap scripts and h9k update use, so a bare machine needs neither a repo checkout nor the .NET SDK")]
         public string? FromRelease { get; init; }
 
         [CommandOption("--restart")]
@@ -522,8 +522,12 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // own package added alongside it once that builder moved onto the same mechanism —
         // independent pre-PR review, cycle 1, conformance lens — since every build dispatch and every
         // h9k task work claim now needs it too, the same way ReviewLapPromptBuilder's needs h9k pr
-        // review).
-        foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory })
+        // review). AgentPromptBuilder's own package joins the same list for the identical reason —
+        // every review, fix, rebase, and recovery prompt now needs it — but as a literal name rather
+        // than AgentPromptBuilder.TemplateDirectory: AgentPromptBuilder lives in Hall9k.Daemon, which
+        // this project never references (Cli → Domain + Connectors only).
+        foreach (string templateDirectory in new[]
+            { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory, "agent-prompt-builder" })
         {
             string requiredTemplatePackage = Path.Combine(fromRelease, "templates", templateDirectory);
             if (!Directory.Exists(requiredTemplatePackage) || !Directory.EnumerateFiles(requiredTemplatePackage, "*.md").Any())

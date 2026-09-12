@@ -6,6 +6,7 @@ using Hall9k.Cli.Commands;
 using Hall9k.Cli.Installation;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Infrastructure.Storage;
 using Xunit;
 
@@ -304,11 +305,12 @@ public sealed class UpdateCommandTests : IDisposable
             string rid = ReleasePlatform.CurrentRid()!;
             string payload = Path.Combine(workspace, "payload");
             Directory.CreateDirectory(Path.Combine(payload, "skills", skillName));
-            // ValidateReleasePayload requires both the review-lap-prompt-builder and
-            // work-prompt-builder templates packages in every payload it accepts (release.yml
+            // ValidateReleasePayload requires the review-lap-prompt-builder, work-prompt-builder,
+            // and agent-prompt-builder templates packages in every payload it accepts (release.yml
             // bundles templates/ beside skills/) — a single file in each package is enough to
             // satisfy the gate, since this fixture is not exercising template publication itself.
-            foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory })
+            foreach (string templateDirectory in new[]
+                { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory, AgentPromptBuilder.TemplateDirectory })
             {
                 string templatePackage = Path.Combine(payload, "templates", templateDirectory);
                 Directory.CreateDirectory(templatePackage);

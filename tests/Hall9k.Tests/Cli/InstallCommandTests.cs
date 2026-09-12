@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Daemon.Execution;
 using Spectre.Console;
 using Xunit;
 
@@ -323,7 +324,8 @@ public sealed class InstallCommandTests : IDisposable
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
-        foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory })
+        foreach (string templateDirectory in new[]
+            { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory, AgentPromptBuilder.TemplateDirectory })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);
             Directory.CreateDirectory(templatePackage);
@@ -357,6 +359,7 @@ public sealed class InstallCommandTests : IDisposable
 
         problem.Should().Contain(ReviewLapPromptBuilder.TemplateDirectory);
         problem.Should().Contain(WorkPromptBuilder.TemplateDirectory);
+        problem.Should().Contain(AgentPromptBuilder.TemplateDirectory);
     }
 
     [Fact]
@@ -365,13 +368,34 @@ public sealed class InstallCommandTests : IDisposable
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
         File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
-        string templatePackage = Path.Combine(directory, "templates", ReviewLapPromptBuilder.TemplateDirectory);
-        Directory.CreateDirectory(templatePackage);
-        File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+        foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, AgentPromptBuilder.TemplateDirectory })
+        {
+            string templatePackage = Path.Combine(directory, "templates", templateDirectory);
+            Directory.CreateDirectory(templatePackage);
+            File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+        }
 
         string? problem = InstallCommand.ValidateReleasePayload(directory);
 
         problem.Should().Contain(WorkPromptBuilder.TemplateDirectory);
+    }
+
+    [Fact]
+    public void A_release_payload_missing_only_the_agent_prompt_builder_package_is_refused()
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+        foreach (string templateDirectory in new[] { ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory })
+        {
+            string templatePackage = Path.Combine(directory, "templates", templateDirectory);
+            Directory.CreateDirectory(templatePackage);
+            File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+        }
+
+        string? problem = InstallCommand.ValidateReleasePayload(directory);
+
+        problem.Should().Contain(AgentPromptBuilder.TemplateDirectory);
     }
 
     [Fact]
