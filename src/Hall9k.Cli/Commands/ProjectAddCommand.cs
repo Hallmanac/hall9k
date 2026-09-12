@@ -81,6 +81,9 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         ProjectDetails? existing = await session.Query<ProjectDetails>()
             .FirstOrDefaultAsync(p => p.Name == name, cancellationToken);
 
+        string? homeOverride = null;
+        string? pendingRenameMessage = null;
+
         if (existing is not null)
         {
             if (!existing.IsArchived)
@@ -88,10 +91,14 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
                 throw new DomainConflictException($"A project named '{name}' already exists.");
             }
 
-            if (await HandleArchivedCollisionAsync(session, existing, settings, cancellationToken) is { } exitCode)
+            ArchivedCollisionOutcome outcome = await HandleArchivedCollisionAsync(session, existing, settings, cancellationToken);
+            if (outcome.ExitCode is { } exitCode)
             {
                 return exitCode;
             }
+
+            homeOverride = outcome.HomeOverride;
+            pendingRenameMessage = outcome.PendingMessage;
         }
 
         if (settings.RepositoryPath.IsBlank() && settings.RepositoryUrl.IsBlank())
@@ -119,10 +126,11 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         // The home is resolved before registration because the repository path may come out of
         // it: with a remote and no --repo, the repository the daemon cuts worktrees from IS the
         // bare clone inside the home, and recording anything else would leave the two disagreeing.
+        string? homeSetting = homeOverride ?? settings.Home;
         ProjectHome home = settings.NoHome
             ? ProjectHome.None
-            : ProjectHome.Parse(settings.Home.IsNotBlank()
-                ? Path.GetFullPath(settings.Home)
+            : ProjectHome.Parse(homeSetting.IsNotBlank()
+                ? Path.GetFullPath(homeSetting)
                 : ProjectHomePaths.DefaultFor(name));
 
         string repositoryPath = settings.RepositoryPath.IsNotBlank()
@@ -156,6 +164,16 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"project-added:{projectId}", cancellationToken);
 
+        // Printed only now, after the rename and this registration committed together in the one
+        // SaveChangesAsync above — printing it the moment it was appended (as an earlier version of
+        // this method did) reported a rename as done while it was still an uncommitted, discardable
+        // in-memory event, which is exactly the outcome this method had not yet observed (independent
+        // pre-PR review, cycle 1, conformance lens).
+        if (pendingRenameMessage is not null)
+        {
+            AnsiConsole.MarkupLine(pendingRenameMessage);
+        }
+
         AnsiConsole.MarkupLine($"[green]Project '{name.EscapeMarkup()}' registered.[/] Id: [dim]{projectId}[/]");
 
         if (!home.HasValue)
@@ -184,15 +202,25 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
     }
 
     /// <summary>
+    /// What resolving a collision with an archived project's name decided. <see cref="ExitCode"/>
+    /// set means the caller should stop right here (reactivation registers nothing new); unset
+    /// means the collision is resolved (a rename has been appended, unsaved, onto the archived
+    /// project's own stream) and the caller should carry on registering the new project under the
+    /// originally requested name — <see cref="HomeOverride"/> is the home path that registration
+    /// must use instead of <c>Settings.Home</c> when the rename could not free the default one (see
+    /// <see cref="RequireHomeAwayFromArchivedDefault"/>), and <see cref="PendingMessage"/> is the
+    /// rename's own success line, printed by the caller only once the new registration's own
+    /// <c>SaveChangesAsync</c> — which is what actually commits this rename — has succeeded.
+    /// </summary>
+    private sealed record ArchivedCollisionOutcome(int? ExitCode, string? HomeOverride, string? PendingMessage);
+
+    /// <summary>
     /// A collision with an archived project's name: reactivate it in place, rename it to free the
     /// name, or refuse and name the three choices — a flag selects one non-interactively, and an
     /// interactive session with neither flag is asked (task: a project can be archived, listed as
-    /// archived, reactivated, and renamed). Returns an exit code when the caller should stop right
-    /// here (reactivation registers nothing new); null means the collision is resolved (a rename
-    /// has been appended, unsaved, onto <paramref name="existing"/>'s own stream) and the caller
-    /// should carry on registering the new project under the originally requested name.
+    /// archived, reactivated, and renamed).
     /// </summary>
-    private static async Task<int?> HandleArchivedCollisionAsync(
+    private static async Task<ArchivedCollisionOutcome> HandleArchivedCollisionAsync(
         IDocumentSession session, ProjectDetails existing, Settings settings, CancellationToken cancellationToken)
     {
         ProjectAggregate archived = await session.Events.AggregateStreamAsync<ProjectAggregate>(existing.Id, token: cancellationToken)
@@ -200,13 +228,21 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
 
         if (settings.ReactivateArchived)
         {
-            return await ReactivateInPlaceAsync(session, archived, existing, cancellationToken);
+            return new ArchivedCollisionOutcome(await ReactivateInPlaceAsync(session, archived, existing, cancellationToken), null, null);
         }
 
         if (settings.RenameArchivedTo.IsNotBlank())
         {
-            await RenameArchivedInPlaceAsync(session, archived, existing, settings.RenameArchivedTo, cancellationToken);
-            return null;
+            // Fails loudly before anything is appended or printed, rather than letting the rename
+            // and the new registration both discover the dead end downstream (EnsureUnclaimedAsync,
+            // naming the archived project by a name it no longer has because the rename that would
+            // have changed it was never saved) after this method already reported the rename as
+            // done (independent pre-PR review, cycle 1: conformance and adversarial lenses, both
+            // high).
+            RequireHomeAwayFromArchivedDefault(existing, settings);
+            string message = await RenameArchivedInPlaceAsync(
+                session, archived, existing, settings.RenameArchivedTo, cancellationToken);
+            return new ArchivedCollisionOutcome(null, null, message);
         }
 
         if (!AnsiConsole.Profile.Capabilities.Interactive)
@@ -219,18 +255,68 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             + $"(since {existing.ArchivedAt:g}).");
         if (AnsiConsole.Confirm("Reactivate it instead of registering a new one?", defaultValue: false))
         {
-            return await ReactivateInPlaceAsync(session, archived, existing, cancellationToken);
+            return new ArchivedCollisionOutcome(await ReactivateInPlaceAsync(session, archived, existing, cancellationToken), null, null);
         }
 
         if (AnsiConsole.Confirm("Rename the archived project so this name is free for the new one?", defaultValue: false))
         {
             string newName = AnsiConsole.Ask<string>("New name for the archived project:");
-            await RenameArchivedInPlaceAsync(session, archived, existing, newName, cancellationToken);
-            return null;
+
+            // The rename frees the *name*, not the home directory a rename never moves — asked here,
+            // alongside the name it is already asking for, rather than left for the operator to
+            // discover only after being told the rename succeeded (independent pre-PR review, cycle
+            // 1, conformance lens: "the interactive prompt never asks where the new project should
+            // live").
+            string? homeOverride = null;
+            if (!settings.NoHome && settings.Home.IsBlank() && DefaultHomeCollidesWithArchived(existing, settings.Name))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]'{existing.Name.EscapeMarkup()}' still occupies the default home directory[/] "
+                    + $"{ProjectHomePaths.DefaultFor(settings.Name).EscapeMarkup()} — renaming it frees the "
+                    + "name, not that path, since a rename never moves a home directory on disk.");
+                homeOverride = Path.GetFullPath(AnsiConsole.Ask<string>("Home directory for the new project:"));
+            }
+
+            string message = await RenameArchivedInPlaceAsync(session, archived, existing, newName, cancellationToken);
+            return new ArchivedCollisionOutcome(null, homeOverride, message);
         }
 
         throw new DomainValidationException(
             $"Register the new project under a different --name than '{existing.Name}'.");
+    }
+
+    /// <summary>
+    /// Whether <paramref name="newProjectName"/>'s default home
+    /// (<see cref="ProjectHomePaths.DefaultFor"/>) is the exact directory the archived project's
+    /// own <c>HomeDirectory</c> still names — the collision a rename can never resolve on its own,
+    /// because renaming a project changes its name without ever moving its home on disk
+    /// (<c>ProjectRenameCommand</c>'s own contract).
+    /// </summary>
+    internal static bool DefaultHomeCollidesWithArchived(ProjectDetails existing, string newProjectName) =>
+        existing.HomeDirectory.HasValue
+        && ProjectHomePaths.SameDirectory(existing.HomeDirectory.Value, ProjectHomePaths.DefaultFor(newProjectName));
+
+    /// <summary>
+    /// The non-interactive half of the same check the interactive path asks about: refuses up
+    /// front, before the rename is even appended, when <c>--rename-archived-to</c> is the only
+    /// flag given and the new registration would default to the exact home the archived project
+    /// still holds. There is no flag this can silently pick a different home from — the operator
+    /// must say where the new project goes — so this throws rather than inventing one.
+    /// </summary>
+    internal static void RequireHomeAwayFromArchivedDefault(ProjectDetails existing, Settings settings)
+    {
+        if (settings.NoHome || settings.Home.IsNotBlank() || !DefaultHomeCollidesWithArchived(existing, settings.Name))
+        {
+            return;
+        }
+
+        string defaultHome = ProjectHomePaths.DefaultFor(settings.Name);
+        throw new DomainValidationException(
+            $"Renaming '{existing.Name}' to '{settings.RenameArchivedTo}' frees the name, not the home "
+            + $"directory: a rename never moves a home on disk, and the archived project still holds "
+            + $"{defaultHome}, exactly where '{settings.Name}' would default to as well. Pass --home "
+            + "<path> for the new project (or --no-home if it needs no home at all), then retry with "
+            + "--rename-archived-to.");
     }
 
     private static string ArchivedCollisionChoices(ProjectDetails existing) =>
@@ -257,7 +343,13 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         return ExitCodes.Ok;
     }
 
-    private static async Task RenameArchivedInPlaceAsync(
+    /// <summary>
+    /// Appends the rename, unsaved — the caller's own <c>SaveChangesAsync</c> is what actually
+    /// commits it, atomically with the registration it is freeing this name for — and returns the
+    /// success line rather than printing it, so nothing claims the rename happened before it truly
+    /// has (independent pre-PR review, cycle 1, conformance lens).
+    /// </summary>
+    private static async Task<string> RenameArchivedInPlaceAsync(
         IDocumentSession session, ProjectAggregate archived, ProjectDetails existing, string newName,
         CancellationToken cancellationToken)
     {
@@ -266,9 +358,8 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         session.Events.Append(
             existing.Id, ProjectDecider.Rename(archived, newName, DateTimeOffset.UtcNow, context.OwnerId));
 
-        AnsiConsole.MarkupLine(
-            $"[dim]Archived project '{existing.Name.EscapeMarkup()}' renamed to '{newName.EscapeMarkup()}' "
-            + "— the home directory on disk keeps its old folder name.[/]");
+        return $"[dim]Archived project '{existing.Name.EscapeMarkup()}' renamed to '{newName.EscapeMarkup()}' "
+            + "— the home directory on disk keeps its old folder name.[/]";
     }
 
 }
