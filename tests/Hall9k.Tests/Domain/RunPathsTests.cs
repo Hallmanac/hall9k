@@ -271,5 +271,16 @@ public sealed class RunPathsTests
                 Path.Combine(home, "tasks", "abc12345-some-task", "workspace"),
                 "the shallower workspace shape un-archives the same way the deeper run shape does");
         }
+
+        [Fact]
+        public void An_archived_workspace_directory_composing_text_for_its_own_archiving_event_is_returned_unchanged()
+        {
+            string home = Path.Combine(Path.GetTempPath(), "hall9k-anticipate-home");
+            string archived = Path.Combine(home, "tasks", "_archive", "abc12345-some-task", "workspace");
+
+            RunPaths.AnticipateDirectoryAfterSweep(archived, willArchive: true).Should().Be(archived,
+                "already archived and staying archived is a no-op in this direction — the four trailing " +
+                "segments here must not be mistaken for the deeper run shape and doubled into tasks/_archive/_archive");
+        }
     }
 }
