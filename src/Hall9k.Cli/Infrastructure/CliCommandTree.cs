@@ -915,7 +915,9 @@ public static class CliCommandTree
                 .WithDescription(
                     "Abandon a task (terminal; releases any lease). Reaches every non-terminal state, drafts "
                     + "and published tasks included — walking away from an idea you have stopped believing in "
-                    + "is the same act as walking away from a run that failed.")
+                    + "is the same act as walking away from a run that failed. This is the task-level "
+                    + "walk-away; it does not itself kill a live headless process — h9k run kill is the "
+                    + "run-level stop, for ending a live session while keeping the task open.")
                 .WithExample("task", "abandon", "28b19893", "--reason", "\"Superseded by the noun-first CLI work\"");
             task.AddCommand<TaskRetryCommand>("retry")
                 .WithDescription(
@@ -1096,6 +1098,24 @@ public static class CliCommandTree
                     + "attests you confirmed by hand that it has exited.")
                 .WithExample("task", "delegate", "28b19893", "--note",
                     "\"Drafted the migration; untested past the happy path. Latitude: rewrite the rollback stub freely.\"");
+        });
+
+        config.AddBranch("run", run =>
+        {
+            run.SetDescription(
+                "The execution attempts a task dispatches (TASK-MODEL.md §2) — a run-level lever, "
+                + "distinct from the task-level ones under h9k task.");
+            run.AddCommand<RunKillCommand>("kill")
+                .WithDescription(
+                    "Stop a run's live agent session without ending its task: this command ends the process "
+                    + "tree the daemon supervises, the run records Killed (never Failed), and the task lands exactly "
+                    + "where any other run failure leaves it — Failed, with h9k task retry, resolve, and "
+                    + "abandon all open for you to choose the next move. Distinct from h9k task abandon, which "
+                    + "is the task-level walk-away and never itself kills a live process. Refused when h9kd is "
+                    + "not running: a stopped daemon supervises nothing, and a detached agent from before the "
+                    + "stop keeps running unsupervised until the next h9k daemon start adopts it.")
+                .WithExample("run", "kill", "28b19893")
+                .WithExample("run", "kill", "28b19893", "--reason", "\"Shedding load before a daemon reinstall\"");
         });
     }
 
