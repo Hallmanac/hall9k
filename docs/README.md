@@ -10,7 +10,7 @@ Then:
 |---|---|
 | [concepts.md](concepts.md) | What are the moving parts? Tasks, runs, the lifecycle and the words the board shows, leases, verification, the pre-PR review loop, closeout. |
 | [cli.md](cli.md) | What can `h9k` do, and where is the authoritative list? (The `--help` tree, and this page is the map to it.) |
-| [operations.md](operations.md) | How do I run this? The daemon's lifecycle, configuration, what lands on disk, what `needs you` means, and the five recovery levers. |
+| [operations.md](operations.md) | How do I run this? The daemon's lifecycle, configuration, what lands on disk, what `needs you` means, and the eight recovery levers. |
 | [scope.md](scope.md) | What actually works, what is designed but unbuilt, and what this project will not do. |
 | [INSTALL.md](INSTALL.md) | How does a bare machine, with no repo checkout and no .NET SDK, get `h9k` installed and kept current? |
 | [getting-started.md](getting-started.md) | What do the first hour, the first week, and the first problems actually look like, once a project is registered? |

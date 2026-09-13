@@ -584,7 +584,7 @@ Start here, in this order:
 - **[docs/cli.md](docs/cli.md)** maps the command surface and explains why the `--help` tree,
   not a page in this repository, is its source of truth.
 - **[docs/operations.md](docs/operations.md)** is running the thing: the daemon's lifecycle,
-  configuration, what lands on disk, what `needs you` means, and the five recovery levers.
+  configuration, what lands on disk, what `needs you` means, and the eight recovery levers.
 - **[docs/scope.md](docs/scope.md)** is the honest inventory: what works today, what is designed
   but unbuilt, and what the project deliberately will not do.
 
