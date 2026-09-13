@@ -161,6 +161,15 @@ public static class RunPaths
     /// <see cref="ResolveCurrentDirectory"/> is, for the same reason: a project home path can
     /// itself contain a <c>tasks</c> or <c>tasks/_archive</c> segment.
     /// </para>
+    /// <para>
+    /// Anchored at two depths, not one: a run directory carries two segments below the task
+    /// directory (<c>runs/&lt;run-id&gt;</c>), but a task's own workspace directory carries only
+    /// one (<c>workspace</c>) — so <c>tasks</c> sits at <c>[^4]</c> for the former and <c>[^3]</c>
+    /// for the latter. A caller composing a stranded-delta path anticipates one or the other
+    /// depending on whether the project has a home, and this checks the deeper (run) shape first
+    /// so a home path that happens to end in a segment literally named <c>tasks</c> still resolves
+    /// to the shallower shape only when the deeper one does not match.
+    /// </para>
     /// </summary>
     public static string AnticipateDirectoryAfterSweep(string currentDirectory, bool willArchive)
     {
@@ -168,22 +177,35 @@ public static class RunPaths
 
         if (willArchive)
         {
-            if (segments.Length < 4 || segments[^4] != "tasks")
+            if (segments.Length >= 4 && segments[^4] == "tasks")
             {
-                return currentDirectory;
+                string home = string.Join(Path.DirectorySeparatorChar, segments[..^4]);
+                return Path.Combine(
+                    ProjectHomePaths.ArchivedTasksDirectory(home), segments[^3], segments[^2], segments[^1]);
             }
 
-            string home = string.Join(Path.DirectorySeparatorChar, segments[..^4]);
-            return Path.Combine(ProjectHomePaths.ArchivedTasksDirectory(home), segments[^3], segments[^2], segments[^1]);
-        }
+            if (segments.Length >= 3 && segments[^3] == "tasks")
+            {
+                string home = string.Join(Path.DirectorySeparatorChar, segments[..^3]);
+                return Path.Combine(ProjectHomePaths.ArchivedTasksDirectory(home), segments[^2], segments[^1]);
+            }
 
-        if (segments.Length < 5 || segments[^4] != ProjectHomePaths.ArchiveDirectoryName)
-        {
             return currentDirectory;
         }
 
-        string liveHome = string.Join(Path.DirectorySeparatorChar, segments[..^5]);
-        return Path.Combine(ProjectHomePaths.TasksDirectory(liveHome), segments[^3], segments[^2], segments[^1]);
+        if (segments.Length >= 5 && segments[^4] == ProjectHomePaths.ArchiveDirectoryName)
+        {
+            string liveHome = string.Join(Path.DirectorySeparatorChar, segments[..^5]);
+            return Path.Combine(ProjectHomePaths.TasksDirectory(liveHome), segments[^3], segments[^2], segments[^1]);
+        }
+
+        if (segments.Length >= 4 && segments[^3] == ProjectHomePaths.ArchiveDirectoryName)
+        {
+            string liveHome = string.Join(Path.DirectorySeparatorChar, segments[..^4]);
+            return Path.Combine(ProjectHomePaths.TasksDirectory(liveHome), segments[^2], segments[^1]);
+        }
+
+        return currentDirectory;
     }
 
     /// <summary>
