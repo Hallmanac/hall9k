@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Text;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
