@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
 using Marten.Linq.MatchesSql;
@@ -48,25 +49,40 @@ public static class ThroughputQuery
     /// <paramref name="projectId"/> null reads the whole install (<c>h9k status</c>); set, it scopes
     /// to one project (<c>h9k project show</c>). The candidate set is every <see cref="TaskState.Done"/>
     /// task of any type except <see cref="TaskType.PrReview"/> — that type never watches a merge of
-    /// its own (<see cref="TaskPassage.MergedAt"/>'s own doc) — read whole rather than pre-filtered
-    /// by a completion timestamp: a task can sit with an open pull request for longer than one
-    /// period before it merges, so filtering candidates by when they pushed would silently drop a
-    /// task that merged this period after a push from an earlier one. The same trade-off
-    /// <see cref="TaskPassageQuery"/>'s own doc already accepts for a single task's replay, taken
-    /// once per candidate instead of once per read.
+    /// its own (<see cref="TaskPassage.MergedAt"/>'s own doc) — narrowed first to tasks with at
+    /// least one run that finished on or after <paramref name="periodStart"/>
+    /// (<see cref="RunListItem.FinishedAt"/>, set by <c>RunCompleted</c> only once a merge has been
+    /// observed) before replaying any of them, rather than replaying every Done task the install
+    /// has ever had: a merge inside the window can only have been observed at or after
+    /// <see cref="RunListItem.FinishedAt"/>, which is itself never earlier than
+    /// <c>PullRequestMerged</c> (that field's own doc), so this pre-filter can only ever exclude a
+    /// task whose merge is provably outside the window, never one inside it. Unlike filtering by
+    /// when a task pushed — which <see cref="TaskPassageQuery"/>'s own doc already rejects, since a
+    /// pull request can sit open across a period boundary before it merges — filtering by the
+    /// merge's own observation loses nothing (independent pre-PR review, cycle 1, both lenses: an
+    /// unfiltered replay of every Done task the install has ever had made every <c>h9k status</c>
+    /// call, and each of the two <c>h9k project show</c> makes, grow without bound as the install's
+    /// history grew).
     /// </summary>
     public static async Task<ThroughputSummary> ReadAsync(
         IQuerySession session, DateTimeOffset periodStart, DateTimeOffset periodEnd, DateTimeOffset now,
         Guid? projectId, CancellationToken cancellationToken)
     {
+        IReadOnlyList<Guid> recentlyFinishedTaskIds = await session.Query<RunListItem>()
+            .Where(run => run.FinishedAt != null && run.FinishedAt >= periodStart)
+            .Select(run => run.TaskId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
         // The state filter runs server-side via MatchesSql, not a plain LINQ `==` against
         // TaskState — the pattern DispatchEngine's own claim query and CloseoutEngine's own
         // missing-run sweep already use for the identical reason: TaskState is a value object
         // with its own JSON converter, not a type Marten's LINQ provider knows how to translate
         // into a JSON-path comparison on its own. Type and the project scope are cheap enough to
-        // filter in memory over the (already small) Done candidate set this returns.
+        // filter in memory over the (already narrowed) Done candidate set this returns.
         IReadOnlyList<TaskListItem> candidates = await session.Query<TaskListItem>()
             .Where(task => task.MatchesSql("d.data ->> 'state' = ?", TaskState.Done.Value))
+            .Where(task => recentlyFinishedTaskIds.Contains(task.Id))
             .ToListAsync(cancellationToken);
 
         List<TaskPassage> merged = [];
@@ -123,25 +139,42 @@ public static class ThroughputQuery
 
         double lapsPerMergedTask = merged.Average(passage => passage.Laps.Sum(lap => lap.Count));
 
-        double? queuedShare = ShareOfClaimToMerge(merged, passage => passage.Queued.Elapsed);
-        double? humanWaitShare = ShareOfClaimToMerge(
+        double? queuedShare = ShareOfTaskLifetime(merged, passage => passage.Queued.Elapsed);
+        double? humanWaitShare = ShareOfTaskLifetime(
             merged,
-            passage => passage.HumanWaits.Aggregate(
-                TimeSpan.Zero, (sum, wait) => sum + (wait.Elapsed.Elapsed ?? TimeSpan.Zero)));
+            passage => passage.HumanWaits.Any(wait => wait.Elapsed.IsUnknown)
+                ? null
+                : passage.HumanWaits.Aggregate(
+                    TimeSpan.Zero, (sum, wait) => sum + (wait.Elapsed.Elapsed ?? TimeSpan.Zero)));
 
         return new ThroughputSummary(count, median, p90, firstPassShare, lapsPerMergedTask, queuedShare, humanWaitShare);
     }
 
     /// <summary>
-    /// One phase's share of the total claim-to-merge time across every merged task that carries a
-    /// known figure for both — the reference baseline's own shape (idea fc85f609: "26 percent
-    /// before the first pull request... 14 percent waiting for the merge"), a share of the whole
-    /// period's total rather than an average of each task's own percentage, so one long-running
-    /// task cannot swing the figure as hard as the total time it actually spent. A task whose own
-    /// claim-to-merge is unknown (an older stream missing a boundary) contributes to neither side
-    /// rather than being guessed at zero.
+    /// One phase's share of the total task lifetime — first queue entry to merge — across every
+    /// merged task that carries a known figure for both (the reference baseline's own shape, idea
+    /// fc85f609: "26 percent before the first pull request... 14 percent waiting for the merge"), a
+    /// share of the whole period's total rather than an average of each task's own percentage, so
+    /// one long-running task cannot swing the figure as hard as the total time it actually spent.
+    /// <para>
+    /// The denominator is <see cref="TaskPassage.QueuedBeforeFirstClaim"/> plus
+    /// <see cref="TaskPassage.ClaimToMerge"/>, not <see cref="TaskPassage.ClaimToMerge"/> alone: a
+    /// task's queued time before its very first claim falls entirely outside the claim-to-merge
+    /// window, so dividing by that window alone could read over 100 percent queued whenever a task
+    /// ever waited before its first claim (independent pre-PR review, cycle 1, both lenses — five
+    /// tasks queued 10h then claimed-to-merged in 2h each read "queued 500%"). The two phases never
+    /// overlap and together span this task's whole life from its first queue entry to its merge, so
+    /// every phase this method is ever asked to share against that whole — the numerator here,
+    /// which spans the same window by construction — is bounded by it.
+    /// </para>
+    /// <para>
+    /// A task missing either half of the denominator, or whose own numerator reads unknown rather
+    /// than a real duration, contributes to neither side rather than being guessed at zero
+    /// (AGENTS.md: never guess at unobserved facts) — an older stream missing a boundary, or a
+    /// human wait this task's own stream never recorded a close for.
+    /// </para>
     /// </summary>
-    private static double? ShareOfClaimToMerge(
+    private static double? ShareOfTaskLifetime(
         IReadOnlyList<TaskPassage> merged, Func<TaskPassage, TimeSpan?> numerator)
     {
         TimeSpan numeratorTotal = TimeSpan.Zero;
@@ -153,8 +186,18 @@ public static class ThroughputQuery
                 continue;
             }
 
-            denominatorTotal += claimToMerge;
-            numeratorTotal += numerator(passage) ?? TimeSpan.Zero;
+            if (passage.QueuedBeforeFirstClaim.Elapsed is not { } queuedBeforeFirstClaim)
+            {
+                continue;
+            }
+
+            if (numerator(passage) is not { } numeratorValue)
+            {
+                continue;
+            }
+
+            denominatorTotal += claimToMerge + queuedBeforeFirstClaim;
+            numeratorTotal += numeratorValue;
         }
 
         return denominatorTotal > TimeSpan.Zero ? numeratorTotal / denominatorTotal : null;
