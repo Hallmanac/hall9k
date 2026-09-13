@@ -48,7 +48,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(session, now, cancellationToken);
         WriteTasks(project, [.. rows.Where(row => row.ProjectId == project.Id)]);
 
-        await WriteThroughputAsync(session, project, operatingSettings, now, cancellationToken);
+        await WriteThroughputAsync(session, project, now, cancellationToken);
         return ExitCodes.Ok;
     }
 
@@ -59,14 +59,25 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// (idea fc85f609's <c>measurement-recipes.md</c>): a single period's figure says nothing about
     /// direction on its own. Degraded rather than fatal on a DB hiccup, the same posture every
     /// other best-effort pane on this command and <c>h9k status</c> already take.
+    /// <para>
+    /// The period comes from <see cref="OperatingSettingsResolver.ResolveAsync"/>, the identical
+    /// resolution <c>h9k status</c> reads <see cref="SpendPressure"/> through — never the raw
+    /// config-file settings <see cref="SettingsPane"/> renders above, which skips the
+    /// <c>Hall9k__SpendPeriod</c> environment variable entirely and never validates the value it
+    /// does read: a hand-written <c>spend-period = "weekly"</c> in the config file reads back as
+    /// <see cref="SpendPeriod.Unknown"/>, whose blank <see cref="SpendPeriod.Value"/> would print
+    /// an empty period name, and <see cref="SpendPeriod.StartOf"/> quietly treats it as a week
+    /// regardless (independent pre-PR review, cycle 1, adversarial lens: this project's own
+    /// throughput could disagree with <c>h9k status</c> about which period is even current).
+    /// </para>
     /// </summary>
     private static async Task WriteThroughputAsync(
-        IQuerySession session, ProjectDetails project, OperatingSettings operatingSettings, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        IQuerySession session, ProjectDetails project, DateTimeOffset now, CancellationToken cancellationToken)
     {
         try
         {
-            SpendPeriod period = SpendPeriod.FromInput(operatingSettings.SpendPeriod ?? OperatingSettings.DefaultSpendPeriod);
+            OperatingSettingsReport settingsReport = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
+            SpendPeriod period = SpendPeriod.FromInput(settingsReport.SpendPeriod.Value);
             DateTimeOffset periodStart = period.StartOf(now);
             DateTimeOffset previousPeriodStart = period == SpendPeriod.Day ? periodStart.AddDays(-1) : periodStart.AddDays(-7);
 
