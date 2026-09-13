@@ -1,17 +1,25 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Tasks;
 
 namespace Hall9k.Daemon.Dispatch;
 
 /// <summary>
 /// One queued task as the claim loop needs it: the task, the project whose cap and tier it
-/// answers to, and whether a human marked it queue-first (Decisions Log #127).
+/// answers to, whether a human marked it queue-first (Decisions Log #127), and its own
+/// <see cref="TaskRank"/> (Decisions Log PLACEHOLDER-307f922b).
 /// </summary>
 /// <param name="QueueFirst">
 /// The human's own per-task override, which is why it outranks the rotation entirely: it is more
 /// specific than a tier (one task, not a project) and it clears itself the moment this claim
 /// commits, so it buys exactly one slot and cannot silently persist as a policy.
 /// </param>
-public sealed record QueuedCandidate(Guid TaskId, Guid ProjectId, bool QueueFirst);
+/// <param name="Rank">
+/// How far along this task is toward merging — a follow-up lap past its first pull request, a
+/// retry or hand-back before any pull request, or a plain first claim — resolved off
+/// <see cref="Hall9k.Domain.Features.Tasks.Projections.TaskListItem.Rank"/> once for the whole
+/// sweep, in the same read that already carries this candidate's project and marker.
+/// </param>
+public sealed record QueuedCandidate(Guid TaskId, Guid ProjectId, bool QueueFirst, TaskRank Rank);
 
 /// <summary>
 /// Why a project won the free slot, in the one sentence the claim logs (Decisions Log #141). An
@@ -45,12 +53,21 @@ public enum SlotReason
 /// manufactured "served at process start" timestamp.
 /// </param>
 /// <param name="Priority">The winner's tier, named in the line when the tier is what decided the slot.</param>
+/// <param name="RankBeatenTaskId">
+/// The oldest other eligible task of the winning project that this candidate's own rank passed
+/// over, or null when nothing was beaten — either only one candidate was eligible in the project,
+/// or the oldest one already carried the best rank, so age alone would have picked the same
+/// winner. Named so the claim's log can state the rank decision as its own sentence, beside the
+/// rotation's, exactly when the rank actually decided something (Decisions Log
+/// PLACEHOLDER-307f922b).
+/// </param>
 public sealed record RotationSlot(
     QueuedCandidate Candidate,
     SlotReason Reason,
     int EligibleProjects,
     DateTimeOffset? LastServedAt,
-    ProjectPriority Priority);
+    ProjectPriority Priority,
+    Guid? RankBeatenTaskId = null);
 
 /// <summary>
 /// How free run slots are shared across projects (Decisions Log #141): round-robin by default —
@@ -96,12 +113,21 @@ public static class ProjectRotation
     /// <item><b>Longest unserved.</b> Within the tier, the project this node dispatched for
     /// longest ago wins; a project it has not dispatched for at all since this daemon started
     /// counts as unserved and so outranks every project that has been.</item>
-    /// <item><b>Queue order.</b> Two projects equally unserved — every project on a cold start,
-    /// which is the first-dispatch case — are separated by their own oldest queued task, in the
-    /// same order the queue always had (the queue-first marker, then oldest assignment, then
-    /// oldest added). That makes a single-project node's behaviour identical to plain oldest-first,
-    /// and a cold start's first claim identical to what it would have been before any of this
-    /// existed.</item>
+    /// <item><b>Queue order, between projects.</b> Two projects equally unserved — every project
+    /// on a cold start, which is the first-dispatch case — are separated by their own oldest
+    /// queued task, in the same order the queue always had (the queue-first marker, then oldest
+    /// assignment, then oldest added). That makes a single-project node's behaviour identical to
+    /// plain oldest-first, and a cold start's first claim identical to what it would have been
+    /// before any of this existed.</item>
+    /// <item><b>Rank, within the winning project.</b> Once a project has won the slot, which of
+    /// its own eligible tasks actually takes it is decided by <see cref="TaskRank"/> before
+    /// assignment age (Decisions Log PLACEHOLDER-307f922b): a follow-up lap on a task past its
+    /// first pull request outranks a retry or hand-back before any pull request, which outranks a
+    /// first claim — with the queue's own order (already assignment-age order within one project)
+    /// breaking a tie inside one rank, exactly as it always has. This is the only step rank
+    /// touches; it never reaches across projects; the queue-first marker above still bypasses it
+    /// entirely, and a first claim marked queue-first still takes the slot ahead of a pending lap
+    /// of any rank.</item>
     /// </list>
     /// </summary>
     /// <param name="remaining">The queue's still-unclaimed candidates, in the order the queue is served.</param>
@@ -114,10 +140,10 @@ public static class ProjectRotation
         IReadOnlyDictionary<Guid, int> claimedThisSweep,
         IReadOnlyDictionary<Guid, DateTimeOffset> lastServed)
     {
-        // The head candidate of each eligible project, in queue order. One entry per project,
-        // because the rotation decides between projects and the queue's own order already decides
-        // within one — and because the head's position is what breaks a tie between two equally
-        // unserved projects.
+        // The head candidate of each eligible project, in queue order (oldest assignment first).
+        // One entry per project — the rotation decides between projects on this list, and the
+        // head is what breaks a tie between two equally unserved ones — but the head is no longer
+        // necessarily the task that ends up claimed once a project wins: rank decides that, below.
         List<QueuedCandidate> heads = [];
         foreach (QueuedCandidate candidate in remaining)
         {
@@ -145,7 +171,7 @@ public static class ProjectRotation
 
         // OrderBy is a stable sort, so two projects with the same last-served instant — every
         // project on a cold start — keep the queue order `heads` was built in.
-        QueuedCandidate winner = heads
+        QueuedCandidate projectHead = heads
             .Where(head => load.Project(head.ProjectId).Priority.Tier == topTier)
             .OrderBy(head => lastServed.TryGetValue(head.ProjectId, out DateTimeOffset servedAt)
                 ? servedAt
@@ -158,7 +184,21 @@ public static class ProjectRotation
                 ? SlotReason.PriorityTier
                 : SlotReason.LongestUnserved;
 
-        return Slot(winner, reason, heads.Count, load, lastServed);
+        // The project is decided; which of its own tasks takes the slot is rank's turn. `remaining`
+        // filtered to this one project is still in queue order (assignment-age ascending, since
+        // that sub-order survives a stable global sort), so OrderBy(Rank) alone — a stable sort —
+        // reproduces "oldest first" for two tasks of the same rank and only reorders across ranks.
+        QueuedCandidate winner = remaining
+            .Where(candidate => candidate.ProjectId == projectHead.ProjectId)
+            .OrderBy(candidate => candidate.Rank)
+            .First();
+
+        // Beaten only when rank actually changed the outcome: the project's own oldest task
+        // (projectHead) is not who won. Equal ranks never reach here — the stable sort above keeps
+        // the oldest task first among equals, so it IS the winner, and nothing was beaten.
+        Guid? beaten = winner.TaskId == projectHead.TaskId ? null : projectHead.TaskId;
+
+        return Slot(winner, reason, heads.Count, load, lastServed, beaten);
     }
 
     /// <summary>
@@ -177,11 +217,13 @@ public static class ProjectRotation
         SlotReason reason,
         int eligibleProjects,
         DispatchLoad load,
-        IReadOnlyDictionary<Guid, DateTimeOffset> lastServed) =>
+        IReadOnlyDictionary<Guid, DateTimeOffset> lastServed,
+        Guid? rankBeatenTaskId = null) =>
         new(
             candidate,
             reason,
             eligibleProjects,
             lastServed.TryGetValue(candidate.ProjectId, out DateTimeOffset servedAt) ? servedAt : null,
-            load.Project(candidate.ProjectId).Priority);
+            load.Project(candidate.ProjectId).Priority,
+            rankBeatenTaskId);
 }
