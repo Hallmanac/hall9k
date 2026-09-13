@@ -50,7 +50,13 @@ namespace Hall9k.Tests.Integration;
 /// <see cref="Hall9k.Daemon.Dispatch.DispatchEngine"/>'s own claim query and
 /// <see cref="Hall9k.Daemon.Closeout.CloseoutEngine"/>'s own missing-run sweep already do — a unit
 /// test constructing a fake candidate list never exercises whether that filter actually finds
-/// anything against a real store.
+/// anything against a real store, nor whether the <see cref="RunListItem.FinishedAt"/> pre-filter
+/// narrowing that candidate set actually translates against Marten.
+/// </para>
+/// <para>
+/// <see cref="QueuedPeriodTotal"/> — its own raw <c>TaskClaimed</c> event query, the second half
+/// of the same task: a fake candidate list cannot exercise whether
+/// <c>QueryRawEventDataOnly&lt;TaskClaimed&gt;</c> actually finds a claim against a real store.
 /// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
@@ -815,6 +821,73 @@ public sealed class StoreBackedQueryTests(PostgresFixture postgres) : IClassFixt
         ThroughputSummary wholeNode = await ThroughputQuery.ReadAsync(
             query, periodStart, periodEnd, periodEnd, projectId: null, cts.Token);
         wholeNode.MergedCount.Should().Be(2, "the sibling project's own merge joins once no project scopes the read");
+    }
+
+    /// <summary>
+    /// <see cref="QueuedPeriodTotal"/>'s own raw-event <c>TaskClaimed</c> query against a real
+    /// store (task: h9k status reports throughput beside spend): a task still queued has its
+    /// lifetime wait clipped to the period, a task that left the queue during the period is swept
+    /// in even though it carries no queued-section row anymore, and a task that left the queue
+    /// well before the period started contributes nothing and is never even fetched.
+    /// </summary>
+    [Fact]
+    public async Task Queued_period_total_clips_a_still_queued_wait_and_sweeps_in_a_task_already_claimed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid stillQueuedTaskId = DomainId.New();
+        Guid claimedThisPeriodTaskId = DomainId.New();
+        Guid claimedBeforePeriodTaskId = DomainId.New();
+
+        DateTimeOffset now = HandoffNow;
+        DateTimeOffset periodStart = now.AddHours(-6);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // Still queued: assigned 10h ago, never claimed. Clipped to the period's own 6h.
+            session.Events.StartStream<TaskAggregate>(stillQueuedTaskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(
+                    stillQueuedTaskId, projectId, "Still queued", ["merged"], TaskType.Chore, null, null, null,
+                    now.AddHours(-10), ownerId),
+                ownerId, now.AddHours(-10)));
+
+            // Left the queue during the period: assigned 20h ago, claimed 3h ago — clipped to the
+            // 3h between the period start and the claim, with no queued-section row left to
+            // report it (this is the very case the conformance finding named).
+            session.Events.StartStream<TaskAggregate>(claimedThisPeriodTaskId,
+            [
+                .. TaskSeed.Dispatchable(
+                    TaskDecider.Add(
+                        claimedThisPeriodTaskId, projectId, "Claimed this period", ["merged"], TaskType.Chore,
+                        null, null, null, now.AddHours(-20), ownerId),
+                    ownerId, now.AddHours(-20)),
+                new TaskClaimed(claimedThisPeriodTaskId, ownerId, ownerId, 1, DomainId.New(), now.AddHours(-3)),
+            ]);
+
+            // Left the queue well before the period started: its own TaskClaimed falls outside
+            // the period, so it is never fetched at all rather than contributing a clipped zero.
+            session.Events.StartStream<TaskAggregate>(claimedBeforePeriodTaskId,
+            [
+                .. TaskSeed.Dispatchable(
+                    TaskDecider.Add(
+                        claimedBeforePeriodTaskId, projectId, "Claimed long ago", ["merged"], TaskType.Chore,
+                        null, null, null, now.AddHours(-40), ownerId),
+                    ownerId, now.AddHours(-40)),
+                new TaskClaimed(claimedBeforePeriodTaskId, ownerId, ownerId, 1, DomainId.New(), now.AddHours(-35)),
+            ]);
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+
+        TimeSpan total = await QueuedPeriodTotal.ReadAsync(
+            query, [stillQueuedTaskId], periodStart, now, cts.Token);
+
+        total.Should().Be(TimeSpan.FromHours(6) + TimeSpan.FromHours(3));
     }
 
     /// <summary>A task claimed, pushed, and merged — the <see cref="TaskState.Done"/> shape <see cref="ThroughputQuery"/> reads.</summary>
