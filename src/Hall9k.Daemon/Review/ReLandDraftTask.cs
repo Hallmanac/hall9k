@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Text;
 using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Tasks;
@@ -107,6 +106,14 @@ public static class ReLandDraftTask
         context.AppendLine(
             "each commit's own intent against the base branch's current state and land it with judgment, never");
         context.AppendLine("as a mechanical replay.");
+        context.AppendLine();
+        context.AppendLine(
+            "This list was built by comparing the branch's own commits against the base branch by patch " +
+            "content, which tells a rebase-merged commit apart from a genuinely stranded one. It cannot tell");
+        context.AppendLine(
+            "a squash-merge apart from a full stranding: if every commit this branch ever made appears above, " +
+            "check the base branch's own history for a single combined commit before assuming none of this");
+        context.AppendLine("landed.");
 
         return context.ToString();
     }
