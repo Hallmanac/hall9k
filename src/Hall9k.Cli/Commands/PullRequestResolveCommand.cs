@@ -70,19 +70,7 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         RunDetails previousRun = await session.LoadAsync<RunDetails>(previousRunId, cancellationToken)
             ?? throw new DomainNotFoundException(MissingRunRecordMessage(taskId, previousRunId, task.PullRequestUrl));
 
-        // The same archived-project refusal TaskAssignCommand.AppendAsync gives h9k task assign
-        // and h9k task publish --assign, and TaskStartCommand/TaskWorkCommand give their own claim
-        // paths (task: a project can be archived, listed as archived, reactivated, and renamed) —
-        // this command reopens a Done task straight to Queued, which DispatchEngine.ReadQueueAsync
-        // then filters out for an archived project, stranding it invisibly rather than dispatching
-        // a follow-up (independent pre-PR review, cycle 1, adversarial lens).
-        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-        if (project is { IsArchived: true })
-        {
-            throw new DomainValidationException(
-                $"Project '{project.Name}' is archived, so its tasks cannot be reopened for a follow-up "
-                + $"run. Reactivate it first: h9k project reactivate {project.Name}");
-        }
+        await RefuseIfArchivedAsync(session, task.ProjectId, cancellationToken);
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
@@ -146,6 +134,28 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The same archived-project refusal <c>TaskAssignCommand.AppendAsync</c> gives h9k task assign
+    /// and h9k task publish --assign, and TaskStartCommand/TaskWorkCommand give their own claim
+    /// paths (task: a project can be archived, listed as archived, reactivated, and renamed) —
+    /// this command reopens a Done task straight to Queued, which DispatchEngine.ReadQueueAsync
+    /// then filters out for an archived project, stranding it invisibly rather than dispatching
+    /// a follow-up (independent pre-PR review, cycle 1, adversarial lens). Extracted so it can be
+    /// exercised directly against a real session, the same seam <c>TaskAssignCommand.AppendAsync</c>
+    /// gives its own equivalent guard, rather than through this command's own <c>ExecuteAsync</c>,
+    /// which opens its own store against the install's real database.
+    /// </summary>
+    internal static async Task RefuseIfArchivedAsync(
+        IDocumentSession session, Guid projectId, CancellationToken cancellationToken)
+    {
+        if (await session.LoadAsync<ProjectDetails>(projectId, cancellationToken) is { IsArchived: true } project)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is archived, so its tasks cannot be reopened for a follow-up "
+                + $"run. Reactivate it first: h9k project reactivate {project.Name}");
+        }
     }
 
     /// <summary>

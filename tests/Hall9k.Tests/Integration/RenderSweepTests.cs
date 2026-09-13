@@ -611,6 +611,36 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Archiving a project (task: a project can be archived, listed as archived, reactivated, and
+    /// renamed) stops this sweep from dispatching into it, the same skip CloseoutEngine and the
+    /// render sweep already give an archived project — without it, an archived project's own
+    /// pending publication request still spawned a live agent session into its checkout and wrote
+    /// a real card on somebody's board (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task An_archived_projects_pending_publication_is_refused_rather_than_dispatched_into()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid taskId = await SeedAsync(store, node, cts.Token, archiveProject: true);
+
+        FakeProcessManager processes = new();
+        ScriptedSession session = new("Created PROJ-123.", processes);
+
+        CardPublicationSweepResult sweep = await NewEngine(store, node, session, processes)
+            .PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new CardPublicationSweepResult(Dispatched: 0, Linked: 0, Adopted: 0, Refused: 1),
+            "the project is archived, so no session was dispatched");
+        session.Spawns.Should().BeEmpty();
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.PublicationOutcome
+            .Should().Contain("is archived").And.Contain("h9k project reactivate");
+    }
+
+    /// <summary>
     /// The daemon stopping mid-publication used to strand the task for good: the dispatch is on
     /// the stream and the completion never lands, and nothing else clears that marker — the sweep
     /// skips a request whose session already ran, push-to-jira refuses while one is outstanding,
@@ -1363,7 +1393,8 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
         Guid? requestedBy = null,
         string? repositoryPath = null,
         DateTimeOffset? requestedAt = null,
-        ProjectHome? homeDirectory = null)
+        ProjectHome? homeDirectory = null,
+        bool archiveProject = false)
     {
         Directory.CreateDirectory(_repository);
         Environment.SetEnvironmentVariable(TokenVariable, "a-token");
@@ -1394,6 +1425,16 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
         session.Events.StartStream<TaskAggregate>(taskId, added, requested);
 
         await session.SaveChangesAsync(cancellationToken);
+
+        if (archiveProject)
+        {
+            await using IDocumentSession archiveSession = store.LightweightSession();
+            ProjectAggregate project = (await archiveSession.Events
+                .AggregateStreamAsync<ProjectAggregate>(projectId, token: cancellationToken))!;
+            archiveSession.Events.Append(projectId, ProjectDecider.Archive(project, null, Now, ownerId));
+            await archiveSession.SaveChangesAsync(cancellationToken);
+        }
+
         return taskId;
     }
 
