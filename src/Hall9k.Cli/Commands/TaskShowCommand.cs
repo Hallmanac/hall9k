@@ -691,7 +691,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         if (reviewHasAnything)
         {
             string cycles = $"review {passage.Review.Cycles} cycle{(passage.Review.Cycles == 1 ? "" : "s")} "
-                + $"{FormatDuration(passage.Review.Elapsed)}{(passage.Review.StillOpen ? " so far" : string.Empty)}";
+                + $"{DurationFormat.Short(passage.Review.Elapsed)}{(passage.Review.StillOpen ? " so far" : string.Empty)}";
             // FixStillOpen alongside the completed count, the same reasoning reviewHasAnything
             // above already applies: a fix session mid-flight before its first
             // ReviewFixCompleted has FixSessions still 0, and gating on the count alone would
@@ -699,7 +699,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // Cycles/StillOpen finding above — independent pre-PR review, cycle 1, both lenses).
             string fix = passage.Review.FixSessions > 0 || passage.Review.FixStillOpen
                 ? $" ({passage.Review.FixSessions} fix session{(passage.Review.FixSessions == 1 ? "" : "s")} "
-                  + $"{FormatDuration(passage.Review.FixElapsed)}{(passage.Review.FixStillOpen ? " so far" : string.Empty)})"
+                  + $"{DurationFormat.Short(passage.Review.FixElapsed)}{(passage.Review.FixStillOpen ? " so far" : string.Empty)})"
                 : string.Empty;
             review.Add(cycles + fix);
         }
@@ -746,7 +746,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     private static string? FormatPhaseOrNull(PassagePhase phase) => phase.Applicable ? FormatPhaseValue(phase) : null;
 
     private static string FormatPhaseValue(PassagePhase phase) => phase.Elapsed is { } elapsed
-        ? $"{FormatDuration(elapsed)}{(phase.StillOpen ? " so far" : string.Empty)}"
+        ? $"{DurationFormat.Short(elapsed)}{(phase.StillOpen ? " so far" : string.Empty)}"
         : "unknown";
 
     private static string HumanWaitLabel(HumanWaitKind kind) => kind switch
@@ -1361,13 +1361,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         gateDurations is not { Count: > 0 } durations
             ? "-"
             : string.Join(", ", durations.Select(gate =>
-                $"{gate.Gate.EscapeMarkup()} {FormatDuration(gate.Duration)}{(gate.Passed ? string.Empty : " [red]✗[/]")}"));
-
-    private static string FormatDuration(TimeSpan duration) => duration.TotalHours >= 1
-        ? $"{(int)duration.TotalHours}h{duration.Minutes:00}m"
-        : duration.TotalMinutes >= 1
-            ? $"{(int)duration.TotalMinutes}m{duration.Seconds:00}s"
-            : $"{duration.TotalSeconds:0.#}s";
+                $"{gate.Gate.EscapeMarkup()} {DurationFormat.Short(gate.Duration)}{(gate.Passed ? string.Empty : " [red]✗[/]")}"));
 
     /// <summary>
     /// The plain flag for a gate whose newest recorded duration materially exceeds this
@@ -1412,8 +1406,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
             string classification = gate.RanFullScope ? "full-scope" : "scoped";
             lines.Add(
-                $"[yellow]{comparison.Gate.EscapeMarkup()}[/] took {FormatDuration(comparison.Observed)} — "
-                + $"well above this project's recent average of {FormatDuration(comparison.RecentAverage)} "
+                $"[yellow]{comparison.Gate.EscapeMarkup()}[/] took {DurationFormat.Short(comparison.Observed)} — "
+                + $"well above this project's recent average of {DurationFormat.Short(comparison.RecentAverage)} "
                 + $"against {comparison.SampleCount} comparable {classification} passing run(s) [dim](drawn from "
                 + "recently recorded runs, not a fixed baseline)[/]");
         }
