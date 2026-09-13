@@ -473,6 +473,17 @@ public sealed class DaemonOptions
     public TimeSpan ProjectHomeRenderPollInterval { get; set; } = TimeSpan.FromSeconds(20);
 
     /// <summary>
+    /// How often the daemon checks for a project purge whose 24-hour grace period
+    /// (<see cref="Hall9k.Domain.Features.Project.ProjectPurge.GracePeriod"/>) has passed (task: an
+    /// archived project can be purged). The first sweep runs before this loop ever waits on
+    /// anything, which is what makes it double as the daemon-start reconciliation pass a purge
+    /// whose deadline passed while the daemon was down needs — there is nothing special about
+    /// "the first run" beyond it happening before any wait. Minutes, not seconds: a purge is a
+    /// 24-hour-out event, not one anything needs to react to within moments of its deadline.
+    /// </summary>
+    public TimeSpan ProjectPurgeSweepPollInterval { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
     /// How long a publication session dispatched by <em>another</em> node may stand before this
     /// node ends the request rather than waiting on a machine it cannot ask.
     /// <para>

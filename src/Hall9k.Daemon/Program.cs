@@ -8,6 +8,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.JiraWrites;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
+using Hall9k.Daemon.Purge;
 using Hall9k.Daemon.Publication;
 using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
@@ -183,6 +184,7 @@ builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
 builder.Services.AddSingleton<JiraWriteRetryEngine>();
 builder.Services.AddSingleton<ProjectHomeRenderEngine>();
+builder.Services.AddSingleton<ProjectPurgeEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
     .IntegrateWithWolverine();
@@ -203,6 +205,7 @@ builder.Services.AddHostedService<LaunchHoldMonitor>();
 builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<JiraWriteRetryLoop>();
 builder.Services.AddHostedService<ProjectHomeRenderLoop>();
+builder.Services.AddHostedService<ProjectPurgeSweepLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 
 // Windows has no SIGTERM h9k daemon stop can send to an arbitrary process (Decisions Log
