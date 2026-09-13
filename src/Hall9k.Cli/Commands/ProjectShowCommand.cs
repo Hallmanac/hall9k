@@ -447,7 +447,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             + $"h9k project set {project.Name.EscapeMarkup()} --priority normal[/]",
         { } tier when tier == ProjectPriority.Normal =>
             "[dim]normal — the default. Free slots rotate: whichever eligible project has gone longest "
-            + "without a dispatch takes the next one, oldest task first within it. Focus on this project "
+            + "without a dispatch takes the next one; which of its own tasks takes it is decided by rank "
+            + "then oldest assignment. Focus on this project "
             + $"instead: h9k project set {project.Name.EscapeMarkup()} --priority high[/]",
         var tier =>
             $"[yellow]{tier.Value.EscapeMarkup()} — unrecognized[/] [dim]— recorded by a build that knew a "

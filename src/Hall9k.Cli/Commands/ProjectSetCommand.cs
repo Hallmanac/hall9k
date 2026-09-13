@@ -836,8 +836,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + "normally.[/]",
             _ =>
                 $"[dim]Project '{project}' is in the default tier: free slots rotate, and whichever eligible "
-                + "project has gone longest without a dispatch takes the next one — oldest task first within "
-                + "it.[/]",
+                + "project has gone longest without a dispatch takes the next one — which of its own tasks "
+                + "takes it is decided by rank then oldest assignment.[/]",
         };
     }
 
