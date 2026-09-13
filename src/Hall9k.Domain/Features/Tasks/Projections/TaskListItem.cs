@@ -249,6 +249,41 @@ public sealed class TaskListItem
     /// (Decisions Log #164).
     /// </summary>
     public DateTimeOffset? FollowUpChecksPendingSince { get; set; }
+    /// <summary>
+    /// The branch a pending follow-up lap resumes, mirrored from <see cref="TaskAggregate.FollowUpBranch"/>
+    /// (task: the dispatcher ranks the ready queue by lifecycle position before age) — set by
+    /// <see cref="TaskReopened"/>, cleared by <see cref="TaskCompleted"/> and
+    /// <see cref="TaskResolved"/> so it never survives past the lap it belongs to. This and
+    /// <see cref="RetryBranch"/> are what <see cref="Rank"/> resolves the dispatch order from; the
+    /// daemon's queue read widens for exactly this pair, not to grow this row's own display duties.
+    /// </summary>
+    public string? FollowUpBranch { get; set; }
+    /// <summary>
+    /// The branch a pending retry or hand-back resumes, mirrored from <see cref="TaskAggregate.RetryBranch"/>
+    /// — set by <see cref="TaskRetried"/> and <see cref="TaskHandedBack"/>, cleared by
+    /// <see cref="TaskCompleted"/> and <see cref="TaskResolved"/>. See <see cref="FollowUpBranch"/>.
+    /// </summary>
+    public string? RetryBranch { get; set; }
+    /// <summary>
+    /// Whether a retry or hand-back is pending, mirrored from <see cref="TaskDetails.RetryPending"/>
+    /// for the identical reason that projection carries it: <see cref="RetryBranch"/> is null both
+    /// when nothing is pending and when a retry was recorded with no run to resume (the failure
+    /// predated any run record — <see cref="Events.TaskRetried.Branch"/> is nullable for exactly
+    /// this), so <see cref="Rank"/> cannot tell a clean-start retry from a first claim off the
+    /// branch alone. Set alongside <see cref="RetryBranch"/> by <see cref="TaskRetried"/> and
+    /// <see cref="TaskHandedBack"/>; cleared alongside it by <see cref="TaskCompleted"/>,
+    /// <see cref="TaskResolved"/> and <see cref="TaskAbandoned"/> (Copilot review, PR #346).
+    /// </summary>
+    public bool RetryPending { get; set; }
+    /// <summary>
+    /// How far along this queued task is toward merging (Decisions Log #187),
+    /// resolved the same way on every reader: a follow-up lap on a task already past its first
+    /// pull request (<see cref="FollowUpBranch"/> set, and <see cref="PullRequestUrl"/> non-blank)
+    /// outranks a retry or hand-back before any pull request (<see cref="RetryPending"/> set), which
+    /// outranks a plain first claim. Computed rather than stored, so the two documents this reads
+    /// from can never drift out of step with it the way a third, persisted copy could.
+    /// </summary>
+    public TaskRank Rank => TaskRankResolution.Resolve(FollowUpBranch, PullRequestUrl, RetryPending);
 }
 
 public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem, Guid>
@@ -535,6 +570,12 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // of the checks at its dispatch describes a push that is no longer the head. The run's own
         // ExternalReviewChecksPendingSince takes over from here, re-anchored by the next sweep.
         view.FollowUpChecksPendingSince = null;
+        // Both pending-lap markers clear here, the same terms TaskAggregate.Apply(TaskCompleted)
+        // clears them on: nothing is left pending for a task that just reached Done, and a value
+        // surviving into Done would misrank a task that no longer even queues.
+        view.FollowUpBranch = null;
+        view.RetryBranch = null;
+        view.RetryPending = false;
         view.State = TaskState.Done;
         // Mirrors TaskAggregate.Apply(TaskCompleted): a marker set while this same claim was
         // live never routes back through Apply(TaskClaimed), so nothing else here clears it.
@@ -546,6 +587,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.ClaimedByNodeId = null;
         view.FollowUpKind = @event.Data.Kind ?? FollowUpKind.Unknown;
+        view.FollowUpBranch = @event.Data.Branch;
         view.FollowUpChecksPendingSince = @event.Data.ChecksPendingSince;
         // Same invariant the TaskRequeued handler above restores: a deliberately-claimed Blocked
         // task can reach Done/Reopened while still carrying an unmet dependency, since Claim never
@@ -571,6 +613,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.RetryBranch = @event.Data.Branch;
+        // Set on the marker directly rather than derived from RetryBranch: Branch is null both
+        // here and when nothing is pending (a clean-start retry with no surviving run record),
+        // so Rank needs this to tell the two apart (Copilot review, PR #346).
+        view.RetryPending = true;
         // The retry answers the failure, so the board stops reporting it: what happened stays
         // on the stream and in h9k task show, which keeps the retry reason beside it.
         view.FailureReason = null;
@@ -588,6 +635,8 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
+        view.RetryBranch = @event.Data.Branch;
+        view.RetryPending = true;
         // Same invariant above: a handback out of a deliberately-claimed Blocked task must not
         // resurface as Queued while a dependency is still on record unmet.
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
@@ -601,6 +650,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // pending follow-up left for it to describe, and a value surviving into a state that
         // renders nothing from it is one a later reader can only misread.
         view.FollowUpChecksPendingSince = null;
+        // Same reasoning as Apply(TaskCompleted): a resolved task reaches Done, and nothing is
+        // left pending for either marker to describe.
+        view.FollowUpBranch = null;
+        view.RetryBranch = null;
+        view.RetryPending = false;
         view.State = TaskState.Done;
         // Mirrors TaskAggregate.Apply(TaskResolved): same reasoning as Apply(TaskCompleted) above.
         view.QueuePriorityMarked = false;
@@ -612,6 +666,9 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.FollowUpKind = FollowUpKind.Unknown;
         // Same reasoning as Apply(TaskResolved) above, and a dead end besides.
         view.FollowUpChecksPendingSince = null;
+        view.FollowUpBranch = null;
+        view.RetryBranch = null;
+        view.RetryPending = false;
         view.State = TaskState.Abandoned;
         // Mirrors TaskAggregate.Apply(TaskAbandoned): a dead end, so a marker set earlier in
         // this task's life must not survive to be read back.

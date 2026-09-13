@@ -367,6 +367,65 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     }
 
     /// <summary>
+    /// <see cref="TaskListItem.RetryPending"/> (task: the dispatcher ranks the ready queue by
+    /// lifecycle position before age) is the list item's own mirror of the marker above, and needs
+    /// its own staleness marker for the identical reason: a clean-start retry — the failure
+    /// predated any run record, so <see cref="Events.TaskRetried.Branch"/> is null — leaves
+    /// <see cref="TaskListItem.RetryBranch"/> null too, indistinguishable from a task that was
+    /// never retried at all, so the branch alone cannot repair <see cref="TaskRank"/> for a
+    /// document old enough to predate this field (Copilot review, PR #346). Without the marker, a
+    /// task genuinely retried before this build reads as a plain first claim in the ready queue
+    /// until something else appends to its stream.
+    /// </summary>
+    [Fact]
+    public async Task A_clean_start_retry_projected_before_the_rank_marker_landed_restores_its_rank_after_the_backfill_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            TaskAdded added = Add(taskId, "Retried with no surviving run record, before the rank marker landed");
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+            TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+            task.Apply(claimed);
+            TaskFailed failed = TaskDecider.Fail(task, runId, "the worktree cut failed", Now.AddMinutes(1));
+            task.Apply(failed);
+            TaskRetried retried = TaskDecider.Retry(
+                task, runId, null, "the infrastructure issue is fixed", Now.AddMinutes(2), ownerId);
+            seed.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, failed, retried]);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StripKeyAsync(taskId, "retryPending", ["mt_doc_tasklistitem"], cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem stale = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            stale.RetryBranch.Should().BeNull("the failure predated any run record, so there is no branch either way");
+            stale.RetryPending.Should().BeFalse("the pre-marker document never wrote this key at all");
+            stale.Rank.Should().Be(
+                TaskRank.FirstClaim,
+                "the branch is null on a genuine retry too, so without the marker this reads exactly like one");
+        }
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Equal(
+            [taskId], "the missing key is a staleness marker, so the window closes at the next daemon start");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem repaired = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            repaired.RetryPending.Should().BeTrue("the stream always recorded the retry; the rebuild restores it");
+            repaired.Rank.Should().Be(
+                TaskRank.RetryOrHandback,
+                "a pending retry now outranks a plain first claim, whether or not a branch survived it");
+        }
+    }
+
+    /// <summary>
     /// <see cref="TaskListItem.QueuePriorityMarked"/> (task 45136b29) exists only on the list
     /// item, and a document written before the field landed carries no key at all — the same
     /// class of defect the markers above cover, but with the worst failure mode of any of them:

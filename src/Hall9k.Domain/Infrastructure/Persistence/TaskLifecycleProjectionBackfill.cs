@@ -115,10 +115,32 @@ public static class TaskLifecycleProjectionBackfill
     /// it), and PostgreSQL's default <c>DESC</c> ordering puts <c>NULL</c> <em>first</em> —
     /// ahead of a genuinely marked row — which is exactly backwards from what the marker is for.
     /// </para>
+    /// <para>
+    /// <see cref="TaskListItem.FollowUpBranch"/> and <see cref="TaskListItem.RetryPending"/> (task:
+    /// the dispatcher ranks the ready queue by lifecycle position before age) join this group for
+    /// the identical class of defect the ordering markers above already cover: a document written
+    /// before the queue read widened to carry them has no key for either, and an absent key reads
+    /// as null/false exactly like a task that genuinely has no pending lap or retry. Both fields
+    /// already exist on <see cref="TaskDetails"/> (they predate this task, and
+    /// <see cref="TaskDetails.RetryPending"/> already has its own marker in
+    /// <see cref="StaleDetailsOnlyDocument"/>), so the marker only belongs here — mixing it into
+    /// <see cref="StaleDocument"/> would read every <see cref="TaskDetails"/> document ever written
+    /// as permanently stale, since that projection never lacked the key.
+    /// Without it, a task sitting in the queue with a genuine follow-up or retry pending since
+    /// before this build reads as a plain first claim until something else appends to its stream —
+    /// which for a queued task, waiting to be claimed, may be a very long time — and is ranked
+    /// behind newer work it should have outranked. <see cref="TaskListItem.RetryPending"/>
+    /// (Copilot review, PR #346) replaced <c>retryBranch</c> as this group's retry marker: a
+    /// retried task's branch is null both when nothing is pending and when the failure predated
+    /// any run record, so the branch key alone could not tell a clean-start retry's stale document
+    /// from a task that never had one pending.
+    /// </para>
     /// </summary>
     private const string StaleListOnlyDocument =
         "(" + StaleDocument
-        + " or not jsonb_exists(d.data, 'queuePriorityMarked'))";
+        + " or not jsonb_exists(d.data, 'queuePriorityMarked')"
+        + " or not jsonb_exists(d.data, 'followUpBranch')"
+        + " or not jsonb_exists(d.data, 'retryPending'))";
 
     /// <summary>
     /// Rebuilds every task stream still carrying an out-of-date document and returns the ids it
